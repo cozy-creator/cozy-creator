@@ -1,27 +1,38 @@
 #!/usr/bin/env bash
-# e2e/cpu/run.sh: every package's entry points through the Runtime's real executor on the CPU, with tiny random
-# weights (README "cpu"). No GPU, no rental, no sign-in.
+# e2e/cpu/run.sh: every package's entry points on the CPU, with tiny random weights (README "cpu"): with --cozy through
+# `cozy run --on local` and real TensorD (real.py), else through the Runtime's real executor and a stand-in TensorD
+# (drive.py). No GPU, no rental, no sign-in.
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
-#                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
+#                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--shard K/N] [--refs DIR] [--helpers pkg,...] [--record]
+#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
-# --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
-# locked and its cells' requests bound through it (cli.sh), and each slot's default lane resolved per GPU family first
-# (lanes.py; `--cells lanes` alone); without it those cells are not run.
+# --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
+# package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
+# resolved per GPU family first (lanes.py; `--cells lanes` alone).
+# --lock fresh (a release's smoke, promote.sh; needs --cozy, and R and T release versions): that cozy locks each package
+# first and it runs from that lock, which must pin R and T from PyPI. Its committed lock isn't compared.
+# --shard K/N runs every Nth package from the Kth, slowest first: N runners share the suite (e2e.yaml's cpu shards). With
+# --cozy, the packages a stand-in TensorD runs (drive.py) take shard 1 and the rest the others.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
 # A helper locked to the Hub's index comes from the checkout, before uv can contact production.
+# --lanes-key FILE: lanes.py reads tensorhub.com as the CI account (an RC's run, its held defaults NOTEs); --public-lanes: as
+# anyone, a default that isn't public failing (the release, before any package final).
 #
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT=''
-RUN_CODE_STAGE=${RUN_CODE_STAGE:-}
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
+RUN_CODE_STAGE=${RUN_CODE_STAGE:-} LANES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
-    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
+    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --shard) SHARD=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
+    --lock) LOCK=$2 ;;
+    --lanes-key) LANES=(--key "$2") ;;
+    --public-lanes) LANES=(--public); shift; continue ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
@@ -32,8 +43,12 @@ done
 [ -n "$OUT" ] && [ -d "$PACKAGES" ] && [ -n "$RUNTIME" ] && [ -n "$TENSORFS" ] \
   || { echo "usage: run.sh --out DIR --packages DIR --runtime R --tensorfs T" >&2; exit 2; }
 [ -z "$COZY" ] || [ -n "$PROJECT" ] || { echo "--cozy needs --project" >&2; exit 2; }
+release() { [[ $1 =~ ^[0-9][0-9a-z.]*$ ]] && [ ! -e "$1" ]; }
+[ -z "$LOCK" ] || { [ "$LOCK" = fresh ] && [ -n "$COZY" ] && release "$RUNTIME" && release "$TENSORFS"; } \
+  || { echo "--lock fresh needs --cozy, and --runtime and --tensorfs release versions" >&2; exit 2; }
 abs() { if [ -e "$1" ]; then (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")"); else echo "$1"; fi; }
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUNTIME=$(abs "$RUNTIME") TENSORFS=$(abs "$TENSORFS")
+[ -z "$COZY" ] || COZY=$(abs "$COZY") PROJECT=$(abs "$PROJECT")
 if [ -n "$COZY" ]; then
   . "$HERE/../test-hub.sh"
   require_ci_test_hub || exit $?
@@ -55,11 +70,14 @@ fi
 NEEDS_ANSWERS=$(abs "$NEEDS_ANSWERS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
-export -f fixture
+# A fixture that patches release geometry (PATCH, WAIVE: se-149) runs in the stand-in TensorD (drive.py) until its package
+# takes a tiny geometry itself; with no cozy, every package does.
+standin() { [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$1")" 2> /dev/null; }
+export -f fixture standin
 if [ -n "$ONLY" ]; then packages=${ONLY//,/ }
 else packages=$(cd "$PACKAGES" && for d in */pyproject.toml; do dirname "$d"; done); fi
 # The slowest first, so the jobs end together: H3's cells are a third of the whole.
@@ -71,12 +89,50 @@ absent=$(for q in $packages; do [ -f "$PACKAGES/$q/pyproject.toml" ] || echo "$q
 packages=$(for q in $packages; do if [ -f "$PACKAGES/$q/pyproject.toml" ]; then echo "$q"; fi; done)
 packages=$(echo $packages)
 packages="$(for q in $SLOWEST; do [[ " $packages " != *" $q "* ]] || echo "$q"; done) $(for q in $packages; do [[ " $SLOWEST " == *" $q "* ]] || echo "$q"; done)"
+every() { local n=$1 k=$2 i=0 q; shift 2; for q; do [ $((i % n)) != $((k - 1)) ] || echo "$q"; i=$((i + 1)); done; }
+# A stand-in's executors run outside cozy's contained machine, so TensorD counts them as the computer's other programs and
+# lowers the machine's limit to keep its reserve beside them: minimax-h3's two ranks and the typechecks left a
+# minimax-h3-image run 1.2 GB (xs-217). With two shards or more, they never share a runner with the machine's packages.
+apart=$(for q in $packages; do ! standin "$q" || echo "$q"; done)
+inside=$(for q in $packages; do standin "$q" || echo "$q"; done)
+k=${SHARD%/*} n=${SHARD#*/}
+if [ "$n" -gt 1 ] && [ -n "$apart" ] && [ -n "$inside" ]; then
+  if [ "$k" = 1 ]; then packages=$apart; else packages=$(every $((n - 1)) $((k - 1)) $inside); fi
+else
+  packages=$(every "$n" "$k" $packages)
+fi
+packages=$(echo $packages)
+[ -n "$packages$absent" ] || { echo "cpu: shard $SHARD holds none of the packages asked for"; exit 0; }
 
 one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t
   rm -rf "$out"; mkdir -p "$out"
   if [ ! -f "$(fixture "$p")" ]; then echo "FAIL $p - fixture 0s: no tiny/$(basename "$(fixture "$p")")"; return 1; fi
+  local pkg=$PACKAGES/$p runtime=$RUNTIME tensorfs=$TENSORFS pinned
+  if [ "$LOCK" = fresh ]; then
+    # A release's question (promote.sh): the cozy under test locks it, from a copy, and it runs from that lock.
+    t=$SECONDS pkg=$out/locked/$p runtime=lock tensorfs=lock
+    mkdir -p "$out/locked" && cp -r "$PACKAGES/$p" "$pkg" && rm -rf "$pkg/.venv" "$pkg/uv.lock"  # fresh: no committed lock to keep pins from
+    if ! python3 "$HERE/../package-lock.py" --cozy "$COZY" "$pkg" > "$out/lock.json" 2> "$out/lock.err"; then
+      echo "FAIL $p - lock $((SECONDS - t))s: $(tail -c 300 "$out/lock.err" | tr '\n' ' ')"; return 1
+    elif ! pinned=$(python3 -I "$HERE/lock_pins.py" "$pkg/uv.lock" "cozy-runtime==$RUNTIME" "tensorfs==$TENSORFS"); then
+      echo "FAIL $p - lock $((SECONDS - t))s: $pinned"; return 1
+    fi
+    echo "PASS $p - lock $((SECONDS - t))s: $pinned"
+  fi
   t=$SECONDS
+  # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
+  # those sources are its sibling folders, and it is locked so. One whose committed lock leaves such a sibling out, unpublished
+  # (stage.py's unpublished.txt), is installed so too, as Calcifer installs it (cl-1211): that lock holds neither the sibling
+  # nor what it brings in (qwen-image-2 imports birefnet's model, xs-217).
+  local read=$PACKAGES/$p staged staging='' envpkg=$pkg
+  if ! staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME" "$TENSORFS"); then
+    staging="staging it from the checkout failed"
+  elif [ -n "$staged" ]; then
+    if nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1; then read=$staged
+    else staging="its checkout-staged lock failed: $(tail -n1 "$out/staged-lock.log" | cut -c1-300)"; fi
+  fi
+  [ "$LOCK" = fresh ] || [ "$read" = "$PACKAGES/$p" ] || [ ! -s "$out/staged/unpublished.txt" ] || envpkg=$read
   local helpers=() h
   for h in ${HELPERS//,/ }; do grep -q "^name = \"$h\"$" "$PACKAGES/$p/uv.lock" && helpers+=("$PACKAGES/$h"); done
   # The same checkout helpers as the former unauthenticated-index fallback, bound before the first uv sync.
@@ -85,7 +141,7 @@ one() {
     [[ " ${helpers[*]} " == *" $PACKAGES/$h "* ]] || helpers+=("$PACKAGES/$h")
   done
   local made=1
-  "$HERE/env.sh" "$PACKAGES/$p" "$env" "$RUNTIME" "$TENSORFS" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
+  "$HERE/env.sh" "$envpkg" "$env" "$runtime" "$tensorfs" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
   if [ -z "$made" ]; then
     echo "FAIL $p - environment $((SECONDS - t))s: $(grep -m1 -iE 'error|failed' "$out/env.log" || tail -n1 "$out/env.log")"
     return 1
@@ -99,7 +155,7 @@ one() {
   # core for a minute, cold).
   (s=$SECONDS; code=0
    nice -n 19 uvx -q mypy@2.4.1 --config-file "$HERE/mypy.ini" --cache-dir "$env/.mypy" --python-executable "$env/bin/python" \
-     "$HERE/drive.py" "$HERE/cell.py" "$HERE/surface.py" "$HERE/waive/cpu_e2e_waive.py" "$(fixture "$p")" > "$out/mypy.txt" 2>&1 || code=1
+     "$HERE/drive.py" "$HERE/real.py" "$HERE/cell.py" "$HERE/surface.py" "$HERE/waive/cpu_e2e_waive.py" "$(fixture "$p")" > "$out/mypy.txt" 2>&1 || code=1
    echo "$code $((SECONDS - s))" > "$out/mypy.rc") &
   local typing=$!
   typed() {
@@ -109,16 +165,7 @@ one() {
     else echo "FAIL $p - typecheck ${s}s: $(grep -m1 'error:' "$out/mypy.txt" || tail -n1 "$out/mypy.txt")"; fi
   }
   t=$SECONDS
-  # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
-  # those sources are its sibling folders, and it is locked so.
-  local read=$PACKAGES/$p staged
-  staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME") \
-    || { echo "FAIL $p - describe $((SECONDS - t))s: staging it from the checkout failed"; typed; return 1; }
-  if [ -n "$staged" ]; then
-    nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1 \
-      || { echo "FAIL $p - describe $((SECONDS - t))s: its checkout-staged lock failed: $(tail -n1 "$out/staged-lock.log" | cut -c1-300)"; typed; return 1; }
-    read=$staged
-  fi
+  [ -z "$staging" ] || { echo "FAIL $p - describe 0s: $staging"; typed; return 1; }
   # The static reader's interface: since Runtime 0.44 (cr-269) the only describer, so no import to compare.
   if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$read" \
       > "$out/interface.json" 2> "$out/describe.err"; then
@@ -128,13 +175,17 @@ one() {
     return 1
   fi
   echo "PASS $p - describe $((SECONDS - t))s"
-  CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
+  # With a cozy, each cell runs as a person runs it (real.py: `cozy run <package dir>/<function> --on local`, real TensorD,
+  # its tiny models published on the suite's Hub), but a stand-in's (`standin`).
+  local driver=(drive.py "$PACKAGES/$p")
+  standin "$p" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg")
+  CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/${driver[0]}" "${driver[@]:1}" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
   # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
   ! grep -q '^Traceback' "$out/drive.err" || echo "FAIL $p - drive 0s: $(grep -v '^\s*$' "$out/drive.err" | tail -n1 | cut -c1-300)"
   [ -z "$COZY" ] || "$HERE/cli.sh" "$COZY" "$PROJECT" "$PACKAGES/$p" "$out"
   typed
-  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,cli/src}
+  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,mirror,cli/src,cli/lock} "$out"/cells/*/out
 }
 export -f one
 
@@ -144,7 +195,7 @@ for q in $absent; do echo "SKIP $q - package 0s: not applicable: the packages un
 # The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
 # cl-1076); `--cells lanes` runs it alone.
 if [ -n "$COZY" ] && [ -n "$packages" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
-  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" $packages \
+  python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" "${LANES[@]}" $packages \
     | tee -a "$OUT/cells.txt" || true
 fi
 if [ "$CELLS" != lanes ]; then

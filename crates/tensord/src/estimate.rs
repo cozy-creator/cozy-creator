@@ -13,7 +13,7 @@ use api::{
 use std::collections::HashMap;
 use std::io;
 
-/// The bytes fetched before this machine's own link stands for the default's.
+/// The bytes a fetch ramps its streams up over, and then the bytes more before this machine's own link stands for the default's.
 const MEASURED_LINK: u64 = 1 << 30;
 
 /// The GPUs a started run holds.
@@ -43,12 +43,20 @@ pub(crate) fn chooses(record: &Execution) -> bool {
     invocation.parent.is_empty() && invocation.gpus == 0 && invocation.widths.len() > 1
 }
 
-/// Its weights' arrival, bytes a second, once 1 GiB came; 0 before.
+/// Its weights' arrival, bytes a second, past the first GiB its downloads brought: a fetch ramps its streams up over that (cl-1107,
+/// the user-flow: cibo's first GiB came at 63 MB/s, and it was quoted 933 s for 59 GB; chocola's own came at 68 MB/s, and its 52 GB
+/// at 216 MB/s). 0 until a GiB more came.
 pub(crate) fn link(service: &Service) -> f64 {
-    let received = service.publisher().map(|publisher| publisher.machine().received());
-    match received.filter(|(bytes, time)| *bytes >= MEASURED_LINK && !time.is_zero()) {
-        Some((bytes, time)) => bytes as f64 / time.as_secs_f64(),
-        None => 0.0,
+    static RAMPED: std::sync::Mutex<Option<(u64, std::time::Duration)>> = std::sync::Mutex::new(None);
+    let Some((bytes, time)) = service.publisher().map(|publisher| publisher.machine().received()) else { return 0.0 };
+    if bytes < MEASURED_LINK {
+        return 0.0;
+    }
+    let (ramped_bytes, ramped_time) = *RAMPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert((bytes, time));
+    let (after, took) = (bytes.saturating_sub(ramped_bytes), time.saturating_sub(ramped_time));
+    match after >= MEASURED_LINK && !took.is_zero() {
+        true => after as f64 / took.as_secs_f64(),
+        false => 0.0,
     }
 }
 
@@ -100,11 +108,23 @@ fn claimed(record: &Execution) -> u64 {
     }
 }
 
-/// The bytes of weights a queued run still waits on, as its progress says.
+/// The bytes of weights a queued run still waits on, as its progress says: of the downloads it waits on, its own still to come
+/// (`journal::Waits`, cl-1205), and what its own preparation transfers.
 fn fetching(record: &Execution) -> u64 {
     let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
     let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
-    count("bytes_total").saturating_sub(count("bytes_done"))
+    count("bytes_left") + count("bytes_total").saturating_sub(count("bytes_done"))
+}
+
+/// How far a run is, as its latest progress says: its stage (none for a private run's), and its step of its steps.
+fn stepped(record: &Execution, private: bool) -> v1::Queued {
+    let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let stage = match private {
+        true => String::new(),
+        false => progress.get("stage").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(120).collect(),
+    };
+    v1::Queued { stage, step: count("position"), steps: count("total"), ..Default::default() }
 }
 
 /// Every root here not ended, every caller's, by acceptance.
@@ -122,8 +142,10 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     }
     for record in &records {
         let invocation = &record.invocation;
-        // A project's fetch ahead (a function's warm run) fetches behind every run; it holds no place in the line.
-        if !invocation.parent.is_empty() || (invocation.prepares && !invocation.entrypoint.is_empty()) {
+        // A project's fetch ahead (a function's warm run) fetches behind every run; it holds no place in the line. Nor does a
+        // speculative run (cl-1123 D): any call takes its GPU at once, and the call that is its request adopts it.
+        if !invocation.parent.is_empty() || (invocation.prepares && !invocation.entrypoint.is_empty())
+            || (invocation.background && !invocation.prepares) {
             continue;
         }
         let actor = record.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
@@ -143,7 +165,9 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             (false, false) => (invocation.widths.clone(), invocation.package.clone()),
         };
         let running = matches!(record.state, State::Starting | State::Running);
-        let private = invocation.local_private.is_some();
+        // An encrypted project's: its function, models and stage are its project's, as `api::calcifer::Run::outsider` rules for every
+        // outsider (cl-1242). A plaintext project's are said, as `times` says them.
+        let private = invocation.local_private.as_ref().is_some_and(|scope| !scope.ordinary);
         let caller = |record: &Execution| {
             (record.submission.as_ref().map(|s| s.request_id.clone()))
                 .filter(|request| !request.is_empty())
@@ -189,15 +213,25 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
                 true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
                 false => fetching(record),
             },
+            client: crate::clients::name(&actor),
+            ..stepped(record, private)
         };
         roots.push(Root { id: record.id.clone(), actor, caller_id, queued });
     }
     Ok(roots)
 }
 
-/// Each waiting root's width as it would start, of those the machine chooses for (`chooses`), from the same picture Calcifer
-/// quotes by.
-pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, u32>> {
+/// A waiting root's width as the machine packs its queue now, and about how long until it starts, ms; None: not known, as a run it
+/// waits for has never been timed here.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Start {
+    pub width: u32,
+    pub wait_ms: Option<u64>,
+}
+
+/// Each waiting root's start, of those the machine chooses for (`chooses`), from the same picture Calcifer quotes by: a root queued,
+/// or an orchestrator whose calls have yet to take its GPUs (cl-1187).
+pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, Start>> {
     let roots = roots(service)?;
     let mut times = HashMap::new();
     for root in roots.iter().filter(|root| !root.queued.function.is_empty()) {
@@ -216,12 +250,13 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         now_ms: crate::machine::lifecycle::now_ms(),
         // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is a minute; Calcifer's quotes know them.
         references: None,
+        named: HashMap::new(),
     };
     let queued: Vec<v1::Queued> = roots.iter().map(|root| root.queued.clone()).collect();
     let (jobs, _) = machine.queue(&queued);
     let placed = estimate::pack(machine.gpus, &jobs);
     Ok((roots.into_iter().zip(jobs).zip(placed))
-        .filter(|((root, job), place)| job.running.is_none() && !root.queued.running && root.queued.chooses && place.width > 0)
-        .map(|((root, _), place)| (root.id, place.width))
+        .filter(|((root, job), place)| job.running.is_none() && root.queued.chooses && place.width > 0)
+        .map(|((root, _), place)| (root.id, Start { width: place.width, wait_ms: place.known.then_some(place.start_ms.max(0.0) as u64) }))
         .collect())
 }

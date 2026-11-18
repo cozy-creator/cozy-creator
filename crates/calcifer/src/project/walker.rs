@@ -1,10 +1,9 @@
-//! The walker's graph (cl-770): one job per version a render owes, made when it is asked and moved by what happens. Most jobs are one-offs
-//! running side by side, and assets come and go while they do. It reads a project only through `Frozen`, so neither its format nor where
-//! its versions are kept reach this. Nothing here walks the project per event: an event touches its job's readers, and a job's turn looks
-//! only at what it reads.
+//! The walker's graph (cl-770): one job per take a render names, made when it is asked and moved by what happens. Nothing is made on
+//! another's behalf (cl-1192, Paul 11-18): a take reads what each box it reads has now, and waits only for a take of one with none that is
+//! already on its way. Most jobs are one-offs running side by side, and assets come and go while they do. It reads a project only through
+//! `Frozen`, so neither its format nor where its versions are kept reach this. Nothing here walks the project per event: an event touches
+//! its job's readers, and a job's turn looks only at what it reads.
 use std::collections::{BTreeSet, HashMap, HashSet};
-
-use sha2::{Digest as _, Sha256};
 
 use super::graph::name_key;
 
@@ -18,7 +17,7 @@ pub(crate) struct Node {
     pub reads: Vec<usize>,
     /// Something makes it.
     pub makes: bool,
-    /// Calcifer makes it, free, with no machine: it reads what stands, and is held up only by what is on its way.
+    /// Calcifer makes it, free, with no machine, from what it reads has now.
     pub free: bool,
     /// Its state is a file the text names, and nothing moves it.
     pub pinned: bool,
@@ -35,21 +34,15 @@ pub(crate) trait Frozen {
     fn order(&self) -> &[usize];
     /// Whether node `i` has a state now.
     fn holds(&mut self, i: usize) -> bool;
-    /// A pin this render looks at when its turn comes, to re-run it if it is out of date (`--outdated`).
-    fn judged(&mut self, i: usize) -> bool;
 }
 
-/// What a job is for.
+/// What a job is for: a new version asked of it by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// A new version asked of it by name.
+    /// A machine makes it.
     Take,
-    /// It has no state, and what the render covers reads it.
-    Owed,
-    /// Calcifer makes it. `named`: though it has a state.
-    Free { named: bool },
-    /// A pin looked at when its turn comes.
-    Judged,
+    /// Calcifer makes it.
+    Free,
 }
 
 /// How a job stands.
@@ -101,17 +94,11 @@ pub(crate) struct Named {
     pub key: String,
     pub asset: String,
     pub approve: bool,
-    /// What it reads with no state renders first, a cut's too (`cozy render`): a cut named otherwise cuts what stands.
-    pub covers: bool,
 }
 
 /// What a render owes as it stands: what it asked, less what it has sent.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Asked {
-    /// Every asset with no state.
-    pub all: bool,
-    /// What it has tried, by name key: each is tried once.
-    pub tried: BTreeSet<String>,
     pub takes: Vec<Named>,
 }
 
@@ -119,11 +106,9 @@ pub(crate) struct Asked {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
     Go,
-    /// It waits for something that came up since it was made.
+    /// It waits for a take on its way of something it reads that has none yet.
     Wait,
-    /// It has its state: nothing to do.
-    Stands,
-    /// Node `read`, which it reads, has no state and nothing is making it.
+    /// Node `read`, which it reads, has nothing yet and nothing is making it: nothing makes it on this one's behalf.
     Unread { read: usize },
 }
 
@@ -138,8 +123,6 @@ pub(crate) struct Graph {
     ready: BTreeSet<(u64, usize)>,
     /// Jobs not ended, by render.
     left: HashMap<String, usize>,
-    /// What each render has tried, by name key.
-    tried: HashMap<String, BTreeSet<String>>,
     /// A job ended since the walk last said so.
     pub ended: bool,
 }
@@ -214,107 +197,58 @@ impl Graph {
         id
     }
 
-    /// Render `ask`: a job for each take it names and each thing it owes, with what each needs.
+    /// Render `ask`: a job for each take it names, each waiting for this render's takes of what it reads. A box it doesn't name is read as
+    /// it is: its approved version, else its newest.
     pub(crate) fn add(&mut self, ask: &str, frozen: &mut dyn Frozen, asked: &Asked) -> Vec<usize> {
         let nodes: Vec<Node> = frozen.nodes().to_vec();
         let order: Vec<usize> = frozen.order().to_vec();
-        let keys: Vec<String> = nodes.iter().map(|node| name_key(&node.name)).collect();
-        let by_name: HashMap<&str, usize> = keys.iter().enumerate().map(|(i, key)| (key.as_str(), i)).collect();
-        let n = nodes.len();
-        let mut taken = vec![vec![]; n];
+        let by_name: HashMap<String, usize> = nodes.iter().enumerate().map(|(i, node)| (name_key(&node.name), i)).collect();
+        let mut taken = vec![vec![]; nodes.len()];
         for take in &asked.takes {
-            if let Some(&i) = by_name.get(name_key(&take.asset).as_str()) {
+            if let Some(&i) = by_name.get(&name_key(&take.asset)) {
                 taken[i].push(take);
             }
         }
-        let holds: Vec<bool> = (0..n).map(|i| frozen.holds(i)).collect();
-        let judged: Vec<bool> = (0..n).map(|i| !asked.tried.contains(&keys[i]) && frozen.judged(i)).collect();
-        let tried = |i: usize| asked.tried.contains(&keys[i]);
-        self.tried.entry(ask.to_owned()).or_default().extend(asked.tried.iter().cloned());
-        let mut covered = vec![asked.all; n];
-        for &i in order.iter().rev() {
-            let node = &nodes[i];
-            let named = !taken[i].is_empty();
-            // Naming a cut cuts what stands, free: it pays for nothing it reads, unless its take covers what it reads.
-            covered[i] |= named && (!node.free || taken[i].iter().any(|take| take.covers));
-            if covered[i] && (!holds[i] || named || (node.free && !node.pinned)) {
-                for &read in &node.reads {
-                    covered[read] = true;
-                }
-            }
-        }
-        // Each node's jobs, with what they need: what makes what they read. A node with none passes on what it reads.
+        // What a reader of each node waits for in this render: its takes here, unless it's approved and none of them approves. A node with
+        // no operation (words, a file) passes on what it reads.
         let base = self.jobs.len() as u64 + 1;
-        let mut through: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut through: Vec<Vec<usize>> = vec![vec![]; nodes.len()];
         let mut made = vec![];
         for (place, &i) in order.iter().enumerate() {
             let node = &nodes[i];
-            let named = !taken[i].is_empty();
-            // A pin needs nothing it reads, unless a take of it does.
-            let up: Vec<usize> = match node.pinned && !named && !judged[i] {
-                true => vec![],
-                false => merged(node.reads.iter().map(|&read| &through[read])),
-            };
-            let job = |key: String, kind: Kind, approve: bool, up: &[usize]| Job {
-                key,
-                ask: ask.to_owned(),
-                node: i,
-                asset: node.name.clone(),
-                spec: node.spec.clone(),
-                kind,
-                state: State::Waiting,
-                shot: node.shot,
-                video: node.video,
-                approve,
-                rank: base + place as u64,
-                needs: up.to_vec(),
-                unmet: 0,
-                readers: vec![],
-            };
+            let up = merged(node.reads.iter().map(|&read| &through[read]));
             let mut own = vec![];
             for take in &taken[i] {
                 // Already going, as what a walker before this one sent.
                 if self.by_key.contains_key(&take.key) {
                     continue;
                 }
-                let kind = if node.free { Kind::Free { named: true } } else { Kind::Take };
-                own.push(self.make(job(take.key.clone(), kind, take.approve, &up)));
-            }
-            // What another render is making of the same thing answers what has no state here, and what reads it waits for that.
-            let others: Vec<usize> = (self.open.get(&keys[i]).into_iter().flatten())
-                .copied()
-                .filter(|&id| self.jobs[id].ask != ask && self.jobs[id].spec == node.spec)
-                .collect();
-            let owed = covered[i] && !holds[i] && node.makes && !node.free && !tried(i) && others.is_empty();
-            let free = node.free && node.makes && !node.pinned && !tried(i) && (!holds[i] || !up.is_empty());
-            if !named && (owed || free || judged[i]) {
-                let kind = match (free, judged[i]) {
-                    (true, _) => Kind::Free { named: false },
-                    (_, true) => Kind::Judged,
-                    _ => Kind::Owed,
-                };
-                let key = owed_key(ask, &keys[i]);
-                if !self.by_key.contains_key(&key) {
-                    own.push(self.make(job(key, kind, false, &up)));
-                }
+                own.push(self.make(Job {
+                    key: take.key.clone(),
+                    ask: ask.to_owned(),
+                    node: i,
+                    asset: node.name.clone(),
+                    spec: node.spec.clone(),
+                    kind: if node.free { Kind::Free } else { Kind::Take },
+                    state: State::Waiting,
+                    shot: node.shot,
+                    video: node.video,
+                    approve: take.approve,
+                    rank: base + place as u64,
+                    needs: up.clone(),
+                    unmet: 0,
+                    readers: vec![],
+                }));
             }
             made.extend(own.iter().copied());
             // Going already, of this render, as what a walker before this one sent.
-            let going = self.open.get(&keys[i]).into_iter().flatten().copied().filter(|&id| self.jobs[id].ask == ask && self.jobs[id].state == State::Going);
+            let going = self.open.get(&name_key(&node.name)).into_iter().flatten().copied().filter(|&id| self.jobs[id].ask == ask && self.jobs[id].state == State::Going);
             own.extend(going);
-            // A completed selected version is this ask's input snapshot. Making
-            // another version must not make its readers wait for that replacement.
-            if node.pinned && holds[i] && !judged[i] {
-                through[i] = vec![];
-                continue;
-            }
             let approving = own.iter().any(|&id| self.jobs[id].approve);
-            let holds_up = approving || judged[i] || (!node.pinned && !own.is_empty());
-            through[i] = match (holds_up, node.pinned, others.is_empty()) {
-                (true, _, true) => own,
-                (true, _, false) => merged([&own, &others].into_iter()),
-                (false, false, false) => merged([&up, &others].into_iter()),
-                (false, ..) => up,
+            through[i] = match (own.is_empty(), node.pinned && !approving) {
+                (true, _) if !node.makes => up,
+                (true, _) | (false, true) => vec![],
+                (false, false) => own,
             };
         }
         for &id in &made {
@@ -323,42 +257,38 @@ impl Graph {
         made
     }
 
-    /// A job's turn, looking only at what it reads.
+    /// A job's turn, looking only at what it reads: one with nothing yet is waited for while a take of it is on its way, here or in another
+    /// render, and else said. Nothing is made of it on this one's behalf.
     pub(crate) fn turn(&mut self, id: usize, frozen: &mut dyn Frozen) -> Turn {
-        let (ask, node, kind) = (self.jobs[id].ask.clone(), self.jobs[id].node, self.jobs[id].kind);
-        let nodes = frozen.nodes();
-        let free = nodes[node].free;
-        let reads: Vec<usize> = match nodes[node].pinned && kind == Kind::Owed {
-            true => vec![],
-            false => nodes[node].reads.clone(),
+        let node = self.jobs[id].node;
+        let (free, reads) = {
+            let nodes = frozen.nodes();
+            (nodes[node].free, nodes[node].reads.clone())
         };
         if free {
             return Turn::Go;
         }
-        // What it reads with no state is made first, if it can be: one a render covers, or that came up since.
-        let mut spawned = vec![];
+        let mut making = vec![];
         let mut missing = None;
         for read in reads {
             if frozen.holds(read) {
                 continue;
             }
-            let before = spawned.len();
-            self.owed_upstream(read, &ask, frozen, &mut spawned);
-            if spawned.len() == before {
+            let key = name_key(&frozen.nodes()[read].name);
+            let before = making.len();
+            making.extend(self.open.get(&key).into_iter().flatten().copied().filter(|&other| other != id));
+            if making.len() == before {
                 missing.get_or_insert(read);
             }
         }
-        if !spawned.is_empty() {
-            self.wait_on(id, spawned);
+        if !making.is_empty() {
+            self.wait_on(id, making);
             return Turn::Wait;
         }
-        if let Some(read) = missing {
-            return Turn::Unread { read };
+        match missing {
+            Some(read) => Turn::Unread { read },
+            None => Turn::Go,
         }
-        if kind == Kind::Owed && frozen.holds(node) {
-            return Turn::Stands;
-        }
-        Turn::Go
     }
 
     /// Back to waiting for its turn: a machine isn't free for it yet, or sending it found out what it is.
@@ -416,8 +346,6 @@ impl Graph {
         if let Some(left) = self.left.get_mut(&self.jobs[id].ask) {
             *left = left.saturating_sub(1);
         }
-        let ask = self.jobs[id].ask.clone();
-        self.tried.entry(ask).or_default().insert(key);
         for reader in std::mem::take(&mut self.jobs[id].readers) {
             let job = &mut self.jobs[reader];
             job.unmet = job.unmet.saturating_sub(1);
@@ -435,23 +363,13 @@ impl Graph {
         (dropped, going)
     }
 
-    /// Asset `from` is called `to` now: its jobs, what waits for it, and what each render tried of it.
+    /// Asset `from` is called `to` now: its jobs, and what waits for it.
     pub(crate) fn renamed(&mut self, from: &str, to: &str) {
         let (key, new) = (name_key(from), name_key(to));
         self.jobs.iter_mut().filter(|job| name_key(&job.asset) == key).for_each(|job| to.clone_into(&mut job.asset));
         if let Some(open) = self.open.remove(&key) {
-            self.open.entry(new.clone()).or_default().extend(open);
+            self.open.entry(new).or_default().extend(open);
         }
-        for tried in self.tried.values_mut() {
-            if tried.remove(&key) {
-                tried.insert(new.clone());
-            }
-        }
-    }
-
-    /// Whether render `ask` tried `name` already: it isn't tried again.
-    pub(crate) fn tried(&self, ask: &str, name: &str) -> bool {
-        self.tried.get(ask).is_some_and(|tried| tried.contains(&name_key(name)))
     }
 
     fn make(&mut self, job: Job) -> usize {
@@ -500,62 +418,12 @@ impl Graph {
             self.ready.insert((self.jobs[id].rank, id));
         }
     }
-
-    /// A job for what node `i` needs to have a state, if render `ask` hasn't tried it: `spawned` is what now has to end first.
-    fn owed_upstream(&mut self, i: usize, ask: &str, frozen: &mut dyn Frozen, spawned: &mut Vec<usize>) {
-        if frozen.holds(i) {
-            return;
-        }
-        let node = frozen.nodes()[i].clone();
-        let key = name_key(&node.name);
-        // On its way already, here or in another render.
-        let making: Vec<usize> = (self.open.get(&key).into_iter().flatten()).copied().filter(|&id| self.jobs[id].ask == ask || self.jobs[id].spec == node.spec).collect();
-        if !making.is_empty() {
-            spawned.extend(making);
-            return;
-        }
-        if self.tried(ask, &node.name) {
-            return;
-        }
-        if node.makes && !node.free {
-            let job_key = owed_key(ask, &key);
-            if self.by_key.contains_key(&job_key) {
-                return;
-            }
-            let rank = self.jobs.len() as u64 + 1;
-            spawned.push(self.make(Job {
-                key: job_key,
-                ask: ask.to_owned(),
-                node: i,
-                asset: node.name.clone(),
-                spec: node.spec.clone(),
-                kind: Kind::Owed,
-                state: State::Waiting,
-                shot: node.shot,
-                video: node.video,
-                approve: false,
-                rank,
-                needs: vec![],
-                unmet: 0,
-                readers: vec![],
-            }));
-            return;
-        }
-        // No operation of its own: what it reads is what's owed.
-        for &read in &node.reads {
-            self.owed_upstream(read, ask, frozen, spawned);
-        }
-    }
 }
 
-/// What a render owes of the asset with this name key goes under one key, restart or not.
-pub(crate) fn owed_key(ask: &str, name_key: &str) -> String {
-    format!("{OWED}{}", &hex::encode(Sha256::digest(format!("{ask}\n{name_key}")))[..32])
-}
-
+/// What a take's run key starts with: `project-` and 32 hex digits, whoever made it.
 const OWED: &str = "project-";
 
-/// Whether a run's key is a walk's (`owed_key`): the run of a take.
+/// Whether a run's key is a walk's: the run of a take.
 pub(crate) fn is_owed_key(key: &str) -> bool {
     key.starts_with(OWED)
 }

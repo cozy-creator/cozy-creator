@@ -74,11 +74,11 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 /** As many tabs as fit their room, the rest behind "N more", and what's said beside them. The room is the bar's free space, whatever its
  *  tabs, so a refit moves nothing it watches. What it holds changing refits it in that frame; its room changing, by the next. A hidden copy
  *  of every tab says what each takes. */
-function ProjectTabs({ id: project, folder, readable, children }: { id: string | null; folder?: string; readable: boolean; children: ReactNode }) {
+function ProjectTabs({ id, folder, readable, children }: { id: string | null; folder?: string; readable: boolean; children: ReactNode }) {
   const { client, stream } = useConnection()
   const to = useTo()
   const navigate = useNavigate()
-  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, project ?? ""), enabled: Boolean(project) && readable })
+  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
   const queries = useQueryClient()
@@ -88,8 +88,6 @@ function ProjectTabs({ id: project, folder, readable, children }: { id: string |
   useEffect(() => { for (const row of list?.projects ?? []) rememberProject(queries, row) }, [list, queries])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
   const order = useByUse(list?.projects ?? [])
-  // The open project's tab: its row by its id, or a locked one's by its folder, as the list holds it by its handle (cl-1090).
-  const id = order.some((row) => row.id === project) ? project : (order.find((row) => folder && row.path === folder)?.id ?? project)
   const room = useRef<HTMLDivElement>(null)
   const strip = useRef<HTMLElement>(null)
   const beside = useRef<HTMLSpanElement>(null)
@@ -378,7 +376,6 @@ export function Shell() {
   const navigate = useNavigate()
   const location = useLocation()
   const matches = useMatches()
-  const [slot, setSlot] = useState<HTMLElement | null>(null)
   const [history, setHistory] = useState<HTMLElement | null>(null)
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
@@ -480,7 +477,7 @@ export function Shell() {
       rememberProject(queries, { id: project, code })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
-      navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })
+      navigate(projectPath({ code }, location.pathname.replace(/^\/$/, "")), { replace: true })
     },
     [navigate, location.pathname, queries],
   )
@@ -540,12 +537,11 @@ export function Shell() {
           <Connectivity />
         </ProjectTabs>
         <MachineTabs to={to} projectId={id} readable={readable} locked={revoked} />
-        <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} readable={readable} />
       </header>
-      {between ? <div inert style={{ display: "contents" }}><CanvasHost key={between.key} projectId={between.id} active={false} slot={null} history={null} onAdopt={adopt} /></div>
+      {between ? <div inert style={{ display: "contents" }}><CanvasHost key={between.key} projectId={between.id} active={false} history={null} onAdopt={adopt} /></div>
         // A first drop waiting on its project holds the canvas still: its box keeps its name field for when the project is made.
-        : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
+        : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} history={readable ? history : null} onAdopt={adopt} /></div>}
       {making && !id && <NewProject />}
       {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate">{vault.isError && <><p>Couldn't check whether this project is locked.</p><button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button></>}</main> : location.pathname.endsWith("/project-settings") ? <main className="gate"><p>This project is locked.</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (

@@ -24,7 +24,8 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ExitStatus, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}},
+    time::{Duration, Instant},
 };
 #[cfg(unix)]
 use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
@@ -238,33 +239,121 @@ pub(crate) struct DeviceExecutor {
     lookahead: Arc<Mutex<LookaheadState>>,
 }
 
-/// A cancel ends the call at once: its executor is killed (its exact process and scope), never
-/// waited on to stop by itself. Its locally owned GPU weights are released on process exit;
-/// a replacement executor reloads them. A cancel for a call it no longer serves does nothing.
+/// A cancel ends the call. An invoke alone in its process (`stoppable`) that has reported a step is
+/// asked to stop (cl-1154): `ctx.progress` is a cancellation point, so it stops at its next step or
+/// model call and replies with what it measured, as a failure does, and its executor stays, its
+/// weights warm. Otherwise its executor is killed (its exact process and scope), as it is when the
+/// call asked shows it doesn't stop: it reports a second step since, or stays silent twice as long as
+/// it ever was before (a halted call, which only a kill ends: cl-663). A killed executor's locally
+/// owned GPU weights are released on its exit; a replacement reloads them. A cancel for a call it no
+/// longer serves does nothing.
 #[derive(Clone)]
 pub(crate) struct Cancellation {
     /// One invocation only. Disabling waits for an in-flight delivery before session reuse.
     enabled: Arc<Mutex<bool>>,
     exact: Arc<Exact>,
-    /// The call it serves ("" while idle in the pool), and whether a cancel killed it.
-    serving: Arc<Mutex<(String, bool)>>,
+    /// The call it serves ("" while idle in the pool).
+    serving: Arc<Mutex<String>>,
+    /// A cancel killed it.
+    killed: Arc<AtomicBool>,
+    /// Its seam, once it connected.
+    line: Arc<OnceLock<Line>>,
+    stopping: Arc<Mutex<Stopping>>,
+}
+/// The invoke that may be asked to stop: whether it reported a step, whether it was asked and the
+/// steps it reported since, when it was last heard from and the longest it was silent.
+#[derive(Default)]
+struct Stopping {
+    request: String,
+    stepped: bool,
+    asked: bool,
+    since: u32,
+    heard: Option<Instant>,
+    longest: Duration,
+}
+/// While it lives, its call's invoke may be asked to stop on a cancel.
+pub(crate) struct Stoppable(Arc<Mutex<Stopping>>);
+impl Drop for Stoppable {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = Stopping::default();
+    }
 }
 impl Cancellation {
     /// It serves `request` from now on ("": none); false once a cancel killed it.
     pub(crate) fn serve(&self, request: &str) -> bool {
-        let mut serving = self.serving.lock().unwrap();
-        serving.0 = request.into();
-        !serving.1
+        *self.serving.lock().unwrap() = request.into();
+        !self.killed.load(Ordering::Acquire)
     }
     pub(crate) fn cancel(&self, request: &str) -> io::Result<()> {
         let enabled = self.enabled.lock().unwrap_or_else(|error| error.into_inner());
         if !*enabled { return Ok(()); }
-        let mut serving = self.serving.lock().unwrap();
-        if serving.0 != request || serving.1 {
+        let serving = self.serving.lock().unwrap();
+        if *serving != request || self.killed.load(Ordering::Acquire) {
             return Ok(());
         }
-        serving.1 = true;
+        let mut stopping = self.stopping.lock().unwrap();
+        if stopping.request == request && stopping.stepped {
+            if stopping.asked {
+                return Ok(());
+            }
+            if self.line.get().is_some_and(|line| line.send(&Command::Cancel(Cancel { request_id: request.into() }))) {
+                stopping.asked = true;
+                let (this, request) = (self.clone(), request.to_owned());
+                std::thread::Builder::new().name("cancel-watch".into()).spawn(move || this.watch(&request))?;
+                return Ok(());
+            }
+        }
+        self.kill()
+    }
+    fn kill(&self) -> io::Result<()> {
+        self.killed.store(true, Ordering::Release);
         self.exact.kill().map_err(io::Error::from)
+    }
+    /// Until its call replies: killed once it is silent twice as long as it ever was before.
+    fn watch(&self, request: &str) {
+        loop {
+            let left = {
+                let stopping = self.stopping.lock().unwrap();
+                if stopping.request != request || !stopping.asked {
+                    return;
+                }
+                let silent = stopping.heard.map_or(Duration::ZERO, |heard| heard.elapsed());
+                let Some(left) = (stopping.longest * 2).checked_sub(silent).filter(|left| !left.is_zero()) else {
+                    tracing::warn!(%request, ?silent, "a call asked to stop is silent twice as long as it ever was: killed");
+                    let _ = self.kill();
+                    return;
+                };
+                left
+            };
+            std::thread::sleep(left);
+        }
+    }
+    /// A frame of the call it serves. A step (`ctx.progress`: a timed count, no unit) shows it reaches
+    /// cancellation points; a second one after it was asked to stop shows it doesn't stop (the first may
+    /// have been on its way), so it is killed.
+    fn heard(&self, frame: &Frame) {
+        let mut stopping = self.stopping.lock().unwrap();
+        if stopping.request.is_empty() || !(frame.request_id.is_empty() || frame.request_id == stopping.request) {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(heard) = stopping.heard.replace(now) {
+            stopping.longest = stopping.longest.max(now - heard);
+        }
+        let step = frame.event == Some(Event::Progress) && frame.position.is_some() && frame.total.is_some()
+            && frame.unit.is_empty() && frame.call_request.is_none() && frame.step_ms.is_some_and(|ms| ms > 0.0);
+        if !step {
+            return;
+        }
+        stopping.stepped = true;
+        if !stopping.asked {
+            return;
+        }
+        stopping.since += 1;
+        if stopping.since >= 2 {
+            tracing::warn!(request = %stopping.request, "a call asked to stop reported two steps since: killed");
+            let _ = self.kill();
+        }
     }
 
     /// No clone of this invocation can kill this executor after it returns to the pool.
@@ -478,6 +567,12 @@ impl Codec {
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut child = command.spawn()?;
+        // A project's own codec holds its frames: its view keeps this birth too, so a lock that can't reach this machine ends it (cl-1064).
+        if let Err(error) = Birth::of(child.id()).map_err(io::Error::from).and_then(|birth| crate::private_io::record_birth(&self.config.python, &birth)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let input = child
             .stdin
             .take()
@@ -914,8 +1009,13 @@ impl DeviceExecutor {
             enabled: Arc::new(Mutex::new(true)),
             exact: Arc::new(exact.try_clone()?),
             serving: Arc::default(),
+            killed: Arc::default(),
+            line: Arc::default(),
+            stopping: Arc::default(),
         };
         on_birth(&birth, &cancellation)?;
+        // A project's own code: its view keeps this birth, so a lock that can't reach this machine ends it (cl-1064).
+        if config.within { crate::private_io::record_birth(&config.python, &birth)?; }
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
             let status = unready.ended()?;
@@ -955,6 +1055,7 @@ impl DeviceExecutor {
             lookahead: Arc::default(),
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
+        let _ = executor.cancellation.line.set(executor.line());
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
         let (mismatched, unreported) = config.seal.mismatches(&hello.hello.sealed);
         if !unreported.is_empty() {
@@ -1033,6 +1134,16 @@ impl DeviceExecutor {
     pub(crate) fn cancellation(&self) -> Cancellation {
         Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
+    /// Until it is dropped, a cancel may ask `request`'s invoke to stop instead of killing it.
+    pub(crate) fn stoppable(&self, request: &str) -> Stoppable {
+        let heard = Some(Instant::now());
+        *self.cancellation.stopping.lock().unwrap() = Stopping { request: request.into(), heard, ..Stopping::default() };
+        Stoppable(self.cancellation.stopping.clone())
+    }
+    /// A cancel killed it.
+    pub(crate) fn killed(&self) -> bool {
+        self.cancellation.killed.load(Ordering::Acquire)
+    }
     /// It goes back to its pool, serving no call; false when a cancel killed it meanwhile.
     pub(crate) fn idle(&self) -> bool {
         self.cancellation.serve("")
@@ -1102,6 +1213,7 @@ impl DeviceExecutor {
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::UnexpectedEof, "stock executor EOF before reply")
                 })?;
+            self.cancellation.heard(&frame);
             let pending = request != Some(frame.request_id.as_str())
                 && self.lookahead.lock().unwrap().queued.as_ref()
                     .is_some_and(|queued| queued.command.request_id == frame.request_id);

@@ -162,7 +162,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
 }
 
 /// `POST /v1/run-estimates` (`Idempotency-Key`; cl-816): when each machine the run may go to would finish it, as each says now.
-/// Nothing is sent. Local code not yet ready answers its install (`preparing`): follow it, then ask again under the same key.
+/// Nothing is sent, and nothing is installed, moved or updated: local code is read as a quote reads it (cl-1115).
 pub(crate) async fn estimate(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
@@ -178,13 +178,8 @@ pub(crate) async fn estimate(
 
 async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Copies) -> Result<Json<RunEstimate>, Refusal> {
     let count = copies.count.unwrap_or(1).clamp(1, COPIES);
-    let (submit, mut notes, offers) = match prepare(api, key, ask, For::Estimate(count)).await.map_err(Refusal)? {
-        Prepared::Install(run) => {
-            let notes = updating(&run).into_iter().collect();
-            return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
-        }
-        Prepared::Cozy(run, note) => return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes: vec![note], ..RunEstimate::default() })),
-        Prepared::Run { submit, notes, offers } => (submit, notes, offers),
+    let Prepared::Run { submit, mut notes, offers } = prepare(api, key, ask, For::Estimate(count)).await.map_err(Refusal)? else {
+        unreachable!("an estimate installs and updates nothing first");
     };
     if copies.count.is_some_and(|asked| asked != count) {
         notes.push(Note { level: NoteLevel::Warning, message: format!("You can render 1 to {COPIES} copies, so this estimate is for {count}.") });
@@ -201,7 +196,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
         On::Machine(name) => machines.iter().any(|machine| machine.job == 0 && machine.fits && machine.machine == *name).then(|| name.clone()),
         _ => None,
     };
-    Ok(Json(RunEstimate { machines, soonest, notes, preparing: None }))
+    Ok(Json(RunEstimate { machines, soonest, notes }))
 }
 
 /// The most copies one estimate quotes: a walk's window.
@@ -462,8 +457,7 @@ enum For {
     Run,
     /// A `new` run's price: nothing installs.
     Quote,
-    /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs but local
-    /// code.
+    /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs.
     Estimate(u32),
 }
 
@@ -518,7 +512,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?;
+    // A run resolves on its machine; a quote or an estimate only reads, installing, starting, moving or updating nothing (cl-1115).
+    let resolved = match purpose {
+        For::Run => Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?,
+        For::Quote | For::Estimate(_) => Box::pin(target::foreseen(api, &hub, &ask.target, ask.code.as_ref(), &on)).await?,
+    };
     // cozy updates itself first for a release only a newer cozy's line runs (cl-978); a quote or an estimate says so.
     let cozy = match &resolved {
         Resolved::Release { cozy: Some(wanted), .. } if purpose == For::Run => {
@@ -596,12 +594,21 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let mut offers = vec![];
     // Placed among machines here rather than named: one of several, or a `new` run a machine up or on its way finishes sooner.
     let mut placed = set.len() > 1;
+    // One machine is quoted too, for its disk's room (cl-1175): a run whose weights it has no room for never starts to download them.
+    let one = purpose == For::Run && matches!(on, On::Machine(_));
     match &resolved {
-        Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
+        Resolved::Release { package, card, .. } if set.len() > 1 || estimates || one => {
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, input.as_ref(), size, gpus, needs_gpu, count, !estimates).await;
             // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
+            }
+            // Room for its weights on none of them: refused before anything downloads, with the rental its asker may choose instead.
+            if let Err(e) = &chosen
+                && e.code == "machine_disk_full"
+                && !estimates
+            {
+                return Err(e.clone().next(format!("cozy run {} … --on new", ask.target)));
             }
             if set.len() > 1 {
                 on = match chosen {
@@ -618,6 +625,9 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
                 let now = crate::store::now_ms();
                 let waits = offered.first().and_then(|offers| offers.iter().find(|offer| offer.machine == on)).and_then(|offer| offer.waits_for(now));
                 notes.extend(waits.map(|message| Note { level: NoteLevel::Info, message: format!("{named}: {message}") }));
+                // Gone elsewhere for a disk without room for it, said in a line.
+                let roomless = offered.first().and_then(|offers| crate::placement::roomless(offers)).filter(|short| short.machine != on && !estimates);
+                notes.extend(roomless.map(|short| Note { level: NoteLevel::Info, message: crate::placement::elsewhere_line(short, &on, "run") }));
             }
             offers = offered;
         }
@@ -686,7 +696,7 @@ struct Weighed<'a> {
     gpu: bool,
 }
 
-/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of this controller's rentals up or on their way
+/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of the account's rentals up or on their way
 /// and the computers added here, when it is sooner than a new rental's boot, preparation and run on the card its Hub would place it on;
 /// what it says of that, and the offers. None: it rents. This computer's machine isn't weighed: a run asked to rent wants a rented GPU.
 async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, String, Vec<Vec<crate::placement::Offer>>)> {
@@ -749,7 +759,7 @@ pub(crate) fn default_on(api: &Api) -> On {
         return local;
     }
     let machines = api.calcifer.store().live_machines().unwrap_or_default();
-    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended && api.machines.ordered(row)) {
+    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended) {
         true => On::Any,
         false => local,
     }
@@ -879,8 +889,12 @@ async fn gpuless(api: &Api, on: &On, gpu: bool, target: &str) -> Option<String> 
     if !gpu {
         return None;
     }
-    let machine = api.machines.show(name).await.ok()?;
-    (machine.status.as_ref()).is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()).then(|| {
+    // What its open Status stream last said, else asked now (cl-1172: a round trip a GPU run).
+    let gpuless = match api.machines.named(name).ok().flatten().and_then(|row| api.machines.live_frame(&row.name)) {
+        Some(frame) => frame.phase == "ready" && frame.gpus.is_empty(),
+        None => api.machines.show(name).await.ok()?.status.is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()),
+    };
+    gpuless.then(|| {
         format!(
             "{name} has no supported GPU, so {target} runs on its CPU: slowly, or not at all if it loads a model. Rent a GPU to run it properly."
         )

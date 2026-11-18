@@ -30,6 +30,8 @@ pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
 pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+/// The computer a request comes from, as it names itself (its host name): what Status says sent each run (`Queued::client`, cl-1193).
+pub const CLIENT: &str = "cozy-client";
 
 /// A project's machine area in its own storage (`DIR`): TensorD's state for the project's runs.
 /// Its journal, results and objects are the project's. What `rebuildable` names TensorD makes
@@ -130,6 +132,9 @@ pub mod path {
     /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
     /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
     pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
+    /// `POST` a [`super::ViewGone`] by this computer's controller: what a lock that couldn't reach this machine owes it (cl-1064).
+    /// Every project it ran in that vault view has its runs cancelled and its records retired, as a lock's close would have. 204.
+    pub const PROJECT_GONE_AT: &str = "/v1/project-gone";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
@@ -150,6 +155,9 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
+    /// `PUT` many whole objects in one body ([`super::OBJECTS_TYPE`]), each written as `PUT /v1/objects/{digest}` writes a whole
+    /// one; answers a [`super::HeldAnswer`] in their order (cl-1123).
+    pub const OBJECTS: &str = "/v1/objects";
     /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
     pub const UPCOMING: &str = "/v1/upcoming";
     /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
@@ -162,6 +170,13 @@ pub mod path {
 
 /// A preview's step, `<position>/<total>` (`path::PREVIEW`).
 pub const PREVIEW_STEP: &str = "cozy-preview-step";
+
+/// A vault view a lock ended while this machine didn't answer (cl-1064): the path it was mounted at, new at each unlock.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewGone {
+    pub view: std::path::PathBuf,
+}
 
 /// Remove all locally cached releases and lanes of one model repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +271,18 @@ pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
 }
 
+/// `PUT /v1/objects`'s body: objects one after another, each an [`ObjectHeader`] as one JSON line and then its `length` bytes
+/// (cl-1123: a tree of small files, one round trip). What the caller sends is what `POST /v1/objects/held` said the machine lacks.
+pub const OBJECTS_TYPE: &str = "application/x-cozy-objects";
+
+/// One object of a `PUT /v1/objects` body, ahead of its bytes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ObjectHeader {
+    /// `sha256:<hex>` of its bytes.
+    pub digest: String,
+    pub length: u64,
+}
+
 /// One object asked: the byte ranges of `digest` the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -281,6 +308,28 @@ pub struct LogLines {
     /// The place after them, also the event's id: a follow resumed there goes on with the next line.
     pub after: String,
     pub text: String,
+}
+
+/// When a log's line was written, unix ms: its first word, an RFC 3339 instant (TensorD's own log) or Unix seconds (the TensorFS
+/// and memory logs). A line that carries none goes with the line before it.
+pub fn log_stamp(line: &str) -> Option<i64> {
+    let word = line.split_whitespace().next()?;
+    match word.parse::<jiff::Timestamp>() {
+        Ok(at) => Some(at.as_millisecond()),
+        Err(_) => word.parse::<f64>().ok().map(|seconds| (seconds * 1000.0) as i64),
+    }
+}
+
+/// A log's `text` from its first line stamped at or after `since_ms` on (`GET /v1/logs/{name}?since_ms=`).
+pub fn log_since(text: &str, since_ms: i64) -> &str {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if log_stamp(line).is_some_and(|stamped| stamped >= since_ms) {
+            return &text[at..];
+        }
+        at += line.len();
+    }
+    ""
 }
 
 /// Raw JSON, kept as its exact text: canonical bytes and 64-bit integers survive.
@@ -323,7 +372,30 @@ pub struct RunRequest {
 #[serde(default)]
 pub struct RunBatch {
     pub runs: Vec<RunRequest>,
+    /// The id of the run of `runs` whose events the answer goes on with, asked as `text/event-stream` (cl-1172): the answer is
+    /// then its [`ADMITTED`] event, and the run's events follow it as `GET /v1/runs/{id}/events` sends them from its start, so one
+    /// round trip admits a run and follows it. Empty, or a machine that doesn't stream it: the answer alone, as JSON.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub follow: String,
+    /// Small objects its runs read, whole (cl-1172): written here as `PUT /v1/objects/{digest}` writes them, before the runs are
+    /// admitted, so a run's small inputs take no round trip of their own. Sent only to a machine whose Status says it takes
+    /// them (`StatusFrame::carried_objects`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<CarriedObject>,
 }
+
+/// One small object a batch carries (`RunBatch::objects`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CarriedObject {
+    /// `sha256:<hex>` of `data`.
+    pub digest: String,
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+}
+
+/// The SSE event that carries a batch's [`RunBatchAnswer`] ahead of its followed run's events (`RunBatch::follow`).
+pub const ADMITTED: &str = "admitted";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -728,6 +800,10 @@ pub struct GpuAllocation {
     pub gpus: Vec<u32>,
     pub width: u32,
     pub behind: String,
+    /// `wait`: about how long until it gets them, ms, as the machine's packing times the runs holding them (cl-1187); 0: not known,
+    /// as none of them has been timed there.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub left_ms: u64,
 }
 
 /// A run as its machine tracks it: number, state, log head, what it waits for and its times.
@@ -820,6 +896,10 @@ pub struct Progress {
     /// The number of the run's newest preview (`path::PREVIEW`), from 1; 0: none.
     #[serde(skip_serializing_if = "no_preview")]
     pub preview: u64,
+    /// The downloads it waits on (cl-1205), by their `Operation::id` in `StatusFrame::activity`: while it does, `stage` says so and
+    /// its bytes are theirs, never its own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<String>,
 }
 
 fn no_preview(n: &u64) -> bool {
@@ -1012,6 +1092,10 @@ pub struct Predicted {
     /// The caller's name for it: an upcoming job's key, the one its run is sent under.
     pub key: String,
     pub spec: RunSpec,
+    /// Local code's interface as its caller read it statically, none for a release (cl-1123): the machine resolves its slots and
+    /// fetches its needs while it installs the code, which its own reading waits on. Never the request: not in its identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<Json>,
 }
 
 // ---- Estimate -------------------------------------------------------------------------------
@@ -1146,9 +1230,12 @@ pub struct Quote {
     pub key: String,
     /// It can run here at all; one that can't has no times.
     pub fits: bool,
-    /// Why it can't: `no_gpu`, `does_not_fit` (its weights, the disk).
+    /// Why it can't: `gpu_lost`, `machine_disk_full` (its weights, the disk).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
+    /// With `machine_disk_full`, the bytes its disk lacks for them, after all the store could free (cl-1175).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub short_bytes: u64,
     /// The GPUs it would run on; 0: none.
     pub width: u32,
     pub start_ms: u64,
@@ -1213,6 +1300,12 @@ pub struct StatusFrame {
     /// An idle rental's release, 15 min after its last job; 0: none (a job is queued or running,
     /// or it never releases).
     pub idle_deadline_unix_ms: i64,
+    /// When a keepalive last restarted that idle clock, while the clock counts from it (no job ended since); 0: none (cl-1193).
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub kept_alive_unix_ms: i64,
+    /// SSH sessions open on it now, a development rental's (`cozy machine ssh`): use that holds no job (cl-1193).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub ssh_sessions: u32,
     /// The caller's live runs.
     pub runs: Vec<RunState>,
     /// An update in progress here; none without one.
@@ -1262,6 +1355,12 @@ pub struct StatusFrame {
     pub gpu_problems: Vec<String>,
     /// What builds kernels here when no prebuilt one serves the card.
     pub toolchain: Toolchain,
+    /// Its batch admission writes the small objects a batch carries (`RunBatch::objects`, cl-1172); false from an older one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carried_objects: bool,
+    /// It takes many whole objects in one `PUT /v1/objects` (cl-1123); false from an older one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub objects_batch: bool,
     /// Each native kernel's verdict on this machine's cards, as the Runtime keeps it.
     pub kernels: Vec<KernelVerdict>,
     /// The TensorD service's process (not its stable parent, a pod's PID 1).
@@ -1346,7 +1445,7 @@ pub fn log_tail(text: &str, lines: u64, bytes: usize) -> &str {
 pub struct Queued {
     /// The caller's id for it; empty: another caller's.
     pub run: String,
-    /// `<package>/<function>`, as `Timed::function` names it; empty: a private run's.
+    /// `<package>/<function>`, as `Timed::function` names it; empty: an encrypted project's run.
     pub function: String,
     pub size: JobSize,
     /// The widths it may run at, smallest first; none: no GPU.
@@ -1374,6 +1473,19 @@ pub struct Queued {
     pub models: Vec<String>,
     /// Its weights' bytes still to come, its calls' included.
     pub bytes_left: u64,
+    /// The caller sent it (cl-1193).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
+    /// The computer that sent it, as that computer named itself ([`CLIENT`]); empty: unnamed since this machine started (cl-1193).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    /// How far it is: its latest progress' stage (none for an encrypted project's run), and its step of `steps` (0: none said yet).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub step: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub steps: u64,
 }
 
 fn is_zero_i64(n: &i64) -> bool {
@@ -1453,14 +1565,15 @@ pub struct Resident {
     pub level: String,
 }
 
-/// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
-/// readings measured, until a later loaded run there runs cool.
+/// A GPU the driver held back for most of a run that loaded it, for heat (thermal or hardware slowdown, cl-913) or at a power
+/// limit its host set under the card's default (cl-1161): what that run's readings measured, until a later loaded run there runs
+/// at full speed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct GpuHeat {
     pub gpu: u32,
-    /// The share of its busy readings under a heat limit, 0 to 1.
+    /// The share of its busy readings under that limit, 0 to 1.
     pub share: f32,
     /// Its busy time those readings cover.
     pub busy_ms: u64,
@@ -1475,9 +1588,15 @@ pub struct GpuHeat {
     /// Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub replayed: bool,
+    /// Held at a power limit, not heat: the limit the driver enforced and the card's default, in W; 0: heat.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub power_limit_w: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub power_default_w: u32,
 }
 
-/// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.
+/// Weights arriving or a package's environment built for runs: one per repository or package, however many runs wait on it
+/// (cl-1205). A run waiting on one names it by `id` (`Progress::waiting_on`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Operation {
@@ -1487,18 +1606,32 @@ pub struct Operation {
     pub kind: String,
     /// The model's repository (or provider source), or the package.
     pub subject: String,
+    /// A download's release and components (none: the whole checkpoint), what its runs fetch of it together: read by
+    /// `cozy machine show` and the page's download row.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub release: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// Where it is, in words; empty when only its bytes say.
     pub stage: String,
-    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once, however
+    /// many runs wait on it.
     pub bytes_done: u64,
     pub bytes_total: u64,
     /// What of it was here already (shared with another model, or pulled before).
     pub bytes_here: u64,
     /// Its bytes a second over its last 10 s, once a second of them is seen.
     pub bytes_per_s: f64,
+    /// The seconds its bytes still take at that rate; none before it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
     pub started_at_unix_ms: i64,
-    /// The runs waiting on it, by the caller's ids.
+    /// The runs waiting on it, by the caller's ids: a call's root, the run its caller knows. Only the caller's own.
     pub runs: Vec<String>,
+    /// The runs waiting on it the caller can't read (another project's, another client's), counted: a download is the machine's,
+    /// listed to every caller (cl-1205; Paul: models are machine-wide, projects isolate files and runs).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub unnamed: u32,
 }
 
 /// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
@@ -1674,7 +1807,9 @@ pub struct GpuUse {
 }
 
 /// One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
-/// process's.
+/// process's. Since cl-1191 also its memory's total, its power draw against the limit its driver enforces, its temperature, its SM
+/// clock against its most, and the limits holding that clock back now; a machine from before reads none of them (0, none, empty),
+/// and a driver that doesn't say one leaves it out.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
@@ -1682,6 +1817,20 @@ pub struct GpuReading {
     pub index: u32,
     pub busy_percent: u32,
     pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_limit_w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sm_mhz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sm_mhz_max: Option<u32>,
+    /// `power_cap` (at its power limit), `sw_thermal` and `hw_thermal` (slowed to cool), `hw_slowdown` (the board's own brake, for
+    /// heat or power), `power_brake` (an outside power brake).
+    pub throttles: Vec<String>,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.
@@ -1768,4 +1917,23 @@ pub struct Disk {
     pub environments_bytes: u64,
     pub runtime_bytes: u64,
     pub runs_bytes: u64,
+    /// What TensorFS keeps free and no download writes into (cl-1175); 0 from an older machine.
+    pub reserve_bytes: u64,
+    /// What its store could free for a download: models no process holds and nothing queued or running uses, never one an
+    /// executor has open (cl-1175); 0 from an older machine.
+    pub reclaimable_bytes: u64,
+}
+
+impl Disk {
+    /// The bytes a download may take here (cl-1175): free past the reserve, with what the store could free.
+    pub fn room(&self) -> u64 {
+        (self.free_bytes + self.reclaimable_bytes).saturating_sub(self.reserve_bytes)
+    }
+
+    /// The room for downloads its usual models need, when it has less (cl-1175, cl-1100): a model the size of its `biggest`, and a tenth
+    /// of the disk. None: it has room, or doesn't say.
+    pub fn short_of(&self, biggest: u64) -> Option<u64> {
+        let needs = biggest.max(self.total_bytes / 10);
+        (self.total_bytes > 0 && self.room() < needs).then_some(needs)
+    }
 }

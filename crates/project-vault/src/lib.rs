@@ -781,6 +781,13 @@ pub enum Hold {
     Working,
 }
 
+/// When a limit of `seconds` from `since` ends: the earlier of its wall and monotonic ends.
+fn limit_end(since: Instant, since_wall: SystemTime, seconds: u64) -> Option<SystemTime> {
+    let (wall, now, limit) = (SystemTime::now(), Instant::now(), Duration::from_secs(seconds));
+    let monotonic = wall.checked_add((since + limit).saturating_duration_since(now));
+    since_wall.checked_add(limit).into_iter().chain(monotonic).min()
+}
+
 /// Explicit viewing activity and expiration. Reading status never extends a session.
 /// This holds no key and does not claim to lock/unmount a provider; Calcifer owns that.
 pub struct SessionTimer {
@@ -818,6 +825,12 @@ impl SessionTimer {
             self.activity_wall = SystemTime::now();
         }
         self.held = held;
+    }
+
+    /// Whether work alone holds the session past a limit it holds (cl-1064): work going, its idle limit or its maximum; work not
+    /// begun, its idle limit (its maximum ends the session anyway). A lock then waits on that work's machine.
+    pub fn held_past_limit(&self) -> bool {
+        self.held_until().is_some_and(|until| until <= SystemTime::now())
     }
 
     /// An expired timer cannot be revived by delayed interaction or a heartbeat.
@@ -865,15 +878,27 @@ impl SessionTimer {
         if self.held == Hold::Working {
             return None;
         }
-        let (wall, now) = (SystemTime::now(), Instant::now());
-        let end = |since: Instant, since_wall: SystemTime, seconds: u64| {
-            let limit = Duration::from_secs(seconds);
-            let monotonic = wall.checked_add((since + limit).saturating_duration_since(now));
-            since_wall.checked_add(limit).into_iter().chain(monotonic).min()
-        };
-        let idle = self.policy.idle_seconds.filter(|_| self.held == Hold::Nothing).and_then(|seconds| end(self.activity, self.activity_wall, seconds));
-        let maximum = self.policy.maximum_seconds.and_then(|seconds| end(self.opened, self.opened_wall, seconds));
+        let maximum = self.maximum_end();
+        let idle = self.idle_end().filter(|_| self.held == Hold::Nothing);
         idle.into_iter().chain(maximum).min()
+    }
+
+    /// When work holding the session passes a limit it holds, and [`SessionTimer::held_past_limit`] turns true (cl-1064): a clock
+    /// asks then whether that work's machine answers. None while nothing holds it, or with no such limit.
+    pub fn held_until(&self) -> Option<SystemTime> {
+        match self.held {
+            Hold::Nothing => None,
+            Hold::Waiting => self.idle_end(),
+            Hold::Working => self.idle_end().into_iter().chain(self.maximum_end()).min(),
+        }
+    }
+
+    fn idle_end(&self) -> Option<SystemTime> {
+        self.policy.idle_seconds.and_then(|seconds| limit_end(self.activity, self.activity_wall, seconds))
+    }
+
+    fn maximum_end(&self) -> Option<SystemTime> {
+        self.policy.maximum_seconds.and_then(|seconds| limit_end(self.opened, self.opened_wall, seconds))
     }
 
     pub fn policy(&self) -> SessionPolicy {

@@ -124,6 +124,10 @@ pub struct Start {
     /// for the desktop to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_pace: Option<DisplayPace>,
+    /// A dev machine (`dev = true` in its config.toml): the Runtime audits its CUDA graphs'
+    /// replays against their calls as written.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dev: bool,
 }
 
 /// How a call shares a GPU with the display it drives (`machine.display_pace`): it pauses
@@ -191,7 +195,8 @@ pub struct Preview {
     pub for_ms: u64,
 }
 
-/// The queued preparation to discard, by its request id.
+/// A request to stop, by its id: a queued preparation is discarded, a running invoke stops at its next
+/// cancellation point and replies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Cancel {

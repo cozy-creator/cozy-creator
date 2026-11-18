@@ -66,5 +66,6 @@ pub(crate) fn writer(store: &store::Store, base: Option<&store::Checkpoint>, key
 /// change an older build would misread bumps it (`tensorfs.store/3`: trees and D10 headers).
 pub const STORE_FORMAT: u32 = 3;
 
-/// This TensorFS's release.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This TensorFS's version, as its Python distribution says it (PEP 440; build.rs): a release (`0.26.0`), a build of the open RC's
+/// dev line (`0.27.0.dev3298+g1a2b3c4d`), or a build of a release's commit (`0.26.0+dev.g1a2b3c4d`).
+pub const VERSION: &str = env!("TENSORFS_VERSION");

@@ -3,6 +3,12 @@
 
     ci/affected <repo> <base> <head> [--json]
     ci/affected --tokens "<token> <token> ..." [--json]
+    ci/affected --shards <head> <bases.json>
+
+--shards (cl-1128, an RC push): the cli suite's Linux shards and the cpu and imports suites, by suites.toml's
+[cozy-creator.shards]: `edge` always; another when a path it names, or any harness path (`all`), changed between the commit
+where it last went green on the RC (bases.json: {"<shard>": "<sha>"}) and <head>; one never green runs. A product path (crates/,
+web/) no shard names runs them all. Prints {"shards": [...], "suites": [...], "why": {...}}.
 
 repo: cozy-creator | cozy-runtime | packages | tensorhub. Run it inside a checkout of <repo> that holds
 both revisions (fetch-depth 0). The change is `git diff <base>...<head>`: a PR passes its base and head,
@@ -162,8 +168,41 @@ def grouped(why: dict[str, str]) -> dict[str, list[str]]:
     }
 
 
+def shards(head: str, bases: dict[str, str]) -> dict[str, object]:
+    conf = RULES["cozy-creator"]["shards"]
+    paths_of = {name: [glob(p) for p in pats] for name, pats in conf["paths"].items()}
+    harness = [glob(p) for p in conf["all"]]
+    product = [glob(p) for p in ("crates/**", "web/**")]
+    why: dict[str, str] = {name: "edge" for name in conf["edge"]}
+    changed: dict[str, list[str]] = {}
+    for name in paths_of:
+        base = bases.get(name)
+        if not base or subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], capture_output=True).returncode != 0:
+            why[name] = "never green on this RC"
+            continue
+        if base not in changed:
+            changed[base] = [p for p in git("diff", "--name-only", "--no-renames", f"{base}..{head}").splitlines() if p]
+        for path in changed[base]:
+            mine = any(p.match(path) for p in paths_of[name])
+            everyone = any(p.match(path) for p in harness)
+            # A product path no shard names runs every cli shard; cpu and imports run on their own paths alone.
+            unnamed = name not in ("cpu", "imports") and any(p.match(path) for p in product) \
+                and not any(q.match(path) for ps in paths_of.values() for q in ps)
+            if mine or everyone or unnamed:
+                why[name] = path
+                break
+    # Hardest first: the edge set in its order, then the rest as suites.toml lists them (a matrix starts its jobs in order).
+    order = [*conf["edge"], *paths_of]
+    picked = [name for name in order if name in why]
+    return {"shards": [s for s in picked if s not in ("cpu", "imports")], "suites": [s for s in ("cpu", "imports") if s in why],
+            "why": why}
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if a != "--json"]
+    if len(args) == 3 and args[0] == "--shards":
+        print(json.dumps(shards(args[1], json.loads(Path(args[2]).read_text())), separators=(",", ":")))
+        return
     if len(args) == 2 and args[0] == "--tokens":
         given = args[1].replace(",", " ").split()
         result = grouped({t: "given" for g in given for t in expand(g)})

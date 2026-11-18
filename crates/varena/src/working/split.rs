@@ -336,20 +336,33 @@ fn fits(
         .ok_or(Error::Invalid("unknown split configuration"))?;
     // A level not yet run is scaled as its nearest measured sibling came out. Otherwise a
     // declaration's excess keeps a coarser level from being tried, and a finer measured one sticks.
-    let measured: Vec<(usize, usize)> = site.choices.iter()
-        .filter_map(|choice| {
+    // Coarser goes one measured level at a time: a level more than one coarser than every measured
+    // one keeps its declaration, unless a measure scales it higher. Declared ratios drift from the
+    // windows' over several levels, and a package's split never runs again finer: MiniMax-H3-Image's
+    // encoder, 1.9 GiB measured at level 4, was scaled to 13.2 GiB at level 1, which took 17.2 (cr-328).
+    let measured: Vec<(usize, usize, usize)> = site.choices.iter().enumerate()
+        .filter_map(|(at, choice)| {
             let sample = site.samples.get(&choice.id).filter(|sample| sample.known)?;
-            Some((choice.backing.max(1), sample.peak))
+            Some((at, choice.backing.max(1), sample.peak))
         })
         .collect();
     site.choices
         .iter()
-        .map(|choice| {
+        .enumerate()
+        .map(|(at, choice)| {
             let sample = site.samples.get(&choice.id).filter(|sample| sample.known);
-            let nearest = measured.iter().min_by_key(|(declared, _)| declared.abs_diff(choice.backing));
-            let scaled = |bytes: usize| nearest.map_or(bytes, |(declared, peak)| {
+            let by = |(_, declared, peak): &(usize, usize, usize), bytes: usize| {
                 (bytes as u128 * *peak as u128 / *declared as u128) as usize
-            });
+            };
+            let closest = |near: bool| measured.iter()
+                .filter(|(level, ..)| !near || *level <= at + 1)
+                .min_by_key(|(_, declared, _)| declared.abs_diff(choice.backing));
+            let (near, any) = (closest(true), closest(false));
+            let scaled = |bytes: usize| match (near, any) {
+                (Some(sibling), _) => by(sibling, bytes),
+                (None, Some(sibling)) => by(sibling, bytes).max(bytes),
+                (None, None) => bytes,
+            };
             let classes = sample.map_or(&choice.classes, |sample| &sample.classes);
             let full = sample.map_or_else(|| scaled(choice.backing), |sample| sample.peak);
             let mut missing = classes.clone();

@@ -17,6 +17,10 @@ use tokio::io::AsyncReadExt as _;
 /// else is the guard's `no-store`.
 pub(crate) const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
+/// The most of a file read out at once. Each piece is a trip to the blocking pool, so `ReaderStream`'s own 4 KiB made a large file
+/// crawl: the page reads a video whole before it plays (cl-1215), and 127 MB took 572 ms, 106 ms at this size (cl-1220).
+const PIECE: usize = 256 << 10;
+
 /// `file` (`len` bytes of `media_type`, its revision `etag`, quoted) as `headers` ask for it.
 pub(crate) fn send(
     mut file: std::fs::File,
@@ -58,10 +62,12 @@ pub(crate) fn send(
     };
     file.seek(SeekFrom::Start(first))?;
     let bytes = tokio::fs::File::from_std(file).take(count);
+    // A thumbnail's few kilobytes take no more than they are.
+    let piece = usize::try_from(count).map_or(PIECE, |count| count.clamp(4096, PIECE));
     Ok(response
         .status(status)
         .header(header::CONTENT_LENGTH, count)
-        .body(Body::from_stream(tokio_util::io::ReaderStream::new(bytes)))
+        .body(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(bytes, piece)))
         .expect("a response"))
 }
 

@@ -305,7 +305,7 @@ FAMILIES: list[Spec] = [
         "reference": "hf://OpenMOSS-Team/MOSS-Image-SFT@f972bd4b4b9e3852133cc5da954d87bc32cd8fb9",
         "classes": ["MOSSImagePipeline", "MOSSImageTransformer"],
         "folders": ["transformer", "text_encoder", "vae"],
-        "sources": ["moss.lora"],
+        "sources": ["moss.lora", "moss.text_encoder"],
     },
     {
         "name": "ideogram-4",
@@ -375,7 +375,7 @@ FAMILIES: list[Spec] = [
         "reference": "hf://IFM/PAN2@82f54c6cea3e20a9c451b61d7360016e5970503d",
         "classes": ["PAN2ModularPipeline", "PAN2Transformer3DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
-        "sources": ["pan2.comfy", "pan2.curve"],
+        "sources": ["pan2.comfy", "pan2.curve", "pan2.text_encoder"],
         # ComfyUI's curve DiT (comfy/ldm/pan2/model.py: `vec` lerped from `adaln_t_table` over t in [0, 1], each
         # modulation linear over its 192 coordinates; Comfy-Org's quantized files, pan2.curve), and the packages pan2
         # `curve` lane that writes it from the canonical DiT.

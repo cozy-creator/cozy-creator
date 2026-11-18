@@ -532,8 +532,8 @@ pub(crate) struct ProgressSnapshot {
     /// What the run waits for, while it waits (`Execution::waiting`), and its place in line (`Execution::place`).
     pub waiting: Option<String>,
     pub place: Option<u32>,
-    /// The weights it waits on while they arrive, shown in `detail` over its own detail, kept here.
-    pub weights: Option<(Weights, String)>,
+    /// The downloads it waits on while they arrive, shown in `detail` over its own detail, kept here.
+    pub waits: Option<(Waits, String)>,
     pub revision: u64,
     /// When it last moved (Unix ms).
     pub at_ms: u64,
@@ -559,17 +559,43 @@ pub(crate) struct Weights {
     pub total: u64,
 }
 
-impl Weights {
-    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
-    /// stage is part of) and the download, never a step its weights have not reached.
+/// The downloads a run waits on (cl-1205; Paul, 11-17: "it should show the download occurring, and then it should also show the 3
+/// jobs that are like 'waiting for download...' and they don't need to independently report the progress in theirs as well"):
+/// their items in this machine's activity (`activity::Waiting::shown`), their repositories, and the bytes of its own still to come,
+/// which only its line's estimate reads (`estimate::fetching`).
+#[derive(Clone, Debug)]
+pub(crate) struct Waits {
+    pub on: Vec<String>,
+    pub models: Vec<String>,
+    pub left: u64,
+}
+
+impl Waits {
+    /// It waits on the same downloads as `other`, whatever bytes each has left.
+    pub(crate) fn same(&self, other: &Waits) -> bool {
+        self.on == other.on && self.models == other.models
+    }
+
+    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the stage is part of) and that it waits
+    /// on them, by name, with no bytes of its own: they are the downloads'.
     pub(crate) fn over(&self, detail: &str) -> String {
         let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        let label = format!("downloading {} weights", self.models);
+        let label = format!("waiting for {} to download", said(&self.models));
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} / {label}"),
             None => label,
         };
-        serde_json::json!({"stage": stage, "bytes_done": self.done, "bytes_total": self.total, "step_ms": 0.0}).to_string()
+        serde_json::json!({"stage": stage, "waiting_on": self.on, "bytes_left": self.left, "step_ms": 0.0}).to_string()
+    }
+}
+
+/// Repositories as a run's stage names them: `minimax-h3`, `minimax-h3 and qwen3-vl`, `a, b and c`.
+fn said(models: &[String]) -> String {
+    let names: Vec<&str> = models.iter().map(|model| model.trim_end_matches('/').rsplit('/').next().unwrap_or(model)).collect();
+    match names.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => "its models".to_owned(),
     }
 }
 
@@ -593,6 +619,10 @@ impl ProgressSnapshot {
 pub(crate) struct Journal {
     connection: Connection,
     workspace_id: String,
+    /// Its commits' wait for the disk (`synchronous`): `FULL` on a durable disk; `OFF` on an ephemeral one (a pod's overlay, which
+    /// no host crash outlives), as its store flushes nothing there (tfs-122). A commit there waited behind the whole download's
+    /// writeback while it held the journal every request reads (cl-1202: 46 s on an A40, 44219244039).
+    synchronous: &'static str,
 }
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
@@ -819,10 +849,29 @@ impl Journal {
             )
             .map_err(db_error)?;
         platform::durable::sync_dir(root)?;
+        let synchronous = match platform::durable::DiskClass::of(root) {
+            platform::durable::DiskClass::Ephemeral => "OFF",
+            _ => "FULL",
+        };
+        connection.pragma_update(None, "synchronous", synchronous).map_err(db_error)?;
         Ok(Self {
             connection,
             workspace_id,
+            synchronous,
         })
+    }
+
+    /// The status reader's connection (cl-1202): a second, ordinary connection on `root`'s journal. In WAL mode it reads the last
+    /// committed state while a commit waits for the disk, so Status and a run's state never wait on a writer. Every write is the
+    /// writer's (`Engine::with_journal`); one misplaced here waits on the writer's lock like any second writer, as SQLite allows
+    /// (cl-1225). Opened after `open`, which made the schema.
+    pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
+        let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_error)?;
+        let workspace_id: String = connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
+            .map_err(db_error)?;
+        Ok(Self { connection, workspace_id, synchronous: "OFF" })
     }
 
     /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
@@ -1053,7 +1102,8 @@ impl Journal {
 
     /// The journal rewritten whole, its WAL emptied before and after: `secure_delete` zeroes a deleted cell, but not the older
     /// copies of its rows a build without it (0.24, 0.25) left in free space, which only a rewrite overwrites. Run after a
-    /// retirement, never at start; atomic (a crash leaves the journal as it was); its scratch copy stays in RAM. Once done,
+    /// retirement, and at the one start that forgets an earlier build's list requests (`forget_lists`); atomic (a crash leaves the
+    /// journal as it was); its scratch copy stays in RAM. Once done,
     /// the journal holds no such copy and a lock's retirement no longer rewrites it.
     fn compact(&self) {
         self.truncate_wal();
@@ -1256,6 +1306,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
+    /// The record held for `actor`'s `computation`, its use recorded now: a write, so the writer's (cl-1225).
     pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
         if let Some(scope) = crate::private_io::current() {
             return crate::project_objects::held(&crate::project_objects::open(&scope)?, actor, computation);
@@ -1489,7 +1540,7 @@ impl Journal {
         }
         let accepted = self.accept_now(actor, runs, synced);
         if !synced {
-            self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+            self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
         }
         accepted
     }
@@ -1592,7 +1643,9 @@ impl Journal {
                 if invocation.local_private.as_ref().is_some_and(|scope| local_private.as_ref().is_none_or(|parent| parent.project_id != scope.project_id)) {
                     return Err(io::Error::new(io::ErrorKind::PermissionDenied, "preparation cannot change its private workspace"));
                 }
-                record.invocation = Invocation { root, family, local_private, ..invocation };
+                // A guess or a speculative run stays no job once bound (cl-1123 D: 44175857630's held the idle clock); `adopt` makes it one.
+                let background = record.invocation.background;
+                record.invocation = Invocation { root, family, local_private, background, ..invocation };
                 if let Some(submission) = record.submission.as_mut() {
                     submission.preparation_id = preparation.into();
                 }
@@ -1650,6 +1703,35 @@ impl Journal {
             Ok(held)
         })?;
         Ok((held, record.invocation.parent))
+    }
+
+    /// A starting machine forgets its list items' runs (`ahead`: an upcoming job's, a guess's), every row of theirs, the WAL emptied
+    /// (cl-1123): their callers send their lists again, and an earlier build kept each one's request whole, an encrypted project's
+    /// draft too, outside its vault. `secure_delete` zeroes a deleted cell, not a copy of it a page's rebalancing left in free space:
+    /// a journal that held such a request is rewritten (`compact`), so none of its bytes stays in the file.
+    pub(crate) fn forget_lists(&mut self) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let rows: Vec<(i64, String, bool)> = {
+            let mut statement = tx.prepare("SELECT id, invocation, EXISTS(SELECT 1 FROM run_specs WHERE execution=executions.id) FROM executions
+                WHERE substr(request_id,1,length(?1))=?1 OR substr(request_id,1,length(?2))=?2").map_err(db_error)?;
+            let rows = statement.query_map(params![crate::ahead::PREPARE, crate::ahead::UPCOMING], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let empty = |invocation: &str| serde_json::from_str::<Value>(invocation).is_ok_and(|value| value["input"].as_object().is_some_and(|input| input.is_empty()));
+        let requests = rows.iter().any(|(_, invocation, spec)| *spec || !empty(invocation.as_str()));
+        for (id, ..) in &rows {
+            delete_execution(&tx, *id)?;
+        }
+        tx.commit().map_err(db_error)?;
+        match requests {
+            true => self.compact(),
+            false => self.truncate_wal(),
+        }
+        tracing::info!("{} list items' runs forgotten: their lists come again{}", rows.len(), if requests { "; the journal rewritten, as it held their requests" } else { "" });
+        Ok(())
     }
 
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
@@ -1909,6 +1991,8 @@ fn insert(
         invocation.local_private = parent.invocation.local_private.clone();
         invocation.root = parent.root_seq().to_string();
         invocation.family = parent.family().unwrap_or_default().into();
+        // A guess's calls, or a speculative run's, are no job either (cl-1123 D).
+        invocation.background |= parent.invocation.background;
     }
     let objects: Vec<_> = invocation
         .inputs
@@ -2060,6 +2144,33 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
+    }
+
+    /// `actor`'s run `from` (a speculative run, cl-1123 D) becomes the run its caller sends as `to`: named so from now on, and a job
+    /// (no longer `background`). Its execution's id; none when no such run is going or has succeeded.
+    pub(crate) fn adopt(&mut self, actor: &str, from: &str, to: &str) -> io::Result<Option<String>> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let found: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id,record FROM executions WHERE actor=?1 AND request_id=?2 AND state NOT IN ('failed','canceled')",
+                params![actor, from],
+                |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_error)?;
+        let Some((id, record)) = found else { return Ok(None) };
+        let mut record = decoded_execution(&record)?;
+        if let Some(submission) = record.submission.as_mut() {
+            to.clone_into(&mut submission.request_id);
+        }
+        record.invocation.background = false;
+        tx.execute(
+            "UPDATE executions SET request_id=?1,invocation=?2,record=?3,updated_ms=?4 WHERE id=?5",
+            params![to, invocation_index(&record.invocation)?, encoded_execution(&record)?, timestamp(), id],
+        )
+        .map_err(db_error)?;
+        tx.commit().map_err(db_error)?;
+        Ok(Some(id))
     }
 
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
@@ -2611,6 +2722,18 @@ impl Journal {
         })
     }
 
+    /// The GPUs root `id` took as its first call bound its lane (cl-1187): what its later calls and its time count.
+    pub(crate) fn set_width(&mut self, id: &str, width: u32) -> io::Result<()> {
+        self.update(id, |record| {
+            let changed = !record.state.terminal() && record.width != width;
+            if changed {
+                record.width = width;
+            }
+            Ok(changed)
+        })
+        .map(drop)
+    }
+
     /// Its weights downloaded from `from` to `to` (Unix ms) while it waited on them (`access::meter`).
     pub(crate) fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.update(id, |record| {
@@ -2747,6 +2870,15 @@ impl Journal {
             if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_cancelled"})) }
             else { Ok(()) }
         })
+    }
+
+    /// The machine ends speculative run `id` (cl-1123 D): its cancel recorded as `cancel_observed` records it, its commit not waiting
+    /// for the disk. A crash loses the run anyway, and its draft runs again.
+    pub(crate) fn cancel_unsynced(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
+        self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
+        let canceled = self.cancel_observed(id, actor, None);
+        self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
+        canceled
     }
 
     /// A run's children that have not finished.

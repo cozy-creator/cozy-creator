@@ -123,6 +123,13 @@ pub(crate) struct GpuConfig {
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
     pub image_kernels: Option<ImageKernels>,
+    /// A dev machine (`dev = true` in its config.toml): sent in Start, its executors audit their CUDA
+    /// graphs' replays.
+    #[serde(default)]
+    pub dev: bool,
+    /// A dev machine's `machine.speculate` (cl-1123 D): a dedicated one runs a loaded prediction ahead (`crate::speculate`).
+    #[serde(default)]
+    pub speculate: bool,
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
@@ -349,22 +356,22 @@ impl Plan {
 }
 
 /// The precision lane the header of checkpoint `manifest` holds (`int8`, `bf16`, …); empty when
-/// it holds none of the table's or is not here.
+/// it holds none of the table's or is not here. Read off disk: planning opens no checkpoint (cl-1202).
 fn precision(store: &Store, manifest: &str) -> String {
-    crate::storage::checkpoint(store, manifest).map(|c| crate::precision::Profile::of(c.header()).family).unwrap_or_default()
+    crate::storage::structure(store, manifest).map(|(_, header)| crate::precision::Profile::of(&header).family).unwrap_or_default()
 }
 
-/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length.
+/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length. Read off disk (cl-1202).
 fn selected_bytes(store: &Store, manifest: &str, components: &[String]) -> io::Result<(u64, u64)> {
-    let checkpoint = crate::storage::checkpoint(store, manifest)?;
+    let (object, header) = crate::storage::structure(store, manifest)?;
     let mut encoded = 0;
     for name in components {
-        let component = checkpoint.header().component(name).ok_or_else(|| {
+        let component = header.component(name).ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, format!("selected component {name} is absent"))
         })?;
         encoded += (component.tensors.iter()).flat_map(|t| t.locations().into_iter().map(|(_, at)| at.length)).sum::<u64>();
     }
-    Ok((encoded, checkpoint.id().length))
+    Ok((encoded, object.length))
 }
 
 /// A checkpoint a plan reads, and the components of it its slots read.
@@ -1929,6 +1936,12 @@ impl Pool {
         idle.sort_by_key(|(_, used)| *used);
         idle
     }
+    /// An executor came back idle or was taken for work: the idle set is watched anew for exits, and what a download may take is
+    /// measured again (`reclaim::frees`, cl-1235), so Status's figure moves with it rather than at the next sweep.
+    fn idle_changed(&self) {
+        self.exits.get().into_iter().for_each(Exits::changed);
+        crate::reclaim::ask();
+    }
     /// Ends the idle executor of process `pid` and waits, as long as `EXIT_WAIT`, for every process of it to exit: what
     /// they hold open goes only then (pod-session 43861913736: H3's group ended, its model still held a moment later, and
     /// the install was refused). Whether one was.
@@ -2079,6 +2092,7 @@ impl Pool {
         let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
             return Ok("its executor ended");
         };
+        self.idle_changed();
         if !session.loaded.contains_key(&plan.construction) {
             self.keep_idle(engine, session)?;
             return Ok("its executor no longer holds it");
@@ -2212,7 +2226,7 @@ impl Pool {
             if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
-                self.exits.get().into_iter().for_each(Exits::changed);
+                self.idle_changed();
                 return Ok(Disposition::Cached);
             }
             drop(idle);
@@ -2253,7 +2267,7 @@ impl Pool {
             drop(levels);
             sessions.insert(key, session);
             drop(sessions);
-            self.exits.get().into_iter().for_each(Exits::changed);
+            self.idle_changed();
             return Ok(Disposition::Cached);
         }
     }
@@ -2316,6 +2330,20 @@ impl Pool {
     /// Every object its calls may read is here, on-demand slots' too: `downloaded`.
     pub(crate) fn downloaded(&self, plan: &Plan) -> bool {
         plan.read().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
+    }
+    /// `downloaded` for `preparation`, as Status reads it (cl-1202): from the store's files, composing no adapter view. One this
+    /// process doesn't keep is judged by what composes it, its base and its LoRAs.
+    pub(crate) fn downloaded_now(&self, preparation: &Preparation) -> bool {
+        let Ok(plan) = Plan::of(preparation) else { return false };
+        let whole = |id: &str, components: &[String]| crate::access::whole(&self.store, id, components);
+        plan.slots.iter().all(|slot| match (&slot.view, crate::storage::view(&slot.binding.snapshot)) {
+            (Some(recipe), None) => whole(recipe.base.as_str(), slot.binding.components.as_slice())
+                && recipe.selections.iter().all(|chosen| match chosen.source_component.is_empty() {
+                    true => whole(chosen.checkpoint.as_str(), &[]),
+                    false => whole(chosen.checkpoint.as_str(), std::slice::from_ref(&chosen.source_component)),
+                }),
+            _ => whole(slot.binding.snapshot.as_str(), slot.binding.components.as_slice()),
+        })
     }
     /// The highest level each App of each generation holds now (keyed `(generation,
     /// application)`): an import-only parent, or an executor. A callee's executors in a
@@ -2671,6 +2699,19 @@ impl Pool {
             engine: Arc::downgrade(engine),
         })
     }
+    /// Whether root `root` holds GPUs whose width is still to be chosen: it never bound a lane (`Allocations::open`).
+    pub(crate) fn open(&self, root: u64) -> bool {
+        self.allocations.open(root)
+    }
+    /// Root `root`'s width as the machine packs its queue now, while it is open, and about how long it waits for it
+    /// (`Allocations::choose`).
+    pub(crate) fn choose(&self, root: u64, width: u32, wait_ms: Option<u64>) {
+        self.allocations.choose(root, width as usize, wait_ms);
+    }
+    /// When dispatch next re-plans an open root's told GPU wait, absent events (`Allocations::told_due`).
+    pub(crate) fn told_due(&self) -> Option<std::time::Instant> {
+        self.allocations.told_due()
+    }
     /// `Context.release_gpus()` of a root: its lane ends now; its next step queues again at
     /// its original place.
     pub(crate) fn release(&self, engine: &Engine, root: u64) {
@@ -2700,6 +2741,10 @@ impl Pool {
             crate::gpu_allocation::Lane::Held { lane, new } => {
                 if new {
                     self.note_gpus(engine, root, "grant", lane.clone(), None);
+                    // Its width, chosen as this call went (cl-1187): what its later calls are prepared at and its time is counted at.
+                    if let Err(error) = engine.set_width(&root.to_string(), lane.len() as u32) {
+                        tracing::warn!(root, "its width was not kept: {error}");
+                    }
                 }
                 Ok(lane)
             }
@@ -2740,8 +2785,11 @@ impl Pool {
         let request = |seq: u64| engine.get(&seq.to_string()).ok()
             .and_then(|record| record.submission.map(|s| s.request_id)).unwrap_or_default();
         let width = self.allocations.width(root);
-        let body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
+        let mut body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
             "width": width, "behind": behind.map(request).unwrap_or_default()}});
+        if let Some(left) = self.allocations.wait_ms(root).filter(|_| state == "wait") {
+            body["gpu"]["left_ms"] = left.max(1).into();
+        }
         if let Err(error) = engine.append_gpu(&root.to_string(), &body) {
             tracing::warn!("gpu allocation entry: {error}");
         }
@@ -2873,9 +2921,13 @@ impl Pool {
         let root = record.root_seq();
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
+            // Its widest in service, until its first call binds its lane at the width the machine's packing then gives it (cl-1187):
+            // what its calls prepared before that fit within. A speculative run (cl-1123 D) isn't packed: its narrowest, as before.
+            let widths = &record.invocation.widths;
+            let widest = widths.iter().copied().filter(|width| *width as usize <= self.serving_width()).max();
             let width = match record.invocation.gpus {
-                // Unpacked (its queue's packing failed), its narrowest width.
-                0 => width.or_else(|| record.invocation.widths.first().copied())
+                0 => (widest.filter(|_| !record.invocation.background))
+                    .or_else(|| widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
@@ -2916,6 +2968,14 @@ impl Pool {
             Some(width) => plan.at(width)?,
             None => plan,
         };
+        // A call prepared before its root's lane was bound narrower (cl-1187) takes the widest group it declares there.
+        let plan = match &lane {
+            Some(lane) if plan.degree as usize > lane.len() && !plan.slots.is_empty() => {
+                let entry = api::interface::entrypoint(&held.record.interface, &record.invocation.entrypoint);
+                plan.at(entry.map_or(1, |entry| self.degree(entry, lane.len() as u32)))?
+            }
+            _ => plan,
+        };
         if let Some(why) = self.unservable(lane.clone(), plan.degree as usize) {
             engine.fail_unstarted(&record.id, "gpu_lost", why)?;
             return Ok(false);
@@ -2926,18 +2986,32 @@ impl Pool {
         // Count CPU output owners after this GPU slot is held. A prior call can return while
         // preparation resolves; it cannot turn a stale pre-placement count into a new grant.
         if !admit()? { return Ok(false); }
-        engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
-            let pool = permit.pool.clone();
+        // A speculative run's call slots are given back the moment a real call wants them, not when it ends (cl-1123 D).
+        let speculative = record.submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id));
+        let pool = permit.pool.clone();
+        let permit = Arc::new(Mutex::new(Some(permit)));
+        if speculative {
+            pool.speculation_dispatched(&record.id, &plan.construction, permit.clone());
+        }
+        let ours = pool.clone();
+        let dispatched = engine.dispatch_managed(&record.id, plan.degree, move |engine, id| {
             let result = pool.run(&engine, &id, held, plan, start, calls.as_ref());
             // Session return and process detachment are already proven. CPU encoding uses
             // the existing managed worker after the next GPU call is allowed to start.
-            drop(permit);
+            drop(permit.lock().unwrap().take());
+            if speculative {
+                pool.speculation_ended(&id);
+            }
             let result = result.and_then(|post| post.map_or(Ok(()), |post| post.finish(&engine, &id)));
             if let Err(error) = &result { settle(&engine, &id, error)?; }
             if let Some(calls) = &calls { calls.ended(&id); }
             pool.keep_all(&engine);
             result
-        })
+        });
+        if speculative && !matches!(dispatched, Ok(true)) {
+            ours.speculation_ended(&record.id);
+        }
+        dispatched
     }
     /// The host watcher looks now (a nudge; the host's own events wake it too).
     fn nudge_host(&self) {
@@ -3042,6 +3116,9 @@ impl Pool {
         preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
         let retained = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start));
+        if retained.is_some() {
+            self.idle_changed();
+        }
         let cancellation = Mutex::new(None::<Cancellation>);
         let halt = Mutex::new(None);
         let serve = |cancel: &Cancellation| {
@@ -3082,7 +3159,7 @@ impl Pool {
             }
         };
         let key = plan.executor.clone();
-        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch);
+        let result = self.call(engine, "", held, plan, &mut session, true, None, fetch, None);
         if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
         drop(halt);
         match result {
@@ -3454,6 +3531,7 @@ impl Pool {
                     shared: false,
                     display_limit: vec![],
                     display_pace: None,
+                    dev: self.config.dev,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3672,6 +3750,15 @@ impl Pool {
                 self.sessions.lock().unwrap().remove(&key)
             }
         };
+        if retained.is_some() {
+            self.idle_changed();
+        }
+        // A request that loads models and starts cold (a new executor, or its models not loaded in the one it takes): from here
+        // until they are loaded, no background download takes the disk, the link or the page cache from it (cl-1118).
+        let request = engine.get(id).is_ok_and(|record| !record.invocation.background);
+        let loads = request && (!plan.slots.is_empty() || !plan.sources.is_empty());
+        let cold = loads && retained.as_ref().is_none_or(|session| !session.started || !session.loaded.contains_key(&plan.construction));
+        let starting = cold.then(tensorfs::fetch::starting);
         let session = match retained {
             Some(session) => {
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
@@ -3732,7 +3819,12 @@ impl Pool {
         }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
-        let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
+        let submission = engine.get(id).ok().and_then(|record| record.submission);
+        // A speculative run's executor, which a real call's arrival tells to stop (cl-1123 D).
+        if submission.as_ref().is_some_and(|submission| crate::ahead::speculative(&submission.request_id)) {
+            self.speculation_executor(id, session.executor.line());
+        }
+        let actor = submission.map(|s| s.actor).unwrap_or_default();
         session.user = Some((actor, private.as_ref().map(|scope| scope.project_id.clone())));
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
@@ -3757,14 +3849,15 @@ impl Pool {
         let error = {
             let mut session = session;
             let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
-            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
+            match self.call(engine, id, &held, plan, &mut session, false, calls, fetch, starting) {
                 Ok(post) => {
                     // Serialize against any old in-flight Halt before the executor becomes
                     // available to a new invocation. Late clones are harmless after this.
                     if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
                     // A caller can submit again as soon as finish publishes. Its predecessor
-                    // must already be idle, or gone if it cannot be reused.
-                    *disposition = if post.is_none() && degree > 0 && engine.get(id)?.cancel_actor.is_some() {
+                    // must already be idle, or gone if it cannot be reused. A call that stopped when
+                    // asked leaves its executor as a failure does (cl-1154).
+                    *disposition = if post.is_none() && degree > 0 && session.executor.killed() && engine.get(id)?.cancel_actor.is_some() {
                         self.retire_canceled(engine, id, session)
                     } else {
                         engine.returned_managed(id, &session.executor.birth)?;
@@ -3911,7 +4004,8 @@ impl Pool {
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
     /// (unless `load_only`: a prewarm). A known outcome stays in the journal until run_on returns
-    /// its executor idle or proves its teardown ended.
+    /// its executor idle or proves its teardown ended. `cold` holds every background download until
+    /// its models are loaded (cl-1118).
     #[allow(clippy::too_many_arguments)]
     fn call(
         &self,
@@ -3923,6 +4017,7 @@ impl Pool {
         load_only: bool,
         calls: Option<&Arc<crate::calls::Calls>>,
         _fetch: Option<Arc<crate::access::Fetch>>,
+        cold: Option<tensorfs::fetch::Starting>,
     ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
@@ -3930,10 +4025,10 @@ impl Pool {
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
-        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one held back for heat most of its load warns as it goes.
+        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one slowed most of its load (heat, a host's power limit) warns as it goes.
         let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
         let replayed = samples.is_some();
-        let hot: platform::gpu::Hot = {
+        let hot: platform::gpu::Slowed = {
             let (engine, id) = (engine.clone(), id.to_owned());
             Box::new(move |used: &platform::gpu::Used| crate::slowed::ran(&engine, &id, std::slice::from_ref(used), replayed, false))
         };
@@ -3998,6 +4093,7 @@ impl Pool {
                     shared: self.config.host.mode == HostMode::Shared,
                     display_limit: self.display_limit(&lane),
                     display_pace: self.display_pace(gpus),
+                    dev: self.config.dev,
                 }),
                 &mut callbacks,
             )?)?;
@@ -4089,6 +4185,8 @@ impl Pool {
                 leader.constructions.insert(construction.clone());
             }
         }
+        // Its models are loaded: the background downloads go on at once (cl-1118).
+        drop(cold);
         if load_only {
             return Ok(None);
         }
@@ -4118,7 +4216,7 @@ impl Pool {
             )
         {
             // Canceled while it waited for its attention kernel's compile (Runtime 0.23.4).
-            if prepared.terminal == "canceled" && engine.get(id)?.cancel_actor.is_some() {
+            if prepared.terminal == "canceled" && (engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id))) {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
                 return Ok(None);
             }
@@ -4187,6 +4285,9 @@ impl Pool {
         }
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
+        // A call alone in its process is asked to stop on a cancel, so its reply keeps what it measured
+        // (cl-1154). A group's ranks are killed: its followers could wait on a collective rank 0 left.
+        let stoppable = session.followers.is_empty().then(|| session.executor.stoppable(id));
         engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
@@ -4218,7 +4319,7 @@ impl Pool {
             })),
             &mut callbacks,
         );
-        drop(invoking);
+        drop((invoking, stoppable));
         engine.watch_previews(id, None);
         let reply = reply?;
         // When the reply came (with the executor's handler and device-lease times) and when it
@@ -4300,7 +4401,8 @@ impl Pool {
                         Outcome::Failed(Failure::custody(&error.to_string())))?,
                 }
             }
-            "canceled" if engine.get(id)?.cancel_actor.is_some() => {
+            // A speculative run told to stop (cl-1123 D) ends canceled, its executor kept.
+            "canceled" if engine.get(id)?.cancel_actor.is_some() || crate::ahead::speculative(&engine.caller_id(id)) => {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
             }
             _ => {

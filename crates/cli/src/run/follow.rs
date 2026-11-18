@@ -29,8 +29,27 @@ use crate::{
 };
 
 /// Submits `ask` under `key`: one key names one run forever. A run that rents carries the quote
-/// its renter agreed to (`machine::agree`). What binding it said is shown, in order.
+/// its renter agreed to (`machine::agree`). What binding it said is shown, in order. One whose
+/// weights no machine here has room for is said once and, at a terminal, offered a new rental in
+/// its place (cl-1175): nothing of it downloaded, and nothing rented unless agreed.
 pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
+    match submit_once(ctx, ask, key).await {
+        Err(e) if e.code == "machine_disk_full" && !matches!(ask.on.as_slice(), [On::New(_)]) && asks_person(ctx) => {
+            output::warn(&e.message);
+            let rent = RunRequest { on: vec![On::New(None)], agreed: None, ..ask.clone() };
+            submit_once(ctx, &rent, &mint_key()).await
+        }
+        submitted => submitted,
+    }
+}
+
+/// A person at a terminal answers a question: not `--json`, nor `--yes`, which agrees to nothing it didn't ask for.
+fn asks_person(ctx: &Context) -> bool {
+    use std::io::IsTerminal as _;
+    !ctx.json && !ctx.yes && std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+async fn submit_once(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut ask = ask.clone();
     if matches!(ask.on.as_slice(), [On::New(_)]) && ask.agreed.is_none() {
@@ -481,6 +500,9 @@ fn fields_after(ctx: &Context, run: &Run, wrote: Option<&str>) -> output::Record
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(retry) = &run.retry {
+        record = record.field("attempt", retry.to_string().trim_start_matches("attempt "));
+    }
     if let Some(placed) = &run.placed {
         record = record.field("placed", placed_words(placed));
     }
@@ -653,6 +675,8 @@ struct View {
     state: String,
     waiting: Option<String>,
     status: Option<Status>,
+    /// Which attempt it is past its first (cl-1173): the status line says it last; the log's warning says why.
+    attempt: Option<String>,
     /// The output items already named.
     named: HashSet<String>,
     /// The log's warnings already said: each once.
@@ -690,6 +714,7 @@ impl View {
             state: String::new(),
             waiting: None,
             status: None,
+            attempt: None,
             named: HashSet::new(),
             warned: HashSet::new(),
             last: None,
@@ -720,7 +745,7 @@ impl View {
             {
                 self.status("saving its outputs")
             }
-            Event::Waiting { reason } => {
+            Event::Waiting { reason, .. } => {
                 self.waiting = Some(reason.clone()).filter(|r| !r.is_empty());
                 self.show();
             }
@@ -797,6 +822,7 @@ impl View {
             self.waiting.clone_from(&run.waiting);
         }
         self.status = Some(run.status);
+        self.attempt = run.retry.as_ref().map(|retry| format!("attempt {} of {}", retry.attempt, retry.attempts));
         self.show();
         self.stalled_as(run);
     }
@@ -811,7 +837,10 @@ impl View {
 
     /// The status line: why the run waits, else where it is.
     fn show(&mut self) {
-        let text = self.waiting.clone().unwrap_or_else(|| self.state.clone());
+        let mut text = self.waiting.clone().unwrap_or_else(|| self.state.clone());
+        if let Some(attempt) = &self.attempt {
+            text = format!("{text} · {attempt}");
+        }
         self.status(&text);
     }
 
@@ -889,6 +918,9 @@ impl View {
         }
         if let Some(stalled) = &self.stalled {
             let _ = write!(text, " · {}", stalled_words(stalled));
+        }
+        if let Some(attempt) = &self.attempt {
+            let _ = write!(text, " · {attempt}");
         }
         match &self.bar {
             Some(bar) => {

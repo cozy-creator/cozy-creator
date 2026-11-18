@@ -76,7 +76,7 @@ test('drawers', { tag: '@solo' }, async ({ page, project, api, cli, removeAfter,
     }
     const plain = extras[0];
     const mine = [project.path, ...extras.map((one) => one.path)];
-    /** The index's order of this cell's projects, by folder (a locked one's row is a handle). */
+    /** The index's order of this cell's projects, by folder. */
     const indexed = async () => (await api.get('/v1/projects?limit=1000')).projects.map((row) => row.path).filter((path) => mine.includes(path));
     const nameOf = (path) => path.split(/[\\/]/).pop();
 
@@ -166,6 +166,17 @@ test('drawers', { tag: '@solo' }, async ({ page, project, api, cli, removeAfter,
       await pick('Installations');
       await expect(titled('Installations'), 'the Installations drawer').toBeVisible();
       await page.keyboard.press('Escape');
+    });
+
+    // Launch walkthrough W-C4 (cl-1238): /settings typed in the address bar answered Calcifer's JSON 404, while /account was the page.
+    await test.step("every drawer's own address opens the page with it, Settings's too", async () => {
+      for (const path of ['projects', 'runs', 'machines', 'packages', 'models', 'account', 'settings']) {
+        const answer = await page.goto(`${api.origin}/${path}`);
+        expect.soft(answer?.headers()['content-type'] ?? '', `/${path} answers the page`).toMatch(/^text\/html/);
+        await expect.soft(drawer, `/${path} opens its drawer`).toBeVisible();
+      }
+      await expect.soft(titled('Settings'), '/settings opens Settings').toBeVisible();
+      await page.screenshot({ path: join(shots, 'settings-address.png') });
     });
 
     await test.step('a new Cozy version reloads the page by itself: no note, nothing in the bar (#3673)', async () => {

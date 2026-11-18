@@ -532,6 +532,87 @@ pub struct Run {
     /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
+    /// Past its first attempt (cl-1173): which it is and why the one before stopped. None on its first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Retry>,
+}
+
+impl Run {
+    /// What a reader outside an encrypted project may know of one of its runs (cl-1242, the release coordinator's ruling): that it
+    /// is there, its id and number, its kind, its machine, its state and times, and how many steps it has gone. Nothing its project
+    /// wrote or chose: not its project's name, nor its key (`KEY-N` is made from that name), its tool, its stage, its outputs or their
+    /// files, its words, its log lines, why it waits or ended, what it asked. The one rule for both kinds of outsider: another project
+    /// on its computer (Calcifer's `Machines::picture_for`) and another computer on the account (TensorD's queue, `estimate::roots`,
+    /// which gives it no function, stage or models). Another run's words name it as TensorD's `others::Others` rules (cl-1223): by
+    /// its id only to its own project's readers. Each field is said here, so one added to `Run` is decided, never passed on.
+    pub fn outsider(&self) -> Run {
+        Run {
+            id: self.id.clone(),
+            number: self.number,
+            name: String::new(),
+            machine_number: self.machine_number,
+            kind: self.kind,
+            target: String::new(),
+            hub: String::new(),
+            machine: self.machine.clone(),
+            project: None,
+            project_id: self.project_id.clone(),
+            status: self.status,
+            cancel_requested: self.cancel_requested,
+            machine_state: self.machine_state.clone(),
+            reason: None,
+            output: vec![],
+            created_at_ms: self.created_at_ms,
+            accepted_at_ms: self.accepted_at_ms,
+            started_at_ms: self.started_at_ms,
+            settled_at_ms: self.settled_at_ms,
+            waiting: None,
+            progress: self.progress.as_ref().map(|progress| Progress {
+                completed: progress.completed,
+                total: progress.total,
+                at_ms: progress.at_ms,
+                ..Progress::default()
+            }),
+            text: vec![],
+            video_progress: None,
+            arriving: None,
+            queue_position: self.queue_position,
+            warnings: vec![],
+            adjustments: vec![],
+            result: None,
+            execution_ms: self.execution_ms,
+            memo: None,
+            measurements: None,
+            stalled: None,
+            calls: vec![],
+            report: None,
+            request: None,
+            gpu: None,
+            placed: None,
+            retry: None,
+        }
+    }
+}
+
+/// A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Retry {
+    pub attempt: u32,
+    pub attempts: u32,
+    /// Why the attempt before stopped, in one line; empty when that wasn't kept.
+    #[serde(default)]
+    pub why: String,
+}
+
+impl std::fmt::Display for Retry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "attempt {} of {}", self.attempt, self.attempts)?;
+        match self.why.is_empty() {
+            true => Ok(()),
+            false => write!(f, ": {}", self.why),
+        }
+    }
 }
 
 /// A text output's words so far, as its machine streams them (xs-209): `index` 0 for a single output, from 1 a list's item.
@@ -624,6 +705,13 @@ pub struct Call {
     /// What keyed a memoizable call's code (`Memo::basis`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub memo_basis: String,
+}
+
+impl Call {
+    /// Where it sits under its run: its request less the run's (`0`; call 1 of call 0: `0/1`).
+    pub fn path(&self) -> String {
+        self.run.split_once('/').map_or_else(|| self.index.to_string(), |(_, path)| path.to_owned())
+    }
 }
 
 /// Why a run or call did not succeed, as its machine said it (with its traceback) or as
@@ -787,6 +875,10 @@ pub struct Progress {
     /// none until its machine made one for a client asking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<u64>,
+    /// The downloads it waits on (cl-1205), by their `Operation::id` in its machine's `status.activity`: its box and row say it
+    /// waits and link there, and show no bytes of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<String>,
 }
 
 impl Progress {
@@ -847,9 +939,6 @@ pub struct RunEstimate {
     pub soonest: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
-    /// Local code's install, still running: follow it, then ask again under the same key.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preparing: Option<Box<Run>>,
 }
 
 /// One machine's quote for a run, or for one of `count` copies of it. Times are ms from the answer.
@@ -877,6 +966,15 @@ pub struct MachineEstimate {
     /// A machine on its way (a rental booting or ordered): when it should serve, part of `start_ms` (cl-915).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready_ms: Option<u64>,
+}
+
+/// A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how
+/// many, and about how long until they're free, as its machine times it (cl-1187); 0: it can't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GpuWait {
+    pub width: u32,
+    pub left_ms: u64,
 }
 
 /// One event of a run's stream.
@@ -939,9 +1037,13 @@ pub enum Event {
     Call { sequence_number: u64, call: Call },
     #[serde(rename = "run.progress")]
     Progress { progress: Progress },
-    /// Why the run waits now; an empty reason: it waits no longer.
+    /// Why the run waits now; an empty reason: it waits no longer. `gpus`: it waits for GPUs, as its machine said (cl-1247).
     #[serde(rename = "run.waiting")]
-    Waiting { reason: String },
+    Waiting {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gpus: Option<GpuWait>,
+    },
     /// Its results coming here once it ended, each second until they land (`Run::arriving`).
     #[serde(rename = "run.arriving")]
     Arriving { progress: Progress },
@@ -1062,6 +1164,9 @@ pub struct Shown {
     pub projects: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub machines: bool,
+    /// It shows machines' GPU use (cl-1191): every machine's is read each second while one does, and sent as `machine.gpus`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpus: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1106,6 +1211,9 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
+    /// Its GPUs' use that second (cl-1191), only to a stream whose page shows it (`Shown::gpus`), and never kept.
+    #[serde(rename = "machine.gpus")]
+    MachineGpus { name: String, reading: GpuUse },
     /// `rev` is opaque, and changes whenever the project does. Optional
     /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
@@ -1230,14 +1338,10 @@ pub struct Machine {
     /// The sha256 of its pinned TLS leaf: what `cozy machine add … --fingerprint` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<Digest>,
-    /// Why it ended.
+    /// Why it ended; while `ending`, why by its Hub's word when the Hub ends it (its provider stopped it: cl-1203). A rental is
+    /// up, ending or ended, never offline in between (Paul 11-17).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Why a ready machine is offline, by its Hub's word (its provider stopped it, or its Hub is
-    /// ending it), while it does not answer: runs to it are refused. Its state stays `ready`,
-    /// which is what a reader that predates this field shows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline: Option<String>,
     /// Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
     /// can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
     /// It takes no work; a rental is released, by itself or by the computer that ordered it.
@@ -1263,7 +1367,8 @@ pub struct Machine {
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
-    /// Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
+    /// Its function runs, its GPUs' work, every client's: this computer's by its records, another's as the machine says (cl-1193).
+    /// Installs, downloads, updates and removals aren't counted (cl-889).
     #[serde(default)]
     pub running: u32,
     #[serde(default)]
@@ -1275,10 +1380,6 @@ pub struct Machine {
     /// machine goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Run>,
-    /// False: a rental another client of this account ordered. This controller reaches it as its
-    /// own (the Hub grants it every device the account signed in on), but places no run on it unasked.
-    #[serde(default = "yes")]
-    pub ordered: bool,
     /// Its Hub did not answer the last listing.
     #[serde(default)]
     pub unverified: bool,
@@ -1305,10 +1406,14 @@ pub struct Machine {
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,
-    /// The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
-    /// package's floor until `cozy machine update <name>` names nothing (cl-952).
+    /// The software an update by hand held it on, in that update's words: it moves to neither the open RC nor a package's floor
+    /// until `cozy machine update <name>` names nothing (cl-952).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// What it runs that its hold names otherwise (`Runtime 0.48.0.dev2319 · cozy 0.27.0-dev`), while no update of it is going: the
+    /// hold is what was asked, this what it runs (cl-1196).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unheld: Option<String>,
 }
 
 /// A dev home's rental and the open RC's newest builds (cl-922).
@@ -1317,15 +1422,11 @@ pub struct Machine {
 pub struct RcFollow {
     /// The open RC: `0.25.0`.
     pub rc: String,
-    /// `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
-    /// other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+    /// `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand held it on
+    /// other software, which `detail` says it runs or not; `none`: the RC has no build for it, or can't be read now.
     pub state: String,
     /// What it runs or moves to, what holds it, or why there is none, in words.
     pub detail: String,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// A duration as Paul writes it: `41s`, `3m 12s`, `2h 5m`.
@@ -1458,6 +1559,13 @@ pub struct MachineStatus {
     pub disk_runtime_bytes: u64,
     #[serde(default)]
     pub disk_runs_bytes: u64,
+    /// What a download may take there: free past the reserve, with what its store could free (`machine::Disk::room`, cl-1175).
+    #[serde(default)]
+    pub disk_room_bytes: u64,
+    /// The room its usual models need, when it has less (`machine::Disk::short_of`): `cozy doctor` and the Machines panel warn. 0: it
+    /// has room.
+    #[serde(default)]
+    pub disk_needs_bytes: u64,
     /// This controller's queued, preparing or running runs there, as the machine says.
     #[serde(default)]
     pub runs: Vec<LiveRun>,
@@ -1489,7 +1597,7 @@ pub struct MachineStatus {
     /// What it does for this controller's runs besides their own work, each once however many wait on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
-    /// Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+    /// Its GPUs held back for heat (cl-913) or at a power limit its host set (cl-1161) most of their last loaded run: its runs are slow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heat: Vec<crate::machine::GpuHeat>,
     /// Why its Runtime serves its GPUs none of its native kernels; empty: it does.
@@ -1502,6 +1610,15 @@ pub struct MachineStatus {
     /// This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<Readied>,
+    /// The runs other clients sent there, as the machine says them (cl-1193): whose, and how far, never their project's content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub others: Vec<ClientRun>,
+    /// SSH sessions open there now (cl-1193).
+    #[serde(default)]
+    pub ssh_sessions: u32,
+    /// When a keepalive last restarted its idle clock, while the clock counts from it (cl-1193).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_alive_ms: Option<i64>,
 }
 
 /// A predicted request on a machine (cl-1123): its item's id there (`cozy:upcoming:<key>`, `cozy:prepare:<key>`), its run's state
@@ -1517,18 +1634,29 @@ pub struct Readied {
 }
 
 impl MachineStatus {
-    /// What makes its runs slow now, one line each: a GPU held back for heat, a Runtime without its kernels.
+    /// What makes its runs slow now, one line each: a GPU held back for heat or held to a power limit under its default, a Runtime
+    /// without its kernels.
     pub fn slowed(&self) -> Vec<String> {
         let heat = self.heat.iter().map(|hot| {
             let replayed = if hot.replayed { " (replayed readings)" } else { "" };
-            format!(
-                "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
-                hot.gpu,
-                hot.share * 100.0,
-                hot.temperature_max_c,
-                hot.sm_mhz_mean,
-                hot.sm_mhz_limit
-            )
+            match hot.power_limit_w {
+                0 => format!(
+                    "GPU {} slowed down from heat for {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
+                    hot.gpu,
+                    hot.share * 100.0,
+                    hot.temperature_max_c,
+                    hot.sm_mhz_mean,
+                    hot.sm_mhz_limit
+                ),
+                limit => format!(
+                    "GPU {} held to {limit} W of its {} W by its host for {:.0}% of its last run ({} of {} MHz){replayed}",
+                    hot.gpu,
+                    hot.power_default_w,
+                    hot.share * 100.0,
+                    hot.sm_mhz_mean,
+                    hot.sm_mhz_limit
+                ),
+            }
         });
         let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("Its Runtime {} has no native kernels: {}", self.runtime, self.runtime_kernels));
         heat.chain(kernels).collect()
@@ -1567,10 +1695,15 @@ pub struct Operation {
     pub kind: String,
     /// The model's repository (or provider source), or the package.
     pub subject: String,
+    /// A download's release and components (none: the whole checkpoint), as its machine says: the download row says them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// Where it is, in words.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stage: String,
-    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once.
     #[serde(default)]
     pub bytes_done: u64,
     #[serde(default)]
@@ -1581,7 +1714,7 @@ pub struct Operation {
     /// Its bytes a second over its last 10 s, once a second of them is seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_per_s: Option<f64>,
-    /// The seconds its bytes still take at that rate.
+    /// The seconds its bytes still take at that rate, as its machine says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
     pub started_at_ms: i64,
@@ -1591,6 +1724,10 @@ pub struct Operation {
     /// The same runs by name, `KEY-N` (cl-987).
     #[serde(default)]
     pub names: Vec<String>,
+    /// The runs waiting on it this reader can't name (another project's, a locked one's, another client's), counted (cl-1205): what
+    /// the machine does is its own, which runs wait is their project's.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub unnamed: u32,
     /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -1623,6 +1760,40 @@ impl LiveRun {
     }
 }
 
+/// A run another client sent a machine, as the machine says it (cl-1193): what it runs, for which computer, and how far it is. Nothing of
+/// its project's: no inputs or outputs, and an encrypted project's names no function, stage or models.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClientRun {
+    /// `<package>/<function>`; empty: an encrypted project's.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub function: String,
+    /// The computer that sent it, as it names itself; empty: unnamed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client: String,
+    /// It left its queue: it starts or runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// When it began executing (unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// The GPUs it holds.
+    #[serde(default)]
+    pub width: u32,
+    /// How far it is: its stage, and its step of `steps` (0: none said).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    #[serde(default)]
+    pub step: u64,
+    #[serde(default)]
+    pub steps: u64,
+    /// The models it waits to download, and their bytes still to come.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub bytes_left: u64,
+}
+
 /// One of a machine's GPUs: its name, memory, driver and family.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1645,6 +1816,10 @@ pub struct Gpu {
     /// Why nothing is placed on it now (cl-935); empty: in service.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub out_of_service: String,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 fn unlimited(bytes: &u64) -> bool {
@@ -1895,17 +2070,20 @@ impl MachineList {
     }
 }
 
-/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
-/// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
-/// `local`, which says why it can't where it can't. Never a test pod, a rental whose GPU memory is capped (a VRAM-capped matrix pod): it
-/// runs only what names it (cl-920).
+/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of the
+/// account up or on its way, whichever of its computers ordered it (cl-1224), any other computer's that's up, then this one, the last
+/// choice, which starts when used. With none of them, `local`, which says why it can't where it can't. Never a test pod, a rental whose
+/// GPU memory is capped (a VRAM-capped matrix pod): it runs only what names it (cl-920). The rentals up come first, then the least busy,
+/// every client's runs counted: what takes the first of the set (local code, which installs where it resolves; a run no machine quoted)
+/// takes the idlest, never another computer's busy pod for being listed first (cl-1224).
 pub fn render_set(machines: &[Machine]) -> Vec<On> {
-    let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
     let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
-    let rented = (machines.iter().filter(held))
-        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));
-    let added = machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
-    let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+    let mut rented: Vec<&Machine> = machines.iter()
+        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine))
+        .collect();
+    rented.sort_by_key(|machine| (machine.state != MachineState::Ready, machine.running + machine.queued));
+    let added = machines.iter().filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
+    let mut set: Vec<On> = rented.into_iter().chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
     if set.is_empty() || platform::Os::CURRENT.local_inference() {
         set.push(On::Machine("local".into()));
     }

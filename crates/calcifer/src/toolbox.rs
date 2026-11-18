@@ -260,23 +260,13 @@ fn asked(key: &str) {
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) -> Vec<Tool> {
     let scope = private_io::current();
     let private = scope.is_some();
-    // Each function is read at once, the static describer's reading kept in its project by its tree, and a read goes on past a list
-    // that stops waiting for it (its caller gone, or late): the next list has it.
-    let reads: Vec<_> = named.into_iter().map(|(written, path)| {
-        let (api, hub, scope) = (api.clone(), hub.to_owned(), scope.clone());
-        tokio::spawn(private_io::context(scope.clone(), async move {
-            let _turn = LOCAL_READS.acquire().await;
-            let described = match staged(&api, scope.as_ref(), &path) {
-                Ok(code) => Box::pin(local_code::read_source(&api, &code, &hub)).await,
-                Err(why) => Err(why),
-            };
-            (written, described)
-        }))
-    }).collect();
-    let late = tokio::time::Instant::now() + LOCAL_LATE;
+    // Each function is read at once, the static describer's reading kept in its project by its tree. What's known answers now; one
+    // read anew goes on past the list, its landing told as `tools.changed`, and the next list has it.
+    let reads: Vec<_> = named.into_iter().map(|(written, path)| (written, reading(api, hub, scope.clone(), path))).collect();
+    let now = tokio::time::Instant::now() + LOCAL_NOW;
     let mut tools = vec![];
-    for read in reads {
-        let Ok(Ok((written, described))) = tokio::time::timeout_at(late, read).await else { continue };
+    for (written, read) in reads {
+        let Ok(Some(described)) = tokio::time::timeout_at(now, read).await else { continue };
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
@@ -297,15 +287,51 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>) ->
     tools
 }
 
+/// One reading of local code, shared by every list that asks for it while it goes: none if it ended without an answer.
+type Reading = futures_util::future::Shared<futures_util::future::BoxFuture<'static, Option<Result<(String, Value), Error>>>>;
+
+/// The readings going, by project, Hub and path: a page's lists, asked again and again while one takes seconds, start one, not one each.
+static READING: LazyLock<Mutex<HashMap<(Option<String>, String, PathBuf), Reading>>> = LazyLock::new(Mutex::default);
+
+/// `path`'s reading: the one going, else one started now, run to its end whoever waits for it. One that lands past `LOCAL_NOW` is told
+/// as `tools.changed`, once, if it lists something: one that can't be listed would be read and told again forever.
+fn reading(api: &Arc<Api>, hub: &str, scope: Option<private_io::Scope>, path: PathBuf) -> Reading {
+    use futures_util::FutureExt as _;
+    let key = (scope.as_ref().map(|scope| scope.storage.project_id.clone()), hub.to_owned(), path.clone());
+    let mut going = READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(read) = going.get(&key) {
+        return read.clone();
+    }
+    let (api, hub, began, held) = (api.clone(), hub.to_owned(), Instant::now(), key.clone());
+    let task = tokio::spawn(private_io::context(scope.clone(), async move {
+        let _turn = LOCAL_READS.acquire().await;
+        match staged(&api, scope.as_ref(), &path) {
+            Ok(code) => Box::pin(local_code::read_source(&api, &code, &hub)).await,
+            Err(why) => Err(why),
+        }
+    }));
+    let read = async move {
+        let described = task.await.ok();
+        READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&held);
+        if began.elapsed() >= LOCAL_NOW && described.as_ref().is_some_and(|read| read.as_ref().is_ok_and(|(_, document)| Interface::parse(document).is_ok())) {
+            crate::events::tools_changed();
+        }
+        described
+    }.boxed().shared();
+    tokio::spawn(read.clone());
+    going.insert(key, read.clone());
+    read
+}
+
 /// `path`'s code copied into its project, which holds still meanwhile: a lock under way refuses the read, and one asked waits.
 fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<api::code::LocalCode, Error> {
     let _admitted = scope.map(|scope| vault::try_admit_root(&vault::logical(&scope.storage.view_root))).transpose()?;
     local_code::own(api, path)
 }
 
-/// How long a list waits for the local functions its project's boxes name to be read: the page reads the list again once when a box
-/// names one, so it waits for the reading. One read later still is listed by a later list.
-const LOCAL_LATE: Duration = Duration::from_secs(60);
+/// How long a list waits for the local functions its project's boxes name to be read: one whose reading is kept answers within it,
+/// and one read anew never holds the list (a palette stood empty 15 s while one was read, e2e 44103425048); its landing is told.
+const LOCAL_NOW: Duration = Duration::from_millis(250);
 /// How many of them are read at once.
 static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
@@ -455,21 +481,40 @@ impl Listing {
     }
 }
 
-/// The tools of every package `hub` lists with a release, each at its newest.
+/// The tools of every package `hub` lists with a release, each at its newest. Each page of the catalog is asked only if it changed
+/// since the one kept (cl-1174: `If-None-Match`); one the Hub says didn't is the kept one.
 async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Tool>>, Error> {
     let reader = api.machines.hubs.reader(hub)?;
-    let mut wanted = vec![];
+    let root = api.machines.hubs.home().root();
+    let kept = cards::kept_pages(root, hub);
+    let (mut wanted, mut pages, mut unchanged) = (vec![], vec![], 0);
     loop {
-        let page = reader.search_packages_page(None, MOST_BROWSED, wanted.len() as u32).await.map_err(cards::refusal)?;
-        let read = page.packages.len();
-        wanted.extend(page.packages.into_iter().map(|row| (format!("{}/{}", row.org, row.name), row.latest_release)));
-        if read == 0 || wanted.len() as i64 >= page.search.total {
+        let offset = wanted.len() as u32;
+        let held = kept.iter().find(|page| page.offset == offset);
+        let page = match reader.catalog_page(MOST_BROWSED, offset, held.map(|page| page.etag.as_str())).await.map_err(cards::refusal)? {
+            Some((page, etag)) => cards::Page {
+                offset,
+                etag: etag.unwrap_or_default(),
+                rows: page.packages.into_iter().map(|row| (format!("{}/{}", row.org, row.name), row.latest_release)).collect(),
+                total: page.search.total,
+            },
+            None => {
+                unchanged += 1;
+                held.cloned().ok_or_else(|| Error::new(Kind::Unavailable, "hub_answer_invalid", format!("{hub} said its catalog was unchanged, asked nothing")))?
+            }
+        };
+        let (read, total) = (page.rows.len(), page.total);
+        wanted.extend(page.rows.iter().cloned());
+        pages.push(page);
+        if read == 0 || wanted.len() as i64 >= total {
             break;
         }
     }
+    tracing::info!(hub, pages = pages.len(), unchanged, packages = wanted.len(), "catalog read");
     let released: Vec<(String, String)> = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
     let tools = Arc::new(read_all(api, hub, released.clone()).await);
-    cards::keep_listed(api.machines.hubs.home().root(), hub, &released);
+    pages.retain(|page| !page.etag.is_empty());
+    cards::keep_listed(root, hub, &released, &pages);
     Ok(tools)
 }
 

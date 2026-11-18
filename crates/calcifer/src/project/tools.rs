@@ -94,7 +94,7 @@ pub(crate) fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
 }
 
 /// Why the film `files` holds isn't what a cut of these fields makes: its frames, measured, against what its pieces add up to, one a
-/// piece being rounding. A film short of a piece isn't that cut's state, whatever made it. None until each is measured.
+/// piece being rounding. Cutting a film short of a piece again makes another. None until each is measured.
 pub(crate) fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, version: &folder::Version) -> Option<String> {
     let film = lock.files.get(version.files.get("video")?)?;
     if film.frames == 0 {

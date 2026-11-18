@@ -1,0 +1,1 @@
+`cozy open` outside a project folder opens Cozy Creator at its start page, where you can pick a project, says in one line that you're not in a project folder (run it in one, or create one with `cozy new`), and exits 0; `--json` gives the root URL with a `note` (`not_in_a_project`). Inside a project it opens `/p/<code>` as before (cl-1179, Paul 11-17).

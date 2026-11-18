@@ -1,9 +1,11 @@
-"""stage.py <packages> <package> <dest> <runtime>: the package as an RC machine reads it from a packages checkout (xs-195,
+"""stage.py <packages> <package> <dest> <runtime> [<tensorfs>]: the package as an RC machine reads it from a packages checkout (xs-195,
 Calcifer's `checkout::stage`). Each `{ index = "tensorhub" }` source naming a package the checkout holds becomes a path to
 that folder, copied beside it, and so on through what those take. The Runtime it is read with is `<runtime>` when that is
-a wheel or a source folder, and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
+a wheel or a source folder, and its TensorFS `<tensorfs>` when that is a wheel (the RC's Runtime floors on a TensorFS build only
+the candidate set holds, xs-216), and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
 folder; prints nothing when it takes no first-party package. <dest>/unpublished.txt names each first-party dependency whose
-requirement the production Hub's index can't meet yet: its committed lock can't name it until promotion publishes it."""
+checkout version production's Hub doesn't hold yet: a committed lock pins only what a machine can fetch, so it leaves that one out
+until the gated publish relocks it on (cli.sh's lock cell locks a copy without it)."""
 
 import platform
 import re
@@ -20,6 +22,7 @@ from packaging.version import InvalidVersion, Version
 INDEX = "https://tensorhub.com/v1/index/_"
 
 packages, package, dest, runtime = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[4]
+tensorfs = sys.argv[5] if len(sys.argv) > 5 else ""
 
 
 def hub_sources(folder: Path) -> list[str]:
@@ -49,6 +52,12 @@ for name, siblings in closure.items():
         assert n == 1, (project, key)
     if name == package and (Path(runtime).is_file() or Path(runtime).is_dir()):
         text = re.sub(r"(?m)^\[tool\.uv\.sources\]$", f'[tool.uv.sources]\ncozy-runtime = {{ path = "{Path(runtime).resolve()}" }}', text, count=1)
+    if name == package and Path(tensorfs).is_file():
+        text = re.sub(r"(?m)^\[tool\.uv\.sources\]$", f'[tool.uv.sources]\ntensorfs = {{ path = "{Path(tensorfs).resolve()}" }}', text, count=1)
+        # uv reads a source only for a dependency the project names itself.
+        if not re.search(r'(?m)^\s*"tensorfs[\s\[<>=!~;"]', text):
+            text, n = re.subn(r"(?m)^dependencies = \[$", 'dependencies = [\n    "tensorfs",', text, count=1)
+            assert n == 1, (project, "dependencies")
     if name == package:
         here = f"\"sys_platform == '{sys.platform}' and platform_machine == '{platform.machine()}'\""
         text, n = re.subn(r"(?ms)^environments = \[.*?^\]", f"environments = [{here}]", text, count=1)
@@ -74,10 +83,15 @@ def published(name: str) -> list[Version] | None:
     return found
 
 
-wanted = {canonicalize_name(Requirement(r).name): Requirement(r) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
+wanted = {canonicalize_name(Requirement(r).name) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
+
+
 def unmet(key: str) -> bool:
+    """The checkout's own version of `key` isn't on production's index: what a lock of this checkout takes of it, no machine can
+    fetch (orbit's minimax-h3 0.16.0rc5 while production's newest, 0.15.0, caps the RC's Runtime)."""
     versions = published(key)
-    return versions is not None and not any(wanted[canonicalize_name(key)].specifier.contains(v, prereleases=True) for v in versions)
+    own = Version(tomllib.loads((packages / key / "pyproject.toml").read_text())["project"]["version"])
+    return versions is not None and own not in versions
 
 
 unpublished = [key for key in closure[package] if canonicalize_name(key) in wanted and unmet(key)]

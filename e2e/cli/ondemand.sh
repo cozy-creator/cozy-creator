@@ -31,7 +31,8 @@ for line in (out / "ondemand-ahead.tensord.log").read_text(errors="replace").spl
         (fetching if found[1] == "fetching" else landed).append((at(line), int(found[2])))
     if "waiting for the models to download" in line and run in line:
         waited.append(line.split(": ", 2)[-1][:200])
-# A project run's id stays out of TensorD's log: what it waited on is in its own events.
+# A project run's id stays out of TensorD's log: what it waited on is in its own events, the downloads its progress names
+# (`waiting_on`, cl-1205).
 for line in (out / "ondemand-ahead.ndjson").read_text(errors="replace").splitlines():
     try:
         event = json.loads(line)
@@ -40,6 +41,9 @@ for line in (out / "ondemand-ahead.ndjson").read_text(errors="replace").splitlin
     reason = event.get("reason") if isinstance(event, dict) else None
     if isinstance(reason, str) and "waiting for the models to download" in reason:
         waited.append(reason[:200])
+    progress = event.get("progress") if isinstance(event, dict) and isinstance(event.get("progress"), dict) else {}
+    if any("lilylilith/fontbox" in str(on) for on in progress.get("waiting_on") or []):
+        waited.append(f"{progress.get('stage')}: {progress['waiting_on']}"[:200])
 record = json.loads((out / "ondemand-ahead.json").read_text())
 fields = {k: record.get(k) for k in ("number", "status", "accepted_at_ms", "started_at_ms", "settled_at_ms")}
 print(json.dumps({"run": fields, "guessed_objects": len(landed), "guessed_bytes": sum(b for _, b in landed),
@@ -96,10 +100,13 @@ cozy machine logs local tensorfs --lines 0 --since 1h > "$OUT/ondemand-adapted.t
 local pulled together
 # The base's chunks pulled on their own: a pull of e2e/calls-base of more than its header.
 pulled=$(awk -v t="$began" '$1 >= t && $2 == "pull" && $3 ~ /^e2e\/calls-base@/' "$OUT/ondemand-adapted.tensorfs.log" | grep -v ' objects=1 ' | head -2 || true)
-# What the call waited on, in order, as its root's progress says: "downloading <models> weights". The root's own prefetch may land
-# the base first (it reads only what `adapted` does); while the base still arrives, the call waits on both at once.
-grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | uniq | sed 's/^/ondemand-adapted: /' || true
-together=$(grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | grep -E 'e2e/calls-(base|other)' | head -1 || true)
+# What the call waited on, in order, as its root's progress names it (`waiting_on`, cl-1205: the machine's download of each
+# repository). The root's own prefetch may land the base first (it reads only what `adapted` does); while the base still arrives, the
+# call waits on both at once. It waits on its other weights at some point, or this judges nothing.
+grep '^{' "$OUT/ondemand-adapted.ndjson" | jq -r 'select(.type? == "run.progress") | .progress.waiting_on // [] | select(length > 0) | join(", ")' | uniq > "$OUT/ondemand-adapted.waited" || true
+sed 's/^/ondemand-adapted: waited on /' "$OUT/ondemand-adapted.waited"
+grep -q 'download e2e/calls-other' "$OUT/ondemand-adapted.waited" || check "ondemand-adapted: its progress never named e2e/calls-other's download as what it waits on: $(tr '\n' ';' < "$OUT/ondemand-adapted.waited" | head -c 300)"
+together=$(grep -E 'download e2e/calls-(base|other)' "$OUT/ondemand-adapted.waited" | head -1 || true)
 [[ "$together" != *e2e/calls-base* || "$together" == *e2e/calls-other* ]] || check "ondemand-adapted: the call waited on e2e/calls-base alone first: $together"
 [ -z "$pulled" ] || check "ondemand-adapted: the LoRA'd base was pulled before the call's other weights were wanted: $pulled"
 local held
@@ -173,10 +180,10 @@ while read -r why; do check "ondemand-order: $why"; done < "$OUT/ondemand-order.
 # nothing more. We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in the critical
 # path of inference (user request) so they shouldn't be waited on." calls.py's `needs` loads e2e/calls-needed (192 MiB) and has
 # e2e/calls-extra (256 MiB) on demand, never read, on this cold machine over the 30 MB/s link. Its record says what the machine had
-# and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; its progress names
-# e2e/calls-needed and its bytes alone, while e2e/calls-extra comes behind it at an extra's order; what it waits on says how much it
-# downloads (`cozy machine show`, its run); and a second call finds it all on the machine. `cozy machine show` lists a download only
-# for this computer's own runs (a project's are its page's to list), so its list is checked where it has one.
+# and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; its progress names the
+# machine's download of e2e/calls-needed and no other (`waiting_on`, cl-1205), whose bytes are its needs alone, while e2e/calls-extra
+# comes behind it at an extra's order, never listed as a download; what it says it waits for, if it says, says how much it downloads
+# (`cozy machine show`, its run); and a second call finds it all on the machine.
 ondemand_needs() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a call downloads what it needs and no more; extras come in the background, never waited on (cl-1102)"
@@ -184,13 +191,15 @@ step "a call downloads what it needs and no more; extras come in the background,
 local began
 slow_store ondemand-needs || return 0
 began=$(date -u +%s%3N)
+downloads_seen ondemand-needs
 run_submit "$OUT" ondemand-needs run "$here/script/calls.py/needs" seconds:=12 --on local > /dev/null
 # The machine as `cozy machine show` says it, while the call waits on its download (what it waits on) and once it runs.
-for _ in $(seq 900); do grep -Eq 'downloading [^"]*weights|"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
+for _ in $(seq 900); do grep -Eq '"waiting_on"|"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
 (cd "${RUN_PROJECT:-.}" && cozy --json machine show local) > "$OUT/ondemand-needs.waiting.json" 2> /dev/null || check "ondemand-needs: machine show local failed"
 for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-needs.ndjson" 2> /dev/null && break; sleep 0.2; done
 (cd "${RUN_PROJECT:-.}" && cozy --json machine show local) > "$OUT/ondemand-needs.running.json" 2> /dev/null || check "ondemand-needs: machine show local failed"
 run_wait "$OUT" ondemand-needs || check "ondemand-needs: it did not end: $(tail -c 300 "$OUT/ondemand-needs.ndjson")"
+downloads_end
 [ "$(run_get "$OUT" ondemand-needs .status)" = completed ] || check "ondemand-needs: $(run_get "$OUT" ondemand-needs .status): $(run_get "$OUT" ondemand-needs .reason.message | head -c 300)"
 sudo tc qdisc del dev lo root || check "ondemand-needs: the store's link wasn't restored"
 cell ondemand-needs-again "$here/script/calls.py/needs" seconds:=0 || :
@@ -229,8 +238,9 @@ for line in (out / "ondemand-needs.tensord.log").read_text(errors="replace").spl
         by_class["needs"] += int(found[1])
     elif order >= 2 and (order - 2) >> 62 == 2:
         by_class["extras"] += int(found[1])
-# What its progress said it downloads, and what it said it waits on.
-stages, waits = [], []
+# What its progress said it waits on: the machine's downloads it names (`waiting_on`, cl-1205) and its words; and what it said it
+# waits for.
+stages, named, waits = [], [], []
 for line in (out / "ondemand-needs.ndjson").read_text(errors="replace").splitlines():
     try:
         event = json.loads(line)
@@ -239,11 +249,23 @@ for line in (out / "ondemand-needs.ndjson").read_text(errors="replace").splitlin
     if not isinstance(event, dict):
         continue
     progress = event.get("progress") if isinstance(event.get("progress"), dict) else {}
-    stage = progress.get("stage") or ""
-    if "downloading" in stage and "weights" in stage:
-        stages.append((stage, progress.get("bytes_total") or 0))
+    on = [str(i) for i in progress.get("waiting_on") or []]
+    if on:
+        stages.append((progress.get("stage") or "", progress.get("bytes_total") or 0))
+        named += on
     if isinstance(event.get("reason"), str) and "waiting for the models to download: " in event["reason"]:
         waits.append(event["reason"])
+# The machine's downloads while it went, by id, as `cozy machine show` listed each (downloads_seen), and what its runs waited for.
+items = {}
+for line in (out / "ondemand-needs.machine.ndjson").read_text(errors="replace").splitlines() if (out / "ondemand-needs.machine.ndjson").exists() else []:
+    try:
+        look = json.loads(line)
+    except ValueError:
+        continue
+    for op in look.get("activity") or []:
+        if op.get("kind") == "download":
+            items.setdefault(str(op.get("id")), []).append(op)
+    waits += [run["waiting"] for run in look.get("runs") or [] if "waiting for the models to download: " in (run.get("waiting") or "")]
 # What the machine listed for it, waiting and running.
 listed = {}
 for when in ("waiting", "running"):
@@ -253,8 +275,11 @@ for when in ("waiting", "running"):
         said = run.get("waiting") or (run.get("run") or {}).get("waiting") or ""
         if "waiting for the models to download: " in said:
             waits.append(said)
-print(json.dumps({"weights": weights, "again": again, "landed": by_class, "progress": sorted(set(stages)), "waits": sorted(set(w[:160] for w in waits)),
-                  "listed": listed}, indent=1))
+subjects = {id: sorted({str(op.get("subject")) for op in seen}) for id, seen in items.items()}
+totals = {id: max(int(op.get("bytes_total") or 0) for op in seen) for id, seen in items.items()}
+print(json.dumps({"weights": weights, "again": again, "landed": by_class, "progress": sorted(set(stages)), "waited_on": sorted(set(named)),
+                  "downloads": {id: {"subject": subjects[id], "bytes_total": totals[id], "looks": len(seen)} for id, seen in items.items()},
+                  "waits": sorted(set(w[:160] for w in waits)), "listed": listed}, indent=1))
 has, needs, extras = (weights.get(k) for k in ("has", "needs", "extras"))
 if not weights:
     fail("its record doesn't say what the machine had of its weights and downloaded for it (measurements.weights)")
@@ -271,9 +296,21 @@ else:
         fail(f"a second call's record says {again or 'nothing'}: not all {needs} bytes already on the machine, none to download")
 if by_class["emergency"]:
     fail(f"{by_class['emergency']} bytes came as an emergency: the call read what it hadn't downloaded")
+# It waited on the machine's download of what it needs, and of nothing else: said, or none of this is judged.
+if not named:
+    fail(f"its progress never named a download it waits on (waiting_on), on a cold machine that downloaded {needs} bytes for it")
+for id in sorted(set(named)):
+    if subjects.get(id) != [needed]:
+        fail(f"it waited on {id!r}, which its machine listed as {subjects.get(id) or 'no download'}: not {needed}'s download alone")
+    if weights and totals.get(id) != needs:
+        fail(f"the download it waited on, {id!r}, is {totals.get(id)} bytes: not {needed}'s {needs} alone")
 for stage, total in sorted(set(stages)):
-    if extra in stage or needed not in stage or (weights and total != needs):
-        fail(f"its progress said \"{stage}\" of {total} bytes: not {needed}'s {needs} alone")
+    if extra.split("/")[1] in stage or f"waiting for {needed.split('/')[1]} to download" not in stage:
+        fail(f"its progress said \"{stage}\" as it waited: not that it waits for {needed} alone")
+    if total:
+        fail(f"its progress said {total} bytes of its own as it waited (\"{stage}\"): its download's bytes are the machine's, said once")
+# Its run's has/needs words reach a reader only while it's queued (`Engine::set_waiting`); waiting dispatched, the download's bytes
+# above say how much it downloads.
 for said in sorted(set(waits)):
     if extra in said:
         fail(f"it waited on its extra: {said[:200]}")
@@ -353,6 +390,19 @@ sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "$1: the store's link wasn't slowed"; return 1; }
 }
+
+# downloads_seen <name>: this computer's machine's downloads and what its runs wait for, as `cozy machine show` says them twice a
+# second, into $OUT/<name>.machine.ndjson until downloads_end. A run waiting on a download names it and says no bytes of its own
+# (cl-1205): its bytes, rate and time left are the machine's one item's, read here.
+downloads_seen() {
+( cd "${RUN_PROJECT:-.}" && while :; do
+    cozy --json machine show local 2> /dev/null | jq -c --argjson at "$(date +%s%3N)" \
+      '{at: $at, activity: (.status.activity // []), runs: [.status.runs[]? | {id, waiting: (.waiting // .run.waiting // "")}]}' || :
+    sleep 0.5
+  done ) > "$OUT/$1.machine.ndjson" 2> /dev/null &
+DOWNLOADS_SEEN=$!
+}
+downloads_end() { kill "$DOWNLOADS_SEEN" 2> /dev/null || :; wait "$DOWNLOADS_SEEN" 2> /dev/null || :; }
 
 ondemand_need() {
 [ "$RUNNER_OS" = Linux ] || return 0
@@ -441,6 +491,87 @@ else:
 JUDGE
 cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
+}
+
+# cl-1118 (the release coordinator, 11-17, on Paul's rule that extras are never in a request's way): "hold background extras (and
+# prefetch at `prepare` priority) while any call on the machine is starting cold, until its models are loaded and resident … Resume
+# the extras the moment the call's load completes." xs-203's run 43996197790: a cold H3 call's executor took 167 s to start, against
+# 1 s, while 22 GB of extras downloaded beside it. calls.py's `cold` loads e2e/calls-cold (32 MiB), whose load takes 15 s, and has
+# e2e/calls-waits (256 MiB, 9 s over this 30 MB/s link) on demand, never read: none of the extra lands from the moment the call's
+# needs are here until its models are loaded, and all of it lands while the call then holds 20 s.
+ondemand_cold() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "the background downloads wait while a call starts cold, until its models are loaded (cl-1118)"
+[ -z "${E2E_CALLS_SEED:-}" ] || { check "ondemand-cold: its models weren't seeded: $E2E_CALLS_SEED"; return 0; }
+local began
+slow_store ondemand-cold || return 0
+began=$(date -u +%s%3N)
+cell ondemand-cold "$here/script/calls.py/cold" seconds:=20 || :
+sudo tc qdisc del dev lo root || check "ondemand-cold: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-cold.tensord.log" 2>&1 || check "ondemand-cold: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-cold.timeline.json" 2> "$OUT/ondemand-cold.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+MIB = 1 << 20
+fail = lambda why: print(why, file=sys.stderr)
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 2 + (class << 62 | run << 32 | rank); class 0 a run's needs, 2 its extras.
+needs, extras, held, freed = [], [], [], []
+for line in (out / "ondemand-cold.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    if t < began:
+        continue
+    if "background downloads wait: a call starts cold" in line:
+        held.append(t)
+    if "background downloads go on" in line:
+        freed.append(t)
+    found = re.search(r": landed .*bytes=(\d+).*priority=(\d+)", line)
+    if found and int(found[2]) >= 2:
+        kind = (int(found[2]) - 2) >> 62
+        if kind in (0, 2):
+            (needs if kind == 0 else extras).append((t, int(found[1])))
+# Its models loaded: its function's first stage, which its log says once the load is done.
+loaded = None
+for line in (out / "ondemand-cold.ndjson").read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    progress = event.get("progress") if isinstance(event, dict) and isinstance(event.get("progress"), dict) else {}
+    if progress.get("stage") == "holding" and progress.get("at_ms"):
+        loaded = progress["at_ms"]
+        break
+here = max((t for t, b in needs if b >= MIB), default=None)
+# Its models loaded: TensorD says the background downloads go on; without that, its function's first stage.
+end = min((t for t in freed if here is not None and t >= here), default=loaded)
+before = sum(b for t, b in extras if here is not None and end is not None and here + 1000 < t < end)
+after = sum(b for t, b in extras if end is not None and t >= end)
+print(json.dumps({"needs_here_ms": here and here - began, "loaded_ms": loaded and loaded - began, "go_on_ms": end and end - began,
+                  "extra_landed_starting": before, "extra_landed_after": after, "held_ms": [t - began for t in held],
+                  "freed_ms": [t - began for t in freed], "needs_bytes": sum(b for _, b in needs), "extra_bytes": sum(b for _, b in extras)},
+                 indent=1))
+if here is None or end is None:
+    fail(f"its needs landed at {here} and its models loaded at {end}: one of them isn't in its record or TensorD's log")
+elif end - here < 10_000:
+    fail(f"the background downloads went on {end - here} ms after its needs landed: before its 15 s load was done")
+else:
+    if before:
+        fail(f"{before // MIB} MiB of e2e/calls-waits landed while the call started cold ({(end - here) / 1e3:.0f} s from its needs to its models)")
+    elif after < 256 * MIB:
+        fail(f"{after // MIB} MiB of e2e/calls-waits landed once its models were loaded, of 256 MiB: the background downloads didn't go on")
+    if not any(t <= end for t in held):
+        fail("TensorD never said the background downloads wait for a call starting cold")
+    if loaded is not None and end > loaded:
+        fail(f"the background downloads went on {end - loaded} ms after its function began: later than its load")
+JUDGE
+cat "$OUT/ondemand-cold.timeline.json"
+while read -r why; do check "ondemand-cold: $why"; done < "$OUT/ondemand-cold.failed"
 }
 
 # cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
@@ -598,8 +729,8 @@ for request, read in reads.items():
             each["objects"], each["bytes"], each["last_landed_ms"] = each["objects"] + 1, each["bytes"] + size, t - accepted
     stands = emergencies(began, ended)
     dropped = {sha: size for sha, size in guessed.items() if sha not in landed}
-    # Its progress, in the order said. A first-use wait shows as "downloading <model> weights", before or after its stage's own
-    # name: the emergencies above say it was one.
+    # Its progress, in the order said. A first-use wait shows as "waiting for <model> to download" (cl-1205), before or after its
+    # stage's own name: the emergencies above say it was one.
     stages = []
     for line in (out / f"enhance-{request}.ndjson").read_text(errors="replace").splitlines():
         try:
@@ -646,18 +777,22 @@ while read -r why; do check "ondemand-enhancers: $why"; done < "$OUT/ondemand-en
 # unnecessary latency for the end-user who is waiting on models to download and install". An edit's prompt rewriter (10 GiB, on
 # demand) came when its stage first read it, in one fetch that said nothing: the run showed "upsampling prompt · no progress for
 # 1m47s". ondemand.py's `read_now` reads e2e/ondemand-read (512 MiB, on demand) as it starts, on this cold machine over the 30 MB/s
-# link: while it lands, the run's progress (`cozy run watch --json`'s events, as `cozy run` follows it) says "downloading
-# e2e/ondemand-read weights" with its bytes rising toward their total, and once it's here, the run's own stage again.
+# link: while it lands, the run's progress (`cozy run watch --json`'s events, as `cozy run` follows it) says it waits for
+# ondemand-read to download and names the machine's download of it (`waiting_on`, cl-1205), which `cozy machine show` lists with its
+# bytes rising toward their total, its rate and its time left; and once it's here, the run's own stage again.
 ondemand_progress() {
 [ "$RUNNER_OS" = Linux ] || return 0
-step "a call's read of a model not here shows its download on the run, then clears (tfs-300)"
+step "a call's read of a model not here names the machine's download, whose bytes rise, then clears (tfs-300)"
 slow_store ondemand-progress || return 0
+downloads_seen ondemand-progress
 cell ondemand-progress "$here/script/ondemand.py/read_now" seconds:=3 || :
+downloads_end
 sudo tc qdisc del dev lo root || check "ondemand-progress: the store's link wasn't restored"
 python3 - "$OUT" <<'JUDGE' > "$OUT/ondemand-progress.timeline.json" 2> "$OUT/ondemand-progress.failed" || true
 import json, sys
 from pathlib import Path
 out, model = Path(sys.argv[1]), "e2e/ondemand-read"
+# Its progress, in order: its stage, the downloads it names as what it waits on, and any bytes of its own.
 said = []
 for line in (out / "ondemand-progress.ndjson").read_text(errors="replace").splitlines():
     try:
@@ -666,34 +801,70 @@ for line in (out / "ondemand-progress.ndjson").read_text(errors="replace").split
         continue
     if isinstance(event, dict) and event.get("type") == "run.progress":
         p = event.get("progress") or {}
-        said.append((p.get("stage") or "", p.get("bytes_done") or 0, p.get("bytes_total") or 0))
-landing = [i for i, (stage, _, _) in enumerate(said) if f"downloading {model} weights" in stage]
-samples = [said[i][1:] for i in landing]
-after = [stage for stage, _, _ in said[landing[-1] + 1:]] if landing else []
+        said.append((p.get("stage") or "", [str(i) for i in p.get("waiting_on") or []], p.get("bytes_total") or 0))
+# The machine's downloads while it went, by id, as `cozy machine show` listed each (downloads_seen).
+items = {}
+seen = out / "ondemand-progress.machine.ndjson"
+for line in seen.read_text(errors="replace").splitlines() if seen.exists() else []:
+    try:
+        look = json.loads(line)
+    except ValueError:
+        continue
+    for op in look.get("activity") or []:
+        if op.get("kind") == "download":
+            items.setdefault(str(op.get("id")), []).append(op)
+waiting = [i for i, (_, on, _) in enumerate(said) if on]
+named = sorted({id for _, on, _ in said for id in on})
+its = [id for id in named if {str(op.get("subject")) for op in items.get(id, [])} == {model}]
+looks = [op for id in its for op in items[id]]
+samples = [(int(op.get("bytes_done") or 0), int(op.get("bytes_total") or 0)) for op in looks]
+after = [(stage, on) for stage, on, _ in said[waiting[-1] + 1:]] if waiting else []
 try:
     record = json.loads((out / "ondemand-progress.json").read_text())
 except (OSError, ValueError):
     record = {}
-ended = (record.get("progress") or {}).get("stage") or ""
+ended = record.get("progress") or {}
 print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "stages": list(dict.fromkeys(s for s, _, _ in said)),
-                  "download_samples": len(samples), "first": samples[:3], "last": samples[-3:],
-                  "stages_after": list(dict.fromkeys(after)), "record_stage": ended}, indent=1))
+                  "waited_on": named, "download_looks": len(samples), "first": samples[:3], "last": samples[-3:],
+                  "rates": sorted({round(op["bytes_per_s"]) for op in looks if op.get("bytes_per_s")})[-3:],
+                  "time_left": sorted({op["eta_s"] for op in looks if op.get("eta_s") is not None})[:3],
+                  "waiters": list(dict.fromkeys(json.dumps({k: op.get(k) for k in ("runs", "names", "unnamed")}) for op in looks)),
+                  "stages_after": list(dict.fromkeys(stage for stage, _ in after)), "record_stage": ended.get("stage") or ""}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
-if not samples:
-    fail(f"its progress never said {model} was downloading while the call read it: {list(dict.fromkeys(s for s, _, _ in said))}")
+if not waiting:
+    fail(f"its progress never named {model}'s download as what it waits on while the call read it: {list(dict.fromkeys(s for s, _, _ in said))}")
 else:
-    done = [d for d, _ in samples]
-    totals = {t for _, t in samples}
-    if len(totals) != 1 or not 0 < max(totals) <= (512 << 20) + (1 << 20):
-        fail(f"its download's total isn't the model's absent bytes: {sorted(totals)}")
-    if any(d > t for d, t in samples):
-        fail(f"its download said more bytes done than its total: {samples}")
-    if len(set(done)) < 2 or max(done[1:], default=0) <= done[0]:
-        fail(f"its download's bytes never rose: {samples}")
-    if not any(f"downloading {model}" not in stage for stage in after):
-        fail(f"its progress still said {model} was downloading after it landed: {after[-3:]}")
-if f"downloading {model}" in ended:
-    fail(f"its record ended saying {model} was downloading: {ended}")
+    if named != its:
+        fail(f"it waited on {named}, of which its machine listed {its} as {model}'s download: not that download alone")
+    for stage, _, total in (said[i] for i in waiting):
+        if not stage.endswith(f"waiting for {model.split('/')[1]} to download"):
+            fail(f"its progress named the download and didn't say it waits for {model}: \"{stage}\"")
+        if total:
+            fail(f"its progress said {total} bytes of its own as it waited (\"{stage}\"): its download's bytes are the machine's, said once")
+    if not samples:
+        fail(f"its machine never listed {model}'s download while the call read it (`cozy machine show`)")
+    else:
+        done = [d for d, _ in samples]
+        totals = {t for _, t in samples if t}
+        if len(totals) != 1 or not 0 < max(totals) <= (512 << 20) + (1 << 20):
+            fail(f"its download's total isn't the model's absent bytes: {sorted(totals)}")
+        if any(d > t for d, t in samples if t):
+            fail(f"its download said more bytes done than its total: {samples}")
+        if len(set(done)) < 2 or max(done[1:], default=0) <= done[0]:
+            fail(f"its download's bytes never rose: {samples}")
+        if not any((op.get("bytes_per_s") or 0) >= 1 for op in looks):
+            fail(f"its download never said a rate as its bytes rose: {samples}")
+        if not any(op.get("eta_s") is not None for op in looks):
+            fail(f"its download never said its time left as its bytes rose: {samples}")
+        # Who waits on it, as the run's own project hears it (cl-1230: 44275006404 listed `"runs": []` while this run waited on it).
+        if not any(record.get("number") in (op.get("runs") or []) for op in looks):
+            fail(f"its download never named run {record.get('number')} to its project: {[(op.get('runs'), op.get('unnamed')) for op in looks][:3]}")
+        if any(not (op.get("runs") or op.get("names") or op.get("unnamed")) for op in looks):
+            fail("its download was listed with no one waiting on it while the call did")
+    if not any(not on for _, on in after):
+        fail(f"its progress still named {model}'s download after it landed: {after[-3:]}")
+if ended.get("waiting_on"):
+    fail(f"its record ended waiting on {ended['waiting_on']}: {ended.get('stage')}")
 JUDGE
 cat "$OUT/ondemand-progress.timeline.json"
 while read -r why; do check "ondemand-progress: $why"; done < "$OUT/ondemand-progress.failed"
@@ -732,9 +903,9 @@ true
 # the wheel server's directory <dir>/www.
 share_package() {
 local dir=$1 arm=$2 port=$3
-mkdir -p "$dir/$arm/slow/e2e_share_slow_$arm" "$dir/www" && : > "$dir/$arm/slow/e2e_share_slow_$arm/__init__.py"
-printf '[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' > "$dir/$arm/slow/pyproject.toml"
-cat > "$dir/$arm/slow/setup.py" <<PY
+mkdir -p "$dir/$arm/slow/e2e_share_slow_$arm" "$dir/www" && : > "$dir/$arm/slow/e2e_share_slow_$arm/__init__.py" || return 1
+printf '[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' > "$dir/$arm/slow/pyproject.toml" || return 1
+cat > "$dir/$arm/slow/setup.py" <<PY || return 1
 import sys, time, urllib.request
 
 from setuptools import setup
@@ -749,7 +920,7 @@ if "bdist_wheel" in sys.argv:
     time.sleep(45)
 setup(name="e2e-share-slow-$arm", version="0.0.0", packages=["e2e_share_slow_$arm"], package_data={"e2e_share_slow_$arm": ["*.bin"]})
 PY
-python3 - "$dir/www" "$arm" <<'PY'
+python3 - "$dir/www" "$arm" <<'PY' || return 1
 import base64, hashlib, os, sys, zipfile
 www, arm = sys.argv[1], sys.argv[2]
 with open(f"{www}/blob-{arm}.bin", "wb") as blob:

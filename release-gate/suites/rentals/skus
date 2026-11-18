@@ -1,0 +1,2 @@
+# The gate's own rental is cell rental-idle-through-updates' machine; rental-stop-closes rents a vast `cpu` pod of its own.
+cpu 50

@@ -1038,9 +1038,9 @@ fn child_intent(module: &str, export: &str, input: &Value) -> String {
 
 /// One byte to every calling attempt's nudge socket each time anything moved: its calls re-poll.
 fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
-    let mut seen = engine.activity_epoch();
+    let mut seen = engine.observed_epoch();
     loop {
-        seen = engine.wait_activity(seen, None);
+        seen = engine.wait_observed(seen, None);
         let Some(calls) = calls.upgrade() else {
             return;
         };
@@ -1058,9 +1058,10 @@ fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
     }
 }
 
-/// Journals a settled child as a `call` event on its parent: the callee, the author's label,
-/// how it ended and when, and what its executor measured (`run watch` lists each call). True
-/// once it is in the parent's log, or the parent has ended and takes no more.
+/// Journals a settled child as a `call` event on its root run, the log `run watch` reads, however
+/// deep it sits (its `request`, `<root>/0/1`, says where): the callee, the author's label, how it
+/// ended and when, and what its executor measured. True once it is in the root's log, or the root
+/// has ended and takes no more.
 fn record_call(
     engine: &Engine,
     parent: &Parent,
@@ -1080,7 +1081,7 @@ fn record_call(
         },
     };
     let measurements = engine
-        .with_journal(|journal| journal.measurements(&record.id))
+        .read_journal(|journal| journal.measurements(&record.id))
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -1094,7 +1095,8 @@ fn record_call(
         "memoized": record.memo.memoized, "unmemoized": record.memo.unmemoized,
         "memo_basis": record.memo.basis,
     });
-    match engine.append_call(&parent.id, &record.id, &crate::boundary_json::exact(&body)) {
+    let root = Some(record.invocation.root.as_str()).filter(|root| !root.is_empty()).unwrap_or(&parent.id);
+    match engine.append_call(root, &record.id, &crate::boundary_json::exact(&body)) {
         Ok(_) => true,
         Err(error) => {
             crate::private_io::warning(engine, &parent.id, format_args!("call {index}: {error}"));

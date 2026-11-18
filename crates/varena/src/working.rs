@@ -343,6 +343,8 @@ pub(crate) struct State {
     escapes: escape::Escapes,
     /// The last allocation refused here, as it found the card (`refusal`).
     refusal: Option<Refusal>,
+    /// Small weight regions packed back to back, their pages shared (cr-317).
+    pub(crate) packs: crate::Packs,
 }
 
 /// The room an allocation varena refused found, read as it was refused, its caller's pins still

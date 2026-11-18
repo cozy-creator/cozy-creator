@@ -73,6 +73,24 @@ struct Session {
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
+/// A lock's `code`, `why`, for a refusal it met: said in its diagnostics with that refusal's code only, since its words may name the
+/// project (cl-984), and the operation's answer keeps only the code.
+fn refused(root: &FsPath, code: &'static str, why: &'static str) -> impl FnOnce(crate::Error) -> Error {
+    use crate::store::StoreError;
+    let root = root.to_owned();
+    move |met| {
+        let met = match &met {
+            crate::Error::Store(StoreError::Locked(code)) => code.clone(),
+            crate::Error::Store(StoreError::Protected(said)) => said.split(':').next().unwrap_or_default().to_owned(),
+            crate::Error::Store(StoreError::Sqlite(sqlite)) => format!("sqlite: {}", sqlite.sqlite_error_code().map_or_else(|| "other".into(), |code| format!("{code:?}"))),
+            crate::Error::Store(_) => "store".into(),
+            crate::Error::Refused(refused) => refused.code.clone(),
+            crate::Error::Invalid(_) | crate::Error::Input { .. } => "invalid".into(),
+        };
+        tracing::warn!("{}: {why}: {met}", root.display());
+        error(code, why)
+    }
+}
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
 /// The provider found and checked: what it needs that this computer lacks is a refusal naming its install command, never a 503
 /// (cl-1000).
@@ -112,6 +130,11 @@ fn key(e: project_vault::Error) -> Error {
     }
 }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
+
+/// Whether the encrypted project at `root` is locked: no session, and no conversion of its storage going (cl-1064).
+pub(crate) fn is_locked(root: &FsPath) -> bool {
+    status(root).state == "locked" && !CONVERTING.lock().expect("vault conversions").contains(root)
+}
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
 /// Whether `view` is an unencrypted project's own folder: no keybag behind it and no mounted view's place.
 pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
@@ -131,9 +154,14 @@ pub(super) fn project_id(root: &FsPath) -> Option<String> {
     Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
 }
 
-/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither.
+/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither. A keybag that holds no code (locked
+/// before codes were kept there) gives the one derived from its id, which its first unlock keeps (cl-1171).
 pub(crate) fn kept_in_keybag(root: &FsPath) -> Option<(String, String)> {
-    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| { let info = keybag.info(); (info.project_id, info.code) })
+    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| {
+        let info = keybag.info();
+        let code = if info.code.is_empty() { super::code::derived(&info.project_id) } else { info.code };
+        (info.project_id, code)
+    })
 }
 
 /// An unlocked project's public code, kept in its keybag beside its id so a compact link finds it once locked (cl-984).
@@ -565,6 +593,29 @@ fn project_runtime(root: &FsPath) -> Result<PathBuf, Error> {
     Ok(runtime)
 }
 
+/// How long a save from a local judged not answering may be still before a deadline lock cuts it (cl-1064, review 6939581151).
+const LOCAL_STILL: Duration = Duration::from_secs(3);
+
+/// In an owed view's runtime folder (cl-1064): its sealed mount point stays until the machine that didn't answer has done the
+/// clean-up a lock owes it, so nothing that machine still runs can write plaintext where the view was.
+const OWED_MARK: &str = "owed";
+
+/// An owed view's runtime folder once its machine did the clean-up (cl-1064): its mark and sealed mount point go.
+pub(crate) fn retire_owed_view(folder: &FsPath, view: &FsPath) -> Result<(), Error> {
+    let Some(runtime) = view.parent() else { return Ok(()) };
+    let base = folder.join(RUNTIME_DIR);
+    let same = |left: &FsPath, right: &FsPath| left == right || platform::durable::canonical(left).ok().zip(platform::durable::canonical(right).ok()).is_some_and(|(left, right)| left == right);
+    if !runtime.parent().is_some_and(|parent| same(parent, &base)) {
+        return Err(error("vault_runtime", "an owed view isn't in its project's runtime folder"));
+    }
+    match fs::remove_file(runtime.join(OWED_MARK)) {
+        Ok(()) => {}
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+        Err(why) => return Err(io(why)),
+    }
+    retire_runtime(runtime)
+}
+
 fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
     #[cfg(not(windows))]
     match fs::remove_dir(runtime.join("view")) {
@@ -597,6 +648,8 @@ fn retire_orphaned_views(root: &FsPath) -> Result<(), Error> {
     for entry in fs::read_dir(&base).map_err(io)? {
         let entry = entry.map_err(io)?;
         if !entry.file_type().map_err(io)?.is_dir() { continue; }
+        // An owed view stays sealed until its machine's clean-up is paid (cl-1064), which retires it.
+        if entry.path().join(OWED_MARK).exists() { continue; }
         project_mount::detach_stale(&project_mount::view_path(&entry.path()).map_err(provider)?);
         retire_runtime(&entry.path())?;
     }
@@ -641,6 +694,9 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     if KEY_ROOTS.lock().expect("vault project roots").get(&keybag.info().project_id).is_some_and(|known| known != root && held(known).is_some()) {
         return Err(Error::new(Kind::Conflict, "vault_project_copy", "another location of this encrypted project is unlocked"));
     }
+    // With no session of it here, a view under it is a dead Calcifer's: one killed, whose service manager ended its supervisor with it
+    // (systemd's KillMode), left mounted with no provider. Detached now, it outlives no later stop (e2e 44118022499).
+    if held(root).is_none() { retire_orphaned_views(root)?; }
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
@@ -648,6 +704,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     drop(took);
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
+    match mounted.ender() {
+        Ok(ender) => { ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(root.to_owned(), ender); }
+        Err(e) => tracing::warn!("{}: a stop past its deadline can't end this view: {e}", root.display()),
+    }
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
     crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
@@ -760,15 +820,32 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
 /// why. A remote machine's run keeps its outputs across a lock (the lock closes only this computer's machine,
 /// `private_io::close_private_project`), so its save stays owed and resumes when that machine answers. The runs it cut and the runs
 /// it left owed, by name, for the lock's answer to its own client and nothing else (no log). One rule for every lock.
-fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
+/// `local_gone`: the deadline's ask found local not answering (cl-1064): a save from it is cut once still for `LOCAL_STILL`, not
+/// `EXPORT_SILENCE`, so the vault locks close to its deadline; its outputs read lost, saying local didn't answer. Still is judged by
+/// progress, from the later of its last bytes and the drain's start: a save whose bytes still come lands, and so does one from a
+/// local that came back as the drain began (review 6939581151).
+fn drain_saves(api: &Arc<Api>, root: &FsPath, mut local_gone: bool, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
     let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let (mut said, mut busy) = (false, None::<Instant>);
+    let (mut said, mut busy, began) = (false, None::<Instant>, Instant::now());
+    // While its saves wait their `LOCAL_STILL`, local is asked every half second (each ask given its 2 s): the first answer means it
+    // came back (re-review 6939581151). Started with the first save from it; the asks end once one answers or the window does.
+    let back = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut asking = false;
     loop {
-        let owed = match owner.store() {
-            Ok(store) => { busy = None; store.exports_owed().map_err(journal)? }
+        let (owed, from_local) = match owner.store() {
+            Ok(store) => {
+                busy = None;
+                let owed = store.exports_owed().map_err(journal)?;
+                let from_local: Vec<crate::RunId> = if local_gone {
+                    owed.iter().filter(|(id, _)| store.run(id.as_str()).ok().flatten().is_some_and(|row| row.machine.as_deref() == Some("local"))).map(|(id, _)| id.clone()).collect()
+                } else {
+                    vec![]
+                };
+                (owed, from_local)
+            }
             // Another lock's turn ahead of it on the project: looked at again shortly, no longer than a save may go silent.
             Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => {
                 if busy.get_or_insert_with(Instant::now).elapsed() >= crate::outputs::EXPORT_SILENCE {
@@ -780,10 +857,35 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
             Err(e) => return Err(journal(e)),
         };
         if owed.is_empty() { return Ok((vec![], vec![])); }
+        if !from_local.is_empty() && !std::mem::replace(&mut asking, true) {
+            let runtime = tokio::runtime::Handle::current();
+            for at in 0..(LOCAL_STILL.as_millis() / 500) as u64 {
+                let (machines, back) = (api.machines.clone(), back.clone());
+                runtime.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500 * at)).await;
+                    if !back.load(std::sync::atomic::Ordering::Acquire) && machines.answers_now("local").await {
+                        back.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                });
+            }
+        }
+        // Back: its saves, judged anew from now, go on as any do; their exporters are woken from their pause.
+        if !from_local.is_empty() && back.load(std::sync::atomic::Ordering::Acquire) {
+            for id in &from_local {
+                api.calcifer.export_fresh(id);
+                api.calcifer.export(id);
+            }
+            local_gone = false;
+            continue;
+        }
         // An exporter missing is started; one going is left alone: waking it is no progress, and cuts its pause.
         for (id, _) in &owed { if !api.calcifer.exporting(id) { api.calcifer.export(id); } }
         if !said { saving(); said = true; }
-        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
+        let still_moving = |id: &crate::RunId| match from_local.contains(id) {
+            true => began.elapsed() < LOCAL_STILL || api.calcifer.export_moved_within(id, LOCAL_STILL),
+            false => api.calcifer.export_moving(id),
+        };
+        if owed.iter().any(|(id, _)| still_moving(id)) {
             std::thread::sleep(Duration::from_millis(250));
             continue;
         }
@@ -801,7 +903,7 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
                 deferred.push(format!("{}-{number}", project.key()));
                 continue;
             }
-            let why = "not saved: its save stopped moving before the project locked";
+            let why = if from_local.contains(&id) { "not saved: this computer's machine didn't answer as the project locked at its deadline" } else { "not saved: its save stopped moving before the project locked" };
             for item in &items {
                 if let Ok(events) = store.export_failed(id.as_str(), &item.name, item.index, item.rev, why) { api.calcifer.publish(&id, events); }
             }
@@ -822,6 +924,59 @@ pub(crate) async fn save_open() {
     if unanswered > 0 { tracing::warn!("stopping: {unanswered} page(s) didn't say they sent what was typed in {} s", LOCK_DRAIN.as_secs()); }
 }
 
+/// What a lock says when `local` didn't answer it (cl-1064).
+const OWED_LINE: &str = "locked; local didn't answer, so its clean-up for this project runs when it next answers";
+/// What each project's last lock said of it, for the lock's answer.
+static OWED_SAID: LazyLock<Mutex<BTreeMap<PathBuf, String>>> = LazyLock::new(Mutex::default);
+
+fn unanswered_seal() -> Error {
+    Error::new(Kind::Unavailable, "private_storage_unavailable", "local didn't answer to close the project's execution storage; retry once it answers")
+        .next("cozy machine show local")
+}
+
+/// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled. Whether it didn't answer.
+/// Its journal is read only for a project with runs going whose local doesn't answer: a lock whose local answers reads nothing more
+/// than it did, so it never meets a journal busy a moment (43969581564). Under the lock's own transition (`close`) the journal is
+/// read and written through it: any other read waits behind that transition's exclusive hold, and the lock waited on itself for
+/// `JOURNAL_BUSY` and failed `run_cancel` (cl-1259).
+fn settle_unanswered(api: &Arc<Api>, root: &FsPath, transition: Option<&ProjectTransition>) -> Result<bool, Error> {
+    let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
+    if !api.calcifer.has_runs(&id) || tokio::runtime::Handle::current().block_on(api.machines.answers("local")) {
+        return Ok(false);
+    }
+    if let Some(transition) = transition {
+        let store = api.projects.transition_store(api, &id, transition)?;
+        let settled = api.calcifer.cancel_unanswered_sealing(&store, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+        return Ok(!settled.is_empty());
+    }
+    if !journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
+        return Ok(false);
+    }
+    journal(|| api.calcifer.cancel_unanswered_for_lock(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+    Ok(true)
+}
+
+/// How long a lock's look at its project's journal waits out a moment's `project_busy` (a transition queued on the project).
+const JOURNAL_BUSY: Duration = Duration::from_secs(5);
+
+/// `read` of a project's journal, asked again every 100 ms for `JOURNAL_BUSY` while it's busy. Only from a blocking thread.
+fn journal<T>(mut read: impl FnMut() -> Result<T, crate::Error>) -> Result<T, crate::Error> {
+    let began = Instant::now();
+    loop {
+        match read() {
+            Err(crate::Error::Store(crate::store::StoreError::Locked(code))) if code == "project_busy" && began.elapsed() < JOURNAL_BUSY => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            done => return done,
+        }
+    }
+}
+
+/// What `root`'s last lock says of a machine that didn't answer it, once.
+fn owed_said(root: &FsPath) -> Option<String> {
+    OWED_SAID.lock().expect("owed said").remove(root)
+}
+
 fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
     // Under the project's turn and before anything is revoked: a run that still writes into it (one `drain_saves` didn't see
     // start) holds it (cl-1060).
@@ -831,18 +986,46 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
         mark_closing(&mut session);
     }
     vault_operation::revoke(root);
+    // A lock never waits on a machine that doesn't answer (cl-1064): the project's runs on local settle here as the lock ends them,
+    // and what local ran in its view is owed a clean-up for when it answers.
+    let unanswered = settle_unanswered(api, root, Some(transition))?;
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root, transition)?;
-    tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+    let sealed = match unanswered {
+        true => crate::private_io::let_go(root),
+        false => tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?,
+    };
+    // Only an encrypted project's view ends without its machine: a plain project's folder stays, and its machine is asked again.
+    if !encrypted(root) && matches!(sealed, crate::private_io::Sealed::Owed(_)) {
+        return Err(unanswered_seal());
+    }
     crate::runs::files::release_private(root)?;
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
-        session.mount.try_unmount().map_err(|why| match why {
-            project_mount::Error::Busy(_) => { holds(root, FILES); Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change") }
-            other => provider(other),
-        })?;
-        retire_runtime(&session.runtime)?;
+        match &sealed {
+            crate::private_io::Sealed::Closed => session.mount.try_unmount().map_err(|why| match why {
+                project_mount::Error::Busy(_) => { holds(root, FILES); Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change") }
+                other => provider(other),
+            })?,
+            // Owed before the view ends, so a Calcifer stopped between them still tells the machine; let go if it doesn't end.
+            crate::private_io::Sealed::Owed(view) => {
+                // Its processes on local end first (cl-1064): a hung machine's executors hold its decrypted bytes in memory.
+                let (ended, said) = api.machines.end_executors(session.keybag.info().project_id.as_str(), session.keybag.info().generation, view);
+                api.machines.owe(view, root, ended).map_err(|e| error("vault_index", e.to_string()))?;
+                // Its sealed mount point stays, marked before the view ends, until the machine's clean-up is paid (`retire_owed_view`).
+                fs::write(session.runtime.join(OWED_MARK), b"").map_err(io)?;
+                if let Err(why) = session.mount.end() {
+                    let _ = fs::remove_file(session.runtime.join(OWED_MARK));
+                    let _ = api.calcifer.store().paid("local", view);
+                    return Err(provider(why));
+                }
+                let line = if said.is_empty() { OWED_LINE.to_owned() } else { format!("{OWED_LINE}; {said}") };
+                OWED_SAID.lock().expect("owed said").insert(root.to_owned(), line.clone());
+                say(root, "owed", || line);
+            }
+        }
+        if matches!(sealed, crate::private_io::Sealed::Closed) { retire_runtime(&session.runtime)?; }
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
@@ -913,6 +1096,19 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     true
 }
 
+/// Each view mounted here, by its project, to be ended past a stop's deadline whoever holds its session. One whose mount ended is
+/// left as it is.
+static ENDERS: LazyLock<Mutex<BTreeMap<PathBuf, project_mount::Ender>>> = LazyLock::new(Mutex::default);
+
+/// A stop past its deadline (`serve::stop_deadline`): every view this Calcifer mounted ended now, its provider killed by its handle and
+/// its view unmounted, so none outlives it mounted or with its key held.
+pub(crate) fn end_all_now() {
+    let enders = std::mem::take(&mut *ENDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for ender in enders.into_values() {
+        ender.end();
+    }
+}
+
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
@@ -920,7 +1116,7 @@ pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
         let _operation = op.lock().expect("vault operation");
         if end_if_gone(api, &root) { continue; }
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-        drain_saves(api, &root, || {})?;
+        drain_saves(api, &root, false, || {})?;
         let transition = exclusive(&root)?;
         close(api, &root, &transition)?;
     }
@@ -976,6 +1172,44 @@ const SAVE_GRACE: Duration = Duration::from_secs(30);
 /// When each open vault was first seen past its deadline and not yet locked.
 static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
 
+/// When the clock last asked whether the machine of runs holding a vault past its deadline answers (cl-1064), and how often it asks.
+static ASKED: LazyLock<Mutex<BTreeMap<PathBuf, Instant>>> = LazyLock::new(Mutex::default);
+const ASKED_AGAIN: Duration = Duration::from_secs(10);
+
+/// Whether `root`'s runs on `local`, or their saves, hold it while local doesn't answer (cl-1064): local asked first, the journal
+/// read only then. A run whose call ended is no longer routed while its save goes on, so the journal is read, not the routes.
+fn unanswered(api: &Arc<Api>, root: &FsPath) -> bool {
+    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return false };
+    encrypted(root)
+        && !tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
+        && held_on_local(api, root, &id).map_err(|failure| say(root, "ask", || format!("its ask read nothing: {}", failure.code))).unwrap_or(false)
+}
+
+/// Whether the project at `root` has a run on `local` not yet settled, or a save from it still owed (cl-1064). Read as the clock
+/// reads its work, beside its readers (`inspection`): a project whose last run handed its outputs to an exporter has no run owner
+/// left to read it through.
+fn held_on_local(api: &Arc<Api>, root: &FsPath, id: &str) -> Result<bool, Error> {
+    let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
+    let inspection = inspection(root)?;
+    let store = api.projects.inspection_store(api, id, &inspection)?;
+    if !store.exports_owed_on("local").map_err(journal)?.is_empty() {
+        return Ok(true);
+    }
+    let mut seen = vec![];
+    for run in store.unsettled().map_err(journal)? {
+        let Some(row) = store.run(run.as_str()).map_err(journal)? else { continue };
+        if row.machine.as_deref() == Some("local") {
+            return Ok(true);
+        }
+        seen.push(format!("{:?} on {}", row.state, row.machine.as_deref().unwrap_or("none")));
+    }
+    // What held it instead, by state and machine only (no run is named outside its project, cl-984).
+    let here = store.unsettled_here().map_err(journal)?.len();
+    let owed = store.exports_owed().map_err(journal)?.len();
+    say(root, "ask held", || format!("its ask found nothing on local: unsettled [{}], {here} of Calcifer's own, {owed} save(s) owed", seen.join(", ")));
+    Ok(false)
+}
+
 /// Vaults whose lock is going on a thread of its own.
 static LOCKING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
@@ -989,7 +1223,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     // Its folder gone: it ends now, not at its deadline (cl-1124).
     if end_if_gone(api, &root) { return None; }
     let work = working(api, &root);
-    let (needs, deadline) = held(&root).map_or((false, None), |session| {
+    let (needs, deadline, past, until) = held(&root).map_or((false, None, false, None), |session| {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
         // Work going holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
@@ -999,12 +1233,36 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
             session.active_ms = super::now_ms();
             if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {}", work.why)); }
         }
-        (lapsed(&session), session.timer.deadline())
+        (lapsed(&session), session.timer.deadline(), session.timer.held_past_limit(), session.timer.held_until())
     });
     drop(operation);
+    // Past its idle limit or maximum, held only by its runs: its lock waits on their machine, and one that doesn't answer never keeps
+    // the vault open (cl-1064). Asked at most every `ASKED_AGAIN` meanwhile, never otherwise.
+    if !needs && past && let Some(work) = work { say(&root, "past", || format!("past its limit, held by {}", work.why)); }
+    if !needs && past && work.is_some_and(|work| work.runs) {
+        let asked = ASKED.lock().expect("vault asks").get(&root).is_some_and(|at| at.elapsed() < ASKED_AGAIN);
+        if !asked {
+            ASKED.lock().expect("vault asks").insert(root.clone(), Instant::now());
+            LOCKING.lock().expect("vault locks").insert(root.clone());
+            let api = api.clone();
+            let root = root.clone();
+            runtime.spawn_blocking(move || {
+                if unanswered(&api, &root) {
+                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+                    lock_lapsed(&api, &root, true);
+                }
+                LOCKING.lock().expect("vault locks").remove(&root);
+                ASKED.lock().expect("vault asks").remove(&root);
+                stir();
+            });
+        }
+        return Some(SystemTime::now() + ASKED_AGAIN);
+    }
     if !needs {
         DUE.lock().expect("vault deadlines").remove(&root);
-        return match work { Some(Work { told: false, .. }) => again(), _ => deadline };
+        // Held by its runs short of a limit: looked at again as it passes one, so the ask above comes then, though they never end.
+        let asks = until.filter(|_| work.is_some_and(|work| work.runs));
+        return match work { Some(Work { told: false, .. }) => again(), _ => deadline.into_iter().chain(asks).min() };
     }
     let due = *DUE.lock().expect("vault deadlines").entry(root.clone()).or_insert_with(Instant::now);
     let forced = due.elapsed() >= SAVE_GRACE;
@@ -1013,7 +1271,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     LOCKING.lock().expect("vault locks").insert(root.clone());
     let api = api.clone();
     runtime.spawn_blocking(move || {
-        lock_lapsed(&api, &root);
+        lock_lapsed(&api, &root, false);
         LOCKING.lock().expect("vault locks").remove(&root);
     });
     // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
@@ -1021,8 +1279,8 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
 }
 
 /// A vault past its deadline locks once what holds it has ended or drained. Its pages aren't asked to send what they typed: a lapsed
-/// view takes no write.
-fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
+/// view takes no write. `unanswered`: its runs on a local that doesn't answer held it past its limit (cl-1064), a deadline lock too.
+fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     let op = operation(root);
     let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
     let still_needs = held(root).is_some_and(|session| {
@@ -1032,18 +1290,24 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
     if !still_needs { return; }
     // A run its machine hasn't begun doesn't keep it open past its deadline (cl-1082): it ends before anything else, before a queued
     // run can begin. An explicit lock (closing) has ended the project's runs its own way.
-    let clocked = held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
+    let clocked = unanswered || held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
     if let Some(id) = project_id(root).filter(|_| clocked) {
-        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
+        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(refused(root, "run_cancel", "the project's runs not begun could not be ended")) {
             idle_lock_failed(root, &failure);
             return;
         }
+    }
+    // Its runs on a local that doesn't answer settle here, before its gate, as an explicit lock's do (cl-1064): a client following one
+    // holds the gate until it settles, and it settles only when the lock gives up on local.
+    if clocked && let Err(failure) = settle_unanswered(api, root, None) {
+        idle_lock_failed(root, &failure);
+        return;
     }
     // No page's save is waited for: the view has lapsed, so a page can't save into it, and a wait only lets queued work begin past the
     // deadline (cl-1082 review). Its pages find it locked.
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
     // a writer is still active.
-    if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
+    if let Err(failure) = drain_saves(api, root, unanswered, || {}) { idle_lock_failed(root, &failure); return; }
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
         return;
@@ -1078,7 +1342,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
                 say(root, "activity op", || "its idle clock restarts on a page's activity".into());
             }
         }
-        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] });
+        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
     }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
@@ -1092,6 +1356,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         return Err(Error::new(Kind::NotFound, "project_gone", "Its folder is gone, so its encrypted view ended: nothing of it stays unlocked."));
     }
     let (mut ended, mut cut, mut deferred) = (vec![], vec![], vec![]);
+    let mut unanswered = false;
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
@@ -1110,14 +1375,16 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // Its runs on a local that doesn't answer settle here now (cl-1064), so the lock goes on rather than wait for them.
+        unanswered = settle_unanswered(api, root, None)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
-        (cut, deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        (cut, deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
-        if let Some(busy) = busy {
+        if let Some(busy) = busy.filter(|_| !unanswered) {
             if ended.is_empty() { return Err(busy); }
             holds(root, RUNS);
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
         }
     }
     // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
@@ -1126,10 +1393,10 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // A decrypt reads the view it converts after its own close revoked it (a retried close revokes it first): the view must be
     // open when it's asked.
     if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
-    let settling = !ended.is_empty();
+    let settling = !ended.is_empty() && !unanswered;
     // A storage change closes the machine's side as a lock does: what the project's runs still owe lands first (cl-1060).
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") {
-        let (more_cut, more_deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        let (more_cut, more_deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         cut.extend(more_cut);
         deferred.extend(more_deferred);
     }
@@ -1139,7 +1406,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         Err(busy) if settling && busy.code == "project_busy" => {
             holds(root, RUNS);
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
         }
         Err(error) => return Err(error),
     };
@@ -1150,7 +1417,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] } },
+            Err(busy) if settling && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None } },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
@@ -1337,19 +1604,21 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![] })
+    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![], owed: owed_said(root) })
 }
 
 /// What holds an unlocked vault open: why, whether its end stirs the vault clock (one that doesn't is looked at again shortly), and how
 /// (cl-1082): work going holds both clocks; a run its machine hasn't begun, its driver or a client following it, only the idle one.
+/// `runs`: only the project's runs hold it, so a lock past its limit waits on their machine (cl-1064).
 #[derive(Clone, Copy)]
-struct Work { why: &'static str, told: bool, held: Hold }
+struct Work { why: &'static str, told: bool, held: Hold, runs: bool }
 
 /// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
 /// move, a reader, a run not settled or its driver, a client following a run, a run's submission.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
-    let going = |why, told| Some(Work { why, told, held: Hold::Working });
-    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting });
+    let going = |why, told| Some(Work { why, told, held: Hold::Working, runs: false });
+    let running = |why, told| Some(Work { why, told, held: Hold::Working, runs: true });
+    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting, runs: true });
     if api.projects.active_requests(root) { return going("a project request being answered", true); }
     if crate::local_code::private_process_active(root) { return going("a private process", true); }
     let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
@@ -1358,7 +1627,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let Some(project) = projects.iter().find(|project| project.root == root) else {
         return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
     };
-    if api.calcifer.exporting_into(&project.id).is_some() { return going("a run saving its outputs", false); }
+    if api.calcifer.exporting_into(&project.id).is_some() { return running("a run saving its outputs", false); }
     if *project.walking.lock().expect("walking lock") { return going("a render", true); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
     let Ok(inspection) = inspection(root) else { return going("a storage change", false) };
@@ -1370,9 +1639,9 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     };
     // A run its machine began holds both clocks (owner 11-11: "runs count as activity"), and so does a driver whose run did: one
     // settling or handing on its outputs (cl-1060).
-    if !here.is_empty() || sent.len() > unstarted.len() { return going("runs not settled", true); }
+    if !here.is_empty() || sent.len() > unstarted.len() { return running("runs not settled", true); }
     let driven = api.calcifer.driven_into(&project.id);
-    if driven.iter().any(|id| !unstarted.contains(id)) { return going("a run not yet settled", false); }
+    if driven.iter().any(|id| !unstarted.contains(id)) { return running("a run not yet settled", false); }
     if !unstarted.is_empty() || !driven.is_empty() || following || submitting { waiting } else { None }
 }
 
@@ -1397,7 +1666,7 @@ fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
         ended.extend(cancelled.canceled);
     }
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) {
-        ended.extend(api.calcifer.cancel_for_lock(&id).map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?);
+        ended.extend(api.calcifer.cancel_for_lock(&id).map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?);
     }
     Ok(ended.into_iter().collect())
 }
@@ -2030,7 +2299,9 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let _converting = Converting(root.to_owned());
     forget(api, root, transition)?;
     if old_secret.is_none() {
-        tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+        if let crate::private_io::Sealed::Owed(_) = tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))? {
+            return Err(unanswered_seal());
+        }
         crate::runs::files::release_private(root)?;
     }
     // Checkpoint before measuring: the source DB's file length must include

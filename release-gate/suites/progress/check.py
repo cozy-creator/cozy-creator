@@ -6,11 +6,15 @@ is doing, where, how far and how long the whole run has left:
 - **in order:** placed, rented, queued, made ready (inputs, install, weights), started, then its work (loads, compiles, stages
   and steps, decode, encode, save), then its result coming here; a call inside it (`Segment k of n / …`) in its own order. A cold
   cell (`-cold`) installs, and its weights say their bytes coming (downloaded first, or streamed as it loads them).
-- **numbers:** a download, a load and the result count bytes; a stage that counts says what it counts.
+- **numbers:** a download, a load and the result count bytes; a stage that counts says what it counts. A run waiting on its
+  machine's download (`progress.waiting_on`, cl-1205) says no bytes of its own: that download says them, once however many runs wait
+  on it, in its machine's activity as the cell saw it (<cell>.machine.ndjson).
 - **words:** every stage it names is one the page knows (`web/app/src/panels/runs/stages.json`); a count the page calls
   steps is a denoising loop's, never tokens or a cap (Paul, 11-12: "Denoise steps: 65 / 2176" was a rewriter's tokens).
 - **a time left:** a warm cell's throughout; a cold cell's while bytes move at a known rate, and while a stage steps from its
   second step (what follows a first run's last stepping stage isn't known yet); a result over RESULT_TIMED as it comes.
+  None is owed while the run waits for GPUs its machine can't time (cl-1247): from a `run.waiting` whose typed `gpus` has no
+  `left_ms`, to the next `run.waiting`. Each cell's note counts the samples so excused.
 - **never silent:** no stretch of over SILENT_MS where nothing moved, and never `stalled`.
 - **no false alarms:** a run that completed warns of nothing the Runtime caught and recovered from (`HANDLED`).
 
@@ -80,6 +84,8 @@ class Seen:
     known: bool = True
     # A `run.log` stage line: its words are checked, but it arrives in batches behind the progress it repeats, so it holds no place.
     logged: bool = False
+    # Taken while the run waited for GPUs its machine couldn't time (`run.waiting`'s typed `gpus`, cl-1247): it owes no time left.
+    untimed: bool = False
 
 
 def parts(stage: str) -> list[str]:
@@ -107,13 +113,18 @@ def read(path: str, stages: Stages) -> tuple[list[Event], list[Seen]]:
             except ValueError:
                 pass
     seen: list[Seen] = []
+    # In a wait for GPUs its machine can't time, by its event's typed `gpus` alone, until the next `run.waiting` (cl-1247).
+    untimed = False
     for e in events:
         kind = e.get('type')
+        if kind == 'run.waiting':
+            gpus = e.get('gpus')
+            untimed = isinstance(gpus, dict) and not cast(dict[str, object], gpus).get('left_ms')
         if kind == 'run.progress':
             p = cast(dict[str, object], e.get('progress') or {})
             stage = str(p.get('stage') or '')
             phase, known = phase_of(stage, stages)
-            seen.append(Seen(phase, stage, cast(int | None, p.get('at_ms')), p, known))
+            seen.append(Seen(phase, stage, cast(int | None, p.get('at_ms')), p, known, untimed=untimed))
         elif kind == 'run.arriving':
             p = cast(dict[str, object], e.get('progress') or {})
             seen.append(Seen('result', 'downloading the result', cast(int | None, p.get('at_ms')), p))
@@ -153,8 +164,33 @@ def out_of_order(kinds: list[str], rank: 'Callable[[str], int]') -> str | None:
     return None
 
 
-def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages) -> list[str]:
+def downloads(path: str) -> dict[str, list[dict[str, object]]]:
+    """Each download its machine listed while the cell ran (<cell>.machine.ndjson, gate.sh `cell`), by its id: what it said, in order."""
+    seen: dict[str, list[dict[str, object]]] = {}
+    if not os.path.exists(path):
+        return seen
+    for line in open(path):
+        try:
+            look = json.loads(line)
+        except ValueError:
+            continue
+        for item in cast(list[dict[str, object]], look.get('activity') or []):
+            if item.get('kind') == 'download':
+                seen.setdefault(str(item.get('id')), []).append(item)
+    return seen
+
+
+def came(said: list[dict[str, object]]) -> bool:
+    """A download said its bytes coming: a total, and bytes done that moved toward it or reached it."""
+    done = [int(cast(int, d.get('bytes_done') or 0)) for d in said]
+    total = max((int(cast(int, d.get('bytes_total') or 0)) for d in said), default=0)
+    return total > 0 and (max(done) > min(done) or max(done) >= total)
+
+
+def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, items: dict[str, list[dict[str, object]]] | None = None,
+          excused: list[Seen] | None = None) -> list[str]:
     fails: list[str] = []
+    items = items or {}
     cold = name.endswith('-cold')
     runs = records(events)
     # Where: its machine from the moment it runs; its GPU by its end.
@@ -185,10 +221,16 @@ def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages) -> l
     if cold:
         if 'installing' not in kinds:
             fails.append(f'{name}: a cold run with no installing phase')
-        # Its weights come down before it runs (`downloading`) or as it reads them (a load that counts their bytes).
+        # Its weights come down before it runs (`downloading`) or as it reads them (a load that counts their bytes). A run waiting on its
+        # machine's download says which, and that download says the bytes, once (cl-1205).
         moved = [s for s in seen if s.kind in ('downloading', 'loading') and s.progress.get('bytes_total')]
-        if not moved:
+        waited = sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])})
+        if not moved and not any(came(items.get(on, [])) for on in waited):
             fails.append(f'{name}: a cold run whose weights never said their bytes coming (no download or load with bytes)')
+    # Every download it waited on says its bytes coming, on its machine.
+    for on in sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])}):
+        if not came(items.get(on, [])):
+            fails.append(f'{name}: it waited on {on!r}, whose download never said its bytes coming on its machine')
     if not name.endswith('-memo') and not any(k in WORK for k in kinds):
         fails.append(f'{name}: no work phase seen')
     # Numbers and words: every part of every stage is one the page knows; a step is a denoising loop's.
@@ -223,6 +265,10 @@ def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages) -> l
         stepping = int(cast(int, p.get('completed') or 0)) >= 2 and int(cast(int, p.get('total') or 0)) > 0 and not p.get('unit')
         due = (not cold) or stepping or (s.kind in BYTES and p.get('bytes_per_s'))
         if due and p.get('eta_s') is None:
+            if s.untimed:
+                if excused is not None:
+                    excused.append(s)
+                continue
             fails.append(f'{name}: no time left at {s.kind} {s.stage!r} ({p.get("eta_basis") or "no basis"})')
             break
     # Never silent.
@@ -251,13 +297,14 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
             fails.append(f'{name}: no event stream')
             continue
         events, seen = read(path, stages)
-        found = judge(name, events, seen, stages)
+        excused: list[Seen] = []
+        found = judge(name, events, seen, stages, downloads(os.path.join(out, name + '.machine.ndjson')), excused)
         fails += found
         order: list[str] = []
         for s in seen:
             if not order or order[-1] != s.kind:
                 order.append(s.kind)
-        notes.append(f'{name}: {" > ".join(order)}{"" if found else " (PASS)"}')
+        notes.append(f'{name}: {" > ".join(order)}{"" if found else " (PASS)"}; {len(excused)} samples owed no time in untimed GPU waits')
     return fails, notes
 
 

@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query"
-import { useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { Link } from "react-router-dom"
 import type { Ahead, Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
+import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
-import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
+import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
-import { bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
+import { attemptWords, bytesKind, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -30,7 +32,12 @@ export interface Face {
   state: string
   /** How far within it and how fast (`frame 3 of 12`, `2GB of 7GB, 100MB/s`): never cut (cl-953). */
   count?: string
+  /** The download it waits on, on its machine, which its words lead to: that alone shows how far it is (cl-1205). */
+  leads?: { machine: string; download: string }
 }
+
+/** Where a box's "Waiting for … to download" leads: its machine's drawer, at that download's row. */
+export const leadsTo = (leads: NonNullable<Face["leads"]>) => `machines/${encodeURIComponent(leads.machine)}#${anchorOf(leads.download)}`
 
 /** A span as Paul writes it: `3s`, `2m 5s`, `5m`, `1h 4m`. */
 export function short(s: number): string {
@@ -48,13 +55,6 @@ const moving = (done: number, total: number, rate?: number | null) => `${size(do
 
 /** The whole job's time left, Calcifer's: once it ended, its result coming here. */
 const leftOf = (run: Run) => (run.status === "completed" ? run.arriving?.eta_s : run.progress?.eta_s) ?? undefined
-
-/** What it waits on as its machine says it, without the machine's state its reason repeats, each run it names by its box. */
-const reason = (run: Run, boxOf: (run: number) => string | undefined) =>
-  run.waiting?.replace(/^(queued|preparing|running): /, "").replace(/\brun (\d+)/g, (said, number: string) => {
-    const box = boxOf(Number(number))
-    return box ? `<${box}>` : said
-  })
 
 /** The run whose take is shown before its file is here, while that file comes: its box says so (Paul, 11-12: no take looks done before
  *  it's here). None for a file a machine keeps. */
@@ -79,6 +79,8 @@ export interface Seen {
   machine?: Machine
   /** What its run waits on there: its package's install or its weights. */
   on?: Operation
+  /** The downloads its run waits on there, each its machine's one (cl-1205). */
+  downloads?: Operation[]
   /** Its package installing before its run is sent. */
   installing?: Operation
   /** The box it waits for: that one's render is that box's to show, not this one's (cl-905). */
@@ -89,11 +91,63 @@ export interface Seen {
   ahead?: string[]
   canceling: boolean
   boxOf: (run: number) => string | undefined
+  /** Which face this is, when it isn't its box's own (a take's run, in Focus): each is steadied by itself. */
+  slot?: string
 }
 
-/** Its two lines' words, by what is known of it: the most specific first. */
-export function faceOf(seen: Seen): Face {
-  const { view, run, machine, on, installing, waits, ahead, preparing } = seen
+/** How long a box's face waits before it says a new phase: one that comes and goes faster, weights already here, an environment already
+ *  installed, a GPU free at once, never flashes by (cl-1197; Paul, 11-18: "those are just phases it's skipping"). 400 ms, as a spinner is
+ *  held back: React reveals a fallback no sooner than 300 ms after the last (FALLBACK_THROTTLE_MS), and NN/g puts under a second as one
+ *  moment, no indicator owed. A real download or install still shows, with its progress, within half a second. */
+export const STEADY_MS = 400
+const ENDS = ["canceling", "failed", "result"]
+/** What each face shows now, by its box's name (`Seen.slot`): the run it's of, and what would replace it once it has lasted. */
+const steady = new Map<string, { face: Face; key: string; run?: number; next?: { key: string; since: number } }>()
+
+/** Its two lines' words, by what is known of it: the most specific first. Past its first attempt, line 1 says which and why (cl-1173). A
+ *  new phase shows once it has lasted STEADY_MS; its own count, and an end, show at once, and so does what this page asked itself
+ *  (queued, no run yet). The first this page sees of a run under way (it just opened, or the run came from elsewhere) has a phase
+ *  whose age is its machine's to say: one it last saw move STEADY_MS ago or more shows at once, and any other waits as a new phase
+ *  does, its machine and Cancel shown meanwhile, so a phase gone in a blink is never said first and left standing (e2e 44244383401
+ *  read "Blinking once", 200 ms long, for 900 ms). */
+export function faceOf(seen: Seen, now = Date.now()): Face {
+  const said = faceNow(seen)
+  const retry = seen.run?.retry
+  const face = retry && !ENDS.includes(said.phase) ? { ...said, machine: `${said.machine} · ${attemptWords(retry)}` } : said
+  const slot = seen.slot ?? seen.view.name
+  const run = seen.run?.number
+  // Its words and where, not its count: a count moving is the same phase going on.
+  const key = `${face.phase}\0${face.state}\0${face.machine}`
+  const was = steady.get(slot)
+  const show = () => {
+    steady.set(slot, { face, key, run })
+    return face
+  }
+  // Nothing of this render is shown yet: none here, the one before it ended, or what's here is another run's.
+  const fresh = !was || ENDS.includes(was.face.phase) || (was.run !== undefined && was.run !== run)
+  if (ENDS.includes(face.phase) || (!fresh && was.key === key)) return show()
+  const moved = seen.run?.progress?.at_ms
+  if (run !== undefined && (fresh || was.run === undefined) && moved && now - moved >= STEADY_MS) return show()
+  if (fresh) {
+    if (run === undefined) return show()
+    const held: Face = { phase: "queued", machine: face.machine, state: "" }
+    steady.set(slot, { face: held, key: "", run, next: { key, since: now } })
+    return held
+  }
+  was.run = run
+  if (was.next?.key !== key) was.next = { key, since: now }
+  if (now - was.next.since < STEADY_MS) return was.face
+  return show()
+}
+
+/** When a face will say the phase it's holding back, if one: the moment to draw it again. */
+export function faceSettles(slot: string): number | null {
+  const next = steady.get(slot)?.next
+  return next ? next.since + STEADY_MS : null
+}
+
+function faceNow(seen: Seen): Face {
+  const { view, run, machine, on, installing, waits, ahead, preparing, downloads } = seen
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()
   const where = run?.machine ? (rented && card ? `${run.machine} (renting ${card})` : run.machine) : "Choosing a machine"
@@ -102,12 +156,14 @@ export function faceOf(seen: Seen): Face {
   if (run?.status === "failed") return face("failed", `Failed: ${run.reason?.message ?? "the run failed"}`)
   if (waits && !on) return prepared(`Waiting for <${waits}>`, preparing)
   if (!run) {
+    // None of its machines has room on its disk for its models (cl-1175): it waits, nothing of them downloaded.
+    if (view.noRoom) return face("queued", "Needs", "Waiting for disk space", `${view.noRoom.short} more`)
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
     if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued, ${ordinal((ahead?.length ?? 0) + 1)} in line`, preparing)
     if (view.queued) return face("queued", "Queued,", "Choosing a machine", `${ordinal((ahead?.length ?? 0) + 1)} in line`)
     return face("queued", "Queued", "Choosing a machine")
   }
-  const waiting = reason(run, seen.boxOf)
+  const waiting = waitReason(run.waiting, seen.boxOf)
   if (!run.machine) {
     const renting = waiting?.match(/^renting (.+)$/)
     return renting ? face("renting", "Placing the order", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`) : face("queued", "Queued")
@@ -115,7 +171,9 @@ export function faceOf(seen: Seen): Face {
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
   if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? `: ${on.stage}` : ""}`)
-  if (on?.kind === "download") return face("download", `Downloading ${modelWords(on.subject)},`, where, moving(on.bytes_done, on.bytes_total, on.bytes_per_s))
+  // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205;
+  // Paul: "the 3 jobs that are like 'waiting for download...'"). Which models, its machine's rows say: a box's line has no room for them.
+  if (on?.kind === "download") return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: (downloads?.[0] ?? on).id } }
   if (run.queue_position != null) return face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`)
   if (run.status === "completed") {
     const arriving = run.arriving
@@ -123,13 +181,17 @@ export function faceOf(seen: Seen): Face {
     return face("result", owed(run) ? "Downloading the result" : "Saving")
   }
   const progress = run.progress
+  if (progress?.waiting_on?.length) return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: progress.waiting_on[0] } }
+  // Waiting on anything else, it says what for, not the stage it waits in (cl-1197: "Preparing, time left unknown" read as stuck
+  // through a 96 s wait for 2 GPUs): `Waiting for 2 GPUs`, whole on a box's line. Who holds them and about how long, its machine's rows
+  // and its drawer say.
+  if (waiting) return face("queued", waitFor(run.waiting))
   if (progress?.stage || progress?.total) {
     const { words, count } = stageParts(progress)
     const phase = bytesKind(progress) === "download" ? "download" : /install/i.test(progress.stage) ? "install" : "work"
     const numbers = [count, progress.bytes_per_s ? rateWords(progress.bytes_per_s) : ""].filter(Boolean).join(", ")
     return face(phase, count || !numbers ? words : `${words},`, where, numbers || undefined)
   }
-  if (waiting) return face("queued", sentence(waiting))
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
 }
 
@@ -160,7 +222,7 @@ function prepared(state: string, row?: Ahead): Face {
   // Its bytes are its count, which never gives way; with what it waits on after them, all of it is words, as it reads.
   if (counted && !row.waiting) return { phase, machine: row.machine, state: `${state}. Getting ready: ${row.stage},`, count: moving(row.done, row.total) }
   const ready = `Getting ready: ${row.stage}${counted ? `, ${moving(row.done, row.total)}` : ""}`
-  return { phase, machine: row.machine, state: [state, ready, row.waiting ? sentence(row.waiting) : ""].filter(Boolean).join(". ") }
+  return { phase, machine: row.machine, state: [state, ready, waitWords(row.waiting)].filter(Boolean).join(". ") }
 }
 
 /** A render on its way, two plain lines (Paul, 11-12): its machine and time, then what it's doing with how far and how fast; Cancel
@@ -176,6 +238,8 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
+  const downloads = useDownloadsOf(run)
+  const to = useTo()
   const { data: machines } = useQuery(machinesQuery(client))
   const machine = run?.machine ? machines?.machines.find((held) => held.name === run.machine) : undefined
   // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
@@ -187,7 +251,16 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   useSignal(store.ahead)
   // Its clock ticks only while it has a time to show.
   const now = useNow(run !== undefined && leftOf(run) !== undefined)
-  const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
+  const slot = later ? `${name}\0${number}` : name
+  const face = faceOf({ view, run, machine, on, downloads, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n), slot })
+  // A phase held back is drawn once it has lasted, though nothing else changes by then.
+  const settles = faceSettles(slot)
+  const [, wake] = useState(0)
+  useEffect(() => {
+    if (settles === null) return
+    const timer = setTimeout(() => wake((n) => n + 1), Math.max(0, settles - Date.now()) + 1)
+    return () => clearTimeout(timer)
+  }, [settles])
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` · ${short(since)} of ${short(since + left)}` : ""
@@ -201,7 +274,13 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
       </p>
       <p className="face-state">
         <b>
-          <span className="face-words">{face.count ? `${face.state} ` : face.state}</span>
+          {face.leads ? (
+            <Link className="face-words face-leads" to={to(leadsTo(face.leads))} title="See its download on its machine" onClick={(event) => event.stopPropagation()}>
+              {face.state}
+            </Link>
+          ) : (
+            <span className="face-words">{face.count ? `${face.state} ` : face.state}</span>
+          )}
           {face.count && <span className="face-count">{face.count}</span>}
         </b>
         {cancel && (

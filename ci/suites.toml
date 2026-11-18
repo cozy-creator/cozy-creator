@@ -5,10 +5,10 @@
 # inside one directory, `**` spans directories.
 # Tokens:
 #   cli, imports, gpu, gpu-datacenter        suites
-#   cpu                                     every package through the candidate Runtime's executor on the CPU, tiny
-#                                           random weights, and uploaded, locked and bound through the candidate cozy
-#                                           (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's frames, Calcifer's
-#                                           describe, lock and binder, or a package decide
+#   cpu                                     every package run as a person runs it on the CPU (cozy run --on local, real
+#                                           TensorD), tiny random weights mirrored on the owned Hub, and uploaded and
+#                                           locked through the candidate cozy (e2e/cpu): what the Runtime, TensorFS,
+#                                           varena, TensorD, Calcifer's describe, lock and binder, or a package decide
 #   skew-candidate                          the candidate cozy against a Hub of tensorhub master, production's line (the
 #                                           Hub suite's cells, e2e/skew/run.sh), while the suites' Hub is tensorhub's RC
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
@@ -129,3 +129,80 @@ rules = [
   # Hub verification uses an isolated fixture; hardware suites require isolated worker infrastructure.
   { paths = ["**"], select = [] },
 ]
+
+# cl-1128 (Paul, 11-17: "test the hardest cases first, the most likely spots to break; test only so far as you need to"): the cli
+# suite's Linux shards on an RC push. `edge` runs on every push, first. Each other shard runs when a path it names changed since it
+# last went green on the RC (rc-e2e's `affected` reads that from the RC's earlier runs), its own cells included
+# (e2e/cli/<its files>); a product path no shard names runs every shard. A release (`--tokens release`) runs every shard.
+[cozy-creator.shards]
+# Hardest first: what broke most often, then data and privacy, then the rest.
+edge = ["web-solo", "stuck", "projectdb", "projectvault", "follow", "disk", "web-2d-solo", "selfupdate", "commands"]
+# Every shard's harness.
+all = ["e2e/lib.sh", "e2e/run.sh", "e2e/isolated.sh", "e2e/skew/**", "e2e/candidates/**", "e2e/hubcheck/**", "e2e/cli/run.sh",
+  "e2e/cli/project/**", "e2e/cli/script/**", "e2e/cli/weightless/**", ".github/workflows/e2e.yaml", "ci/**", "Cargo.lock",
+  "Cargo.toml", "rust-toolchain.toml", "crates/api/**", "crates/platform/**", "crates/cozy/**"]
+[cozy-creator.shards.paths]
+# What plays on screen (cl-1208): the players, their slots across tabs, Focus's frame and the files they read; its cell runs once on the
+# built page and once from Vite as `dev = true` serves it, which only its own shard installs.
+web-playback = ["web/app/src/api/events.ts", "web/app/src/api/transport.ts", "web/app/src/canvas/Media.tsx", "web/app/src/canvas/Orbit.tsx",
+  "web/app/src/canvas/FocusFrame.tsx", "web/app/src/canvas/FocusedViewport.css", "web/app/src/canvas/FullScreen.ts", "web/app/src/canvas/Card.tsx",
+  "web/app/src/canvas/CanvasHost.tsx", "web/app/src/canvas/board/**", "web/app/src/canvas/timeline/**", "web/app/src/main.tsx",
+  "web/app/package.json", "web/app/pnpm-lock.yaml", "web/app/vite.config.*", "crates/calcifer/src/files.rs", "e2e/cli/web/playback.spec.js"]
+runs = ["crates/cli/src/run/**", "crates/calcifer/src/runs/**", "crates/calcifer/src/stages.rs", "crates/calcifer/src/previews.rs",
+  "crates/calcifer/src/reports.rs", "crates/calcifer/src/play.rs", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/execution.rs",
+  "crates/tensord/src/seam.rs", "crates/tensord/src/access.rs", "crates/executor-api/**", "crates/tensorfs/**", "crates/varena*/**",
+  "web/app/src/panels/runs/stages.json", "e2e/cli/previews.sh", "e2e/cli/reports.sh", "e2e/cli/llm.sh", "e2e/cli/control.sh",
+  "e2e/cli/stages.py"]
+executors = ["crates/tensord/src/machine/**", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/process.rs",
+  "crates/tensord/src/stop.rs", "crates/calcifer/src/machines.rs", "crates/calcifer/src/machine_client.rs",
+  "crates/calcifer/src/update.rs", "crates/cli/src/update.rs", "e2e/cli/lifetime.sh", "e2e/cli/released.sh", "e2e/cli/installed.sh"]
+local-code = ["crates/calcifer/src/local_code*", "crates/calcifer/src/local_code/**", "crates/calcifer/src/checkout.rs",
+  "crates/calcifer/src/rc.rs", "crates/calcifer/src/floor*", "crates/tensord/src/local_source.rs", "crates/tensord/src/trees.rs",
+  "crates/tensord/src/published*", "crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs",
+  "crates/calcifer/src/rentals.rs", "e2e/cli/source.sh", "e2e/cli/rental.sh", "e2e/cli/relay/**", "e2e/cli/returned-media/**"]
+ondemand = ["crates/tensord/src/ahead.rs", "crates/tensord/src/runs*", "crates/tensord/src/runs/**", "crates/tensord/src/line.rs",
+  "crates/tensord/src/queue.rs", "crates/tensord/src/held_models.rs", "crates/tensorfs/src/fetch/**", "crates/needs/**",
+  "e2e/cli/ondemand.sh", "e2e/cli/slow_proxy.py"]
+ondemand-share = ["crates/tensorfs/src/fetch/**", "crates/tensord/src/machine/uv.rs", "crates/tensord/src/machine/pypi.rs",
+  "crates/tensord/src/machine/speed.rs", "crates/tensord/src/machine/hub.rs", "crates/tensord/src/machine/lifecycle.rs",
+  "e2e/cli/ondemand.sh", "e2e/cli/slow_proxy.py", "e2e/cli/rentalself.sh", "e2e/cli/rentalself/**"]
+ondemand-enhancers = ["crates/needs/**", "crates/tensord/src/ahead.rs", "crates/tensord/src/held_models.rs", "e2e/cli/ondemand.sh"]
+plan = ["crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs", "crates/calcifer/src/eta.rs", "crates/calcifer/src/took.rs",
+  "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh", "e2e/cli/plan.py", "e2e/cli/machineset.sh"]
+queue = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh",
+  "e2e/cli/fakemachine.py"]
+prefetch = ["crates/calcifer/src/prefetch.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs",
+  "crates/tensord/src/ahead.rs", "e2e/cli/prefetch.sh"]
+coming = ["crates/calcifer/src/coming.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/rentals.rs", "e2e/cli/coming.sh"]
+disk-room = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/project/mod.rs",
+  "crates/calcifer/src/runs/mod.rs", "crates/tensord/src/reclaim.rs", "crates/tensord/src/api/machine_status.rs",
+  "crates/cli/src/run/follow.rs", "web/app/src/canvas/RunFace.tsx", "e2e/cli/disk.sh", "e2e/cli/machineset.sh", "e2e/cli/web/room.js"]
+lines = ["crates/tensord/src/line.rs", "crates/tensord/src/queue.rs", "crates/tensord/src/activity.rs", "e2e/cli/lines.sh"]
+log-since = ["crates/platform/src/gzip.rs", "e2e/cli/since.sh"]
+answers = ["crates/tensord/src/execution.rs", "crates/tensord/src/api/machine_status.rs", "crates/tensord/src/runs/read.rs",
+  "e2e/cli/control.sh", "e2e/cli/slow-sync.c"]
+held-memo = ["crates/tensord/src/journal.rs", "crates/tensord/src/journal/**", "crates/tensord/src/objects.rs",
+  "crates/tensord/src/project_objects.rs", "crates/tensord/src/call_memo.rs", "e2e/cli/heldmemo.sh", "e2e/cli/project/counted.py"]
+slow = ["crates/calcifer/src/slow.rs", "crates/calcifer/src/store*", "crates/calcifer/src/store/**", "crates/calcifer/src/hub/**",
+  "e2e/cli/slow.sh", "e2e/cli/statedb.sh"]
+typed-calls = ["crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs", "e2e/cli/typedcalls.sh", "e2e/cli/typed-calls/**"]
+dev-start = ["crates/calcifer/src/maintenance_source.rs", "crates/calcifer/src/update.rs", "scripts/dev-local.sh", "e2e/cli/devstart.sh"]
+hold-wins = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/floor.rs",
+  "crates/tensord/src/machine/update.rs", "crates/tensord/src/api/machine_update.rs", "e2e/cli/holdwins.sh", "e2e/cli/uplink.py", "e2e/cli/rentalself/**"]
+rc-moves = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/lib.rs", "crates/calcifer/src/store.rs",
+  "crates/calcifer/src/floor.rs", "crates/tensord/src/machine/lifecycle.rs", "e2e/cli/rcmoves.sh", "e2e/cli/rcmoves/**", "e2e/cli/rentalself/**"]
+projectvault-nofuse = ["crates/project-mount/**", "crates/project-vault/**", "e2e/cli/projectvault.sh"]
+projectvault-static = ["crates/project-mount/**", "e2e/cli/projectvault.sh", "e2e/cli/install-vault-driver.sh", "e2e/vault-provider/**"]
+web-1 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",
+  "crates/calcifer/src/files.rs", "crates/calcifer/src/outputs.rs", "crates/calcifer/src/project/**", "e2e/cli/web/**"]
+web-2 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",
+  "crates/calcifer/src/files.rs", "crates/calcifer/src/outputs.rs", "crates/calcifer/src/project/**", "e2e/cli/web/**"]
+web-3 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",
+  "crates/calcifer/src/files.rs", "crates/calcifer/src/outputs.rs", "crates/calcifer/src/project/**", "e2e/cli/web/**"]
+web-2d = ["web/**", "e2e/cli/web/**"]
+web-engines = ["web/**", "crates/project-mount/**", "crates/calcifer/src/project/vault*", "e2e/cli/web/**",
+  "e2e/cli/install-browser-deps.sh"]
+# Suites judged the same way on an RC push (their jobs: `cpu`, `imports 1/2`).
+cpu = ["crates/tensord/**", "crates/executor-api/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena*/**",
+  "crates/calcifer/src/local_code*", "crates/calcifer/src/runs/bind.rs", "crates/calcifer/src/toolbox.rs", "e2e/cpu/**"]
+imports = ["crates/tensord/src/machine/**", "crates/tensord/src/published*", "crates/tensorfs-py/**", "e2e/imports/**"]

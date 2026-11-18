@@ -217,7 +217,6 @@ def main() -> None:
 
         for name, words in (
             ("status requires project", ["--json", "status"]),
-            ("open requires project", ["--json", "open"]),
             ("run requires project", ["--json", "run", "example/generate", "prompt=test"]),
             ("run list requires project", ["--json", "run", "ls"]),
         ):
@@ -236,8 +235,9 @@ def main() -> None:
         assert listed["runs"] == [], "a new project has unexpected runs"
         assert Path(status["project"]["path"]).resolve() == project
         assert status["health"] == "ready" and status["warnings"] == []
-        for field in ("unrendered_assets", "outdated_assets", "missing_files", "warnings"):
+        for field in ("unrendered_assets", "missing_files", "warnings"):
             assert status["counts"][field] == 0, f"new project health count {field} is nonzero"
+        assert "outdated_assets" not in status["counts"], "nothing is out of date (cl-1192): status counts none"
         assert not ({"runs", "machines", "rentals"} & status.keys()), "health status contains activity or account totals"
         assert run("bare help in project", [], project).stdout.strip() == help_text.strip()
         plain = run("default health output", ["status"], project).stdout
@@ -252,7 +252,7 @@ def main() -> None:
         opened = json.loads(run("project URL", ["--json", "open"], project).stdout)
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
-        # Its short address, as the page's own links say it (Paul 11-16, of `/projects/<id>`: "where did this dumb other url come from?").
+        # Its address, as the page's own links say it: a project's only one (cl-1171).
         assert url.path == f"/p/{created['code']}", f"open printed another address than the project's /p/<code>: {url.path}"
         # A --json caller is a program: it gets the page's plain address, and no browser starts (cl-985).
         assert set(opened) == {"url"}, f"--json open: {opened}"

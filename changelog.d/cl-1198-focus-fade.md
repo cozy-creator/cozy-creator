@@ -1,0 +1,1 @@
+Entering Focus, the other boxes fade out as the canvas zooms into the box, and back in as it zooms out (cl-1198). The fade follows the zoom frame by frame. Turned halfway, by Esc or by another box opened, each box fades on from where it was. With reduced motion, Focus opens and closes at once. A faded box is neither drawn nor clickable until it's fully back.

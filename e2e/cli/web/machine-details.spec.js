@@ -23,13 +23,9 @@ const SIZES = [[1440, 900], [1920, 1080]];
 const GB = 2 ** 30;
 const softly = expect.configure({ soft: true });
 
-/** The page's rule (Disk.tsx `nearlyFull`): under a tenth free, or too little past the machine's reserve for its biggest model. */
+/** Calcifer's rule, which the page shows (Disk.tsx `nearlyFull`, cl-1175): its room for downloads under what its usual models need. */
 function nearlyFull(status) {
-  const total = status.disk_total_bytes, free = status.disk_free_bytes;
-  if (!total) return false;
-  const reserve = Math.min(10 * GB, Math.max(GB, total / 50));
-  const biggest = Math.max(0, ...(status.models ?? []).map((model) => model.total_bytes));
-  return free < total / 10 || (biggest > 0 && free < reserve + biggest);
+  return Boolean(status.disk_total_bytes && status.disk_needs_bytes);
 }
 
 test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) => {
@@ -139,7 +135,7 @@ test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) =>
       await expect.poll(async () => nearlyFull(await local()), { message: 'the machine reports its disk nearly full', timeout: 90_000 }).toBe(true);
       const warning = section('Disk').locator('.disk-full');
       await expect(warning).toBeVisible({ timeout: 30_000 });
-      await expect(warning).toContainText(/^Nearly full: \d+(\.\d)?(MB|GB) free of \d+(\.\d)?(GB|TB)/);
+      await expect(warning).toContainText(/^Nearly full: \d+(\.\d)?(MB|GB) of room for models, and its usual models need \d+(\.\d)?(GB|TB)/);
       await expect(warning).toContainText('free up space on this computer');
       await shoot('nearly-full', ['Disk']);
       if (fill) rmSync(fill, { force: true });
@@ -185,8 +181,9 @@ async function gpuReadings(calcifer, name, count, wait = 5_000) {
 
 // Paul's 4th: "a list of its GPUs and GPU utilization ... That way we can see how hard its GPUs are working". Calcifer's stream of a
 // machine's GPU use answers as SSE, a reading a second while followed and none otherwise. A machine with no NVIDIA GPU (a runner's) sends
-// one empty reading, and its drawer opens no stream. With NVIDIA GPUs (GPU_MACHINE names one, on a pod), the readings come each second,
-// and the drawer shows each GPU's busy share and memory in use under it, as the stream says.
+// one empty reading. The page opens no stream of its own: the readings come on its events stream while it shows machines (cl-1191). With
+// NVIDIA GPUs (GPU_MACHINE names one, on a pod), the readings come each second, and the drawer shows each GPU's busy share and memory in
+// use under it, as the stream says.
 test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, calcifer, cli }) => {
   const name = process.env.GPU_MACHINE || 'local';
   if (name === 'local') await cli.json('machine', 'show', 'local');
@@ -209,14 +206,14 @@ test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, 
 
   const asked = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/gpus')) asked.push(request.url()); });
-  if (process.env.GPU_LOG) await page.addInitScript(heardGpus);
+  if (process.env.GPU_LOG) await page.addInitScript(heardGpus, name);
   await page.goto(project.url(`machines/${encodeURIComponent(name)}`));
   const section = page.locator('.drawer section.sect').filter({ has: page.locator('h3 > span', { hasText: /^GPUs$/ }) });
   await expect(section).toBeVisible({ timeout: 60_000 });
   if (!gpus.length) {
     await expect(section).toContainText('No GPUs');
     await page.waitForTimeout(3_000);
-    expect(asked, 'no GPU stream for a machine with none').toEqual([]);
+    expect(asked, 'no GPU stream of its own').toEqual([]);
     return;
   }
   for (const gpu of gpus) {
@@ -225,7 +222,7 @@ test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, 
     await expect(section.locator(`[data-gpu="${gpu.index}"] .gpu-use b`).first()).toHaveText(/^\d{1,3}%$/);
     await expect(section.getByRole('meter', { name: `GPU ${gpu.index} memory in use` })).toBeVisible();
   }
-  expect(asked.length, 'one stream while the drawer is open').toBeGreaterThan(0);
+  expect(asked, 'no GPU stream of its own: the events stream brings them').toEqual([]);
   for (const [width, height] of SIZES) {
     await page.setViewportSize({ width, height });
     for (const theme of ['paper', 'dark']) {
@@ -258,16 +255,16 @@ test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, 
   }
 });
 
-/** In the page, before its scripts: each `gpus` reading its stream of a machine's GPU use brings, kept in `__gpuHeard` (the last in
- *  `__gpuLast`), the page's own copy of the stream untouched. */
-function heardGpus() {
+/** In the page, before its scripts: each `machine.gpus` reading of machine `name` its events stream brings (cl-1191), kept in `__gpuHeard`
+ *  (the last in `__gpuLast`), the page's own copy of the stream untouched. */
+function heardGpus(name) {
   const real = window.fetch;
   window.__gpuHeard = [];
   window.fetch = async function (input, init) {
     const response = await real.call(this, input, init);
     try {
       const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-      if (!url.pathname.endsWith('/gpus') || (init?.method ?? 'GET') !== 'GET' || !response.body) return response;
+      if (url.pathname !== '/v1/events' || (init?.method ?? 'GET') !== 'GET' || !response.body) return response;
       const [ours, theirs] = response.body.tee();
       (async () => {
         const reader = ours.pipeThrough(new TextDecoderStream()).getReader();
@@ -279,8 +276,10 @@ function heardGpus() {
           for (let end = held.indexOf('\n\n'); end >= 0; end = held.indexOf('\n\n')) {
             const lines = held.slice(0, end).split('\n');
             held = held.slice(end + 2);
-            if (!lines.some((line) => /^event: ?gpus$/.test(line))) continue;
-            const reading = JSON.parse(lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n'));
+            const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+            const event = data.startsWith('{') ? JSON.parse(data) : null;
+            if (event?.type !== 'machine.gpus' || event.name !== name) continue;
+            const reading = event.reading;
             window.__gpuLast = reading;
             window.__gpuHeard.push({ heard: Date.now(), ...reading });
           }

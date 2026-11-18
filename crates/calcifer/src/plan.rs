@@ -191,13 +191,13 @@ pub(crate) fn finishes_clearly_sooner(sooner: i64, than: i64, now: i64) -> bool 
 }
 
 /// Of `offers`, where a job goes: the soonest finish of those that can run it, of those tied a machine that serves before one on its
-/// way, one measured before one not, a rental before this computer, then the sooner (`placement::soonest`); and the machine fetching
+/// way, one measured before one not, a rental before this computer, the one holding fewest runs, then the sooner (`placement::soonest`); and the machine fetching
 /// ahead for it unless another is clearly sooner.
 fn choose(offers: &[(usize, Offer)], stay: Option<usize>, now: i64) -> Option<(usize, Offer)> {
     let fits = || offers.iter().filter(|(_, offer)| offer.fits);
     let first = fits().map(|(_, offer)| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
-    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
+    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
     let soonest = fits().filter(|(_, offer)| offer.finish_at_ms <= first + tie).min_by_key(|(_, offer)| rank(offer))?;
     let kept = stay.and_then(|stay| fits().find(|(m, _)| *m == stay)).filter(|(_, held)| !clearly_sooner(&soonest.1, held, now));
     kept.or(Some(soonest)).cloned()

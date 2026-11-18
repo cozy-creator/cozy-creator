@@ -275,10 +275,168 @@ fn decrement(counter: &AtomicUsize) -> usize {
         - 1
 }
 
+/// A region rounding wastes more than 1/`PACK_WASTE` of, under `PACK_BELOW`, is packed (cr-317).
+const PACK_WASTE: usize = 16;
+const PACK_BELOW: usize = 32 << 20;
+/// Each pack's address range, and the alignment of its regions in it.
+const PACK_SPAN: usize = 8 << 30;
+const PACK_ALIGN: usize = 256;
+/// A packed region's `handle` once its pages are counted: its bytes are its pack's.
+const PACKED: u64 = u64::MAX;
+
+/// One set's small regions, back to back in one reserved range, backed page by page.
+struct Pack {
+    ptr: u64,
+    used: usize,
+    /// Each page's handle and the resident regions on it.
+    pages: Vec<(Option<u64>, u32)>,
+    /// Regions placed here not yet retired: the range goes with the last.
+    live: usize,
+}
+
+/// Every pack of a device, and the one each set fills now.
+#[derive(Default)]
+pub(crate) struct Packs {
+    packs: std::collections::BTreeMap<u64, Pack>,
+    open: std::collections::HashMap<String, u64>,
+    granularity: usize,
+    /// Unmapped page handles a reclaim for a packed fill freed: that fill maps them, with no create
+    /// and no release, as an unpacked region's refill takes its evicted neighbour's handle (`into`).
+    spare: Vec<u64>,
+}
+
+impl Packs {
+    /// Room for `bytes` in `set`'s open pack, else a new one: (pack, offset).
+    fn place(&mut self, driver: &cuda::Driver, set: &str, bytes: usize, granularity: usize) -> Result<(u64, usize)> {
+        self.granularity = granularity;
+        if let Some(&id) = self.open.get(set) {
+            let pack = self.packs.get_mut(&id).expect("open pack");
+            if pack.used + bytes <= PACK_SPAN {
+                let offset = pack.used;
+                pack.used += bytes;
+                pack.live += 1;
+                return Ok((id, offset));
+            }
+        }
+        let ptr = driver.reserve(PACK_SPAN)?;
+        let id = next_identity()?;
+        self.packs.insert(id, Pack { ptr, used: bytes, pages: vec![(None, 0); PACK_SPAN / granularity], live: 1 });
+        self.open.insert(set.to_owned(), id);
+        Ok((id, 0))
+    }
+
+    fn base(&self, pack: u64) -> u64 {
+        self.packs[&pack].ptr
+    }
+
+    fn span(&self, (pack, offset): (u64, usize), bytes: usize) -> std::ops::Range<usize> {
+        let _ = pack;
+        offset / self.granularity..(offset + bytes).div_ceil(self.granularity)
+    }
+
+    /// Bytes of pages a fill of this region must still create.
+    fn missing(&self, at: (u64, usize), bytes: usize) -> usize {
+        let pages = &self.packs[&at.0].pages;
+        self.span(at, bytes).filter(|&page| pages[page].0.is_none()).count() * self.granularity
+    }
+
+    /// Back the region: create and map its absent pages, then count it on each. On a failure the
+    /// pages this call created go again, so nothing is left unowned.
+    fn back(&mut self, gpu: &Device, at: (u64, usize), bytes: usize) -> AllocationResult<()> {
+        let (granularity, span) = (self.granularity, self.span(at, bytes));
+        let pack = self.packs.get_mut(&at.0).expect("live pack");
+        let mut made = Vec::new();
+        for page in span.clone() {
+            if pack.pages[page].0.is_some() {
+                continue;
+            }
+            if let Some(handle) = self.spare.pop() {
+                pack.pages[page].0 = Some(handle);
+                gpu.driver().map(pack.ptr + (page * granularity) as u64, granularity, handle)?;
+                made.push(page);
+                continue;
+            }
+            match gpu.create(granularity) {
+                Ok(handle) => {
+                    // Custody before map, as a region's fill records it: a failed map poisons.
+                    pack.pages[page].0 = Some(handle);
+                    gpu.driver().map(pack.ptr + (page * granularity) as u64, granularity, handle)?;
+                    made.push(page);
+                }
+                Err(failure) => {
+                    for page in made {
+                        let handle = pack.pages[page].0.take().expect("made page");
+                        let _ = gpu.driver().unmap(pack.ptr + (page * granularity) as u64, granularity);
+                        let _ = gpu.driver().release(handle);
+                        gpu.pages.fetch_sub(granularity, Ordering::AcqRel);
+                    }
+                    self.release_spare(gpu)?;
+                    return Err(failure);
+                }
+            }
+        }
+        for page in span {
+            pack.pages[page].1 += 1;
+        }
+        self.release_spare(gpu)?;
+        Ok(())
+    }
+
+    /// Spare handles no fill took go back to the driver.
+    fn release_spare(&mut self, gpu: &Device) -> Result<()> {
+        for handle in self.spare.drain(..) {
+            gpu.driver().release(handle)?;
+            gpu.pages.fetch_sub(self.granularity, Ordering::AcqRel);
+            gpu.released.fetch_add(self.granularity as u64, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
+    /// The region leaves its pages: each no resident region is left on is unmapped and released.
+    /// The bytes released.
+    /// `keep`: up to that many freed handles stay as spares for the packed fill this reclaim serves.
+    fn drop_backing(&mut self, gpu: &Device, at: (u64, usize), bytes: usize, keep: usize) -> Result<usize> {
+        let (granularity, span) = (self.granularity, self.span(at, bytes));
+        let pack = self.packs.get_mut(&at.0).expect("live pack");
+        let mut released = 0;
+        for page in span {
+            let slot = &mut pack.pages[page];
+            slot.1 = slot.1.checked_sub(1).expect("packed page count underflow");
+            if slot.1 == 0 && let Some(handle) = slot.0.take() {
+                gpu.driver().unmap(pack.ptr + (page * granularity) as u64, granularity)?;
+                if self.spare.len() < keep {
+                    self.spare.push(handle);
+                } else {
+                    gpu.driver().release(handle)?;
+                    gpu.pages.fetch_sub(granularity, Ordering::AcqRel);
+                    gpu.released.fetch_add(granularity as u64, Ordering::AcqRel);
+                }
+                released += granularity;
+            }
+        }
+        Ok(released)
+    }
+
+    /// A retired region leaves its pack; the pack's range goes with its last region.
+    fn retire(&mut self, driver: &cuda::Driver, pack: u64) -> Result<()> {
+        let entry = self.packs.get_mut(&pack).expect("live pack");
+        entry.live -= 1;
+        if entry.live != 0 {
+            return Ok(());
+        }
+        let entry = self.packs.remove(&pack).expect("live pack");
+        self.open.retain(|_, open| *open != pack);
+        driver.free_address(entry.ptr, PACK_SPAN)
+    }
+}
+
 struct Entry {
     ptr: u64,
     bytes: usize,
+    /// Its physical backing: its own handle, or `PACKED` when its bytes are its pack's pages.
     handle: Option<u64>,
+    /// Its pack and offset there, for a small region packed with its set's others (cr-317).
+    packed: Option<(u64, usize)>,
     uses: Arc<Uses>,
     region: Weak<Region>,
     // The Region used right after this one, last time.
@@ -811,21 +969,37 @@ impl Device {
     /// A Region of `bytes` from `source`: address space only, no physical memory. One eviction
     /// group. `use_on` fills it.
     pub fn region(&'static self, bytes: usize, source: Arc<dyn Source>) -> Result<Arc<Region>> {
+        self.region_in(bytes, source, None)
+    }
+
+    /// `region`, one of `set`'s: a small one (rounding to the card's pages would waste over
+    /// 1/`PACK_WASTE` of it) sits back to back with the set's others in one address range, and its
+    /// pages are shared, refcounted by the resident regions on them (cr-317). Qwen3.6-35B-A3B's
+    /// 10,496 int8 experts are 3.01 MiB each and took 4 MiB alone: 45.2 GiB for 35.0 GiB.
+    pub fn region_in(&'static self, bytes: usize, source: Arc<dyn Source>, set: Option<&str>) -> Result<Arc<Region>> {
         if bytes == 0 {
             return Err(Error::Invalid("zero-length region"));
         }
         let granularity = self.granularity();
-        let rounded = bytes
+        let paged = bytes
             .checked_add(granularity - 1)
             .ok_or(Error::Invalid("region size overflow"))?
             / granularity
             * granularity;
+        let small = bytes < PACK_BELOW && (paged - bytes) * PACK_WASTE > bytes;
         let gate = gate(self.ordinal)?;
         gate.not_capturing()?;
         let mut state = self.lock()?;
         let id = next_identity()?;
         let _context = self.driver().enter()?;
-        let ptr = self.driver().reserve(rounded)?;
+        let (ptr, rounded, packed) = match set.filter(|_| small) {
+            Some(set) => {
+                let rounded = bytes.div_ceil(PACK_ALIGN) * PACK_ALIGN;
+                let (pack, offset) = state.packs.place(self.driver(), set, rounded, granularity)?;
+                (state.packs.base(pack) + offset as u64, rounded, Some((pack, offset)))
+            }
+            None => (self.driver().reserve(paged)?, paged, None),
+        };
         let uses = Arc::new(Uses::new());
         Ok(Arc::new_cyclic(|region| {
             state.entries.insert(
@@ -834,6 +1008,7 @@ impl Device {
                     ptr,
                     bytes: rounded,
                     handle: None,
+                    packed,
                     uses: Arc::clone(&uses),
                     region: region.clone(),
                     next: None,
@@ -907,8 +1082,13 @@ impl Device {
     fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize, into: Option<u64>) -> Result<()> {
         let prefetched = state.entries[&id].prefetched;
         let bytes = state.entries[&id].bytes;
-        let into = into.filter(|to| state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.bytes == bytes));
-        let size = self.release_backing_counted(state, id, completed, into)?;
+        // A packed fill takes freed pages as spares: its pages missing are what it may keep.
+        let keep = into.and_then(|to| state.entries.get(&to)).filter(|to| to.handle.is_none())
+            .and_then(|to| to.packed.map(|at| state.packs.missing(at, to.bytes) / self.granularity()))
+            .unwrap_or(0);
+        let into = into.filter(|to| state.entries[&id].packed.is_none()
+            && state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.packed.is_none() && to.bytes == bytes));
+        let size = self.release_backing_counted(state, id, completed, into, keep)?;
         if prefetched {
             state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
             if let Some(entry) = state.entries.get(&id) {
@@ -924,9 +1104,30 @@ impl Device {
     /// Unmap a completed, unpinned region's pages and release them, or map them at `into`, an
     /// absent region of its size: a refill then costs a remap, never a release and a create. A
     /// retired region's address goes too.
-    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>) -> Result<usize> {
+    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>, keep: usize) -> Result<usize> {
         let entry = state.entries.get(&id).expect("candidate in the table");
         let (ptr, size, handle) = (entry.ptr, entry.bytes, entry.handle.expect("mapped candidate"));
+        if let Some(at) = entry.packed {
+            // Its pages go only once no resident region is left on them: what it frees may be less
+            // than its size, and reclaim counts what it freed.
+            let freed = match state.packs.drop_backing(self, at, size, keep) {
+                Ok(freed) => freed,
+                Err(error) => return Err(poison(state, error)),
+            };
+            *completed += freed;
+            let entry = state.entries.get_mut(&id).expect("candidate in the table");
+            entry.uses.waits().clear();
+            entry.prefetched = false;
+            entry.handle = None;
+            entry.uses.invalidate();
+            if entry.uses.state() == Contents::Retired {
+                state.entries.remove(&id);
+                if let Err(error) = state.packs.retire(self.driver(), at.0) {
+                    return Err(poison(state, error));
+                }
+            }
+            return Ok(freed);
+        }
         if let Err(error) = self.driver().unmap(ptr, size) {
             return Err(poison(state, error));
         }
@@ -1299,7 +1500,7 @@ impl Region {
             return Ok(false);
         }
         let _context = self.gpu.driver().enter()?;
-        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None)?;
+        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None, 0)?;
         Ok(true)
     }
 
@@ -1333,8 +1534,17 @@ impl Region {
         let protect = reclaim::Protect {
             regions: Some(&protected), keep_phase: true, into: Some(self.id), outside: true, ..Default::default()
         };
+        // A packed region needs only its pages not yet mapped by a resident neighbour.
+        let need = {
+            let state = self.gpu.lock()?;
+            let entry = state.entries.get(&self.id).expect("live region");
+            match (entry.handle, entry.packed) {
+                (None, Some(at)) => state.packs.missing(at, self.rounded),
+                _ => self.rounded,
+            }
+        };
         let result = (|| loop {
-            let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
+            let prepared = reclaim::acquire(self.gpu.ordinal, need, reclaim::Wait::Yes, protect, || {
                 let gate = gate(self.gpu.ordinal)?;
                 let mut state = self.gpu.lock()?;
                 self.prepare_locked(&gate, &mut state, false)
@@ -1380,6 +1590,26 @@ impl Region {
         Ok(pin)
     }
 
+    /// A fill ahead of demand on the caller's thread, pinned for `consumer`, if the rule the fill
+    /// worker follows allows it (`prepare_ahead`, `reclaim::prefetch_room`): for a Source that
+    /// needs its caller (a derive), which the worker never runs. None declines without IO: no
+    /// room by the rule, a fill already present or running, or a capture in progress (cr-330).
+    ///
+    /// # Safety
+    /// `consumer` is live in this primary context and reads nothing before this returns.
+    #[allow(unsafe_code)]
+    pub unsafe fn use_ahead(self: &Arc<Self>, consumer: u64) -> Result<Option<Pin>> {
+        let hold = match enter_producer(self.device()) {
+            Ok(hold) => hold,
+            Err(Error::CaptureActive) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(fill) = self.prepare_ahead(false)? else { return Ok(None) };
+        let pin = self.source.fill(fill, Some(consumer));
+        drop(hold);
+        pin
+    }
+
     /// A fill ahead of demand, if the rule allows (`reclaim::prefetch_room`). A wrong guess costs
     /// a read, never a refusal: None declines without IO or waiting.
     #[allow(unsafe_code)]
@@ -1398,7 +1628,11 @@ impl Region {
             {
                 return Ok(None);
             }
-            if entry.handle.is_none() { self.rounded } else { 0 }
+            match (entry.handle, entry.packed) {
+                (None, Some(at)) => state.packs.missing(at, self.rounded),
+                (None, None) => self.rounded,
+                (Some(_), _) => 0,
+            }
         };
         if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]), free_only)? {
             working::prefetch_declined(device)?;
@@ -1446,7 +1680,13 @@ impl Region {
         }
         gate.not_capturing()?;
         let _context = self.gpu.driver().enter()?;
-        if entry.handle.is_none() {
+        if entry.handle.is_none() && let Some(at) = entry.packed {
+            match state.packs.back(self.gpu, at, self.rounded) {
+                Ok(()) => state.entries.get_mut(&self.id).expect("live region").handle = Some(PACKED),
+                Err(failure) if failure.is_oom() => return Err(failure),
+                Err(failure) => return Err(poison(state, failure.into()).into()),
+            }
+        } else if entry.handle.is_none() {
             let handle = match self.gpu.create(self.rounded) {
                 Ok(handle) => handle,
                 Err(failure) if failure.is_oom() => return Err(failure),
@@ -1795,7 +2035,12 @@ impl Drop for Region {
         let Ok(_context) = self.gpu.driver().enter() else {
             return;
         };
-        if let Err(error) = self.gpu.driver().free_address(self.ptr, self.rounded) {
+        let packed = entry.packed;
+        let freed = match packed {
+            Some((pack, _)) => state.packs.retire(self.gpu.driver(), pack),
+            None => self.gpu.driver().free_address(self.ptr, self.rounded),
+        };
+        if let Err(error) = freed {
             poison(&mut state, error);
             return;
         }

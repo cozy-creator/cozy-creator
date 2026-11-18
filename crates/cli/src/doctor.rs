@@ -118,6 +118,9 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             ),
         });
     }
+    if let Some((m, status)) = machine.as_ref().and_then(|m| Some((m, m.status.as_ref()?))).filter(|(_, status)| status.disk_total_bytes > 0) {
+        checks.push(disk(&m.name, status));
+    }
     let healthy = checks.iter().all(|c| c.ok);
     let code = if healthy { ExitCode::SUCCESS } else { ExitCode::FAILURE };
     if ctx.json {
@@ -288,6 +291,19 @@ fn captive(ctx: &Context, checks: &mut Vec<Check>, ended: Option<&Birth>) -> Opt
         }
     }
     Some(format!("pid {pid} ({command}) held its lock after its Calcifer stopped; ended it"))
+}
+
+/// Its disk's room for models' downloads, and a problem when its usual models need more (cl-1175): said before a render finds it.
+fn disk(name: &str, status: &api::calcifer::MachineStatus) -> Check {
+    let room = output::bytes(status.disk_room_bytes);
+    let whose = if name == "local" { "this computer".to_owned() } else { name.to_owned() };
+    match status.disk_needs_bytes {
+        0 => Check::ok("disk", format!("{room} of room for models on {whose}")),
+        needs => Check::bad(
+            "disk",
+            format!("{room} of room for models on {whose}, and its usual models need {}: free up disk space, or render on a new rental", output::bytes(needs)),
+        ),
+    }
 }
 
 /// Starts Calcifer (or waits for the one starting), said as what fixed `why`.

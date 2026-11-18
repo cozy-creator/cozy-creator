@@ -154,6 +154,24 @@ pub struct WorkerAuthorizedKeys {
     #[serde(deserialize_with = "null_is_empty")]
     pub authorized_keys: Vec<String>,
     pub lease_seconds: i64,
+    /// What the machine holds its first download to (th-405). None from a Hub before it, or one this can't read: the keys
+    /// stand all the same.
+    #[serde(deserialize_with = "readable")]
+    pub link_floor: Option<WorkerLinkFloor>,
+}
+
+/// A value this client can read, else none: never a reason to refuse the document it is in.
+fn readable<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    Ok(Option::<Value>::deserialize(d)?.and_then(|value| serde_json::from_value(value).ok()))
+}
+
+/// The floor a rental's first download is held to (th-405): past its first `warmup_seconds`, the link's pace at `mbps` or
+/// more. Under it for `window_seconds`, the machine reports a [`WorkerSlowLink`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct WorkerLinkFloor {
+    pub mbps: u32,
+    pub warmup_seconds: u32,
+    pub window_seconds: u32,
 }
 
 /// What a rental's machine measured of its own host (`POST /v1/worker/rental/speed`).
@@ -162,10 +180,15 @@ pub struct WorkerSpeedReport {
     pub worker_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download: Option<WorkerDownload>,
+    /// Sent alone, and answered ([`WorkerSlowLinkAnswer`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_link: Option<WorkerSlowLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu: Option<WorkerProbe>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_heat: Option<WorkerGpuHeat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_power: Option<WorkerGpuPower>,
 }
 
 /// One transfer into the machine, all its streams together.
@@ -173,6 +196,20 @@ pub struct WorkerSpeedReport {
 pub struct WorkerDownload {
     pub bytes: u64,
     pub seconds: f64,
+}
+
+/// A first download's stretch under the lease's [`WorkerLinkFloor`]: what the link carried over its seconds.
+#[derive(Debug, Serialize)]
+pub struct WorkerSlowLink {
+    pub bytes: u64,
+    pub seconds: f64,
+}
+
+/// The Hub's answer to a [`WorkerSlowLink`]: whether it is placing the rental on another host.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkerSlowLinkAnswer {
+    pub replacing: bool,
 }
 
 /// A fixed probe's wall time, the same work on every host.
@@ -187,6 +224,15 @@ pub struct WorkerProbe {
 #[derive(Debug, Serialize)]
 pub struct WorkerGpuHeat {
     pub share: f32,
+    pub seconds: f64,
+}
+
+/// A loaded run's GPU power limit (cl-1161): the limit the driver enforced and the card's default, in W, of the GPU held lowest
+/// against its default, and the run's busy time.
+#[derive(Debug, Serialize)]
+pub struct WorkerGpuPower {
+    pub power_cap_watts: u32,
+    pub power_default_watts: u32,
     pub seconds: f64,
 }
 
@@ -837,7 +883,7 @@ pub struct Rental {
     pub boot: Option<RentalBoot>,
 }
 
-/// What went wrong with the rental, by the Hub's code (`readiness.provider_stopped`, …).
+/// What went wrong with the rental, by the Hub's code (`readiness.provider_lost`, …).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RentalFailure {

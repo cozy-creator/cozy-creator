@@ -115,7 +115,7 @@ export type Appearance = { theme: string, options?: { [key in string]: string },
 export type Approve = { name: string, version: string, };
 
 /**
- * What an approve pinned: the asset's version and files, and what that put out of date.
+ * What an approve pinned: the asset's version and files.
  */
 export type Approved = { name: string, noun: string,
 /**
@@ -125,11 +125,7 @@ number: number, files: { [key in string]: ProjectFile },
 /**
  * The file people mean by it.
  */
-path: string,
-/**
- * What this put out of date.
- */
-stale: Array<string>, warnings?: Array<string>,
+path: string, warnings?: Array<string>,
 /**
  * What `If-Match` names from here on.
  */
@@ -151,10 +147,6 @@ joined?: boolean,
  * What it added to the walk; 0 with `joined` is no new work.
  */
 added: number,
-/**
- * Pinned assets it was asked of by no name of their own: left as they are.
- */
-skipped?: Array<string>,
 /**
  * What it added, each with what is ahead of it.
  */
@@ -253,7 +245,7 @@ machine?: string | null,
  */
 made_by?: string | null,
 /**
- * For people, in its own noun: current, no take yet, out of date and why, making (run N), …
+ * For people, in its own noun: approved take 2, take 3, no take yet, rendering (run N), …
  */
 status: string,
 /**
@@ -272,10 +264,6 @@ etag?: string | null,
  * What stopped its last try: until a version lands, it's tried again, or its inputs change.
  */
 failure?: ErrorBody | null,
-/**
- * A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
- */
-changed?: Array<string>,
 /**
  * The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
  * A pin lists them too, for its text: it stands, and only fails if it is run again.
@@ -558,6 +546,40 @@ complete?: boolean | null, };
 export type CheckpointRef = { repo_id: string, revision: string, lane: string, };
 
 /**
+ * A run another client sent a machine, as the machine says it (cl-1193): what it runs, for which computer, and how far it is. Nothing of
+ * its project's: no inputs or outputs, and an encrypted project's names no function, stage or models.
+ */
+export type ClientRun = {
+/**
+ * `<package>/<function>`; empty: an encrypted project's.
+ */
+function?: string,
+/**
+ * The computer that sent it, as it names itself; empty: unnamed.
+ */
+client?: string,
+/**
+ * It left its queue: it starts or runs.
+ */
+running?: boolean,
+/**
+ * When it began executing (unix ms).
+ */
+started_at_ms?: number | null,
+/**
+ * The GPUs it holds.
+ */
+width: number,
+/**
+ * How far it is: its stage, and its step of `steps` (0: none said).
+ */
+stage?: string, step: number, steps: number,
+/**
+ * The models it waits to download, and their bytes still to come.
+ */
+models?: Array<string>, bytes_left: number, };
+
+/**
  * A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
  */
 export type Clip = {
@@ -837,15 +859,15 @@ export type Fit = { tools: Array<ToolFit>,
  */
 rent?: RentFor | null,
 /**
- * Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+ * Each box named, where a render of it would go now and how long it runs there (cl-1004).
  */
 estimates?: Array<BoxEstimate>, };
 
 /**
- * `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
- * a render reads them; and how long each box named takes where a render of it would go now.
+ * `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, and how long each box named
+ * takes where a render of it would go now.
  */
-export type FitAsk = { names: Array<string>, outdated?: boolean, };
+export type FitAsk = { names: Array<string>, };
 
 /**
  * One model a search found, with its newest release, lanes, author and kind.
@@ -912,12 +934,13 @@ display?: boolean,
 out_of_service?: string, };
 
 /**
- * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
- * readings measured, until a later loaded run there runs cool.
+ * A GPU the driver held back for most of a run that loaded it, for heat (thermal or hardware slowdown, cl-913) or at a power
+ * limit its host set under the card's default (cl-1161): what that run's readings measured, until a later loaded run there runs
+ * at full speed.
  */
 export type GpuHeat = { gpu: number,
 /**
- * The share of its busy readings under a heat limit, 0 to 1.
+ * The share of its busy readings under that limit, 0 to 1.
  */
 share: number,
 /**
@@ -935,18 +958,35 @@ run: string, at_unix_ms: number,
 /**
  * Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
  */
-replayed: boolean, };
+replayed: boolean,
+/**
+ * Held at a power limit, not heat: the limit the driver enforced and the card's default, in W; 0: heat.
+ */
+power_limit_w: number, power_default_w: number, };
 
 /**
  * One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
- * process's.
+ * process's. Since cl-1191 also its memory's total, its power draw against the limit its driver enforces, its temperature, its SM
+ * clock against its most, and the limits holding that clock back now; a machine from before reads none of them (0, none, empty),
+ * and a driver that doesn't say one leaves it out.
  */
-export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, };
+export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, memory_total_bytes: number, power_w?: number | null, power_limit_w?: number | null, temperature_c?: number | null, sm_mhz?: number | null, sm_mhz_max?: number | null,
+/**
+ * `power_cap` (at its power limit), `sw_thermal` and `hw_thermal` (slowed to cool), `hw_slowdown` (the board's own brake, for
+ * heat or power), `power_brake` (an outside power brake).
+ */
+throttles: Array<string>, };
 
 /**
  * What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
  */
 export type GpuUse = { at_unix_ms: number, gpus: Array<GpuReading>, };
+
+/**
+ * A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how
+ * many, and about how long until they're free, as its machine times it (cl-1187); 0: it can't.
+ */
+export type GpuWait = { width: number, left_ms: number, };
 
 /**
  * What the machine holds of each object asked, in the order asked; a stored object is held
@@ -1309,15 +1349,10 @@ alias?: string | null, address?: string | null,
  */
 fingerprint?: Digest | null,
 /**
- * Why it ended.
+ * Why it ended; while `ending`, why by its Hub's word when the Hub ends it (its provider stopped it: cl-1203). A rental is
+ * up, ending or ended, never offline in between (Paul 11-17).
  */
 reason?: string | null,
-/**
- * Why a ready machine is offline, by its Hub's word (its provider stopped it, or its Hub is
- * ending it), while it does not answer: runs to it are refused. Its state stays `ready`,
- * which is what a reader that predates this field shows.
- */
-offline?: string | null,
 /**
  * Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
  * can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
@@ -1349,7 +1384,8 @@ boot?: string | null,
  */
 attempt?: Attempt | null,
 /**
- * Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
+ * Its function runs, its GPUs' work, every client's: this computer's by its records, another's as the machine says (cl-1193).
+ * Installs, downloads, updates and removals aren't counted (cl-889).
  */
 running: number, queued: number,
 /**
@@ -1360,11 +1396,6 @@ running: number, queued: number,
  * machine goes.
  */
 jobs?: Array<Run>,
-/**
- * False: a rental another client of this account ordered. This controller reaches it as its
- * own (the Hub grants it every device the account signed in on), but places no run on it unasked.
- */
-ordered: boolean,
 /**
  * Its Hub did not answer the last listing.
  */
@@ -1399,10 +1430,15 @@ end_unconfirmed?: string | null,
  */
 rc?: RcFollow | null,
 /**
- * The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
- * package's floor until `cozy machine update <name>` names nothing (cl-952).
+ * The software an update by hand held it on, in that update's words: it moves to neither the open RC nor a package's floor
+ * until `cozy machine update <name>` names nothing (cl-952).
  */
-held?: string | null, };
+held?: string | null,
+/**
+ * What it runs that its hold names otherwise (`Runtime 0.48.0.dev2319 · cozy 0.27.0-dev`), while no update of it is going: the
+ * hold is what was asked, this what it runs (cl-1196).
+ */
+unheld?: string | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
@@ -1502,6 +1538,15 @@ idle_deadline_ms?: number | null, gpus: Array<Gpu>, disk_total_bytes: number, di
  */
 disk_models_bytes: number, disk_environments_bytes: number, disk_runtime_bytes: number, disk_runs_bytes: number,
 /**
+ * What a download may take there: free past the reserve, with what its store could free (`machine::Disk::room`, cl-1175).
+ */
+disk_room_bytes: number,
+/**
+ * The room its usual models need, when it has less (`machine::Disk::short_of`): `cozy doctor` and the Machines panel warn. 0: it
+ * has room.
+ */
+disk_needs_bytes: number,
+/**
  * This controller's queued, preparing or running runs there, as the machine says.
  */
 runs: Array<LiveRun>, models: Array<Model>, models_bytes: number, environments: Array<Environment>, warm: Array<WarmItem>,
@@ -1530,7 +1575,7 @@ stuck?: Array<StuckProcess>,
  */
 activity?: Array<Operation>,
 /**
- * Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+ * Its GPUs held back for heat (cl-913) or at a power limit its host set (cl-1161) most of their last loaded run: its runs are slow.
  */
 heat?: Array<GpuHeat>,
 /**
@@ -1545,7 +1590,19 @@ busy_until_ms?: number | null,
 /**
  * This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
  */
-ahead?: Array<Readied>, };
+ahead?: Array<Readied>,
+/**
+ * The runs other clients sent there, as the machine says them (cl-1193): whose, and how far, never their project's content.
+ */
+others?: Array<ClientRun>,
+/**
+ * SSH sessions open there now (cl-1193).
+ */
+ssh_sessions: number,
+/**
+ * When a keepalive last restarted its idle clock, while the clock counts from it (cl-1193).
+ */
+kept_alive_ms?: number | null, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS
@@ -1991,6 +2048,20 @@ ssh_key?: string | null, } | { "kind": "add", name: string, address: string,
 fingerprint: Digest, };
 
 /**
+ * A render waiting because none of its machines has room on its disk for its models (cl-1175).
+ */
+export type NoRoom = {
+/**
+ * What it lacks, once: `This computer needs 671MB more disk space for its models: free that much and it renders here, or render it on a
+ * new rental.`
+ */
+line: string,
+/**
+ * What the disk of the machine it would go to lacks for them, after all its store could free, as the line says it: `671MB`.
+ */
+short: string, };
+
+/**
  * Something a request's handling said.
  */
 export type Note = { level: NoteLevel, message: string, };
@@ -2070,11 +2141,15 @@ kind: string,
  */
 subject: string,
 /**
+ * A download's release and components (none: the whole checkpoint), as its machine says: the download row says them.
+ */
+release?: string, components?: Array<string>,
+/**
  * Where it is, in words.
  */
 stage?: string,
 /**
- * Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+ * Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once.
  */
 bytes_done: number, bytes_total: number,
 /**
@@ -2086,7 +2161,7 @@ bytes_here: number,
  */
 bytes_per_s?: number | null,
 /**
- * The seconds its bytes still take at that rate.
+ * The seconds its bytes still take at that rate, as its machine says.
  */
 eta_s?: number | null, started_at_ms: number,
 /**
@@ -2097,6 +2172,11 @@ runs: Array<number>,
  * The same runs by name, `KEY-N` (cl-987).
  */
 names: Array<string>,
+/**
+ * The runs waiting on it this reader can't name (another project's, a locked one's, another client's), counted (cl-1205): what
+ * the machine does is its own, which runs wait is their project's.
+ */
+unnamed?: number,
 /**
  * The project whose runs wait on it, shown to its own views only; none for this computer's own work.
  */
@@ -2337,7 +2417,12 @@ eta_basis?: EtaBasis | null,
  * The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
  * none until its machine made one for a client asking.
  */
-preview?: number | null, };
+preview?: number | null,
+/**
+ * The downloads it waits on (cl-1205), by their `Operation::id` in its machine's `status.activity`: its box and row say it
+ * waits and link there, and show no bytes of their own.
+ */
+waiting_on?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
@@ -2446,13 +2531,9 @@ heads?: Array<string>,
  */
 queue?: Array<Queued>,
 /**
- * Assets with no state and no version yet.
+ * Assets with no version yet.
  */
 missing?: Array<string>,
-/**
- * Assets out of date, and why.
- */
-stale?: Array<Stale>,
 /**
  * Assets the project keeps versions of that it no longer names.
  */
@@ -2553,7 +2634,11 @@ export type Purpose = "sign_in" | "export" | "sign_out_everywhere";
 /**
  * One thing a project has to do: running, with its run's number once it has one, else queued.
  */
-export type Queued = { name: string, running: boolean, run?: number | null, };
+export type Queued = { name: string, running: boolean, run?: number | null,
+/**
+ * None of its machines has room on its disk for its models (cl-1175): it waits, nothing of it downloaded.
+ */
+no_room?: NoRoom | null, };
 
 /**
  * One thing an ask queued, and the names ahead of it.
@@ -2591,8 +2676,8 @@ export type RcFollow = {
  */
 rc: string,
 /**
- * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
- * other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+ * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand held it on
+ * other software, which `detail` says it runs or not; `none`: the RC has no build for it, or can't be read now.
  */
 state: string,
 /**
@@ -2930,6 +3015,15 @@ steps?: Steps | null,
 unaccounted?: boolean, };
 
 /**
+ * A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
+ */
+export type Retry = { attempt: number, attempts: number,
+/**
+ * Why the attempt before stopped, in one line; empty when that wasn't kept.
+ */
+why: string, };
+
+/**
  * One run as Calcifer holds it.
  */
 export type Run = {
@@ -3036,7 +3130,11 @@ gpu?: string | null,
 /**
  * Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
  */
-placed?: Placed | null, };
+placed?: Placed | null,
+/**
+ * Past its first attempt (cl-1173): which it is and why the one before stopped. None on its first.
+ */
+retry?: Retry | null, };
 
 /**
  * What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
@@ -3054,7 +3152,7 @@ seed?: number | null, };
 /**
  * One event of a run's stream.
  */
-export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, } | { "type": "output_text.delta", output_index: number, item_id: string, delta: string, };
+export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, gpus?: GpuWait | null, } | { "type": "run.arriving", progress: Progress, } | { "type": "output_text.delta", output_index: number, item_id: string, delta: string, };
 
 /**
  * A run's id: the caller's id on the machine (`RunRequest.id`), the same in Calcifer, the CLI
@@ -3196,9 +3294,9 @@ agreed?: Agreed | null, };
 export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "canceled";
 
 /**
- * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
- * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
- * is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
+ * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and nothing else: each
+ * reads what it reads has now (cl-1192). It joins the project's walk, which sends each once this render's takes of what it reads have
+ * landed; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -3209,16 +3307,6 @@ hub?: string,
  * The new version is approved when it lands; only with `n` 1.
  */
 approve?: boolean,
-/**
- * Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
- * being made (it's joined), and what they read with no state first, a cut's too.
- */
-missing?: boolean,
-/**
- * Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
- * and what they read. What reads it in this render reads that; the version it held stays approved.
- */
-outdated?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */
@@ -3285,11 +3373,6 @@ args: Array<string>,
 line: string, };
 
 /**
- * An asset out of date, and why.
- */
-export type Stale = { name: string, why: string, };
-
-/**
  * A run that has not moved: since when, on which machine, and what that machine costs an hour
  * (none: not a rental, or its Hub has not said).
  */
@@ -3298,7 +3381,7 @@ export type Stalled = { since_ms: number, machine: string, usd_micros_per_hour?:
 /**
  * How an asset stands, for a client that shows it rather than says it (`status` says it).
  */
-export type Standing = "current" | "out_of_date" | "making" | "missing";
+export type Standing = "current" | "making" | "missing";
 
 /**
  * One plan step of a GPU: the free bytes at its start, the bytes its binds found mapped (hit),
@@ -3316,7 +3399,7 @@ export type Steps = { count: number, each_ms: number, };
  * `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
  * answers it. No backlog: a client subscribes, then reads what it holds.
  */
-export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "project.changed", id: string, rev: string,
+export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "machine.gpus", name: string, reading: GpuUse, } | { "type": "project.changed", id: string, rev: string,
 /**
  * The assets whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`. Absent: read the whole project.
  */
@@ -3460,7 +3543,7 @@ name: string,
  */
 label: string,
 /**
- * Its package in words, as its description writes its name (`MiniMax H3`, `Qwen-Image-2.1`), else as `title` spells it (`SDXL`).
+ * Its package in words, as its description writes its name (`MiniMax H3`, `Qwen Image 2.1`), else as `title` spells it (`SDXL`).
  */
 package_title: string,
 /**
@@ -3685,12 +3768,12 @@ to?: { [key in string]: string }, };
 export type Undone = { at_ms: number, by: By, };
 
 /**
- * `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
+ * `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so it stands on its newest version again.
  */
 export type Unpin = { name: string, };
 
 /**
- * What an unpin left: the version it had pinned and what that put out of date.
+ * What an unpin left: the version it had pinned.
  */
 export type Unpinned = { name: string,
 /**
@@ -3698,11 +3781,7 @@ export type Unpinned = { name: string,
  */
 version?: number | null,
 /**
- * What this put out of date, itself too.
- */
-stale: Array<string>,
-/**
- * What making the tools that read it now said.
+ * What settling it said.
  */
 warnings?: Array<string>,
 /**
@@ -3762,7 +3841,11 @@ unsaved?: Array<string>,
 /**
  * The runs whose save a lock stopped while their remote machine didn't answer (cl-1060): still owed, saved when it answers.
  */
-deferred?: Array<string>, };
+deferred?: Array<string>,
+/**
+ * What a lock says when this computer's machine didn't answer it (cl-1064): its clean-up runs when it next answers.
+ */
+owed?: string | null, };
 
 /**
  * A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
@@ -3837,10 +3920,6 @@ approved?: boolean,
  * What the asset stands on now, else its newest. None: it has none left.
  */
 stands?: number | null,
-/**
- * What is out of date now and wasn't.
- */
-stale?: Array<string>,
 /**
  * What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
  */

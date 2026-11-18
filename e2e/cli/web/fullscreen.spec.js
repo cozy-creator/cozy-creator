@@ -52,7 +52,7 @@ const seen = (page) => page.evaluate(() => {
   return {
     media: true,
     video: video ? { drawn: video.readyState >= 2 && visible(video) && Boolean(video.currentSrc), on_top: middle === video, natural: [video.videoWidth, video.videoHeight], at: video.currentTime, paused: video.paused } : null,
-    poster: [...media.querySelectorAll('.scrub > img')].map((img) => [img.naturalWidth, img.naturalHeight]),
+    poster: [...media.querySelectorAll('img')].map((img) => [img.naturalWidth, img.naturalHeight]),
     stretched,
     blurs,
     full: document.fullscreenElement?.matches('.focus-viewer[data-full]') ?? false,
@@ -131,7 +131,7 @@ test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
   await test.step('in Focus a video shows its own frame at once, at its own size, nothing blurred over it', async () => {
     await focus(page, 'wide');
     const now = await ownFrame('wide', [1280, 720]);
-    expect.soft(now.poster.every(([width]) => width < 1280), `its poster is smaller than it (${JSON.stringify(now.poster)}): the frame drawn is the video's`).toBe(true);
+    expect.soft(now.poster, 'no poster under its own frame in Focus (cl-1214)').toEqual([]);
     held = await region.locator('video.live').elementHandle();
   });
 

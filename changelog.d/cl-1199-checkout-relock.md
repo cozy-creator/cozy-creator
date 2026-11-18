@@ -1,0 +1,2 @@
+A dev home's checkout package on the open RC's floor keeps the RC Runtime build its lock takes: a new RC build no longer re-locks it, reinstalls it on rentals or drops its box's finished draft.
+- Its lock moves only when its pyproject.toml or uv.lock changes, or that build no longer meets its floor, is no longer on the RC's prerelease, or needs a TensorFS this cozy doesn't run. A new lock takes the newest RC build this cozy's TensorFS runs. An edit to a package's code alone locks nothing again.

@@ -19,8 +19,15 @@ listed() {
 }
 
 # own [cli]: what this computer's Calcifer ordered and has not ended, a line each: its rental id, else (an order its Hub
-# has not answered) its name. On a fresh runner that is what this job ordered: another client's rentals read `ordered: false`.
-own() { machines_json "${1:-cozy}" | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
+# has not answered) its name. On a fresh runner that is what this job ordered. The listing is the account's one pool (cl-1224)
+# and says nothing of who ordered a rental: an order here mints its key, ~/.cozy/keys/rental-<name>.pem, under the name it
+# asked, which stays the machine's name or, once its Hub names it, its alias.
+own() {
+  local names
+  names=$(find ~/.cozy/keys -maxdepth 1 -name 'rental-*.pem' -printf '%f\n' 2> /dev/null | sed 's/^rental-//; s/\.pem$//' | jq -R . | jq -sc .)
+  machines_json "${1:-cozy}" | jq -r --argjson n "${names:-[]}" \
+    '.machines[] | select(.kind == "rental" and .state != "ended" and ((.name | IN($n[])) or ((.alias // "") | IN($n[])))) | .rental_id // .name'
+}
 
 # going <machine> [cli]: the machine's runs (every project's) and its jobs (an install, a download, an update: cl-1028, no project's
 # runs, listed on the machine), as one `{runs}`; fails when neither answers.
@@ -73,6 +80,13 @@ pod_derived() {
 # pod_derived_zero <census line>: no derived page, memo entry or learned peak (an arm's own executors may compile kernels as
 # they boot).
 pod_derived_zero() { awk '{exit !($2 == 0 && $4 == 0 && $6 == 0)}' <<<"$1"; }
+# pod_dev <cli> <machine>: the machine a dev machine (an `--ssh` rental): `dev = true` at the top of its config.toml,
+# which TensorD reads at its next start and sends in each executor's Start (gate seams, replay audits). Prints that
+# line once written; restart the machine after (`cozy machine update`).
+pod_dev() {
+  timeout 120 "$1" machine ssh "$2" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null |
+    grep -x 'dev = true'
+}
 
 # tag_built <cozy_runtime|tensorfs> <version>: a candidate asked by version is the build of its own tag (coordinator 11-17,
 # xs-208). A machine accepts a GitHub prerelease only when its SHA256SUMS is signed by its publish workflow at master or the

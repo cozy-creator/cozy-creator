@@ -15,7 +15,8 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
+  # e2e.yaml asks for actions: write (a red edge shard of an rc-e2e run ends it); a caller granting less fails at start.
+  actions: write
 
 jobs:
   e2e:

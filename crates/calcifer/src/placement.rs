@@ -57,11 +57,16 @@ pub(crate) struct Offer {
     pub machine: On,
     pub fits: bool,
     pub refusal: Option<v1::Reason>,
+    /// Its disk lacks this much for its weights, after all its store could free (cl-1175): it can't run it there.
+    pub short_bytes: u64,
     pub width: u32,
     pub start_at_ms: i64,
     pub finish_at_ms: i64,
     pub prepare_ms: u64,
     pub queue_position: u32,
+    /// The runs its machine holds now, running or waiting, every client's (and those already sent to one on its way): of machines
+    /// that finish it together, the one holding fewest takes it (cl-1224).
+    pub load: u32,
     pub basis: Basis,
     /// Its time is its function's warm one there (cl-967).
     pub warm: bool,
@@ -353,17 +358,20 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
         .map(|job| v1::EstimateJob { after_ms: job.after_ms.max(ready), ..job.clone() })
         .collect();
     let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
+    let load = (picture.frame.queue.as_ref().map_or(0, Vec::len) + picture.ahead.len()) as u32;
     let at = |ms: u64| now + ms as i64;
     (quotes.into_iter().skip(picture.ahead.len()).take(jobs.len()))
         .map(|quote| Offer {
             machine: picture.on.clone(),
             fits: quote.fits,
             refusal: quote.refusal,
+            short_bytes: quote.short_bytes,
             width: quote.width,
             start_at_ms: at(quote.start_ms),
             finish_at_ms: at(quote.finish_ms),
             prepare_ms: quote.prepare_ms,
             queue_position: quote.queue_position,
+            load,
             basis: quote.basis,
             warm: quote.warm,
             fetch_bytes: quote.fetch_bytes,
@@ -410,11 +418,18 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
 
 /// `on` as its last Status pictured it, however long ago; none for one that never said, or is broken.
 fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
-    let frame = api.machines.frame(name).ok_or("it hasn't reported what it has yet")?;
+    let frame = api.machines.frame(name).filter(whole).ok_or("it hasn't reported what it has yet")?;
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
     }
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame: linked(api, name, frame), ready_at_ms: None, ahead: vec![], references: Arc::default() })
+}
+
+/// Whether `frame` is its machine's whole picture: TensorD answers its status while it starts with its identity and boot step alone
+/// (`booting`), no GPUs, queue or installs (cl-1107, the user-flow: cibo, starting at 01:38:15 and again at 01:46:46 for an update, was
+/// quoted from that as a machine with no GPU and nothing held, a minute of work, and took request 3, then request 4's move).
+fn whole(frame: &v1::StatusFrame) -> bool {
+    frame.booting.is_none() && !frame.phase.is_empty()
 }
 
 /// `frame` with the link its machine would download at where it hasn't measured one: what this account's rentals beside it measured
@@ -465,13 +480,13 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
 /// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
-/// computer, then the sooner: never the first listed for being first (cl-1073).
+/// computer, the one holding fewest runs (every client's, cl-1224), then the sooner: never the first listed for being first (cl-1073).
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
     tied().min_by_key(rank)
 }
 
@@ -479,6 +494,13 @@ pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
 /// of several machines, the first, a rental before this computer, that can take a run at all (one booting or updating waits there).
 /// With none of them, where a run naming none would go, said once (fix, don't refuse; cl-1066): refused only when nothing can take it.
 pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result<(On, Option<String>), Error> {
+    // One whose disk has no room for its weights is never sent them (cl-1175): none of them would start to download.
+    let roomless = |machine: &On| offers.iter().any(|offer| offer.short_bytes > 0 && offer.machine == *machine);
+    let kept: Vec<On> = on.iter().filter(|machine| !roomless(machine)).cloned().collect();
+    if let (true, Some(refused)) = (kept.is_empty(), no_room(offers).filter(|_| !on.is_empty())) {
+        return Err(refused);
+    }
+    let on = kept.as_slice();
     let names: Vec<&str> = on.iter().filter_map(|on| match on {
         On::Machine(name) => Some(name.as_str()),
         _ => None,
@@ -499,7 +521,7 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
     }
     let said = format!("None of {} can take this run: {}.", names.join(", "), why.join("; "));
     // Where a render naming none goes, this computer and this account's rentals alone, never a rental it would buy: the first there now.
-    for other in api.machines.fallback().into_iter().filter(|other| !on.contains(other)) {
+    for other in api.machines.fallback().into_iter().filter(|other| !on.contains(other) && !roomless(other)) {
         let On::Machine(name) = &other else { continue };
         if api.machines.reach(name).await.is_ok() {
             return Ok((other.clone(), Some(format!("{said} It goes to {name}."))));
@@ -526,6 +548,9 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         Some(frame) => frame,
         None => machines.status_read(&row.name, &link).await?,
     };
+    if !whole(&frame) {
+        return Err("it's starting".into());
+    }
     if let Some(broken) = &frame.broken {
         return Err(format!("it isn't working ({})", broken.message));
     }
@@ -545,6 +570,9 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
 /// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing,
 /// 12.0 GiB to fetch), ready in 210 s`, `local can't: does_not_fit`. Preparing: its install, download and load.
 pub(crate) fn said(offer: &Offer, now: i64) -> String {
+    if offer.short_bytes > 0 {
+        return format!("{} has no room for its models ({} short)", offer.machine, crate::bytes(offer.short_bytes as f64));
+    }
     if !offer.fits {
         return format!("{} can't run it ({})", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()));
     }
@@ -568,5 +596,37 @@ pub(crate) fn within(ms: i64) -> String {
         s if s < 45.0 => "in under a minute".into(),
         s if s < 90.0 * 60.0 => format!("in about {}m", (s / 60.0).round().max(1.0)),
         s => format!("in about {:.1}h", s / 3600.0),
+    }
+}
+
+/// The machine of `offers` whose disk has no room for a job's weights (cl-1175): this computer's first, else the one shortest of
+/// room. None: each has room.
+pub(crate) fn roomless(offers: &[Offer]) -> Option<&Offer> {
+    offers.iter().filter(|offer| offer.short_bytes > 0).min_by_key(|offer| (!offer.machine.is_local(), offer.short_bytes))
+}
+
+/// What a job none of whose machines has room for its weights says (cl-1175, Paul 11-17: "warn them and stop them from trying to
+/// download models they cannot fit, instead telling them to free up disc-space or run on another machine + rent another machine"),
+/// once: how much room its machine lacks, that freeing it lets it run there, and a rental.
+pub(crate) fn no_room_line(offer: &Offer, verb: &str) -> String {
+    let short = crate::bytes(offer.short_bytes as f64);
+    match offer.machine.is_local() {
+        true => format!("This computer needs {short} more disk space for its models: free that much and it {verb}s here, or {verb} it on a new rental."),
+        false => format!("{} needs {short} more disk space for its models: free that much and it {verb}s there, or {verb} it on a new rental.", offer.machine),
+    }
+}
+
+/// `no_room_line` as a refusal, for what isn't held to wait for room: none of its weights downloaded anywhere. None: each has room.
+pub(crate) fn no_room(offers: &[Offer]) -> Option<Error> {
+    let offer = roomless(offers)?;
+    Some(Error::new(Kind::Unavailable, "machine_disk_full", no_room_line(offer, "run")).remedy("Free up disk space, or run it on a new rental with --on new."))
+}
+
+/// A job placed on `to` because `short`'s disk has no room for its weights, in a line (cl-1175).
+pub(crate) fn elsewhere_line(short: &Offer, to: &On, verb: &str) -> String {
+    let lacks = crate::bytes(short.short_bytes as f64);
+    match short.machine.is_local() {
+        true => format!("This computer's disk is {lacks} short for its models, so it {verb}s on {to}."),
+        false => format!("{}'s disk is {lacks} short for its models, so it {verb}s on {to}.", short.machine),
     }
 }

@@ -3,7 +3,7 @@ import type { CanvasStore, ElementView } from "../CanvasStore"
 import type { Box } from "../graph"
 import { fieldsOf } from "../controls"
 import { ratioWords } from "../ratios"
-import { faceOf as runFace, short, type Face } from "../RunFace"
+import { faceOf as runFace, faceSettles, short, type Face } from "../RunFace"
 import { orbitOf } from "../Orbit"
 import { type NodeState, viewState } from "../StateDot"
 import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
@@ -14,6 +14,8 @@ export interface RunContext {
   run?: Run
   machine?: Machine
   on?: Operation
+  /** The downloads its run waits on, each its machine's one (cl-1205). */
+  downloads?: Operation[]
   installing?: Operation
 }
 
@@ -21,7 +23,7 @@ export interface RunContext {
 export interface SceneNode {
   id: string
   name: string
-  /** The displayed body's world box, including its HEAD and existing image-row space. */
+  /** The displayed body's world box, its HEAD included. */
   box: Box
   view: ElementView
   selected: boolean
@@ -75,14 +77,15 @@ export interface Presentation {
   tool: string
   shape: string
   from: string
-  progress?: Face & { time: string; fraction?: number; cancel: boolean }
+  /** `settles`: when a phase its face holds back is drawn (RunFace's STEADY_MS). */
+  progress?: Face & { time: string; fraction?: number; cancel: boolean; settles?: number }
   duration: string
   /** Its file says it turns, not plays (xs-180): marked at rest, as before the board (cl-1131). */
   orbit: boolean
   entity?: { kind: string; description: string; slots: EntitySlot[]; rows: EntityRow[] }
 }
 
-/** Media bounds, excluding the title and an image's existing lower row. No DOM measurement or duplicate layout owner. */
+/** Media bounds, under its HEAD. No DOM measurement or duplicate layout owner. */
 export function pictureBox(node: SceneNode): Box {
   const { box, view } = node
   if (view.entity) return { ...box }
@@ -188,7 +191,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     const since = run ? Math.max(0, (now - run.created_at_ms) / 1000) : undefined
     const time = since !== undefined && left != null ? `${short(since)} of ${short(since + left)}` : ""
     progress = {
-      ...face, time, cancel: !["canceling", "failed", "result"].includes(face.phase),
+      ...face, time, cancel: !["canceling", "failed", "result"].includes(face.phase), settles: faceSettles(name) ?? undefined,
       fraction: since !== undefined && left != null && left > 0 ? Math.min(0.99, since / (since + left)) : undefined,
     }
   } else if (asset?.rendering != null) {

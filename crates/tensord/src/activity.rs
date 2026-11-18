@@ -1,12 +1,16 @@
 //! What this machine does for runs besides their own work: weights arriving and packages' environments built, each listed once however
-//! many runs wait on it, until the last of them stops waiting. Status shows each caller what its runs wait on (`api::machine_status`).
+//! many runs wait on it, until the last of them stops waiting. Status shows each caller what its runs wait on (`api::machine_status`),
+//! and a run waiting on one names it (`Waiting::shown`, cl-1205).
 use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{LazyLock, Mutex, MutexGuard, PoisonError},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
 use api::machine as v1;
+use tensorfs::format::ObjectRef;
+
+use crate::origin::{Machine, Remote};
 
 /// What Status shows may have changed: something began (engine activity, an operation, an update). A Status stream with
 /// nothing going waits on this (`api::machine_status`).
@@ -39,10 +43,16 @@ struct Operation {
     kind: Kind,
     subject: String,
     stage: String,
+    /// Its bytes fetched of those it fetches: its objects' (`Objects`), else as its one wait says them (`Waiting::moved`).
     done: u64,
     total: u64,
-    /// What of it was here already, which it never fetches.
-    here: u64,
+    /// What of it was here already, which it never fetches, as its first wait to say it found it.
+    here: Option<u64>,
+    /// A download's objects, each once however many runs wait on it (cl-1205).
+    objects: Objects,
+    /// What its waits fetch of it: the release, and the components (none: the whole checkpoint).
+    release: String,
+    components: BTreeSet<String>,
     started_at_ms: i64,
     /// Each run waiting on it, by its caller's id, with how many of its waits are open.
     runs: BTreeMap<String, usize>,
@@ -55,6 +65,57 @@ struct Operation {
 
 const WINDOW: Duration = Duration::from_secs(10);
 const UNSEEN: Duration = Duration::from_secs(10);
+/// How often a download's objects still coming are looked at, by whichever of its waits ticks first.
+const LOOK: Duration = Duration::from_millis(250);
+
+/// A download's objects (cl-1205; Paul, 11-17: "it looks like we're downloading it 3 times, but we're actually just downloading it
+/// once"): each counted once, however many waits want it, its total as each joins and its bytes as each lands. Those still coming
+/// are looked at no more than every [`LOOK`] (`Waiting::look`); Status reads the counts.
+#[derive(Default)]
+struct Objects {
+    /// Where its objects come from: each wait's machine and origin.
+    sources: Vec<(Arc<Machine>, Remote)>,
+    /// Those still to come, by sha256.
+    coming: HashMap<String, Coming>,
+    /// Those that landed, by sha256, and their bytes.
+    landed: BTreeSet<String>,
+    landed_bytes: u64,
+    /// The bytes of those coming, and those of them that arrived so far.
+    coming_bytes: u64,
+    reached: u64,
+    looked: Option<Instant>,
+}
+
+struct Coming {
+    object: ObjectRef,
+    source: usize,
+    reached: u64,
+    /// How many waits want it: it is counted while any does.
+    wants: usize,
+}
+
+impl Objects {
+    fn any(&self) -> bool {
+        !self.coming.is_empty() || !self.landed.is_empty()
+    }
+
+    fn done(&self) -> u64 {
+        self.landed_bytes + self.reached
+    }
+
+    fn total(&self) -> u64 {
+        self.landed_bytes + self.coming_bytes
+    }
+
+    fn land(&mut self, sha256: &str) {
+        if let Some(coming) = self.coming.remove(sha256) {
+            self.coming_bytes -= coming.object.length;
+            self.reached -= coming.reached;
+            self.landed_bytes += coming.object.length;
+            self.landed.insert(sha256.to_owned());
+        }
+    }
+}
 
 static OPERATIONS: LazyLock<Mutex<BTreeMap<String, Operation>>> = LazyLock::new(Mutex::default);
 
@@ -66,11 +127,20 @@ fn operations() -> MutexGuard<'static, BTreeMap<String, Operation>> {
 pub(crate) struct Waiting {
     id: String,
     run: String,
+    /// Its id as Status lists it: what its run names in its progress (`journal::Waits`).
+    shown: String,
+    /// The objects it wants of a download (`objects`), by sha256.
+    wanted: Mutex<Vec<String>>,
 }
 
-/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one.
+/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. A download is the machine's,
+/// one however many projects' runs wait on it (cl-1205: a project's and the machine's own scope each listed BiRefNet once); an install
+/// is its scope's.
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
-    let id = crate::private_io::resource_key(&format!("{} {subject}", kind.word()));
+    let id = match kind {
+        Kind::Download => format!("{} {subject}", kind.word()),
+        Kind::Install => crate::private_io::resource_key(&format!("{} {subject}", kind.word())),
+    };
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
         kind,
@@ -78,7 +148,10 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         stage: String::new(),
         done: 0,
         total: 0,
-        here: 0,
+        here: None,
+        objects: Objects::default(),
+        release: String::new(),
+        components: BTreeSet::new(),
         started_at_ms: crate::machine::lifecycle::now_ms(),
         runs: BTreeMap::new(),
         seen: VecDeque::new(),
@@ -92,37 +165,144 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
     *operation.runs.entry(run.to_owned()).or_default() += 1;
     drop(listed);
     status_changed();
-    Waiting { id, run: run.to_owned() }
+    Waiting { shown: crate::private_io::unscoped_key(&id), id, run: run.to_owned(), wanted: Mutex::default() }
+}
+
+/// Its bytes `done` at `now` count toward its rate over the last [`WINDOW`].
+fn sample(seen: &mut VecDeque<(Instant, u64)>, now: Instant, done: u64) {
+    if seen.back().is_some_and(|(_, last)| done < *last) {
+        seen.clear();
+    }
+    seen.push_back((now, done));
+    while seen.len() > 2 && seen.front().is_some_and(|(at, _)| now - *at > WINDOW) {
+        seen.pop_front();
+    }
 }
 
 impl Waiting {
-    /// What of it was here already: a download's bytes are only those it fetches.
+    /// Its id as Status lists it (`v1::Operation::id`).
+    pub(crate) fn shown(&self) -> &str {
+        &self.shown
+    }
+
+    /// What of it was here already: a download's bytes are only those it fetches. Its first wait to say found it so.
     pub(crate) fn here(&self, bytes: u64) {
         if let Some(operation) = operations().get_mut(&self.id) {
-            operation.here = bytes;
+            operation.here.get_or_insert(bytes);
         }
     }
 
-    /// Where it is: in words, and a download by its bytes fetched of those it fetches.
+    /// What it fetches of a download: `release`'s `components` (none: the whole checkpoint).
+    pub(crate) fn fetches(&self, release: &str, components: &[String]) {
+        if let Some(operation) = operations().get_mut(&self.id) {
+            if operation.release.is_empty() {
+                release.clone_into(&mut operation.release);
+            }
+            operation.components.extend(components.iter().cloned());
+        }
+    }
+
+    /// It waits on `objects` of the download, from `remote` on `machine`: those absent when it wanted them. Each joins the download's
+    /// bytes once, whichever wait wants it first; one here now landed since. The store is asked which are here with the lock let go,
+    /// as `look` does: Status waits on that lock, and a slow disk held it (cl-1231). What another wait did meanwhile is read again
+    /// under the lock: one it landed or wants is counted as before; one that landed on disk since this asked comes, and is landed by
+    /// the next `look`.
+    pub(crate) fn objects(&self, machine: &Arc<Machine>, remote: &Remote, objects: &[ObjectRef]) {
+        let unknown: Vec<&ObjectRef> = {
+            let listed = operations();
+            let Some(operation) = listed.get(&self.id) else { return };
+            let held = &operation.objects;
+            objects.iter().filter(|object| !held.landed.contains(&object.sha256) && !held.coming.contains_key(&object.sha256)).collect()
+        };
+        let store = machine.store();
+        let here: BTreeSet<&str> = unknown.into_iter().filter(|object| store.holds(object)).map(|object| object.sha256.as_str()).collect();
+        let mut listed = operations();
+        let Some(operation) = listed.get_mut(&self.id) else { return };
+        let held = &mut operation.objects;
+        let source = held.sources.len();
+        held.sources.push((machine.clone(), remote.clone()));
+        let mut wanted = self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
+        for object in objects {
+            if held.landed.contains(&object.sha256) {
+                continue;
+            }
+            if let Some(coming) = held.coming.get_mut(&object.sha256) {
+                coming.wants += 1;
+                wanted.push(object.sha256.clone());
+                continue;
+            }
+            if here.contains(object.sha256.as_str()) {
+                held.landed.insert(object.sha256.clone());
+                held.landed_bytes += object.length;
+                continue;
+            }
+            held.coming.insert(object.sha256.clone(), Coming { object: object.clone(), source, reached: 0, wants: 1 });
+            held.coming_bytes += object.length;
+            wanted.push(object.sha256.clone());
+        }
+        (operation.done, operation.total) = (held.done(), held.total());
+    }
+
+    /// A download's objects still coming, looked at now unless one of its waits did within [`LOOK`]: each one the line still
+    /// fetches by the bytes it reached, and each it no longer does that the store holds, landed. Read off the line and the store
+    /// outside the lock, whose counts Status reads.
+    pub(crate) fn look(&self) {
+        let now = Instant::now();
+        let looking: Vec<(Arc<Machine>, Remote, Vec<ObjectRef>)> = {
+            let mut listed = operations();
+            let Some(operation) = listed.get_mut(&self.id) else { return };
+            let held = &mut operation.objects;
+            if held.coming.is_empty() || held.looked.is_some_and(|at| now - at < LOOK) {
+                return;
+            }
+            held.looked = Some(now);
+            let mut by: Vec<Vec<ObjectRef>> = vec![vec![]; held.sources.len()];
+            for coming in held.coming.values() {
+                by[coming.source].push(coming.object.clone());
+            }
+            (held.sources.iter().zip(by)).filter(|(_, objects)| !objects.is_empty()).map(|((machine, remote), objects)| (machine.clone(), remote.clone(), objects)).collect()
+        };
+        let mut seen: Vec<(String, Option<u64>)> = vec![];
+        for (machine, remote, objects) in looking {
+            for (object, state) in objects.iter().zip(machine.fetching(&remote, &objects)) {
+                match state {
+                    Some(state) => seen.push((object.sha256.clone(), Some(state.reached.min(object.length)))),
+                    None if machine.store().holds(object) => seen.push((object.sha256.clone(), None)),
+                    None => {}
+                }
+            }
+        }
+        let mut listed = operations();
+        let Some(operation) = listed.get_mut(&self.id) else { return };
+        let held = &mut operation.objects;
+        for (sha256, reached) in seen {
+            match reached {
+                Some(reached) => {
+                    if let Some(coming) = held.coming.get_mut(&sha256) {
+                        held.reached = held.reached - coming.reached + reached;
+                        coming.reached = reached;
+                    }
+                }
+                None => held.land(&sha256),
+            }
+        }
+        (operation.done, operation.total) = (held.done(), held.total());
+        let done = operation.done;
+        sample(&mut operation.seen, now, done);
+    }
+
+    /// Where it is: in words, and, for a wait that knows no objects of it, its bytes fetched of those it fetches.
     pub(crate) fn moved(&self, stage: &str, done: u64, total: u64) {
         let mut listed = operations();
         let Some(operation) = listed.get_mut(&self.id) else { return };
         if operation.stage != stage {
             stage.clone_into(&mut operation.stage);
         }
-        // An install's are its tool's output, not what it fetches: its stage says how far it is.
-        if (done == 0 && total == 0) || operation.kind == Kind::Install {
+        // An install's are its tool's output, not what it fetches: its stage says how far it is. A download's objects say its bytes.
+        if (done == 0 && total == 0) || operation.kind == Kind::Install || operation.objects.any() {
             return;
         }
-        let now = Instant::now();
-        let seen = &mut operation.seen;
-        if seen.back().is_some_and(|(_, last)| done < *last) {
-            seen.clear();
-        }
-        seen.push_back((now, done));
-        while seen.len() > 2 && seen.front().is_some_and(|(at, _)| now - *at > WINDOW) {
-            seen.pop_front();
-        }
+        sample(&mut operation.seen, Instant::now(), done);
         (operation.done, operation.total) = (done, total);
     }
 }
@@ -131,6 +311,22 @@ impl Drop for Waiting {
     fn drop(&mut self) {
         let mut listed = operations();
         let Some(operation) = listed.get_mut(&self.id) else { return };
+        // What only it wanted, still coming, no longer counts: nothing fetches it for this download now.
+        let held = &mut operation.objects;
+        for sha256 in self.wanted.get_mut().unwrap_or_else(PoisonError::into_inner).drain(..) {
+            let Some(coming) = held.coming.get_mut(&sha256) else { continue };
+            coming.wants -= 1;
+            if coming.wants == 0 {
+                let (length, reached) = (coming.object.length, coming.reached);
+                held.coming.remove(&sha256);
+                held.coming_bytes -= length;
+                held.reached -= reached;
+            }
+        }
+        (operation.done, operation.total) = match held.any() {
+            true => (held.done(), held.total()),
+            false => (operation.done, operation.total),
+        };
         let Some(open) = operation.runs.get_mut(&self.run) else { return };
         *open -= 1;
         if *open > 0 {
@@ -176,6 +372,36 @@ impl Import {
     }
 }
 
+/// What another run's work here that `run` (its caller's id) may be behind is, in words: the download or install going for other
+/// runs with the most left, `minimaxai/minimax-h3's download for run-1b589… to finish, 40GB left` (cl-1185). Its runs are said as
+/// `run`'s own readers hear them (`others`, cl-1217); an install's package only when one of them is of their project (cl-1223), and an
+/// install none of them waits on is "another project's install". None: none goes.
+pub(crate) fn ahead_of(run: &str, reads: impl Fn(&str) -> crate::others::Read) -> Option<String> {
+    use crate::others::{Others, Read};
+    // Copied off the lock, which Status reads: `reads` asks the journal.
+    let (subject, kind, runs, left) = {
+        let operations = operations();
+        let busiest = (operations.values())
+            .filter(|operation| operation.ended.is_none() && !operation.runs.is_empty() && !operation.runs.contains_key(run))
+            .max_by_key(|operation| operation.total.saturating_sub(operation.done))?;
+        let runs: Vec<String> = busiest.runs.keys().cloned().collect();
+        (busiest.subject.clone(), busiest.kind, runs, busiest.total.saturating_sub(busiest.done))
+    };
+    let others = Others::of(runs, reads);
+    let left = match left {
+        0 => String::new(),
+        left => format!(", {} left", crate::reclaim::size(left)),
+    };
+    // A download is the machine's, said to every reader (cl-1205); an install is its project's.
+    let what = match (kind, others.read) {
+        (Kind::Download, _) | (Kind::Install, Read::Project) => format!("{subject}'s {}", kind.word()),
+        (Kind::Install, Read::Id) => "an install".to_owned(),
+        (Kind::Install, Read::No) => return Some(format!("another project's install to finish{left}")),
+    };
+    let whose = others.said("and").map(|whose| format!(" for {whose}")).unwrap_or_default();
+    Some(format!("{what}{whose} to finish{left}"))
+}
+
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
 /// The repositories each run (by its caller's id) waits to download now.
 pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {
@@ -194,18 +420,27 @@ pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
         .iter_mut()
         .filter_map(|(id, operation)| {
             let runs: Vec<String> = operation.runs.keys().filter(|run| mine(run)).cloned().collect();
-            operation.listed |= !runs.is_empty();
-            (!runs.is_empty()).then(|| v1::Operation {
+            // A download is listed to every caller, the runs it can't read counted (cl-1205).
+            let unnamed = (operation.runs.len() - runs.len()) as u32;
+            let shown = !runs.is_empty() || (operation.kind == Kind::Download && unnamed > 0);
+            operation.listed |= shown;
+            let bytes_per_s = rate(&operation.seen);
+            let left = operation.total.saturating_sub(operation.done);
+            shown.then(|| v1::Operation {
                 id: crate::private_io::unscoped_key(id),
                 kind: operation.kind.word().into(),
                 subject: operation.subject.clone(),
+                release: operation.release.clone(),
+                components: operation.components.iter().cloned().collect(),
                 stage: operation.stage.clone(),
                 bytes_done: operation.done,
                 bytes_total: operation.total,
-                bytes_here: operation.here,
-                bytes_per_s: rate(&operation.seen),
+                bytes_here: operation.here.unwrap_or(0),
+                bytes_per_s,
+                eta_s: (bytes_per_s >= 1.0 && left > 0).then(|| (left as f64 / bytes_per_s).ceil() as i64),
                 started_at_unix_ms: operation.started_at_ms,
                 runs,
+                unnamed,
             })
         })
         .collect();

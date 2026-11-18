@@ -3,7 +3,8 @@
 # run_no_on holds the case with no rental: this computer. Weightless local code, so where each run lands is all that's measured:
 #   - idle, nothing measured anywhere: a tie, which the rental takes;
 #   - a function that orchestrates a GPU model (e2e's heavy.py) on a runner with no GPU: the rental, with no warning of this computer.
-# One rental of $SKU (any GPU).
+# One rental of $SKU (any GPU). The account's rentals are one pool (cl-1224): each run waits until every other rental of the account that's
+# up is busy (lib.sh `others_busy`), so it never lands on another session's idle pod.
 . "$(dirname "$0")/lib.sh"
 E2E=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
 for f in project/tool.py web/heavy.py; do [ -f "$E2E/$f" ] || fail "no e2e/cli/$f"; done
@@ -12,6 +13,7 @@ landed() { cozy --json run watch "$(runno "$1")" --once | jq -r '.machine // emp
 # ran <step> <target> <field=value…>: `cozy run` with no --on, to its end; fails on a warning that this computer would do it poorly.
 ran() {
   local n=$1; shift
+  others_busy "$NAME"
   step "$n" run "$@" || fail "$n: cozy run $1: $(tail -3 "$OUT/$n.txt")"
   ! grep -qE 'has no supported GPU|This computer has no GPU' "$OUT/$n.txt" || fail "$n: with a rental held, cozy run warned of this computer: $(grep -E 'no (supported )?GPU' "$OUT/$n.txt")"
 }

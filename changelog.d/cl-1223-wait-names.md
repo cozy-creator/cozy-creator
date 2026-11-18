@@ -1,0 +1,1 @@
+A run waiting in a machine's install line, for another run's install of its package, or for the machine's CPU names only its own project's runs, and the package another run installs only when that run is its project's: another project's is "another project's run" or "another project's install". Refusing to remove a model a run reads names only the asker's own runs.

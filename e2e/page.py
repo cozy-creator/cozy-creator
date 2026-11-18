@@ -6,12 +6,12 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
                                                                      /assets body {name, tool, kind, fields, at}, made in order
     page.py set <project> <name> [--fields JSON] [--tool T]          a box's fields set (null clears one), as the page edits it
     page.py rename <project> <from> <to>                             a box renamed, and every mention of it
-    page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] [--missing] <name>...
+    page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] <name>...
                                                                      a render, followed until each name's (or --wait's) new
                                                                      versions land: one JSON line each, exit 1 on a failure.
                                                                      `auto`: none, as the page sends with no machine chosen, for
                                                                      Calcifer to place (board's `on` says where); --queue:
-                                                                     asked, not followed; --missing: only what has no state
+                                                                     asked, not followed
     page.py approve <project> <name> <version>                       a version approved, as a double tap on its take does
     page.py asset <project> <name>...                                each box and its versions, a JSON line each
     page.py board <project>                                          the project's render as the page shows it
@@ -87,11 +87,9 @@ def render(args: argparse.Namespace) -> int:
     names: list[str] = args.names
     # None: the page's ask with no machine chosen, which Calcifer places as a `cozy run` naming none (cl-894).
     on: list[str] = [] if args.on == "auto" else args.on.split(",")
-    waited = [] if args.queue else args.wait.split(",") if args.wait else [name for name in names if name != "all"]
+    waited = [] if args.queue else args.wait.split(",") if args.wait else names
     before = {name: len(cast(list[object], asset(args.project, name)["versions"])) for name in waited}
-    if args.missing:  # a box with a version already makes nothing new
-        before = {name: count for name, count in before.items() if not count}
-    ask: Json = {"names": names, "n": args.n, "on": on, "approve": args.approve, "missing": args.missing}
+    ask: Json = {"names": names, "n": args.n, "on": on, "approve": args.approve}
     if args.pickup:
         ask["pickup"] = {"take": args.pickup[0], "out_frame": int(args.pickup[1])}
     print(json.dumps({"on": on, "asked": call("POST", project(args.project) + "/runs", json.dumps(ask).encode())}), flush=True)
@@ -178,7 +176,6 @@ def main() -> int:
     one.add_argument("--pickup", nargs=2, metavar=("TAKE", "FRAME"))
     one.add_argument("--wait")
     one.add_argument("--queue", action="store_true")
-    one.add_argument("--missing", action="store_true")
     one.add_argument("names", nargs="+")
     one = verbs.add_parser("approve")
     one.add_argument("project")

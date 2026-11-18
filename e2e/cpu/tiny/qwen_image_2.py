@@ -5,7 +5,7 @@ release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes
 `pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights. A second VAE,
 other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131). Parts of the same pipeline, each a
 model of its own (xs-192): its transformer with its scheduler, as a community fine-tune is published, and its text encoder
-with its processor."""
+with its processor. Its `matte` (se-154) is birefnet's own tiny BiRefNet (`tiny/birefnet.py`)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from transformers import Qwen3_5ForConditionalGeneration, Qwen3VLForConditionalG
 
 from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
+from tiny import birefnet as _birefnet
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
@@ -134,7 +135,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _part(root / "qwen-image-2.1", root / "text-encoder", ("text_encoder", "processor"))
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
             ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix",
-            DIT: root / "dit", ENCODER_PART: root / "text-encoder"}
+            DIT: root / "dit", ENCODER_PART: root / "text-encoder", **_birefnet.models(root, store)}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:

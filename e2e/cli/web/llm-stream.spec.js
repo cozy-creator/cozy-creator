@@ -9,14 +9,27 @@ const { join } = require('path');
 const { test, expect, themed, canvasIdle, canvasVisible, focus } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
-const MODEL = 'qwen/qwen3.5-0.8b@0.1.0';
+const MODEL = 'huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0';
 const PROMPT = 'Write a long story in twelve chapters, each about two hundred words, of a lighthouse keeper through one winter of storms. Use plain sentences.';
+// Its length is sized to the slowest runner measured, not a lucky one: about 1.3 tokens/s beside the page (44285972438), where 2400 tokens
+// ran past the 900 s budget; at least 4 tokens/s on 11-17's (44079545177). 600 tokens take about 460 s there and at least 140 s here,
+// where the looks mid-stream need its run going for its first 45 to 60 s: a margin of about 2× at each end. The story is cut at 600, as
+// any max_tokens cuts it; the checks are the same.
+const TOKENS = 600;
 const NAME = 'story';
 
 /** The words a box shows at rest, as the canvas drew them. */
 const restWords = (page, name) => page.evaluate((name) => document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.words ?? null, name);
 /** Words as drawn, less a cut's ellipsis and the space at their ends: what any later look must start with. */
 const plain = (words) => (words ?? '').replace(/…$/, '').trim();
+
+// Its box's run ends with the cell, whatever stopped it, its timeout too, and is waited for: one left writing on this CPU slows the cells
+// after it (44285972438: the story still writing as the cell timed out, cli-words after it took 158 s; with none left, 70 s, 44295419036).
+test.afterEach(async ({ project, api }) => {
+  if (!(await project.asset(NAME))?.making?.length) return;
+  await api.post(project.at('/cancel'), { names: [NAME] });
+  await expect.poll(async () => (await project.asset(NAME))?.making?.length ?? 0, { message: `${NAME}'s run ended`, timeout: 60_000 }).toBe(0);
+});
 
 test('llm-stream', async ({ page, project, api }) => {
   test.setTimeout(900_000);
@@ -27,7 +40,7 @@ test('llm-stream', async ({ page, project, api }) => {
     if (found.ok) { tool = name; break; }
   }
   expect(tool, 'a Qwen Write tool is published here').toBeTruthy();
-  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: 2400, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
+  await project.add({ name: NAME, tool, kind: 'text', fields: { instructions: PROMPT, max_tokens: TOKENS, seed: 7, models: { model: { ref: MODEL } } }, at: { x: 0, y: 0 } });
   await page.reload();
   await expect(page.locator('.stage')).toBeVisible();
   await expect.poll(() => canvasVisible(page, NAME)).toBe(true);

@@ -7,7 +7,7 @@
 //! copy excludes its layer, so no lock holds it. Nothing is written into the client's folder: a lock
 //! answers its `uv.lock`, which the client writes.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -138,9 +138,12 @@ impl Stage {
         Ok(Self { _dir: dir, root, src, uv, offline: false })
     }
 
-    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
-    /// alone (`floor::rc_runtime`, xs-194). An explicitly selected SDK source stays authoritative.
-    async fn rc_runtime(&self, say: Say<'_>) -> Result<(), Error> {
+    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes an RC build, its wheel by URL in this copy alone
+    /// (`floor::rc_runtime`, xs-194): the one its own lock takes while it stands, unless `upgrade` names cozy-runtime (cl-1199). Beside
+    /// it, the RC's TensorFS build that Runtime admits, by URL for a rental's platform, the only one the RC builds it for
+    /// (`floor::rc_tensorfs_wheel`, xs-216): every other platform's row is the index's. An explicitly selected SDK source stays
+    /// authoritative.
+    async fn rc_runtime(&self, upgrade: &[String], say: Say<'_>) -> Result<(), Error> {
         let path = self.src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
         let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
@@ -149,16 +152,40 @@ impl Stage {
         if selected {
             return Ok(());
         }
-        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
+        let own = fs::read_to_string(self.src.join("uv.lock")).ok().filter(|_| !upgrade.iter().any(|name| distribution(name) == "cozy-runtime"));
+        let Some(rc) = crate::floor::rc_runtime(&self.src, own.as_deref().as_slice()).await? else { return Ok(()) };
+        let tensorfs = crate::floor::rc_tensorfs_wheel(&self.src, &rc, own.as_deref().as_slice()).await;
         let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
             .as_table_like_mut()
             .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
         let mut source = toml_edit::InlineTable::new();
         source.insert("url", rc.url.as_str().into());
         sources.insert("cozy-runtime", toml_edit::value(source));
+        if let Some(tensorfs) = &tensorfs {
+            let mut source = toml_edit::InlineTable::new();
+            source.insert("url", tensorfs.url.as_str().into());
+            source.insert("marker", RENTAL_ENVIRONMENT.into());
+            sources.insert("tensorfs", toml_edit::value(source));
+            // uv reads a source only for a dependency the project names itself.
+            let named = |spec: &str| spec.trim_start().strip_prefix("tensorfs").is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || "-_.".contains(c)));
+            let dependencies = doc["project"]["dependencies"].as_array_mut()
+                .ok_or_else(|| refuse("project_invalid", "project.dependencies is not a list"))?;
+            if !dependencies.iter().any(|spec| spec.as_str().is_some_and(named)) {
+                dependencies.push("tensorfs");
+            }
+        }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
-        say(&format!("cozy-runtime {}: the open RC's newest build, which its machines run (no release meets its floor)", api::prerelease::shown(&rc.version)));
+        let beside = tensorfs.map_or_else(String::new, |tensorfs| format!(" and TensorFS {}", api::prerelease::shown(&tensorfs.version)));
+        say(&format!("cozy-runtime {}{beside}: the open RC's build (no release meets its floor)", api::prerelease::shown(&rc.version)));
         Ok(())
+    }
+
+    /// Takes each first-party sibling the copy's tree holds by path (`local_code::sibling_sources`): their distributions.
+    fn siblings(&self) -> Result<BTreeSet<String>, Error> {
+        for (path, text) in crate::local_code::sibling_sources(&self.src)? {
+            fs::write(&path, text).map_err(|e| refuse("stage_unavailable", e))?;
+        }
+        Ok(::api::code::siblings(&self.src).into_keys().collect())
     }
 
     /// Points each of the copy's `tensorhub` sources at the index `bound` names for its distribution: one uv index per
@@ -193,11 +220,36 @@ impl Stage {
                 }
             }
         }
-        let mut text = doc.to_string();
+        // Each index set in the copy's own `tool.uv.index`, as it is written (tables or an inline list), one of the same name
+        // replaced: appended as text, it was a second `index` key beside an inline list (`duplicate key`).
+        let uv = (doc["tool"]["uv"].or_insert(toml_edit::table()))
+            .as_table_like_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv is not a table"))?;
         for &(namespace, url) in &namespaces {
-            text.push_str(&format!("\n[[tool.uv.index]]\nname = \"{}\"\nurl = \"{url}\"\nexplicit = true\n", name(namespace)));
+            let to = name(namespace);
+            let mut index = toml_edit::Table::new();
+            index.insert("name", toml_edit::value(to.as_str()));
+            index.insert("url", toml_edit::value(url));
+            index.insert("explicit", toml_edit::value(true));
+            let other = |held: Option<&toml_edit::Value>| held.and_then(toml_edit::Value::as_str) != Some(to.as_str());
+            match uv.get_mut("index") {
+                None => {
+                    let mut tables = toml_edit::ArrayOfTables::new();
+                    tables.push(index);
+                    uv.insert("index", toml_edit::Item::ArrayOfTables(tables));
+                }
+                Some(toml_edit::Item::ArrayOfTables(tables)) => {
+                    tables.retain(|table| other(table.get("name").and_then(toml_edit::Item::as_value)));
+                    tables.push(index);
+                }
+                Some(toml_edit::Item::Value(toml_edit::Value::Array(list))) => {
+                    list.retain(|held| other(held.as_inline_table().and_then(|table| table.get("name"))));
+                    list.push(index.into_inline_table());
+                }
+                Some(_) => return Err(refuse("project_invalid", "tool.uv.index is not a list of indexes")),
+            }
         }
-        fs::write(&path, text).map_err(|e| refuse("stage_unavailable", e))
+        fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))
     }
 
     /// Relocks the copy against its bound index with `pins` as constraints, then without them:
@@ -254,7 +306,7 @@ type Bound = BTreeMap<String, (String, String)>;
 /// distribution; else the root's, whose packages are everyone's. Each at the index that namespace has at the origin `hub`
 /// advertises. A package of the account's own wins over a root one of the same name, so nothing published later at the root
 /// moves an account's dependency.
-async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock: Option<&str>) -> Result<Bound, Error> {
+async fn bindings(hubs: &Hubs, hub: &Origin, sources: &BTreeSet<String>, root: bool, lock: Option<&str>) -> Result<Bound, Error> {
     let locked = lock.map(lock_namespaces).unwrap_or_default();
     let reader = hubs.reader(hub.as_str())?;
     let account = match !root && matches!(reader.credential(), ::api::hub::Credential::User(_)) {
@@ -262,7 +314,7 @@ async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock
         false => None,
     };
     let (mut urls, mut bound) = (BTreeMap::new(), Bound::new());
-    for name in &project.hub_sources {
+    for name in sources {
         let namespace = match (root, locked.get(name), &account) {
             (true, _, _) | (false, None, None) => api::names::ROOT.to_owned(),
             (false, Some(namespace), _) => namespace.clone(),
@@ -367,24 +419,31 @@ fn sent(api: &Api, code: &api::code::LocalCode) -> Result<(Project, PathBuf), Er
 pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackageLock, work: &Here) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
     let (project, within) = sent(api, code)?;
-    let locked = locked(&api.machines.hubs, hub, &project, &within, ask.root, &ask.upgrade, say).await?;
+    let locked = locked(&api.machines.hubs, hub, &project, &within, ask.root, &ask.upgrade, false, say).await?;
     versions(&locked.lock)?;
     Ok(locked)
 }
 
 /// `project` locked for `hub` by uv in a private copy, its `tensorhub` sources bound where their packages are (`bindings`), each
 /// of `upgrade` free to move to its newest release, and the rest kept at what its own uv.lock pins. A run of local code locks
-/// with this too (`local_code::locked`), its path dependencies included. `within`: Calcifer's copy of the tree it is in.
-/// `account_index`: the index its own account's packages came from, else the root's.
-pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], say: Say<'_>)
-    -> Result<Locked, Error> {
+/// with this too (`local_code::locked`), its path dependencies included, and with `siblings` the first-party siblings its tree
+/// holds by path (`local_code::sibling_sources`, cl-1211), which no Hub is asked for. `within`: Calcifer's copy of the tree it is
+/// in. `account_index`: the index its own account's packages came from, else the root's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], siblings: bool,
+    say: Say<'_>) -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
     let mut stage = blocking(|| Stage::new(project, within, uv_path, say))?;
-    stage.rc_runtime(say).await?;
+    stage.rc_runtime(upgrade, say).await?;
+    let taken = match siblings {
+        true => blocking(|| stage.siblings())?,
+        false => BTreeSet::new(),
+    };
+    let sources: BTreeSet<String> = project.hub_sources.difference(&taken).cloned().collect();
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
-    let bound = match project.hub_sources.is_empty() {
+    let bound = match sources.is_empty() {
         true => Bound::new(),
-        false => match bindings(hubs, hub, project, root, own.as_deref()).await {
+        false => match bindings(hubs, hub, &sources, root, own.as_deref()).await {
             Ok(bound) => {
                 super::held::keep_indexes(hubs.home(), hub.as_str(), &bound);
                 bound
@@ -395,7 +454,7 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
                 let locked = own.as_deref().map(lock_namespaces).unwrap_or_default();
                 stage.offline = true;
                 say(&format!("{hub} can't be reached: locked from what this computer holds"));
-                (project.hub_sources.iter())
+                (sources.iter())
                     .map(|name| {
                         let namespace = locked.get(name).cloned().unwrap_or_else(|| api::names::ROOT.to_owned());
                         let url = super::held::offline_index(hubs.home(), hub.as_str(), &namespace)
@@ -480,14 +539,14 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     }
     let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
     let stage = blocking(|| Stage::new(&project, &within, uv_path, say))?;
-    stage.rc_runtime(say).await?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
+    stage.rc_runtime(&[], say).await?;
     // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
     // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin
     // this Hub cannot meet is refused by name, never re-resolved to a newer release.
     let python = blocking(|| python(&project, &stage.uv))?;
     if !project.hub_sources.is_empty() {
-        let bound = bindings(&api.machines.hubs, hub, &project, ask.root, Some(committed.as_str())).await?;
+        let bound = bindings(&api.machines.hubs, hub, &project.hub_sources, ask.root, Some(committed.as_str())).await?;
         stage.bind(&bound)?;
         let pins = index_pins(&committed)?;
         if !pins.is_empty() && bound.values().any(|(_, url)| !committed.contains(url.as_str())) {

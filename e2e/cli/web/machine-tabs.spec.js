@@ -66,9 +66,9 @@ const geometry = (page) => page.evaluate(() => {
   };
 });
 
-/** Every machine the tabs show, as Calcifer lists them. */
+/** Every machine the tabs show, as Calcifer lists them: every rental of the account, whichever computer rented it (cl-1193). */
 const machinesNow = async (api) => (await api.get('/v1/machines')).machines
-  .filter((row) => row.state !== 'ended' && (row.kind !== 'rental' || row.ordered !== false)).map((row) => row.name);
+  .filter((row) => row.state !== 'ended').map((row) => row.name);
 
 test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
   test.skip(!(process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true'), 'its stand-in machine is another user of a fresh GitHub runner');

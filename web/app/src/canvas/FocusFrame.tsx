@@ -12,17 +12,33 @@ interface FocusResize {
 }
 const ResizeContext = createContext<FocusResize | null>(null)
 export const useFocusResize = () => useContext(ResizeContext)
-const UI = "button, input, select, textarea, a, video, audio, [contenteditable], [role=slider], .tl, .orbit"
+/** What's drawn over the frame and never zoomed with it (an orbit's bar, a picture's Edit), and how far it's zoomed now. */
+export interface FocusLayer {
+  overlay: HTMLElement | null
+  scale(): number
+}
+const LayerContext = createContext<FocusLayer | null>(null)
+export const useFocusLayer = () => useContext(LayerContext)
+/** Its own controls: the wheel and a drag there are theirs, not the frame's. A video and an orbit are what's looked at, so they zoom. */
+const CONTROLS = "button, input, select, textarea, a, audio, [contenteditable], [role=slider]:not(.orbit), .tl, .orbit-bar, .focus-under, .focus-image-zoom"
 
 /** Image-space pan/zoom never changes the Wander camera. */
 /** What sits right under the frame (a video's segments and Redo): its row's height is kept out of the fit. */
 const UNDER = 44
 /** Full screen, the transport goes once the pointer has rested this long, and comes back as it moves (cl-1080). */
 const REST_MS = 2500
+/** The most a picture or a video zooms: 8× its fit, or to 8 screen pixels to each of its own where that's more, so one of any size can be
+ *  looked at pixel by pixel (cl-1184). */
+const MOST = 8
 
-/** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted, and goes full
- *  screen (cl-1080): letterboxed on black at its own aspect, what's `under` it over its bottom. */
-export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
+/** One viewer for a picture, a video and an orbit (cl-1190; Paul, 11-17: "on videos, especially the 360 orbits, I should be able to zoom
+ *  in on a section of the video"), as image viewers do it: the wheel or a pinch zooms about the pointer; zoomed, a drag pans, or, on an
+ *  orbit, whose drag turns it, a Shift-drag or a middle-button drag (as 3D viewers pan); a double-click or Fit goes back to the fit, and
+ *  at the fit a player's double-click is full screen. A video plays and scrubs on as it's zoomed. Zoomed in past one screen pixel to each
+ *  of its own, its pixels are drawn as they are (`pixels`: its own size).
+ *  `zooms` false: a player that's its own control (an Edit's cut, cl-957) is only fitted. `full`: it plays, and goes full screen (cl-1080),
+ *  letterboxed on black at its own aspect, what's `under` it over its bottom. */
+export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = true, full: plays = !zooms, under, children }: { enabled: boolean; aspect: number; pixels?: { width: number; height: number }; fitted?: boolean; zooms?: boolean; full?: boolean; under?: ReactNode; children: ReactNode }) {
   const zoomable = fitted && zooms
   const store = useCanvasStore()
   const element = useRef<HTMLDivElement>(null)
@@ -34,7 +50,9 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
   cameraNow.current = camera
   const dragging = useRef<{ id: number; x: number; y: number; from: Camera } | null>(null)
   const moved = useRef(false)
-  const player = !zooms && canFull()
+  const frame = useRef<HTMLDivElement>(null)
+  const [overlay, setOverlay] = useState<HTMLDivElement | null>(null)
+  const player = plays && canFull()
   const showing = useSignal(fullElement)
   const full = showing !== null && showing === element.current
   const [offered, setOffered] = useState(false)
@@ -64,8 +82,15 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
     x: resize.from.camera.x + (width - resize.from.width) * resize.from.camera.scale / 2,
     y: resize.from.camera.y + (height - resize.from.height) * resize.from.camera.scale / 2,
   } : camera
-  const geometry = useRef({ width, height, room })
-  geometry.current = { width, height, room }
+  // Its own width as it's drawn: a file whose measured sides lie the other way from its shape (turned by its EXIF) is drawn turned.
+  const own = pixels ? ((pixels.width >= pixels.height) === (aspect >= 1) ? pixels.width : pixels.height) : 0
+  const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
+  const most = Math.max(MOST, own && width ? (MOST * own) / (width * density) : 0)
+  // Screen pixels to each of its own now. Zoomed in past one each, they're drawn as they are; fitted, smoothed, however small its file.
+  const across = own && width ? (width * shown.scale * density) / own : 0
+  const pixelated = shown.scale > 1 && across > 1.001
+  const geometry = useRef({ width, height, room, most })
+  geometry.current = { width, height, room, most }
   const bound = useCallback((next: Camera): Camera => {
     const g = geometry.current
     const x = Math.max(0, (g.width * next.scale - g.room.width) / 2)
@@ -75,11 +100,12 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
   const zoom = useCallback((value: number, relative = false, point = { x: 0, y: 0 }) => {
     if (resizing.current) return
     setCamera((was) => {
-      const scale = Math.max(1, Math.min(8, relative ? was.scale * value : value))
+      const scale = Math.max(1, Math.min(geometry.current.most, relative ? was.scale * value : value))
       return bound({ scale, x: point.x - (point.x - was.x) * scale / was.scale, y: point.y - (point.y - was.y) * scale / was.scale })
     })
   }, [bound])
   const reset = useCallback(() => setCamera({ scale: 1, x: 0, y: 0 }), [])
+  const layer = useMemo<FocusLayer>(() => ({ overlay, scale: () => cameraNow.current.scale }), [overlay])
   const startResize = useCallback(() => {
     const { width, height } = geometry.current
     const from = { width, height, camera: cameraNow.current }
@@ -124,11 +150,13 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
     if (!enabled || !zoomable || !element.current) return
     const held = element.current
     const wheel = (event: WheelEvent) => {
-      if ((event.target as Element).closest(UI)) return
+      if ((event.target as Element).closest(CONTROLS)) return
       event.preventDefault()
       event.stopPropagation()
-      const r = held.getBoundingClientRect()
-      zoom(Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.032 : 0.002)), true, { x: event.clientX - r.left - r.width / 2, y: event.clientY - r.top - r.height / 2 })
+      // About the pointer: from the middle of the frame as fitted, which a video's transport under it moves off the viewer's.
+      const r = (frame.current ?? held).getBoundingClientRect()
+      // A pinch comes as the wheel with Ctrl, in small steps: each counts five times a wheel's.
+      zoom(Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.032 : event.ctrlKey ? 0.01 : 0.002)), true, { x: event.clientX - r.left - r.width / 2, y: event.clientY - r.top - r.height / 2 })
     }
     held.addEventListener("wheel", wheel, { passive: false })
     return () => held.removeEventListener("wheel", wheel)
@@ -178,16 +206,32 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
     dragging.current = null
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
-  return <ResizeContext.Provider value={{ start: startResize, move: moveResize, end: endResize }}><FullScreenContext.Provider value={player ? screen : null}><div ref={element} className="focus-viewer" data-zoomed={shown.scale > 1 || undefined} data-resizing={Boolean(resize) || undefined} data-full={full || undefined} data-resting={(full && resting) || undefined} onDoubleClick={(event) => {
-    // A double-click on the picture toggles full screen, as a player's does.
-    if (!offering || (event.target as Element).closest("button, input, select, textarea, a, [contenteditable], .focus-under, .orbit-bar")) return
+  /** Whether a press here pans: zoomed, on what's looked at, by a plain drag, or, where a plain drag is the orbit's turn, Shift or the
+   *  middle button. */
+  const pans = (event: { button: number; shiftKey: boolean; target: EventTarget }) => {
+    const target = event.target as Element
+    if (resizing.current || !zoomable || cameraNow.current.scale <= 1 || target.closest(CONTROLS) || !target.closest(".focus-image-transform")) return false
+    return event.button === 1 || (event.button === 0 && (event.shiftKey || !target.closest(".orbit")))
+  }
+  return <ResizeContext.Provider value={{ start: startResize, move: moveResize, end: endResize }}><LayerContext.Provider value={layer}><FullScreenContext.Provider value={player ? screen : null}><div ref={element} className="focus-viewer" data-zoomed={shown.scale > 1 || undefined} data-resizing={Boolean(resize) || undefined} data-full={full || undefined} data-resting={(full && resting) || undefined} onDoubleClick={(event) => {
+    if ((event.target as Element).closest("button, input, select, textarea, a, [contenteditable], .focus-under, .orbit-bar, .focus-image-zoom")) return
+    // Zoomed, a double-click goes back to the fit; at the fit, a player's toggles full screen.
+    if (zoomable && cameraNow.current.scale > 1) {
+      event.stopPropagation()
+      reset()
+      return
+    }
+    if (!offering) return
     event.stopPropagation()
     toggle()
   }} onContextMenu={full ? (event) => event.stopPropagation() : undefined} onClickCapture={(event) => {
     if (moved.current) { event.preventDefault(); event.stopPropagation(); moved.current = false }
+  }} onMouseDown={(event) => {
+    // A middle-button pan isn't the browser's autoscroll.
+    if (event.button === 1 && pans(event)) event.preventDefault()
   }} onPointerDown={(event) => {
     moved.current = false
-    if (resizing.current || !zoomable || camera.scale <= 1 || event.button !== 0 || (event.target as Element).closest(UI) || !(event.target as Element).closest(".focus-image-transform")) return
+    if (!pans(event)) return
     event.preventDefault()
     dragging.current = { id: event.pointerId, x: event.clientX, y: event.clientY, from: camera }
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -199,13 +243,18 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
     }
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="focus-stack">
-      <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
-      {/* In the frame's bottom right, a picture's own (cl-958): held to the frame, not the window, and not scaled with the picture. */}
-      {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
-        <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
-        <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
-      </div>}
+      <div ref={frame} className="focus-frame" style={{ width: width || "100%", height: height || "100%" }}>
+        <div className="focus-image-transform" data-pixelated={pixelated || undefined} style={{ transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
+        {/* Over the frame, at its size, never zoomed: an orbit's bar, a picture's Edit. */}
+        <div ref={setOverlay} className="focus-overlay" />
+        {/* In the frame's bottom right, its own (cl-958): held to the frame, not the window, and not scaled with what's zoomed. */}
+        {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
+          {camera.scale > 1 && <button type="button" className="tb fit" aria-label="Fit to frame" title="Fit to frame (double-click)" onClick={reset}>Fit</button>}
+          <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
+          <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= most} onClick={() => zoom(1.25, true)}>+</button>
+        </div>}
+      </div>
       {under && <div className="focus-under" style={full ? undefined : { width: width || "100%" }}>{under}</div>}
     </div>
-  </div></FullScreenContext.Provider></ResizeContext.Provider>
+  </div></FullScreenContext.Provider></LayerContext.Provider></ResizeContext.Provider>
 }

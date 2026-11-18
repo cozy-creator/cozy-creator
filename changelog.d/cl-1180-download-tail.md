@@ -1,0 +1,1 @@
+A model download's last pieces no longer crawl behind one slow request. Once nothing is left to start, a request that falls behind the typical one hands the rest of its range to free connections a storage chunk at a time, and its last piece is asked again on two other connections at once; the first to finish wins. A download asks for at most 64 MiB twice.

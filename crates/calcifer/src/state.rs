@@ -27,14 +27,18 @@ pub(crate) const TABLES: &str = "
         current INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE UNIQUE INDEX IF NOT EXISTS project_keys_current ON project_keys (id) WHERE current = 1;
-    CREATE TABLE IF NOT EXISTS project_handles (
-        handle TEXT PRIMARY KEY,
-        path TEXT NOT NULL
-    ) STRICT;
+    DROP TABLE IF EXISTS project_handles;
     CREATE TABLE IF NOT EXISTS projects_gone (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
         path TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS machine_owed (
+        machine TEXT NOT NULL,
+        view TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        ended INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (machine, view)
     ) STRICT;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS session_codes;
@@ -286,7 +290,6 @@ impl Store {
                 tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM purge_due WHERE project = ?1", [id])?;
-                tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
             }
             Ok(())
         })?;
@@ -316,8 +319,6 @@ impl Store {
         self.write(|tx| {
             // What it retires leaves no page behind (cl-984): a locked project's handle row among them.
             tx.pragma_update(None, "secure_delete", "ON")?;
-            // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
-            tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [&path])?;
             // Its locked handle there was this project: its last use stays.
             let was: i64 = tx.query_row("SELECT COALESCE(MAX(used_at_ms), 0) FROM projects WHERE id = ?1 OR path = ?2", params![id, path], |row| row.get(0))?;
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path])?;
@@ -326,8 +327,6 @@ impl Store {
             tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, ?3, ?4)
                 ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code, used_at_ms = excluded.used_at_ms",
                 params![id, path, code, used_at_ms.unwrap_or(was).max(was)])?;
-            // A handle whose folder no longer holds a project here (it moved, its folder went, it never locked again) goes.
-            tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
         })
     }
@@ -337,7 +336,6 @@ impl Store {
         let (from, to) = (folder(from), folder(to));
         self.write(|tx| {
             tx.execute("UPDATE projects SET path = ?2 WHERE path = ?1", params![from, to])?;
-            tx.execute("UPDATE project_handles SET path = ?2 WHERE path = ?1", params![from, to])?;
             Ok(())
         })
     }
@@ -427,11 +425,6 @@ impl Store {
         })
     }
 
-    /// The folder a locked project's `handle` named before it was opened (cl-1090), until its next lock.
-    pub(crate) fn handle_path(&self, handle: &str) -> Result<Option<PathBuf>> {
-        self.read(|conn| Ok(conn.query_row("SELECT path FROM project_handles WHERE handle = ?1", [handle], |row| row.get::<_, String>(0)).optional()?.map(PathBuf::from)))
-    }
-
     /// The project `key` names here, now or before (cl-987).
     pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
@@ -448,7 +441,7 @@ impl Store {
 
     /// A locked encrypted project keeps only where it is here (cl-984): an opaque handle and its folder, so a list offers Unlock.
     /// Its id, code and anything else go, their pages overwritten and the WAL emptied; unlocking opens it, which registers it again
-    /// from its own project.db.
+    /// from its own project.db. The handle keys its row and never leaves Calcifer: the list says its keybag's id and code (cl-1171).
     pub(crate) fn project_locked(&self, id: &str, path: &Path) -> Result<()> {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).expect("the OS gives random bytes");
@@ -462,9 +455,35 @@ impl Store {
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
             tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
-            // The handles of its last lock go: each lock's is new.
-            tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
             tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, '', ?3)", params![handle, path, used])?;
+            Ok(())
+        })?;
+        self.empty_wal()
+    }
+
+    /// A machine's clean-up a lock owes (cl-1064): the lock couldn't reach `machine`, so what it held of the project at `folder`,
+    /// mounted at `view` (a path new at each unlock), is cancelled and retired when it next answers. Nothing else of the project.
+    pub(crate) fn owe(&self, machine: &str, view: &Path, folder: &Path, ended: u32) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("INSERT OR REPLACE INTO machine_owed (machine, view, folder, ended) VALUES (?1, ?2, ?3, ?4)", params![machine, view.to_string_lossy(), folder.to_string_lossy(), ended])?;
+            Ok(())
+        })
+    }
+
+    /// What `machine` is owed: each view and its project's folder.
+    pub(crate) fn owed_to(&self, machine: &str) -> Result<Vec<(PathBuf, PathBuf)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT view, folder FROM machine_owed WHERE machine = ?1 ORDER BY view")?;
+            let rows = statement.query_map([machine], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), PathBuf::from(row.get::<_, String>(1)?))))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// `machine` did the clean-up owed for `view`.
+    pub(crate) fn paid(&self, machine: &str, view: &Path) -> Result<()> {
+        self.write(|tx| {
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            tx.execute("DELETE FROM machine_owed WHERE machine = ?1 AND view = ?2", params![machine, view.to_string_lossy()])?;
             Ok(())
         })?;
         self.empty_wal()

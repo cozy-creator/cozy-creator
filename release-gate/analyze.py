@@ -159,8 +159,9 @@ for name, target, number in cells:
         elif any(s in text for s in ('gemm.fallback', 'decoded_float')):
             fails.append(f'{name}: {text} {o.get("fields")}')
     for fmt, val in gemm:
-        if fmt.startswith('int8') and val != 'cozy-int8':
-            fails.append(f'{name}: int8 GEMM served by {val}, not cozy-int8')
+        # An int8 lane's linears are Cozy's int8 GEMM's; its convs Cozy's int8 conv's (cr-327). A decoded fallback fails.
+        if fmt.startswith('int8') and val not in ('cozy-int8', 'cozy-conv8'):
+            fails.append(f'{name}: int8 GEMM served by {val}, not cozy-int8 or cozy-conv8')
         if any(s in val for s in ('_int_mm', 'dense', 'decoded_float', 'fallback')):
             fails.append(f'{name}: GEMM {fmt} served by {val}')
     blocking: dict[str, int] = {}
@@ -361,6 +362,10 @@ for failing in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) 
     if failing['sku'] in (sku, '*'):
         parked, parked_why = ', '.join(failing.get('cells') or [failing.get('cell', '?')]), failing.get('what', '')
         notes.append(f"known failing, not run: {parked} ({failing['issue']}{': ' + parked_why if parked_why else ''})")
+# Cells --skip-unchanged did not run: their last PASS on this SKU asked the same of the same versions (ledger.py skip).
+for kept in open(os.path.join(out, 'skipped.tsv')) if os.path.exists(os.path.join(out, 'skipped.tsv')) else []:
+    skipped = (kept.rstrip('\n').split('\t') + ['', ''])[:3]
+    notes.append(f'{skipped[0]}: skipped, unchanged since {skipped[2]}')
 # The host: a slow driver makes every first pass slow and must read as the host, not the code (lead 10-23).
 for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]

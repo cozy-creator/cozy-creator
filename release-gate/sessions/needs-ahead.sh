@@ -4,20 +4,18 @@
 # as Paul's laptop is), every step through this runner's cozy and its Calcifer; each rental runs the session's TensorD. Evidence is
 # the machine's own: `cozy machine show` (what it holds of each model), the runs' records (`placed`, the quote;
 # `measurements.weights`, what each waited for) and its log.
-# Steps 2–3 run no function, only a guess's prepare item, so with `cpu_sku` they run on a CPU pod of their own (Paul, 11-17: "spawn
-# some runpod cpu-only pods and then tell them to download stuff"), in a project of its own whose one machine it is: a quote doesn't
-# rule out a machine with no GPU (it would run there on its CPU), so the guess goes to it. The GPU rental ($SKU) then runs 1 and 4.
+# `cpu_sku` (steps 2–3 on a CPU pod) is refused: a machine with no GPU gets nothing ahead for a function that builds a model on one,
+# as its render would run there on its CPU (cl-1123).
 # 1. `first` (prompt_upsampling off) rendered on the cold GPU rental, no page showing the project: nothing said ahead, so the
 #    machine evaluates the request's rules itself. It holds the model and neither enhancer after; its quote's download is what it
 #    waited for.
 # 2. A page shows the project: `draw`, drafted text-to-image, is guessed on the machine, which fetches the model and expander_t2i,
 #    never expander_i2i.
 # 3. While expander_t2i is still coming, the draft mentions <pic>: expander_t2i stops where it was, and expander_i2i comes.
-# 4. `draw` is ready on the GPU rental; rendered, its quote downloads nothing and its run waits for nothing. (With `cpu_sku`, its
-#    draft there mentions <pic> from the start: the guess fetches expander_i2i, never expander_t2i.)
+# 4. `draw` is ready on the GPU rental; rendered, its quote downloads nothing and its run waits for nothing.
 # params:
 #   tree     the packages_refs checkout whose qwen-image-2 runs (`-f packages_refs=pk=<packages ref with its rules>`, tree pk)
-#   cpu_sku  a CPU-only SKU (`cpu`) for steps 2–3 (default: none, all four on $SKU)
+#   cpu_sku  refused (above)
 #   t2i, i2i the enhancers' repositories (default: qwen-image-2's defaults)
 #   link_mbit the GPU rental's download link shaped to this many Mbit/s from step 2 on (tc police on its ingress, over SSH; default
 #            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s)
@@ -30,6 +28,7 @@ fail() {
   say "FAIL: $*"; RC=1; exit 1
 }
 TREE=$(param tree '') CPU_SKU=$(param cpu_sku '')
+[ -z "$CPU_SKU" ] || fail "cpu_sku: a machine with no GPU gets no Qwen box ready ahead (cl-1123); run all four steps on \$SKU"
 T2I=$(param t2i pottokao/qwen-image-2.1-pe-t2i-abliterated) I2I=$(param i2i darrellbest/qwen-image-2.1-pe-i2i-abliterated)
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen-image-2/pyproject.toml" ] ||
   fail "qwen-image-2's rules aren't released: dispatch with -f packages_refs=<name>=<their packages ref> and params.tree=<name>"

@@ -171,3 +171,40 @@ in_project "$P" --json run minimax-h3-tools/echo text=idle > "$OUT/idle-run.ndjs
 idle_runs "$P" echo "$OUT/idle-echo.txt"
 grep -qx 'local completed' "$OUT/idle-echo.txt" || check "local idle: cozy run didn't run on local: $(tr '\n' ';' < "$OUT/idle-echo.txt")"
 }
+
+# gpu_use_follows (cl-1117; the user flow's 43996197790: kubera's drawer, open as it came up on its image's 0.25.0 TensorD, asked for its
+# GPU use and was answered 404, a console error, and read nothing more after kubera updated). `GET /v1/machines/<name>/gpus` follows
+# the machine across its restarts and updates: one stream, open as the page's drawer opens it, reads stand-g's GPU use before stand-g's
+# machine stops and after its user's cozy starts it again. A stand-in has no GPU: each reading lists none.
+gpus_read() { local n; n=$(grep -c '^event: *gpus' "$OUT/gpus.sse" 2> /dev/null) || true; echo "${n:-0}"; }
+gpu_use_follows() {
+step "a machine's GPU use is followed across its restart, never refused for it (cl-1117)"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "gpu use: its stand-in is another user of a fresh GitHub runner"; return; }
+local holder follower stand_holder stand_pid
+cozy --json machine show local > "$OUT/set-local.json" || { check "gpu use: machine show local"; return; }
+stand_in stand-g || return
+holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+curl -sS -N -o "$OUT/gpus.sse" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Accept: text/event-stream' \
+  "http://$(jq -r .address "$holder")/v1/machines/stand-g/gpus" > "$OUT/gpus.code" 2> "$OUT/gpus.err" & follower=$!
+for _ in $(seq 60); do [ "$(gpus_read)" -ge 1 ] && break; sleep 0.5; done
+if [ "$(gpus_read)" -lt 1 ]; then
+  check "gpu use: stand-g's stream read nothing in 30 s: HTTP $(cat "$OUT/gpus.code" 2> /dev/null) $(head -c 300 "$OUT/gpus.sse" 2> /dev/null) $(tail -c 200 "$OUT/gpus.err")"
+  kill "$follower" 2> /dev/null || true
+  return
+fi
+# stand-g's machine stops, as an update restarts it, and its user's cozy starts it again.
+stand_holder=$(sudo find "/home/cozy-stand-g/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
+stand_pid=$([ -z "$stand_holder" ] || sudo grep -o '"pid": *[0-9]*' "$stand_holder" | grep -o '[0-9]*$' || true)
+[ -n "$stand_pid" ] || { check "gpu use: stand-g's machine has no lock holder"; kill "$follower" 2> /dev/null || true; return; }
+sudo kill "$stand_pid"
+for _ in $(seq 60); do case $(ps -o stat= -p "$stand_pid" 2> /dev/null || true) in '' | Z*) break ;; esac; sleep 1; done
+stand_as stand-g --json machine show local > "$OUT/gpus-stand-g-again.json" || check "gpu use: stand-g didn't start again: $(tail -c 300 "$OUT/stand-g.err")"
+for _ in $(seq 180); do [ "$(gpus_read)" -ge 2 ] && break; kill -0 "$follower" 2> /dev/null || break; sleep 0.5; done
+echo "gpu use: stand-g's stream read $(gpus_read) times across its restart; HTTP $(cat "$OUT/gpus.code" 2> /dev/null): $(grep '^data:' "$OUT/gpus.sse" | cut -c1-120 | paste -sd ' ')"
+kill -0 "$follower" 2> /dev/null \
+  || check "gpu use: stand-g's stream ended as its machine restarted (HTTP $(cat "$OUT/gpus.code" 2> /dev/null), $(gpus_read) readings): the drawer reads nothing more"
+[ "$(gpus_read)" -ge 2 ] || check "gpu use: stand-g's stream read nothing after its machine started again"
+kill "$follower" 2> /dev/null || true
+wait "$follower" 2> /dev/null || true
+timeout 60 "$COZY" --json machine end stand-g --force -y > "$OUT/stand-g-end.json" 2>&1 || true
+}

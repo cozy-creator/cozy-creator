@@ -14,6 +14,7 @@ platform = { workspace = true, features = ["seams"] }
 ed25519-dalek.workspace = true
 pep440_rs = { version = "0.7.3", default-features = false }
 hex.workspace = true
+jiff.workspace = true
 saphyr.workspace = true
 saphyr-parser.workspace = true
 serde.workspace = true

@@ -430,12 +430,14 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const canceled = await runsOf(project, 'heavy');
       const takes = (await project.asset('heavy')).versions ?? 0;
       expect.soft({ runs: canceled.filter((one) => one.status !== 'canceled').map((one) => `#${one.number} ${one.status}`), takes }, 'Cancel stops its render: no run of it but canceled, no take').toEqual({ runs: [], takes: 0 });
-      // Canceled while it waited on its fresh install (the Hub switched, so heavy.py is locked and installed anew), which no other run
-      // or job waited on: no call of it is made, and the install ends with it (cl-973) rather than running on for no one.
+      // Canceled before its call (the Hub switched, so heavy.py is locked and installed anew): no call of it is made. Its fresh install
+      // is either the render's own, which no other run or job waited on and which ends with it (cl-973) rather than running on for no
+      // one, or, as heavy's guess carries its code ahead and prepares it (cl-1123), the guess's: no run of this project, and shared
+      // work a cancel leaves alone.
       expect.soft(canceled.map((one) => `#${one.number} ${one.status}`), 'no call of heavy made').toEqual([]);
       await expect.poll(async () => (await installsOf(project)).every((one) => ended.includes(one.status)), { message: "heavy's install settled", timeout: 60_000 }).toBe(true);
       const dropped = await installsOf(project);
-      expect.soft(dropped.map((one) => `${one.target}: ${one.status}`), 'its install, which only the canceled render waited on, canceled with it').toEqual(['install local/heavy: canceled']);
+      expect.soft(dropped.filter((one) => one.status !== 'canceled').map((one) => `${one.target}: ${one.status}`), "an install of its own, which only the canceled render waited on, canceled with it (none: its guess installed it ahead)").toEqual([]);
 
       /** Render, asking nothing: sent to this computer, and one more take lands. */
       const again = async (what) => {

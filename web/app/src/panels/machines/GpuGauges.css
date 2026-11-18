@@ -1,0 +1,164 @@
+/* A GPU's gauges (cl-1100, cl-1191): busy share, memory and power as bars on a track of their own hue, the last minute's busy share as a
+   line over its area, and what holds it back now. */
+.meter {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--meter) 16%, transparent);
+}
+.meter i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--meter);
+  transition: width 400ms ease-out;
+}
+.meter.busy,
+.trace {
+  --meter: var(--cur);
+}
+.meter.memory {
+  --meter: var(--mak);
+}
+.meter.power {
+  --meter: #7d4fb8;
+}
+:root[data-theme="dark"] .meter.power {
+  --meter: #b48cf0;
+}
+
+.trace {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.trace svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: none;
+}
+.trace-line {
+  fill: none;
+  stroke: var(--meter);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+}
+.trace-area {
+  fill: color-mix(in srgb, var(--meter) 18%, transparent);
+}
+.trace-base {
+  stroke: color-mix(in srgb, var(--meter) 30%, transparent);
+  stroke-width: 1px;
+}
+.trace-at {
+  stroke: var(--mute);
+  stroke-width: 1px;
+}
+.trace-tip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  z-index: 2;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--float);
+  color: var(--mute);
+  font-size: var(--small);
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.trace-tip b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* On a machine's row of the list: a GPU's bar, figure and trace on a line, its facts under the bar; bars aligned across its GPUs. */
+.gpu-strip {
+  display: grid;
+  grid-template-columns: minmax(64px, 1fr) auto 88px;
+  align-items: center;
+  gap: 0 10px;
+  margin: 6px 0 2px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+.gpu-strip.many {
+  grid-template-columns: auto minmax(64px, 1fr) auto 88px;
+}
+.gauge {
+  display: contents;
+}
+.gauge .meter {
+  height: 10px;
+  border-radius: 5px;
+}
+.gauge .trace {
+  height: 20px;
+}
+.gauge-gpu {
+  font: var(--w-heading) var(--body) var(--mono);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.gauge-busy {
+  min-width: 2.8em;
+  color: var(--ink);
+  font-weight: 600;
+  text-align: right;
+}
+.gauge-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 12px;
+  grid-column: 1 / -1;
+  margin: 1px 0 5px;
+  font-size: var(--small);
+}
+.gpu-strip.many .gauge-facts {
+  grid-column: 2 / -1;
+}
+.gauge-fact {
+  white-space: nowrap;
+}
+.gauge-limit {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ood) 16%, transparent);
+  color: var(--ood);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* In the drawer: a row each, bars aligned. */
+.gpu-use {
+  display: grid;
+  grid-template-columns: auto minmax(60px, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 6px 0 2px;
+  color: var(--mute);
+}
+.gpu-use b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.gpu-use .trace.wide {
+  grid-column: 2 / 4;
+  height: 32px;
+}
+.gpu-heat {
+  grid-column: 2 / 4;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.gpu-limit b {
+  font-weight: 600;
+}

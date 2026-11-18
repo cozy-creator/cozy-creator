@@ -282,7 +282,7 @@ step "a project: the fixtures' tools read on this machine"
   || fail "the fixtures' tools don't read here: the machine's Runtime (${CAND_RUNTIME:-none of its own, so the newest on PyPI}) needs cozy-runtime's tools (rc/tools), as --runtime: $(tail -c 300 "$OUT/tools-read.txt")"
 }
 
-# Renders queued from one shell, seen, one canceled, and the rest land. A canceled `render all` doesn't send again what it canceled.
+# Renders queued from one shell, seen, one canceled, and the rest land. A canceled render doesn't send again what it canceled.
 # The walk (cl-770): every job known when asked, each going on its own, a deleted asset's queued job saying so, and nothing of the walk left behind.
 walking() {
 step "a project: what's queued is known at once, a long job holds up nothing it isn't read by, a deleted asset's job stops and lands nothing"
@@ -302,7 +302,7 @@ api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
 local tail=$!
 show_events "$stream" "$id" || check "walking: project interest not held"
 api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: walking-$RANDOM$RANDOM" \
-  -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
+  -d '{"names":["running_gone","reads_gone","slow","beside","one","two","last","gone_soon"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
 for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done

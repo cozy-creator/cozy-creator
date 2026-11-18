@@ -18,9 +18,17 @@ say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 RC=0 RID='' NAME='' WD='' BG='' DL='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
+# ON: the pod of the session that runs this one (`on_this`): this one neither quotes, rents, guards, claims nor ends a pod.
+ON=${ON:-}
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+# `file`: PARAMS are a JSON file in this checkout (from its root), for a matrix past the dispatch input's 65,535 characters;
+# read before any other param, so lib.sh's own (floor_mb_s, runtime, tensorfs) come from it too.
+PF=$(param file '')
+if [ -n "$PF" ]; then
+  PF=$(dirname "${BASH_SOURCE[0]}")/../../$PF; jq -e 'type == "object"' "$PF" > /dev/null 2>&1 || fail "params file $PF"; PARAMS=$(cat "$PF")
+fi
 # The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
@@ -45,9 +53,13 @@ wheel_from() {
   esac
   find "$1" -name '*manylinux*x86_64*.whl' | head -1
 }
-# made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
-# (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
-made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
+# made <name>: the checkpoint a step's upload, quantize or run made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…`
+# line, or a run's `<slot> commit <org/name>@sha256:…` one (a machine's own `checkpoint sha256:…` line names no model);
+# cozy 0.24's quantize says `commit`.
+made() {
+  awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} $2=="commit" && $3 ~ /@sha256:/ {c=$3}
+    END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"
+}
 # runno <name>: the run a step's output names last (its own, after a local source's sync run): its KEY-N.
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 # handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
@@ -60,6 +72,8 @@ finish() {
   trap 'RC=1' INT TERM HUP
   # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
   for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
+  if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -112,9 +126,22 @@ derived_zero() { pod_derived_zero "$DERIVED"; }
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
 # orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
 claim() {
+  [ -z "$ON" ] || return 0
   local r
   for r in $(own); do
     [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
+  done
+}
+# others_busy <machine> [seconds]: waits (900 s by default) until every other live rental of the account that's up runs or waits on
+# work, every client's, as its Status says. The account's rentals are one pool (cl-1224): a run naming no machine may go to any of them,
+# so a session that sends one waits until no other session's pod would take it idle. Fails naming them when they never are.
+others_busy() {
+  local until=$(($(date +%s) + ${2:-900}))
+  until cozy machine ls --json > "$OUT/others.json" 2> /dev/null && jq -e --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0)] | length == 0' "$OUT/others.json" > /dev/null; do
+    [ "$(date +%s)" -lt "$until" ] || fail "another rental of the account stayed idle, which a run naming no machine could take: $(jq -c --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0) | .name]' "$OUT/others.json" 2> /dev/null)"
+    sleep 15
   done
 }
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
@@ -138,6 +165,26 @@ kernels() {
   local t0=$SECONDS
   "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
   say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
+}
+# pod_speculates: $NAME runs a loaded prediction ahead (cl-1123 D, off by default since Paul 11-18): `dev = true` and
+# `[machine] speculate = true` in its config.toml over `cozy machine ssh` (RENT_ARGS=--ssh), read at its service's next start.
+pod_speculates() {
+  local script said='' _
+  script=$(cat <<'EOS'
+c=$HOME/.cozy/config.toml
+mkdir -p "${c%/*}" && touch "$c" || exit 1
+{ echo 'dev = true'; grep -v '^dev *=' "$c" | awk '/^speculate *=/ { next } { print } /^\[machine\]/ { print "speculate = true"; put = 1 }
+  END { if (!put) printf "\n[machine]\nspeculate = true\n" }'; } > "$c.new" && mv "$c.new" "$c" || exit 1
+head -1 "$c"; grep -x 'speculate = true' "$c"
+EOS
+)
+  # Right after a restart the pod's ssh can answer nothing (pod-session 43325104295).
+  for _ in 1 2 3 4 5 6; do
+    said=$(timeout 120 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" < /dev/null 2>&1)
+    grep -qx 'dev = true' <<< "$said" && grep -qx 'speculate = true' <<< "$said" && { say "$NAME speculates from its next start"; return 0; }
+    sleep 10
+  done
+  fail "$NAME's config.toml doesn't say speculate: $(tail -c 300 <<< "$said")"
 }
 # floor FILE KINDS: the transfer of KINDS (`downloading`, `uploading|downloading`) FILE reports last, when it is a link's
 # measure (16 MiB or more; a result's never) still in progress and under FLOOR_MBS MB/s. A finished or small transfer
@@ -183,6 +230,8 @@ step() {
   if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
     local t=${words[1]}; [ "$1" = run ] || t=${words[2]:-}
     case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
+    # One that takes another package of its checkout from the Hub (`{ index = "tensorhub" }`) takes it from the checkout by
+    # path: cozy stages a package's first-party siblings itself (cl-1211, `api::code::siblings`).
   fi
   say "step $n: cozy ${words[*]}"
   # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
@@ -216,7 +265,7 @@ step() {
 # quote. No read for GUARD_BLIND s ends them too. Nothing else in the account is touched: other sessions' pods are in the same listing.
 GUARD_STEP=20 GUARD_END_S=120 GUARD_BLIND=300 GUARD_ALSO=''
 guard() {
-  [ -z "$WD" ] || return 0
+  [ -z "$WD" ] && [ -z "$ON" ] || return 0
   ( blind=0
     while :; do
       sleep "$GUARD_STEP"
@@ -251,6 +300,7 @@ billed() {
 # the Hub's one price an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the
 # seconds. Ends the $0 pre-flight unless RENT=true.
 quote() {
+  [ -z "$ON" ] || { say "on $ON, the pod of the session that runs this one: no quote"; return 0; }
   local need=$1; shift
   local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus gb
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
@@ -303,7 +353,7 @@ order() {
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"
+  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; printf -v "SKU_$i" %s "$sku"
   say "rental $RID ordered"
   guard
 }
@@ -321,8 +371,29 @@ ready() {
   NAME=$(jq -r .name "$OUT/show$i.json")
   [ "$(jq -r .rental_id "$OUT/show$i.json")" = "$RID" ] && [ -n "$NAME" ] || fail "show $RID: $(head -c 300 "$OUT/show$i.json")"
   say "READY $RID as $NAME, image $(jq -r .rental.base_worker_image_digest "$OUT/show$i.json"), disk $(jq -r '.rental.disk_gb // "?"' "$OUT/show$i.json") GB of $DISK asked"
+  # What was rented is what was asked for: a provider that offers another width or card fails the session here, never runs it.
+  # The GPUs asked: the order's own count of its SKU (`gpus` when its Hub accepted it: --gpus N, else the SKU's one), each one
+  # GPU, or none for the CPU machine, as `cozy machine show` counts them (belgrieve, 44192794516: "0 GPUs, not the 1").
+  local s=SKU_$i asked got sku
+  asked=$(grep -m1 '"type":"rental.accepted"' "$OUT/rent$i.out" | jq -r '.gpus // empty')
+  ! jq -e '(.rental.accelerator // "") | ascii_downcase == "cpu"' "$OUT/show$i.json" > /dev/null || asked=0
+  got=$(jq '.status.gpus // [] | length' "$OUT/show$i.json") sku=$(jq -r '.sku // .rental.sku // empty' "$OUT/show$i.json")
+  [ -z "$sku" ] || [ "$sku" = "${!s}" ] || fail "$NAME is $sku, not the ${!s} asked for"
+  [ "$got" = "$asked" ] || fail "$NAME has $got GPUs, not the ${asked:-?} asked for"
   grep -E '^(version|runtime|tensorfs|GPU 0|disk free) ' "$OUT/show$i.txt" | tee -a "$R"
 }
 
-# rent: one rental, ordered and booted ($RID, its machine $NAME), under the guard.
-rent() { order; ready; }
+# rent: one rental, ordered and booted ($RID, its machine $NAME), under the guard. Under ON, that pod.
+rent() {
+  [ -z "$ON" ] || { NAME=$ON; say "on $NAME, the pod of the session that runs this one"; return 0; }
+  order; ready
+}
+
+# on_this <session> <params JSON>: another session run on this session's pod after its own work, one boot and one download for
+# both: its files in $OUT/<session>, its results said here; it fails this one when it fails.
+on_this() {
+  say "$1 on $NAME"
+  ON=$NAME OUT=$OUT/$1 PARAMS=$2 bash "$(dirname "${BASH_SOURCE[0]}")/$1.sh" > "$OUT/$1.log" 2>&1; local rc=$?
+  sed "s/^/$1: /" "$OUT/$1/results.txt" >> "$R" 2> /dev/null
+  [ "$rc" = 0 ] || { say "FAIL: $1 on $NAME"; RC=1; }
+}

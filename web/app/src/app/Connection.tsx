@@ -299,12 +299,8 @@ class Bridge {
           this.vaultChanged(event.id, event.state)
           break
         }
-        if (event.state === "unlocked") {
-          this.allowProject(event.id)
-          // A tab left at a locked project's handle (`/projects/locked-…`) reads its address again and goes on to the project's own, however
-          // it was unlocked: the CLI, another tab (cl-1090). The key is project.tsx's `referenceKey`.
-          void this.queries.invalidateQueries({ queryKey: ["project-reference"] })
-        } else this.forgetProject(event.id)
+        if (event.state === "unlocked") this.allowProject(event.id)
+        else this.forgetProject(event.id)
         this.queries.setQueryData(["project-vault", event.id], (held: import("../api/calcifer").VaultStatus | undefined) => ({
           ...(held ?? { path: "", idle_timeout_s: 1800 }), encrypted: true, state: event.state,
           ...(event.state === "unlocked" ? {} : { view: null, expires_at_ms: null }),
@@ -390,9 +386,9 @@ export async function connect(): Promise<Boot> {
     revokeProjectMedia(id)
     // Its protection status and its address stay: they are what the locked page shows. Dropped, they are asked again, and the lock
     // they answer retires the project again, and again (a locked project opened from the list reloaded for ever, Paul 11-16).
-    // Its tools too (`["tools", q, on, project]`), as they can list its own code; another project's, or none's, are no business of its lock
+    // Its tools too (`["tools", q, project]`), as they can list its own code; another project's, or none's, are no business of its lock
     // (cl-1110: a lock elsewhere cancelled a tab's tool read mid-retry).
-    const privateData = ({ queryKey: [kind, project, , tools] }: { queryKey: readonly unknown[] }) =>
+    const privateData = ({ queryKey: [kind, project, tools] }: { queryKey: readonly unknown[] }) =>
       (project === id && kind !== "project-vault" && kind !== "project-reference" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
       || (kind === "tools" && tools === id)
     void queries.cancelQueries({ predicate: privateData })

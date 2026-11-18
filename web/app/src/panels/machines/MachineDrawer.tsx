@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
+import { useShowGpus } from "../../api/gpus"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -17,14 +18,14 @@ import { MachineLogs } from "./MachineLogs"
 import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { statusWord, target } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
+import { brokenWords, called, endsWords, holdWords, kindWords, kernelsWords, named, spentWords } from "./words"
 import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
 function KeepRunning({ machine }: { machine: Machine }) {
   const { client } = useConnection()
   const ask = useAsk()
-  if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
+  if (machine.kind !== "rental" || machine.state !== "ready") return null
   return (
     <>
       <button type="button" className="tb" title="Restart its 15-minute idle timer" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
@@ -145,14 +146,18 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. Calcifer counts a job it sent as running;
- *  the machine says which of those it runs now and which wait there, as its queue does. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), every computer's, what it's cost so far, and when it ends. Calcifer counts a job it
+ *  sent as running; the machine says which of those it runs now and which wait there, as its queue does, and another computer's
+ *  (cl-1193). */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
   const runs = machine.status?.runs
+  const others = machine.status?.others ?? []
+  const theirs = others.filter((other) => other.running).length
   const total = machine.running + machine.queued
-  const running = runs ? Math.min(total, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running
+  const own = total - others.length
+  const running = (runs ? Math.min(own, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running - theirs) + theirs
   const jobs = total ? `${running} running, ${total - running} queued` : "Nothing running"
-  const ends = endsWords(machine, now)
+  const ends = [endsWords(machine, now), ...holdWords(machine, now)].filter(Boolean).join(" · ")
   const spent = spentWords(machine)
   return (
     <p className="doing-now">
@@ -165,7 +170,8 @@ function Doing({ machine, now }: { machine: Machine; now: number }) {
 
 /** One machine, read from the live list while it's in it: reading it alone would start `local`. */
 export function MachineDrawer() {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
+  useShowGpus(stream)
   const queries = useQueryClient()
   const to = useTo()
   const name = useParams().name ?? ""
@@ -209,7 +215,9 @@ export function MachineDrawer() {
           {machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
-      {machine.offline && <p className="warn">It's offline, so it can't take runs. It comes back if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {machine.state === "ending" && machine.reason && (
+        <p className="warn">It's ending ({machine.reason}), so it takes no runs. Its Hub destroys it, and it costs nothing after that.</p>
+      )}
       {brokenWords(machine) && <p className="warn">{brokenWords(machine)}</p>}
       {machine.unreachable && !ended && <p className="muted">It didn't respond just now ({machine.unreachable}), so this is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}

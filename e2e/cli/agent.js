@@ -221,7 +221,7 @@ film:
   check('no_progress_when_nothing_moves', !applied.err.includes('Sending files'), applied.err);
   check('apply_makes_them', applied.code === 0 && /^created: look \(take 1\), mara \(take 1\), shot_1, shot_2, film$/m.test(applied.out)
     && /warning: shot_2\.beats\.0\.duration: 20 is over 15 s, so 15/.test(applied.err)
-    && /pier\.yaml rewritten: each node as it stands, with its rev$/m.test(applied.out) && /^next: cozy render film$/m.test(applied.out), applied);
+    && /pier\.yaml rewritten: each node as it stands, with its rev$/m.test(applied.out) && /^next: cozy render shot_1 shot_2 film$/m.test(applied.out), applied);
   const rewritten = readFileSync(file, 'utf8');
   seen.rewritten = rewritten;
   check('the_file_is_rewritten_with_revs', /^mara:\n  kind: image\n  description: Mara, in her thirties, red raincoat, short black hair\.\n  approved: 1\n  takes:\n    - number: 1\n      state: done\n      file: \//m.test(rewritten)
@@ -234,8 +234,8 @@ film:
   const history = pageAt('history')[0];
   check('one_entry_by_the_cli', history.entries?.[0]?.by?.via === 'cli' && history.entries.filter((entry) => entry.by?.via === 'cli').length === 1, history.entries?.slice(0, 3));
 
-  // Rendered as the page's Render does: what the film reads first.
-  const render = at('render', 'film', '--on', 'local');
+  // Rendered as the apply's next step says: each node it made that renders, named, the film last (cl-1192: nothing renders on its behalf).
+  const render = at('render', 'shot_1', 'shot_2', 'film', '--on', 'local');
   const rendered = atJson('get', 'film', 'shot_2');
   seen.render = render;
   await integrity(pier, 'render');

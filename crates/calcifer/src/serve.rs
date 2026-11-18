@@ -415,13 +415,18 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     });
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());
+    crate::tools::install_at_start(api.machines.hubs.home().clone());
+    crate::gpu_use::start(api.clone());
     crate::project::previews(api.clone());
     crate::project::resume(&api);
     crate::project::purge::start(api.clone());
 
     api.stopped().await;
     crate::health::service_health(crate::health::HealthEvent::Stopping);
+    stop_deadline(api.clone());
+    stop_step(StopStep::Views);
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
+    stop_step(StopStep::Answers);
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
     }
@@ -432,12 +437,62 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     // Projects held after their last request close now, their WAL emptied, no request left to hold one again: a stop just after a
     // request leaves no -wal or -shm in a person's folder, nor commits only there.
+    stop_step(StopStep::Projects);
     tokio::task::block_in_place(|| api.projects.close_lingering());
+    stop_step(StopStep::Machines);
     machines.close();
+    stop_step(StopStep::Store);
     calcifer.close();
     drop(held);
     crate::health::service_health(crate::health::HealthEvent::Stopped);
     Ok(if api.updated() { Stopped::Updated } else { Stopped::Down })
+}
+
+/// How long a stop may take once it's under way: no step waits on what may never come (an answer or a lock a stuck task holds) past
+/// it. A service manager kills one later (launchd at 20 s, systemd at 90 s), and nothing kills one an update restarts.
+const STOP_WITHIN: Duration = Duration::from_secs(15);
+
+/// The steps of a stop, in order, the one it's on kept for its deadline to name.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum StopStep {
+    Views = 1,
+    Answers,
+    Projects,
+    Machines,
+    Store,
+}
+
+static STOP_STEP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn stop_step(step: StopStep) {
+    STOP_STEP.store(step as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Past [`STOP_WITHIN`], the step still going is said in the health log, every encrypted view this Calcifer mounted is ended (its
+/// provider killed by its handle, its view unmounted), and Calcifer exits as stopped (an update's successor starts in its place). Its
+/// own thread: a wedged runtime can't hold it.
+fn stop_deadline(api: Arc<Api>) {
+    let spawned = std::thread::Builder::new().name("stop-deadline".into()).spawn(move || {
+        std::thread::sleep(STOP_WITHIN);
+        let step = match STOP_STEP.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => "encrypted views",
+            2 => "answers",
+            3 => "projects",
+            4 => "machines",
+            _ => "store",
+        };
+        crate::health::stop_late(step);
+        crate::project::vault::end_all_now();
+        crate::health::service_health(crate::health::HealthEvent::Stopped);
+        if api.updated() {
+            let _ = successor();
+        }
+        std::process::exit(0);
+    });
+    if let Err(e) = spawned {
+        warn!("a stop with no deadline: {e}");
+    }
 }
 
 /// Logs each startup step with the time it took.

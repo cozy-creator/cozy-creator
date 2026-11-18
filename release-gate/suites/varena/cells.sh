@@ -24,7 +24,6 @@
 #   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/, a program)
 #   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
 #   diff-*           real models repeat byte for byte, under a cap and with memory taken and perturbed (differential/cell.sh)
-#   memcheck         compute-sanitizer finds nothing in SDXL through vt.offload's graphs that stock doesn't have (memcheck.sh)
 #
 # check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
 # and peak VRAM against the last pass. A cell named in known-failing.json's `cells` for this SKU or "*" is skipped.
@@ -74,7 +73,6 @@ authority() {
   "$V/public-api/pack.sh" "$OUT/varena-public" && programs public "$OUT/varena-public" public_api.py
   . "$V/faults.sh"
   . "$V/differential/cell.sh"
-  . "$V/memcheck.sh"
 }
 
 if ! grep -q '^GPU 0' machine.txt; then

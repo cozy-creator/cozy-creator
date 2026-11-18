@@ -266,10 +266,10 @@ pub(crate) async fn bind(
         let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
         let inline = binder.inline_references().await?;
         let title = api::calcifer::tool::title(package, summary);
-        let (payload, named, said, left) = project.bound(target, package, &title, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
+        let (payload, named, said, left) = project.bound(target, package, &title, callable, std::mem::take(&mut binder.document), &terms.clips, &inline, &files).await?;
         binder.document = payload;
-        files.retain(|file| !named.iter().any(|held| held.field == file.field));
-        files.extend(named);
+        // Each file goes by where the call reads it, as a box's would: a first use of a file is bound as any later one (cl-1183).
+        files = named;
         said.into_iter().for_each(|message| binder.warn(message));
         unused = left.iter().map(|one| one.line(target)).collect();
         binder.notes.extend(unused.iter().map(|message| Note { level: api::calcifer::NoteLevel::Info, message: message.clone() }));
@@ -535,9 +535,22 @@ impl Binder<'_> {
 
     /// Whether `key` is an input file, or a list of them (`image`, `pictures.0.image`, `plate.video`).
     fn names_a_file(&self, key: &str) -> bool {
+        let key = self.boxed(key);
         let list = self.callable.field(key).is_some_and(|field| field.ty.media().is_some());
         let parts: Vec<String> = key.split('.').map(str::to_owned).collect();
         list || self.accepts(&parts).is_some()
+    }
+
+    /// `key` with a box-shaped input's own `file` left off: `video.file`, where the call reads the file `video` holds, names
+    /// `video`, bound as a box's file is (cl-1183).
+    fn boxed<'k>(&self, key: &'k str) -> &'k str {
+        let Some(head) = key.strip_suffix(".file") else { return key };
+        let parts: Vec<String> = head.split('.').map(str::to_owned).collect();
+        let field = self.fold(&parts[0]).ok().and_then(|first| self.callable.field(&first));
+        match field.and_then(|field| type_at(&field.ty, &parts[1..])) {
+            Some(Type::Media { .. }) => head,
+            _ => key,
+        }
     }
 
     /// A scalar spelled as the field's declared type.
@@ -850,6 +863,7 @@ impl Binder<'_> {
         let Some(name) = term.name.as_deref() else {
             return Spec { field: None, source, label: None };
         };
+        let name = self.boxed(name);
         let parts: Vec<String> = name.split('.').map(str::to_owned).collect();
         let first = self.fold(&parts[0]).ok();
         let list = first.as_deref().filter(|first| {
@@ -1267,6 +1281,17 @@ fn asset_at(
             };
             asset_at(&field.ty, &parts[1..], types, max)
         }
+        _ => None,
+    }
+}
+
+/// The type at `parts` under `ty`, as it is when it's there (`T | None` is `T`).
+fn type_at<'t>(ty: &'t Type, parts: &[String]) -> Option<&'t Type> {
+    let Some((first, rest)) = parts.split_first() else { return Some(ty.plain()) };
+    match ty.plain() {
+        Type::Union { branches, .. } => branches.iter().find_map(|branch| type_at(branch, parts)),
+        Type::List(item) if first.parse::<u32>().is_ok() => type_at(item, rest),
+        Type::Struct(members) => type_at(&members.fields.iter().find(|field| field.name == *first)?.ty, rest),
         _ => None,
     }
 }

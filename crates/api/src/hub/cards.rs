@@ -71,12 +71,22 @@ fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
     dir
 }
 
+/// One page of a Hub's catalog as it answered, by its ETag (cl-1174): what it listed, each package with its newest release if it has
+/// one, and the catalog's size. A page the Hub says is unchanged (304) is read from here.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Page {
+    pub offset: u32,
+    pub etag: String,
+    pub rows: Vec<(String, Option<String>)>,
+    pub total: i64,
+}
+
 /// Keeps what `hub` listed at its last whole read, each package with its newest release, beside their cards: a list asked before
-/// the Hub answers again, after a restart too, stands on it (cl-975).
-pub fn keep_listed(root: &Path, hub: &str, listed: &[(String, String)]) {
+/// the Hub answers again, after a restart too, stands on it (cl-975). With the pages it was read from that carried an ETag.
+pub fn keep_listed(root: &Path, hub: &str, listed: &[(String, String)], pages: &[Page]) {
     let dir = hub_dir(root, hub);
     let read_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-    let document = serde_json::json!({ "read_at_ms": read_at_ms, "packages": listed });
+    let document = serde_json::json!({ "read_at_ms": read_at_ms, "packages": listed, "pages": pages });
     // One that cannot be kept is the next restart's to read again.
     drop(durable::private_dir(&dir).and_then(|()| durable::replace(&dir.join(LISTED), document.to_string().as_bytes(), 0o600)));
 }
@@ -86,6 +96,15 @@ pub fn kept_listed(root: &Path, hub: &str) -> Option<(SystemTime, Vec<(String, S
     let document: Value = serde_json::from_slice(&std::fs::read(hub_dir(root, hub).join(LISTED)).ok()?).ok()?;
     let at = UNIX_EPOCH + Duration::from_millis(document["read_at_ms"].as_u64()?);
     Some((at, serde_json::from_value(document["packages"].clone()).ok()?))
+}
+
+/// The pages of `hub`'s catalog kept with its last whole read (`keep_listed`): none from a Hub that sent no ETag, or a Calcifer before.
+pub fn kept_pages(root: &Path, hub: &str) -> Vec<Page> {
+    let read = || -> Option<Vec<Page>> {
+        let document: Value = serde_json::from_slice(&std::fs::read(hub_dir(root, hub).join(LISTED)).ok()?).ok()?;
+        serde_json::from_value(document.get("pages")?.clone()).ok()
+    };
+    read().unwrap_or_default()
 }
 
 /// The file `keep_listed` writes: not a card, nor an org's folder.

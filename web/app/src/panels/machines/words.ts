@@ -21,10 +21,9 @@ export const gpusWords = (machine: Machine) => {
   return `${rental.gpus}× ${rental.accelerator}`
 }
 
-/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Offline (its provider stopped
- *  it)`. */
+/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Ending (vast stopped
+ *  it)`. A rental is up, ending or ended, never offline in between (Paul 11-17). */
 export function stateWords(machine: Machine, now: number): string {
-  if (machine.offline) return `Offline (${machine.offline})`
   if (machine.broken && machine.state !== "ended") return `Not working (${machine.broken.message.replace(/\.$/, "")})`
   const unverified = machine.unverified ? " (may be out of date)" : ""
   switch (machine.state) {
@@ -37,7 +36,7 @@ export function stateWords(machine: Machine, now: number): string {
       return `Ready${unverified}`
     }
     case "ending":
-      return "Ending"
+      return machine.reason ? `Ending (${machine.reason})` : "Ending"
     case "ended":
       return "Ended"
     case "stopped":
@@ -56,31 +55,41 @@ export function brokenWords(machine: Machine): string {
       ? "Cozy won't send it work. It stops after 2 idle minutes, and checks itself again the next time it's needed."
       : machine.status?.phase === "releasing"
         ? "It's ending itself."
-        : broken.code === "silent_after_update" && machine.ordered !== false
+        : broken.code === "silent_after_update"
           ? "Cozy is ending it, since it costs money and can't do any work."
           : "Cozy won't send it work, and it ends itself once nothing is running on it."
   return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
 }
 
-/** How a GPU was held back for heat (cl-913): `for 64% of its last run (89 °C, 1400 of 2520 MHz)`. */
-export const heatWords = (hot: GpuHeat) =>
-  `for ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`
+/** How a GPU was held back, for heat (cl-913) or at a power limit its host set (cl-1161): `for 64% of its last run (89 °C, 1400 of
+ * 2520 MHz)`, `to 160 W of its 450 W by its host for 98% of its last run (876 of 3105 MHz)`. */
+export const heatWords = (hot: GpuHeat) => {
+  const share = `for ${Math.round(hot.share * 100)}% of its last run`
+  const replayed = hot.replayed ? " (replayed readings)" : ""
+  return hot.power_limit_w
+    ? `to ${hot.power_limit_w} W of its ${hot.power_default_w} W by its host ${share} (${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${replayed}`
+    : `${share} (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${replayed}`
+}
+
+/** What held a GPU back, as a sentence's start. */
+const heldBy = (hot: GpuHeat) => (hot.power_limit_w ? `GPU ${hot.gpu} held` : `GPU ${hot.gpu} slowed down from heat`)
 
 /** Its Runtime serves its GPUs none of its fast kernels: runs there are slower. */
 export const kernelsWords = (status: MachineStatus) =>
   status.runtime_kernels ? `Runtime ${status.runtime} is missing its fast GPU kernels, so runs here are slower: ${status.runtime_kernels}` : ""
 
-/** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
+/** What makes its runs slow now (cl-913): a GPU throttled for heat or held to its host's power limit, a Runtime without its kernels.
+ * Red wherever it shows. */
 export function slowWords(machine: Machine): string[] {
   const status = machine.status
   if (!status || machine.state === "ended") return []
-  const heat = (status.heat ?? []).map((hot) => `GPU ${hot.gpu} slowed down from heat ${heatWords(hot)}`)
+  const heat = (status.heat ?? []).map((hot) => `${heldBy(hot)} ${heatWords(hot)}`)
   const kernels = kernelsWords(status)
   return kernels ? [...heat, kernels] : heat
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
+  machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"
@@ -91,13 +100,22 @@ export const stateClass = (machine: Machine) =>
           : "s-queued"
 
 export const kindWords = (machine: Machine) =>
-  machine.kind === "local" ? "This computer" : machine.kind === "added" ? "Added computer" : machine.ordered === false ? "Rental (rented by another computer)" : "Rental"
+  machine.kind === "local" ? "This computer" : machine.kind === "added" ? "Added computer" : "Rental"
 
 /** When an idle machine ends itself; a rental with work names no deadline and ends after it. */
 export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
   if (deadline != null) return deadline > now ? `Ends in ${span((deadline - now) / 1000)} if it stays idle` : "Ending now"
   return machine.status && machine.kind === "rental" ? "Ends 15 minutes after its last run" : ""
+}
+
+/** What keeps it up that is no job, as it says (cl-1193): `An SSH session is open`, `Kept up by a keepalive 2m ago`. */
+export function holdWords(machine: Machine, now: number): string[] {
+  const status = machine.status
+  if (!status || machine.state === "ended") return []
+  const ssh = status.ssh_sessions ? [status.ssh_sessions === 1 ? "An SSH session is open" : `${status.ssh_sessions} SSH sessions are open`] : []
+  const kept = status.kept_alive_ms != null ? [`Kept up by a keepalive ${span((now - status.kept_alive_ms) / 1000)} ago`] : []
+  return [...ssh, ...kept]
 }
 
 /** What it has cost so far: `$1.20 so far`, `About $1.20 so far` while that's an estimate. */

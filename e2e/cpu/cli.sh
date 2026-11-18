@@ -4,10 +4,14 @@
 #   upload    its code, with an empty file (0.22.1 refused one: file_length_required), sent by content and described
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
-#             suite's Hub's: lock_same.py)
-#   bind      every cell's request (drive.py's <out>/requests/<request>.json, its input files) bound by Calcifer's binder
-#             against the staged local code (the private estimate API; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
-#             reference images named as the run's own `references`
+#             suite's Hub's: lock_same.py), for every package, and every first-party file it pins is one production's Hub
+#             serves: a committed lock pins only what a machine can fetch. A first-party dependency whose checkout version
+#             production doesn't hold yet is left out of the copy locked, as of the committed lock; not under run.sh's
+#             --lock fresh, which locked it first
+#   bind      a stand-in package's (drive.py, se-149) every cell's request (<out>/requests/<request>.json, its input files)
+#             bound by Calcifer's binder against the staged local code (the private estimate API; 0.22.1 refused
+#             `aspect_ratio=1:1`), a prompt's reference images named as the run's own `references`. Every other package's cells
+#             run for real (real.py), which binds them.
 # <project> is a project's folder: a run belongs to the project it is sent from. One line per cell, as run.sh's.
 set -uo pipefail
 COZY=$1 PROJECT=$2 PKG=$3 OUT=$4
@@ -46,14 +50,24 @@ else
   line FAIL - upload "$(said "$cli/describe.json")"
 fi
 
-if [ -s "$OUT/staged/unpublished.txt" ]; then
-  # A first-party dependency production's index can't meet yet (run.sh's stage.py): no committed lock can name it until promotion
-  # publishes it and the publish cascade relocks this one. The check comes back once production meets it.
-  line SKIP - lock "unpublished first-party dependency $(paste -sd, "$OUT/staged/unpublished.txt"); the publish cascade relocks it"
-elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
-  # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same.
-  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
-    line PASS - lock
+# A first-party dependency whose checkout version production's Hub doesn't hold yet (stage.py's unpublished.txt) is no committed
+# lock's: a machine can't fetch it, so the dependent's lock leaves it out until the gated publish relocks it on (packages
+# RELEASING.md). The copy locked here, its own (the bind cells bind the package as it is), leaves it out the same way: its
+# requirement and its source.
+unpublished=$(paste -sd, "$OUT/staged/unpublished.txt" 2> /dev/null || true)
+locking=$cli/lock/$p
+rm -rf "$cli/lock" && mkdir -p "$cli/lock" && cp -r "$cli/src/$p" "$locking"
+[ "${LOCK:-}" = fresh ] || for dep in ${unpublished//,/ }; do
+  spelled=$(sed 's/[-_.]/[-_.]/g' <<< "$dep")
+  sed -i -E "/^[[:space:]]*\"$spelled([<>=!~;[ ][^\"]*)?\",?[[:space:]]*\$/d; /^$spelled[[:space:]]*=/d" "$locking/pyproject.toml"
+done
+if [ "${LOCK:-}" = fresh ]; then
+  :
+elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$locking" > "$cli/lock.json" 2> "$cli/lock.err"; then
+  # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same, and each
+  # first-party file the committed lock pins one production's Hub serves.
+  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$locking/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
+    line PASS - lock "${unpublished:+unpublished $unpublished left out}"
   else line FAIL - lock "the committed uv.lock is stale: $stale"; fi
 elif grep -qE 'not_logged_in|401|403' "$cli/lock.json" "$cli/lock.err"; then
   line SKIP - lock "its index needs a sign-in: $(said "$cli/lock.json")"
@@ -86,7 +100,7 @@ for request in "$OUT"/requests/*.json; do
   files=()
   while IFS=$'\t' read -r field file; do files+=(--file "${field%.file}=$file"); done \
     < <(jq -r '.files | to_entries[] | select(.key | test("\\.references\\.[0-9]+\\.file$") | not) | "\(.key)\t\(.value)"' "$request")
-  if python3 "$(dirname "$0")/../run-estimate.py" "$cli/src/$p/$entry" --cozy "$COZY" --project "$PROJECT" \
+  if python3 "$(dirname "$0")/../run-estimate.py" "$cli/src/$p/$entry" --project "$PROJECT" \
       --input "$cli/$entry-$cell.payload" "${files[@]}" > "$cli/$entry-$cell.bound" 2> "$cli/$entry-$cell.bind.err" \
       && jq -e 'has("error") | not' "$cli/$entry-$cell.bound" > /dev/null; then
     line PASS "$entry" "bind/$cell"

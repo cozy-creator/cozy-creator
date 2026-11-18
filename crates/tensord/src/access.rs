@@ -9,7 +9,7 @@ use crate::{
     execution::Engine,
     held_models::Pulled,
     hub,
-    journal::{Account, Weights},
+    journal::{Account, Waits, Weights},
     origin::{self, priority, Machine, Remote},
     stop::Stop,
     storage::{self, Store},
@@ -62,50 +62,73 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
 pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<crate::journal::FunctionRead> {
     (selected.iter().filter(|(_, components)| !components.is_empty()))
         .filter_map(|(header, components)| {
-            let checkpoint = checkpoint(store, header).ok()?;
-            let model = Pulled::of(store, checkpoint.id()).ok().flatten()?.model;
-            let bytes = storage::chunks(&checkpoint, components).iter().map(|o| o.length).sum();
+            let (object, parsed) = storage::structure(store, header).ok()?;
+            let model = Pulled::of(store, &object).ok().flatten()?.model;
+            let bytes = chunks_in(header, &object, components, &parsed).iter().map(|o| o.length).sum();
             Some(crate::journal::FunctionRead { checkpoint: header.clone(), model, components: components.clone(), bytes })
         })
         .collect()
 }
 
-/// Of what `read` names, the bytes not here now: all of them once its header is gone.
+/// The chunks `components` of checkpoint `header` read (all, when none), by header and components: read once from its structure,
+/// then known for good, as a header names its chunks for good. So they are known once the header went with its model too, while
+/// other models still hold some of them (two fine-tunes share a base's VAE; 44185604891: pre-a's VAE stayed under pre-b).
+static CHUNKS: Mutex<BTreeMap<(String, Vec<String>), Arc<[ObjectRef]>>> = Mutex::new(BTreeMap::new());
+
+/// The chunks `components` of `header` read, from its structure here (`object` and `parsed`, `storage::structure`), and known from
+/// now on (`CHUNKS`).
+fn chunks_in(header: &str, object: &ObjectRef, components: &[String], parsed: &tensorfs::format::Header) -> Arc<[ObjectRef]> {
+    let key = (header.to_owned(), components.to_vec());
+    if let Some(known) = CHUNKS.lock().unwrap().get(&key) {
+        return known.clone();
+    }
+    let chunks: Arc<[ObjectRef]> = storage::chunks_of(&object.sha256, parsed, components).into();
+    CHUNKS.lock().unwrap().entry(key).or_insert(chunks).clone()
+}
+
+/// The chunks `components` of checkpoint `header` read (all, when none): as its structure here says, else as it said when it was
+/// last here. None: its header isn't here and never was read here. Read off disk alone: a reader opens no checkpoint (cl-1202).
+fn chunks_of(store: &Store, header: &str, components: &[String]) -> Option<Arc<[ObjectRef]>> {
+    if let Some(known) = CHUNKS.lock().unwrap().get(&(header.to_owned(), components.to_vec())) {
+        return Some(known.clone());
+    }
+    let (object, parsed) = storage::structure(store, header).ok()?;
+    Some(chunks_in(header, &object, components, &parsed))
+}
+
+/// Of what `read` names, the bytes not here now: of its chunks, those the store doesn't hold, though its header went with its model
+/// (`chunks_of`). All of them, for a header never read here.
 pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64 {
     if whole(store, &read.checkpoint, &read.components) {
         return 0;
     }
-    match checkpoint(store, &read.checkpoint) {
-        Ok(checkpoint) => storage::chunks(&checkpoint, &read.components).iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
-        Err(_) => read.bytes,
+    match chunks_of(store, &read.checkpoint, &read.components) {
+        Some(chunks) => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+        None => read.bytes,
     }
 }
 
 /// Each of `read`'s components: its bytes, and of them those not here now (cl-1104: a quote of one slot counts only those it reads).
-/// None once its header is gone. Each one's bytes are its header's, read once.
+/// None for a header never read here (`chunks_of`).
 pub(crate) fn parts(store: &Store, read: &crate::journal::FunctionRead) -> Vec<(String, u64, u64)> {
-    static BYTES: Mutex<BTreeMap<(String, String), u64>> = Mutex::new(BTreeMap::new());
-    let known: Option<Vec<u64>> = {
-        let bytes = BYTES.lock().unwrap();
-        read.components.iter().map(|component| bytes.get(&(read.checkpoint.clone(), component.clone())).copied()).collect()
-    };
-    if let Some(known) = known.filter(|_| whole(store, &read.checkpoint, &read.components)) {
-        return read.components.iter().zip(known).map(|(component, bytes)| (component.clone(), bytes, 0)).collect();
-    }
-    let Ok(checkpoint) = checkpoint(store, &read.checkpoint) else { return vec![] };
-    let mut bytes = BYTES.lock().unwrap();
+    let whole = whole(store, &read.checkpoint, &read.components);
     (read.components.iter())
         .map(|component| {
-            let chunks = storage::chunks(&checkpoint, std::slice::from_ref(component));
-            let length: u64 = chunks.iter().map(|o| o.length).sum();
-            bytes.insert((read.checkpoint.clone(), component.clone()), length);
-            (component.clone(), length, chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum())
+            let chunks = chunks_of(store, &read.checkpoint, std::slice::from_ref(component))?;
+            let bytes: u64 = chunks.iter().map(|o| o.length).sum();
+            let absent: u64 = match whole {
+                true => 0,
+                false => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+            };
+            Some((component.clone(), bytes, absent))
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
-/// remembered (Status asks every second) until the store next evicts, in any process.
+/// remembered (Status asks every second) until the store next evicts, in any process. Judged from the store's files: Status and
+/// the dispatcher ask it, and a reader opens no checkpoint (cl-1202).
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {
     static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
     let key = format!("{}\0{header}\0{components:?}", store.root().display());
@@ -113,8 +136,7 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     if WHOLE.lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
         return true;
     }
-    let whole = checkpoint(store, header)
-        .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| store.holds(o)));
+    let whole = storage::present(store, header) && chunks_of(store, header, components).is_some_and(|chunks| chunks.iter().all(|o| store.holds(o)));
     match whole {
         true => WHOLE.lock().unwrap().insert(key, evicted),
         false => WHOLE.lock().unwrap().remove(&key),
@@ -122,8 +144,13 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     whole
 }
 
-/// What a queued run waits on while the models it needs download (`waiting_on` says how far).
+/// What a queued run waits on while the models it needs download, with what it has and needs (`Fetch::needs`); TensorD's log says
+/// which components, as they change (`waiting_on`), and the machine's activity their bytes (cl-1205).
 pub(crate) const WAITING_FOR_MODELS: &str = "waiting for the models to download";
+
+/// The components a run waits on, each with whether its chunks are all on disk: what TensorD's log line of the wait is keyed on
+/// (`meter`).
+type Awaited = Vec<(String, bool)>;
 
 /// Bytes for people (`reclaim::size`).
 fn gib(bytes: u64) -> String {
@@ -240,11 +267,14 @@ struct Guessed {
     held: Vec<Checkpoint>,
 }
 
-/// One component in line: its bytes, origin, repository, name for people, chunks, and those absent.
+/// One component in line: its bytes, origin, repository, its release and component (none: the whole checkpoint), name for people,
+/// chunks, and those absent.
 struct Lining {
     bytes: u64,
     remote: Remote,
     model: String,
+    release: String,
+    component: Vec<String>,
     label: String,
     objects: Vec<ObjectRef>,
     absent: Vec<ObjectRef>,
@@ -254,8 +284,40 @@ impl Lining {
     /// It arriving, for the machine's list.
     fn arriving(self) -> Arriving {
         let fetch = self.absent.iter().map(|o| o.length).sum::<u64>();
-        Arriving { model: self.model, remote: self.remote, fetch, here: self.bytes - fetch, absent: self.absent }
+        Arriving {
+            model: self.model, release: self.release, components: self.component, remote: self.remote, fetch, here: self.bytes - fetch,
+            wanted: self.absent.clone(), absent: self.absent,
+        }
     }
+
+    /// The machine's download of its repository waits on it (cl-1205): its objects absent when wanted, its release and component.
+    fn join(&self, machine: &Arc<Machine>, wait: &crate::activity::Waiting) {
+        wait.objects(machine, &self.remote, &self.absent);
+        wait.fetches(&self.release, &self.component);
+    }
+}
+
+impl Lined {
+    /// The machine's download of each repository its needs bring (cl-1205), waited on by run `caller`: one wait each, its objects
+    /// those absent now, as `download` wants them. A repository all here has none.
+    pub(crate) fn waits(&self, machine: &Arc<Machine>, caller: &str) -> BTreeMap<String, crate::activity::Waiting> {
+        let mut waits = BTreeMap::new();
+        for (_, part) in self.wants.iter().filter(|(_, part)| !part.absent.is_empty()) {
+            let wait = waits.entry(part.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &part.model, caller));
+            part.join(machine, wait);
+        }
+        waits
+    }
+}
+
+/// What run `id` waits on, as `waits` (by repository) say it (`Engine::observe_waits`), with `left` bytes of its own still to come;
+/// none once it waits on nothing.
+pub(crate) fn waits_of(waits: &BTreeMap<String, crate::activity::Waiting>, left: u64) -> Option<crate::journal::Waits> {
+    (!waits.is_empty()).then(|| crate::journal::Waits {
+        on: waits.values().map(|wait| wait.shown().to_owned()).collect(),
+        models: waits.keys().cloned().collect(),
+        left,
+    })
 }
 
 /// One call's fetches: its checkpoints, where each comes from, and what it wants held.
@@ -282,14 +344,25 @@ pub(crate) struct Fetch {
     required: Mutex<Required>,
 }
 
-/// A checkpoint not all here when it was wanted: its repository and where it comes from, the bytes it had to fetch and those it held
-/// already, and its objects still absent.
+/// A checkpoint not all here when it was wanted: its repository, release and components and where it comes from, the bytes it had
+/// to fetch and those it held already, its objects absent when wanted, and those still absent.
 struct Arriving {
     model: String,
+    release: String,
+    components: Vec<String>,
     remote: Remote,
     fetch: u64,
     here: u64,
+    wanted: Vec<ObjectRef>,
     absent: Vec<ObjectRef>,
+}
+
+impl Arriving {
+    /// The machine's download of its repository waits on it (cl-1205): its objects absent when it was wanted.
+    fn join(&self, machine: &Arc<Machine>, wait: &crate::activity::Waiting) {
+        wait.objects(machine, &self.remote, &self.wanted);
+        wait.fetches(&self.release, &self.components);
+    }
 }
 
 /// A repository's checkpoints arriving: the bytes fetched of those to fetch, those that were here, and whether any is still absent.
@@ -353,6 +426,22 @@ impl Fetch {
         self.hinted.lock().unwrap().clear();
     }
 
+    /// The bytes of `lined`'s needed objects absent here whose download is under way, each once: the store took each one's whole
+    /// length as it began (`Store::partial`), so the disk's free bytes have them already.
+    pub(crate) fn under_way(&self, lined: &Lined) -> u64 {
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        for (_, part) in &lined.wants {
+            for (object, state) in part.absent.iter().zip(self.machine.fetching(&part.remote, &part.absent)) {
+                let taken = state.is_some_and(|state| !matches!(state.phase, tensorfs::fetch::Phase::Queued | tensorfs::fetch::Phase::Starting));
+                if taken && seen.insert(object.sha256.clone()) {
+                    bytes += object.length;
+                }
+            }
+        }
+        bytes
+    }
+
     /// Want what a call `needs` (cl-1102), before its executor reads it. What of `needed` isn't here (Y) comes next, in Runtime's
     /// Start-pass order, the smallest component first, held until the call ends: its run waits on that and nothing else. `room` is
     /// asked for Y's bytes before any is wanted: it frees them on the disk or refuses, and a refusal fails the call before it
@@ -381,9 +470,10 @@ impl Fetch {
         if let Some(unsourced) = lined.unsourced.take() {
             return Err(refuse(unsourced));
         }
-        // Its checkpoints are held from `lined` on: making room never evicts its own.
+        // Its checkpoints are held from `lined` on: making room never evicts its own. What of it a download under way has taken its
+        // room for (its early fetch's, cl-966) isn't asked for again (cl-1256: counted twice, a call that fit failed mid-download).
         let account = lined.account;
-        room(account.needs).map_err(|why| refuse(why))?;
+        room(account.needs.saturating_sub(self.under_way(&lined))).map_err(|why| refuse(why))?;
         let wanted: Vec<(u64, Lining)> = std::mem::take(&mut lined.wants).into_iter().filter(|(_, part)| !part.absent.is_empty()).collect();
         {
             let mut state = self.required.lock().unwrap();
@@ -487,8 +577,25 @@ impl Fetch {
         };
         match failure {
             Some(error) => Ready::Failed(error),
-            None => Ready::Waiting(self.waiting_on().unwrap_or_default()),
+            None => Ready::Waiting(self.needs()),
         }
+    }
+
+    /// What its run needs and what was here, in words (cl-1102): what its run says while it waits, which doesn't move as bytes
+    /// arrive (cl-1205: those are its downloads', in the machine's activity).
+    pub(crate) fn needs(&self) -> String {
+        let account = self.required.lock().unwrap().account;
+        match account.has {
+            0 => format!("{} to download", gib(account.needs)),
+            has => format!("{} to download, {} already on this machine", gib(account.needs), gib(has)),
+        }
+    }
+
+    /// The components its run waits on while their wants are unanswered (`Awaited`); none once nothing is waited on.
+    fn awaited(&self) -> Awaited {
+        let wants: Vec<(String, Vec<ObjectRef>)> = self.required.lock().unwrap().wants.iter()
+            .filter(|w| !w.settled).map(|w| (w.label.clone(), w.objects.clone())).collect();
+        wants.into_iter().map(|(label, objects)| (label, objects.iter().all(|o| self.store().holds(o)))).collect()
     }
 
     /// What its run waits on while a required component's want is unanswered, for people: per
@@ -535,13 +642,8 @@ impl Fetch {
             format!("{label}, {} of {} ({} of {} pieces left: {}{last}{attempt}{hedges})",
                 gib(reached), gib(length), absent.len(), objects.len(), phases.join(", "))
         }).collect();
-        // What it needs and what was here, first (cl-1102): `cozy machine show` and its run say it while it waits.
-        let account = self.required.lock().unwrap().account;
-        let needs = match account.has {
-            0 => format!("{} to download", gib(account.needs)),
-            has => format!("{} to download, {} already on this machine", gib(account.needs), gib(has)),
-        };
-        Some(format!("{needs}; {}", each.join("; ")))
+        // What it needs and what was here, first (cl-1102).
+        Some(format!("{}; {}", self.needs(), each.join("; ")))
     }
     /// Want `components` of each of `selected` (header, components) behind everything, held
     /// until the call ends: a warm set member's `downloaded`.
@@ -575,7 +677,7 @@ impl Fetch {
                 let checkpoint = checkpoint(self.store(), header)?;
                 match self.source(checkpoint.id())? {
                     Some(remote) => {
-                        let model = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
+                        let (model, release) = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| (header.clone(), String::new()), |p| (p.model, p.release));
                         let each: Vec<Vec<String>> = match components.is_empty() {
                             true => vec![vec![]],
                             false => components.iter().map(|component| vec![component.clone()]).collect(),
@@ -588,7 +690,9 @@ impl Fetch {
                                 Some(component) => format!("{model} {component}"),
                                 None => model.clone(),
                             };
-                            parts.push(Lining { bytes, remote: remote.clone(), model: model.clone(), label, objects, absent });
+                            parts.push(Lining {
+                                bytes, remote: remote.clone(), model: model.clone(), release: release.clone(), component, label, objects, absent,
+                            });
                         }
                     }
                     // One no Hub brings is all here, or its call can't run.
@@ -716,17 +820,28 @@ impl Fetch {
                     live.watching.store(false, Ordering::Release);
                     return;
                 }
-                drop(live);
                 waits.retain(|model, _| each.iter().any(|e| e.model == *model));
                 for e in &each {
-                    let wait = waits.entry(e.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &e.model, &caller));
+                    let wait = waits.entry(e.model.clone()).or_insert_with(|| {
+                        let wait = crate::activity::wait(crate::activity::Kind::Download, &e.model, &caller);
+                        live.join(&live.hinted, &e.model, &wait);
+                        wait
+                    });
                     wait.here(e.here);
-                    wait.moved("", e.done, e.total);
+                    wait.look();
                 }
+                drop(live);
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         })?;
         Ok(())
+    }
+
+    /// The machine's download of `model` waits on what of it `list` holds (cl-1205): each checkpoint's objects absent when wanted.
+    fn join(&self, list: &Mutex<Vec<Arriving>>, model: &str, wait: &crate::activity::Waiting) {
+        for arriving in list.lock().unwrap().iter().filter(|arriving| arriving.model == model) {
+            arriving.join(&self.machine, wait);
+        }
     }
 
     /// The weights its run waits on that are not all here yet, while any are not; and each
@@ -741,7 +856,7 @@ impl Fetch {
     fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<ModelTransfer> {
         let mut arriving = list.lock().unwrap();
         let mut each: Vec<ModelTransfer> = vec![];
-        for Arriving { model, remote, fetch, here, absent } in arriving.iter_mut() {
+        for Arriving { model, remote, fetch, here, absent, .. } in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
             let mut states = self.machine.fetching(remote, absent).into_iter();
             let mut missing = 0;
@@ -795,9 +910,9 @@ fn counted(each: &[ModelTransfer]) -> Option<Weights> {
 
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
-/// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
-/// waiting reason says on what (`Fetch::waiting_on`), and TensorD's log says so each time where
-/// its chunks are changes. A run whose weights are here hears nothing.
+/// or the fetch ends, its own stage shows again. While a required want is unanswered, TensorD's log
+/// says on what (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`),
+/// never as their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
 pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
@@ -805,51 +920,54 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
     let began_ms = crate::machine::lifecycle::now_ms() as u64;
     let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
-        let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
-        // What its run waits on, as this machine lists it (`activity`), by repository.
-        let caller = engine.caller_id(&id);
+        let (mut last, mut said) = (None, Awaited::new());
         // A call's weights show on its root's progress too, the box a person watches (cl-921: H3's segment downloaded 2.5 min
         // with no bytes on its shot): over its own stage, until they're here.
         let root = engine.get(&id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && *root != id);
-        let tell = |weights: Option<Weights>| {
+        // What its run waits on, as this machine lists it (`activity`), by repository, under its root: the run its caller knows. A
+        // call's own id named no run there, and its download wasn't shown (cl-1205).
+        let caller = engine.caller_id(root.as_deref().unwrap_or(&id));
+        let tell = |waits: Option<Waits>| {
             if let Some(root) = &root {
-                if let Err(error) = engine.observe_weights(root, weights.clone()) {
-                    tracing::warn!("run {root}: its call's weights' progress: {error}");
+                if let Err(error) = engine.observe_waits(root, waits.clone()) {
+                    tracing::warn!("run {root}: what its call waits on: {error}");
                 }
             }
-            engine.observe_weights(&id, weights)
+            engine.observe_waits(&id, waits)
         };
-        let mut waits: std::collections::HashMap<String, crate::activity::Waiting> = Default::default();
+        let mut waits: BTreeMap<String, crate::activity::Waiting> = BTreeMap::new();
         loop {
             let live = fetch.upgrade().filter(|f| !f.ended());
             let (weights, waited) = live.as_ref().map(|f| f.arriving()).unwrap_or_default();
             waits.retain(|model, _| waited.iter().any(|each| each.model == *model));
             for each in &waited {
-                let wait = waits.entry(each.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &each.model, &caller));
+                let wait = waits.entry(each.model.clone()).or_insert_with(|| {
+                    let wait = crate::activity::wait(crate::activity::Kind::Download, &each.model, &caller);
+                    if let Some(live) = &live {
+                        live.join(&live.arriving, &each.model, &wait);
+                    }
+                    wait
+                });
                 wait.here(each.here);
-                wait.moved("", each.done, each.total);
+                wait.look();
             }
-            if let Err(error) = tell(weights.clone()) {
-                tracing::warn!("run {id}: its weights' progress: {error}");
+            // It says which downloads it waits on, never their bytes: those are the machine's, once (Paul, 11-17).
+            let left = weights.as_ref().map_or(0, |weights| weights.total.saturating_sub(weights.done));
+            if let Err(error) = tell(waits_of(&waits, left)) {
+                tracing::warn!("run {id}: what it waits on: {error}");
                 return;
             }
-            let waiting = live.as_ref().and_then(|f| f.waiting_on());
-            if waiting != shown {
-                if let Some(on) = &waiting {
-                    // The log line's state is its phases and counts: bytes and times change it not.
-                    let state = phases(on);
-                    if state != said {
-                        tracing::info!("run {id}: {WAITING_FOR_MODELS}: {on}");
-                        said = state;
-                    }
-                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {on}"))) {
-                        tracing::warn!("run {id}: what it waits on: {error}");
-                    }
+            let on = live.as_ref().map(|f| f.awaited()).unwrap_or_default();
+            // Its readers hear the downloads it waits on (`waiting_on`) and its record what it had and needed (`weights`), never
+            // has/needs words set here (cl-1230: they showed only once its downloads had landed, still saying what was to download).
+            if on != said {
+                if let Some(words) = live.as_ref().and_then(|f| f.waiting_on()) {
+                    tracing::info!("run {id}: {WAITING_FOR_MODELS}: {words}");
                 }
-                shown = waiting.clone();
+                said = on;
             }
             // What the run waited for lands in the transport log, as a pull's does.
-            if weights.is_none() && waiting.is_none() {
+            if weights.is_none() && said.is_empty() {
                 if let (Some(Weights { models, total, .. }), true) = (last, live.is_some()) {
                     let waited = format!("bytes={total} seconds={:.1} run={id}", began.elapsed().as_secs_f64());
                     storage::transport(&store, "arrived", &models, &waited);
@@ -874,22 +992,6 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if let Err(error) = started {
         tracing::warn!("its weights' progress: {error}");
     }
-}
-
-/// `waiting_on`'s text as a state: each component's label and the phases its chunks are in (not
-/// their counts, bytes or times), or that it is on disk but not bound. The log says each change.
-fn phases(waiting: &str) -> String {
-    waiting.split("; ").map(|part| {
-        let label = part.split(": ").next().unwrap_or(part);
-        if part.contains("not yet bound") {
-            return format!("{label}: on disk, not yet bound");
-        }
-        let inside = part.rsplit_once(" (").map_or("", |(_, t)| t.split(')').next().unwrap_or(""));
-        let mut names: Vec<&str> = inside.split(", ").map(|p| p.split_once(' ').map_or(p, |(_, name)| name)).collect();
-        names.sort_unstable();
-        names.dedup();
-        format!("{label}: {}", names.join(", "))
-    }).collect::<Vec<_>>().join("; ")
 }
 
 impl Drop for Fetch {

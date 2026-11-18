@@ -14,7 +14,7 @@ use api::{
 };
 
 use super::{
-    Project, Reading, Stale, board_of, cut_row,
+    Project, Reading, board_of, cut_row,
     folder::{Folder, Lock},
     format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
@@ -125,16 +125,14 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
         warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| api::calcifer::project::Warning::of(&doc.assets[i].name, message.clone()))));
     }
     warnings.dedup();
-    let (mut missing, mut stale) = (vec![], vec![]);
+    let mut missing = vec![];
     let reading = Reading { doc: &doc, folder, lock: &lock, stand: &stand, known: &known };
     let rows: Vec<Row> = (0..doc.assets.len())
         .map(|i| {
             let mut row = row(&reading, i);
             row.etag = etags.get(&name_key(&row.name)).cloned();
-            match &stand[i].state {
-                Stand::Stale(why) => stale.push(Stale { name: row.name.clone(), why: why.clone() }),
-                Stand::Missing | Stand::Waits if doc.makes(i) => missing.push(row.name.clone()),
-                _ => {}
+            if stand[i].state == Stand::Missing && doc.makes(i) {
+                missing.push(row.name.clone());
             }
             row
         })
@@ -144,11 +142,11 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
+    let next = next_steps(&orphans, absent, !missing.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let notes = rows.iter().flat_map(|row| row.unused.iter().map(|unused| api::calcifer::project::Warning::of(&row.name, unused.line(&row.name)))).collect();
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![], appearance: None };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![], appearance: None };
     Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 
@@ -257,7 +255,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
     // Told with no file moved, it's what the head says that moved, even if it went there and back since the last telling and a reader saw it there.
-    let head = settled || was.busy != now.busy || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.notes, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.notes, &to.next);
+    let head = settled || was.busy != now.busy || was.queue != now.queue || (&from.missing, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.notes, &from.next) != (&to.missing, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.notes, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, cursor: None, assets: Some(assets), gone, head },

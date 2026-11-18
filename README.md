@@ -98,7 +98,7 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
 rent a Linux GPU, or `--on <machine>` for one you have. Run project commands from the project directory. `cozy new [directory]` creates a project explicitly.
-`cozy open`, `cozy run` and `cozy status` use an existing project. Outputs land in its `files/` directory.
+`cozy run` and `cozy status` use an existing project. `cozy open` opens it; outside a project folder, it opens Cozy Creator, where you can pick one. Outputs land in its `files/` directory.
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
 `cozy open` uses local port 8818 by default. `cozy open --port 9000` selects and remembers another loopback port. Project links use `/p/` followed by a stable nine-character uppercase code.
@@ -124,13 +124,13 @@ cozy status                                # project health and warnings
 An agent edits the same project as a file of nodes: `cozy get` lists them, `cozy get NAME` prints each whole as YAML, `cozy apply -f
 FILE` merges each back against the rev it was read at, `cozy diff -f FILE` shows that merge and writes nothing, and `cozy delete NAME`
 removes one. What a person changed on the page meanwhile stands, a value both changed is a conflict, and the page's Undo takes an
-apply back. `cozy explain [TOOL]` says what a file holds, `--schema` as JSON Schema. `cozy render NAME` is the page's Render: it
-brings the node up to date, what it reads first, and joins a render already going, so running it again never pays twice.
+apply back. `cozy explain [TOOL]` says what a file holds, `--schema` as JSON Schema. `cozy render NAME` is the page's Render: a new
+take of that node alone, from what it reads now, joining a render of it already going, so running it again never pays twice.
 
 ```sh
 cozy get shot_2 > shot_2.yaml              # edit it with any editor
 cozy apply -f shot_2.yaml                  # the file is rewritten as it now stands
-cozy render film --on local                # film, and shot_2 first, as it's out of date
+cozy render shot_2 film --on local         # shot_2, then film from its new take
 ```
 
 The project model and every command: [PROJECT.md](crates/calcifer/docs/PROJECT.md).

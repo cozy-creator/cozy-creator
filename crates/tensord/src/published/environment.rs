@@ -7,6 +7,7 @@
 //! once it is installed. uv runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::{pypi, update}, process::Supervised};
+use api::release::{series, Bound};
 use pep440_rs::{Version, VersionSpecifiers};
 use serde_json::{json, Value};
 use std::{
@@ -77,8 +78,8 @@ impl Floor {
     /// `name[extras]==version`, as uv installs it.
     fn pinned(&self, version: &str) -> String {
         match self.extras.is_empty() {
-            true => format!("{}=={version}", self.name),
-            false => format!("{}[{}]=={version}", self.name, self.extras),
+            true => api::release::requirement(&self.name, Bound::Exactly, version),
+            false => api::release::requirement(&format!("{}[{}]", self.name, self.extras), Bound::Exactly, version),
         }
     }
 }
@@ -93,7 +94,9 @@ impl Publisher {
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
         loop {
-            let turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+            let turn = crate::line::INSTALLS
+                .turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said, &|id: &str| job.reads(id))
+                .ok_or_else(super::canceled)?;
             *job.yields.lock().unwrap() = Some(turn.outranked().clone());
             let built = self.build_in_turn(env, project, job);
             *job.yields.lock().unwrap() = None;
@@ -298,7 +301,7 @@ impl Publisher {
                 // The lock's own series at its newest released patch: a patch is fixes, never a
                 // change in what a package calls. One that doesn't install here leaves the lock's.
                 let newest: Vec<String> = SDK.iter()
-                    .filter_map(|name| Some(newest_patch(name, locked.packages.get(*name)?))).collect();
+                    .filter_map(|name| Some(api::release::requirement(name, Bound::NewestPatch, locked.packages.get(*name)?))).collect();
                 match self.pair(env, &py, &newest, job) {
                     Ok(Ok(found)) => fallback.extend(checked(&found)),
                     Ok(Err(why)) | Err((super::UNREACHABLE, why)) => {
@@ -495,6 +498,10 @@ impl Publisher {
         // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
         // machine's cache and Pythons, never a project's.
         let stop = job.stops();
+        // A guess a run's install took the line from starts no step more (`line::Turn::outranked`).
+        if stop.as_ref().is_some_and(|(stop, _)| stop.is_cancelled()) {
+            return Err(canceled());
+        }
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
@@ -619,6 +626,12 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
     }
     platform::process::own_group(&mut command);
     let mut child = command.spawn().map_err(io_failure)?;
+    // A project's own code described: its view keeps this birth, so a lock that can't reach this machine ends it (cl-1064).
+    if let Err(error) = platform::process::Birth::of(child.id()).map_err(std::io::Error::from).and_then(|birth| crate::private_io::record_birth(python, &birth)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io_failure(error));
+    }
     // Its own exit says why, should it stop before reading the request.
     let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
     let (mut stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take());
@@ -859,13 +872,6 @@ fn torch_miss(line: &str, layer: &Layer) -> Option<String> {
     (layer.holds(&required) || layer.holds(&requirer)).then(|| requirement.to_string())
 }
 
-/// A release's series: its major, or before 1.0 its minor, within which a release only fixes.
-fn series(version: &Version) -> Vec<u64> {
-    let release = version.release();
-    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
-    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
-}
-
 /// Whether release `ours` is `locked` or a later patch of it: the same series and not older.
 fn patch_of(ours: &str, locked: &str) -> bool {
     let (Ok(ours), Ok(locked)) = (Version::from_str(ours), Version::from_str(locked)) else {
@@ -925,17 +931,6 @@ fn relock(project: &Project, ranged: bool) -> String {
 /// machine's protocol in its place (`Publisher::onward`).
 pub(crate) fn newest_hint(package: &str) -> String {
     format!("try its newest release: `cozy package install {package}`")
-}
-
-/// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
-fn newest_patch(name: &str, locked: &str) -> String {
-    match Version::from_str(locked) {
-        Ok(version) => {
-            let series: Vec<String> = series(&version).iter().map(u64::to_string).collect();
-            format!("{name}>={locked},=={}.*", series.join("."))
-        }
-        Err(_) => format!("{name}=={locked}"),
-    }
 }
 
 /// The Runtime and TensorFS of `versions`, by name.
@@ -1020,6 +1015,8 @@ pub(crate) fn compile_bytecode(python: &Path) {
                 Err(error) => tracing::warn!("environment bytecode: {error}"),
                 Ok(_) => {}
             }
+            // Its bytecode is the environment's bytes too (`reclaim::measure_usage`).
+            crate::reclaim::environments_changed();
         })
     });
     if let Err(error) = reaped {

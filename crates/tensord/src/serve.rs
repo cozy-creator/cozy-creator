@@ -159,7 +159,7 @@ fn run_machine(
     mut ready: crate::machine::supervise::Ready,
     listeners: Option<crate::machine::net::Listeners>,
 ) -> io::Result<()> {
-    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, .. } = config;
+    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, dev, speculate, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
     if mode == ::api::config::MachineMode::Shared {
@@ -312,6 +312,7 @@ fn run_machine(
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
         let home = engine.join("executor-home");
         std::fs::create_dir_all(&home)?;
+        crate::private_io::keep_births_in(engine.join("private-executors"))?;
         let config = serde_json::json!({
             "devices": devices.join(","),
             "inventory": gpus,
@@ -325,6 +326,8 @@ fn run_machine(
             "image_kernels": (!gpus.is_empty() && broken.is_none()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
             "toolchain": crate::machine::toolchain::dir(&engine),
             "gpu_samples": gpu_samples,
+            "dev": dev,
+            "speculate": speculate,
             "broken": broken.as_ref().map(|broken| format!("broken: {}", broken.message)),
         });
         let config = serde_json::from_value::<crate::gpu_service::GpuConfig>(config)
@@ -376,7 +379,7 @@ fn run_machine(
         let lifecycle = lifecycle.clone();
         let service = service.clone();
         let provider = grant.provider.clone();
-        let (state, origin) = (layout.state.clone(), machine.clone());
+        let state = layout.state.clone();
         // Its check-ins (reads of its keys) on a thread and runtime of their own: the Hub hears it while it serves, whatever its
         // API or a download or an install does meanwhile, and releases it only once it falls silent (cl-977).
         let check_ins = crate::machine::hub::Hub::for_check_ins(&hub)?;
@@ -387,11 +390,15 @@ fn run_machine(
                 Err(error) => tracing::error!("no runtime for the rental's check-ins ({error}): its Hub releases it once it hears nothing"),
             }
         })?;
+        #[cfg(unix)]
+        if let Some(own) = provider.clone() {
+            runtime.spawn(crate::machine::provider::stop_when_asked(own));
+        }
         std::thread::Builder::new()
             .name("rental-lifecycle".into())
             .spawn(move || {
                 runtime.block_on(async {
-                    crate::machine::speed::serve(hub.clone(), state, origin);
+                    crate::machine::speed::serve(hub.clone(), state);
                     crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, service.engine.clone()).await;
                 });
                 // The Hub accepted the release, or the rental ended itself: this process ends.
@@ -420,6 +427,7 @@ fn run_machine(
         gpus,
         gpu_problems,
         gpu_memory_limit,
+        gpu_samples,
         mode: mode.name(),
         torch,
         stuck: crate::machine::stuck::Before::watch(stuck, paths.clone(), broken.is_some()),

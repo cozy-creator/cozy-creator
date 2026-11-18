@@ -19,6 +19,8 @@ from tiny import _shared, qwen3
 from tiny._video import video
 
 REF, REASONER = "ifm/pan2@0.2.0", "qwen/qwen3.5-9b@0.2.0"
+#: pan2's `text_encoder` slot default (se-160): the same tiny checkpoint, whose encoder it reads.
+TEXT_ENCODER = "pottokao/moss-image-text-encoder-heretic-pan2@0.1.0"
 _CAPTION = json.dumps({"video_style": "A fixed tabletop shot.", "lighting": "Daylight.",
                        "perspective_view": "Side view.", "subjects_lifecycle": [],
                        "init_frame_visual_description": "A red ball on a table.",
@@ -81,14 +83,21 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "text_encoder": ["transformers", "Qwen3_5TextModel"], "vae": ["diffusers", "AutoencoderKLWan"],
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"], "tokenizer": ["transformers", "Qwen2Tokenizer"],
     }))
-    return {REF: out, REASONER: qwen3.dense(root / "reasoner")}
+    return {REF: out, TEXT_ENCODER: out, REASONER: qwen3.dense(root / "reasoner")}
 
 
-_SMALL: dict[str, Json] = {"prompt": _CAPTION, "duration_s": 1, "seed": 7, "steps": 1,
+def _instructions(text: str, *keys: str) -> dict[str, Json]:
+    return {"text": text, "references": [{"key": key, "type": "image"} for key in keys]}
+
+
+_SMALL: dict[str, Json] = {"instructions": _instructions(_CAPTION), "duration": 1, "seed": 7, "steps": 1,
                            "guidance": 1.0, "prompt_upsampling": False}
+# se-164: the first picture the instructions mention is the first frame, as on every canvas box.
+_OPENING = _CAPTION.replace('"A red ball on a table."', '"<opening> A red ball on a table."')
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": dict(_SMALL), "check": video(1248, 704, 25)},
     {"entry": "generate", "name": "cfg", "payload": {**_SMALL, "guidance": 2.5}, "check": video(1248, 704, 25)},
-    {"entry": "generate", "name": "first-frame", "payload": {**_SMALL, "aspect_ratio": "16:9", "guidance": 2.5},
-     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": video(1248, 704, 25)},
+    {"entry": "generate", "name": "first-frame",
+     "payload": {**_SMALL, "instructions": _instructions(_OPENING, "opening"), "aspect_ratio": "16:9", "guidance": 2.5},
+     "files": {"instructions.references.0.file": _shared.picture("opening", 96, 64)}, "check": video(1248, 704, 25)},
 ]

@@ -515,7 +515,7 @@ impl Updates {
     }
 
     fn running(&self) -> Vec<String> {
-        self.engine.with_journal(|journal| journal.started()).unwrap_or_default()
+        self.engine.read_journal(|journal| journal.started()).unwrap_or_default()
     }
 
     /// The build toolchain, probed once and again after each install.
@@ -615,9 +615,6 @@ impl Updates {
         status.to = this_binary(identified(&self.paths.sdk())?);
         status.error.clear();
         status.enter("succeeded");
-        if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.used();
-        }
         if let Some(launch) = &pending.binary {
             let marker = self.paths.engine.join(DEV);
             match pending.dev {
@@ -1034,6 +1031,9 @@ impl Updates {
                     tracing::error!("update publication: {error}; rollback: {rollback}");
                     // The links cannot be trusted. Restart while admission remains closed;
                     // startup recovers before selecting software, or refuses this launch.
+                    if let Some(lifecycle) = &self.lifecycle {
+                        lifecycle.update_ended();
+                    }
                     exit(REPLACE_EXIT);
                 }
             }
@@ -1043,9 +1043,9 @@ impl Updates {
             "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );
-        // The restarted service's idle window starts here; its commit starts it again.
+        // Its end, for the ledger the restarted service opens: a run held for it keeps this machine (cl-1236).
         if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.used();
+            lifecycle.update_ended();
         }
         exit(if binary.is_some() { super::binary::EXEC_EXIT } else { REPLACE_EXIT });
         Ok(())

@@ -109,6 +109,22 @@ pub(crate) async fn resolve(
     published(api, hub, text, Some(on), runs).await
 }
 
+/// `text` as a quote or an estimate of a run `on` its machine reads it (cl-1115: a quote never acts): local code described
+/// (`local_code::foreseen`), a published release as that machine last said. Nothing is installed, started, moved or updated.
+pub(crate) async fn foreseen(api: &Arc<Api>, hub: &str, text: &str, code: Option<&LocalCode>, on: &On) -> Result<Resolved, Error> {
+    if let Some(found) = local(api, text, code, None) {
+        let (code, function) = found?;
+        let prepared = crate::local_code::foreseen(api, &code, on, hub).await?;
+        let interface = prepared.interface.as_ref().map(parse).transpose()?;
+        let function = match &interface {
+            Some(interface) => chosen(interface, function),
+            None => function,
+        };
+        return Ok(Resolved::Local { local: Box::new(prepared), interface, function });
+    }
+    published(api, hub, text, Some(on), false).await
+}
+
 /// `GET /v1/targets`: the package, its release and why for a run `on` its machine, and the function,
 /// checked as a run checks it; local code (a client's `code`, or a project's from its folder `cwd`) as its machine read it, else
 /// from its source, installing and starting nothing.
@@ -359,6 +375,20 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             )
             .next(format!("cozy machine update {machine}"))
         }
+        api::release::Refused::Unmet { release, needs } if held.moves == api::release::Moves::ByHand => Error::new(
+            Kind::Conflict,
+            "runtime_unmet",
+            format!("{shown} {release} needs cozy-runtime{needs}, but {machine} runs {}, and another computer of the account rented it, so Cozy moves it only by hand.", held.runtime),
+        )
+        .remedy(format!("Move it by hand, or pick a release of {shown} that runs on {machine}."))
+        .next(format!("cozy machine update {machine}")),
+        api::release::Refused::Unmet { release, needs } if held.moves == api::release::Moves::Busy => Error::new(
+            Kind::Unavailable,
+            "runtime_unmet_busy",
+            format!("{shown} {release} needs cozy-runtime{needs}, but {machine} runs {}, and another computer's runs are on it now: Cozy moves it only when it is idle.", held.runtime),
+        )
+        .remedy(format!("Run it again once {machine} is idle, or on another machine."))
+        .next(format!("cozy machine show {machine}")),
         api::release::Refused::Unmet { release, needs } => Error::new(
             Kind::Conflict,
             "runtime_unmet",
@@ -379,6 +409,8 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
         api::release::Chosen::Older { release, newest, needs } => {
             let why = match held.moves {
                 api::release::Moves::No => "only its owner can change it",
+                api::release::Moves::Busy => "another computer's runs are on it now",
+                api::release::Moves::ByHand => "another computer of the account rented it, so Cozy moves it only by hand",
                 _ => "no Runtime it can move to does",
             };
             let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and {why}, so this run uses {release}.", held.runtime);

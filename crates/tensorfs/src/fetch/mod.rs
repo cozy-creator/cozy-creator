@@ -37,7 +37,7 @@ pub use volume::VolumeOrigin;
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
 pub use ask::{Backoff, ATTEMPTS};
-pub use download::{install_received, installing, Fetching, Installing, Phase, BACKGROUND, EMERGENCY, SOFTWARE};
+pub use download::{install_received, installing, starting, sustained, Fetching, Installing, Phase, Starting, Sustained, BACKGROUND, EMERGENCY, SOFTWARE};
 use download::{Shared, Task};
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host
@@ -285,6 +285,7 @@ impl Fetcher {
         shared.join_link();
         tokio::spawn(Arc::clone(&shared).dispatch());
         tokio::spawn(Arc::clone(&shared).pace());
+        tokio::spawn(Arc::clone(&shared).tail());
         Fetcher { shared }
     }
 

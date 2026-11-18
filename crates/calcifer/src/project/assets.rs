@@ -21,7 +21,7 @@ use api::{
 
 use super::{
     Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, stop_at_machines, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
-    measure_soon, model, noun, stale_names,
+    measure_soon, model, noun,
     written::{Boxed, Start, Written},
 };
 use crate::api::{Api, Refusal, parse};
@@ -255,7 +255,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             let bound = async {
                 let hub = api.machines.hubs.default_origin();
                 let on = [crate::runs::default_on(&api)];
-                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, super::host::Wait::Plain).await?;
+                // Read as a quote reads it: nothing installed, started or moved on any machine to show a call (cl-1115).
+                let package = Host::new(&api).foreseen(&hub, &doc.target(i), &project.folder.dir, &on).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function called {function}.", package.name)))?;
                 let (fields, reserved, stand, title) = (doc.inputs_of(i), package.reserved(), &model.stand, package.title());
@@ -620,7 +621,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
 }
 
 /// `DELETE /v1/projects/{id}/assets/{name}/versions/{number}`: that version off the asset, at once. Its number stays given and its files on record
-/// until `reclaim`, and what's approved goes with it. What read it is out of date only as anything is when what it reads moves.
+/// until `reclaim`, and what's approved goes with it. What reads it reads what the box stands on now.
 pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)): Path<(String, String, String)>) -> Result<Json<VersionMoved>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
@@ -635,7 +636,6 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
         || doc.assets[i].pin.as_ref().is_some_and(|pin| main == Some(pin) && !held.versions.iter().any(|other| other.number != number && other.main() == Some(pin))),
         |selected| selected == number,
     );
-    let before = stale_names(&doc, &doc.stand(&lock));
     let read_by = doc.read_by(i, number);
     folder
         .act(|| {
@@ -649,7 +649,7 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
             Ok(())
         })
         .map_err(Refusal)?;
-    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by, ..answer }))
+    moved(&api, &project, name, number, noun, approved).await.map(|Json(answer)| Json(VersionMoved { read_by, ..answer }))
 }
 
 /// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it as its next version, so versions of one thing live on one box. The file it held before that
@@ -663,7 +663,6 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let asset = &doc.assets[i];
     let name = asset.name.clone();
     let kept = keep_file(folder, &asked.source).await?;
-    let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
     // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
     let (number, already) = folder.act(|| {
         let (number, already) = joined(folder, &doc, i, &kept)?;
@@ -674,7 +673,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     }).map_err(Refusal)?;
     measure_soon(&api, &project);
     let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
-    moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
+    moved(&api, &project, name, number, noun, false).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
 }
 
 /// `kept` the next version of asset `i` of `doc`, in one transaction (or the act it's in): its number, and whether a version held it already.
@@ -701,7 +700,7 @@ pub(super) fn joined(folder: &folder::Folder, doc: &Doc, i: usize, kept: &folder
 
 /// `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: what its main file says of itself, whole, as a person sets it on its box (orbit
 /// viewing on for any video). Number 0 is the file a box with no version shows (a dropped video): numbered first, as a join numbers it.
-/// Nothing goes out of date: it's how the file shows, not what made it. Undo puts the old map back.
+/// It's how the file shows, not what made it. Undo puts the old map back.
 pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, number)): Path<(String, String, String)>, body: Result<Bytes, BytesRejection>) -> Result<Json<VersionPatched>, Refusal> {
     let asked: VersionPatch = parse(&body?)?;
     let length = serde_json::to_vec(&asked.metadata).map_or(usize::MAX, |bytes| bytes.len());
@@ -770,8 +769,7 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
     Error::new(Kind::NotFound, "version_unknown", said).next("cozy status --full")
 }
 
-/// A version's move as its transaction knows it, for its answer kept with it: what it stands on is what's approved, else its newest. What
-/// that put out of date the answer after says (`moved`).
+/// A version's move as its transaction knows it, for its answer kept with it: what it stands on is what's approved, else its newest.
 fn moving(folder: &folder::Folder, name: &str, number: u32, noun: &str, approved: bool) -> Result<VersionMoved, Error> {
     let lock = folder.lock()?;
     let held = lock.asset(name);
@@ -779,11 +777,11 @@ fn moving(folder: &folder::Folder, name: &str, number: u32, noun: &str, approved
     let pin = format::approved_file(pinned.as_ref(), &lock);
     let on = held.and_then(|held| held.versions.iter().rev().find(|version| pin.is_some() && version.main() == pin.as_ref()));
     let stands = on.or_else(|| held.and_then(|held| held.versions.last())).map(|version| version.number);
-    Ok(VersionMoved { name: name.to_owned(), number, noun: noun.to_owned(), approved, stands, stale: vec![], read_by: vec![], already: false })
+    Ok(VersionMoved { name: name.to_owned(), number, noun: noun.to_owned(), approved, stands, read_by: vec![], already: false })
 }
 
 /// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.
-async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32, noun: &str, approved: bool, before: &BTreeSet<String>) -> Result<Json<VersionMoved>, Refusal> {
+async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32, noun: &str, approved: bool) -> Result<Json<VersionMoved>, Refusal> {
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     project.asked.notify_one();
     let (doc, lock) = (Doc::load(&project.folder).map_err(Refusal)?, project.folder.lock().map_err(Refusal)?);
@@ -793,8 +791,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
         Walk::new(api, project).film_follows(&doc, &stand, &lock, i).await;
     }
     let stands = stand[i].version().or(lock.asset(&name).and_then(|held| held.versions.last()).map(|version| version.number));
-    let stale = stale_names(&doc, &stand).into_iter().filter(|name| !before.contains(name)).collect();
-    Ok(Json(VersionMoved { name, number, noun: noun.to_owned(), approved, stands, stale, read_by: vec![], already: false }))
+    Ok(Json(VersionMoved { name, number, noun: noun.to_owned(), approved, stands, read_by: vec![], already: false }))
 }
 
 fn taken(name: &str) -> Error {

@@ -44,7 +44,7 @@ async function candidateCDP(page, origin, directory) {
   const receipt = {
     origin, directory: root,
     files: [...files.values()].map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
-    documents: [], static_requests: [], errors: [],
+    documents: [], static_requests: [], errors: [], aborted: [],
     cachemode: { browser_cache: 'unchanged', static_cache_control: 'public, max-age=31536000, immutable', cache_hits: 'unverified; coordinator must observe actual browser cache hits', interception: 'page CDP Fetch; no Playwright routes or Network.setCacheDisabled' },
     disposed: false,
   };
@@ -62,8 +62,31 @@ async function candidateCDP(page, origin, directory) {
   const pending = new Set();
   const error = (operation, failure) => receipt.errors.push({ operation, name: failure?.name ?? 'Error', message: String(failure?.message ?? failure).replace(/https?:\/\/[^\s)]+/g, '[url]') });
   const navigated = ({ frame }) => { if (!frame.parentId) topFrame = frame.id; };
+  // A request the page cancelled itself (a picture whose box re-rendered, a live theme change: 44307867239) is gone before its
+  // answer: the browser says so (Network.loadingFailed, canceled), and answering it fails `Invalid InterceptionId`. That is no
+  // delivery failure, so it is counted in `aborted`, by path. Any other failed answer stays an error.
+  const cancels = new Map();
+  const entry = id => {
+    let e = cancels.get(id);
+    if (!e) { e = { said: '' }; e.seen = new Promise(done => { e.done = done; }); cancels.set(id, e); }
+    return e;
+  };
+  const cancelled = id => id ? Promise.race([entry(id).seen, new Promise(done => setTimeout(done, 2000, false))]) : Promise.resolve(false);
+  const failed = ({ requestId, canceled, errorText, blockedReason }) => {
+    const e = entry(requestId);
+    e.said = `${blockedReason ?? errorText}${canceled ? ', cancelled' : ''}`;
+    if (canceled) e.done(true);
+  };
   const paused = event => {
     const task = handle(event).catch(async failure => {
+      if (/Invalid InterceptionId/.test(String(failure?.message))) {
+        if (await cancelled(event.networkId)) {
+          receipt.aborted.push({ path: new URL(event.request.url).pathname, resource: event.resourceType });
+          return;
+        }
+        // Not one the browser said was cancelled: an error still, with what it did say.
+        failure = new Error(`${failure.message} (the browser said: ${event.networkId ? cancels.get(event.networkId)?.said || 'nothing of it in 2 s' : 'no network id'})`);
+      }
       if (!closing && !page.isClosed()) error('Fetch.requestPaused', failure);
       // Failed candidate delivery stays a failed receipt; unblock only this request with its real response.
       if (!closing) await session.send('Fetch.continueRequest', { requestId: event.requestId }).catch(failure => { if (!page.isClosed()) error('Fetch.continueRequest', failure); });
@@ -82,13 +105,15 @@ async function candidateCDP(page, origin, directory) {
       const values = name => headers.filter(header => header.name.toLowerCase() === name).map(header => header.value);
       const csp = values('content-security-policy'), contentType = values('content-type').join(';');
       const replace = !event.responseErrorReason && status >= 200 && status < 300 && contentType.split(';')[0].trim().toLowerCase() === 'text/html' && csp.some(value => value.trim());
-      const document = { status: status ?? null, replaced: Boolean(replace), csp_sha256: csp.length ? sha(csp.join('\n')) : null };
+      // Replaced once delivered: a document the page cancelled (`aborted`) replaced nothing.
+      const document = { status: status ?? null, replaced: false, csp_sha256: csp.length ? sha(csp.join('\n')) : null };
       receipt.documents.push(document);
       if (!replace) return session.send('Fetch.continueRequest', { requestId });
       security = headers.filter(header => securityNames.has(header.name.toLowerCase()));
       const replacement = headers.filter(header => !bodyHeaders.has(header.name.toLowerCase()));
       replacement.push({ name: 'Content-Length', value: String(html.bytes) });
       await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, ...(event.responseStatusText ? { responsePhrase: event.responseStatusText } : {}), responseHeaders: replacement, body: html.body });
+      document.replaced = true;
       document.sha256 = html.sha256;
       return;
     }
@@ -113,18 +138,21 @@ async function candidateCDP(page, origin, directory) {
       // Fetch.disable releases this session's paused requests; no server/browser/context cache state is changed.
       await session.send('Fetch.disable').catch(failure => { if (!page.isClosed()) error('Fetch.disable', failure); });
       await Promise.allSettled([...pending]);
-      session.off('Fetch.requestPaused', paused); session.off('Page.frameNavigated', navigated);
+      session.off('Fetch.requestPaused', paused); session.off('Page.frameNavigated', navigated); session.off('Network.loadingFailed', failed);
       await session.detach().catch(failure => { if (!page.isClosed()) error('CDPSession.detach', failure); });
-      files.clear(); html = undefined; security = undefined;
+      files.clear(); cancels.clear(); html = undefined; security = undefined;
       receipt.disposed = true; installed.delete(page);
     })();
     return cleanup;
   };
   const closed = () => { void dispose(); };
   Object.defineProperty(receipt, 'dispose', { value: dispose });
-  session.on('Fetch.requestPaused', paused); session.on('Page.frameNavigated', navigated); page.once('close', closed);
+  session.on('Fetch.requestPaused', paused); session.on('Page.frameNavigated', navigated); session.on('Network.loadingFailed', failed);
+  page.once('close', closed);
   try {
     await session.send('Page.enable');
+    // Only to hear which requests the browser cancelled (loadingFailed); it changes no cache behaviour.
+    await session.send('Network.enable');
     topFrame = (await session.send('Page.getFrameTree')).frameTree.frame.id;
     await session.send('Fetch.enable', { patterns, handleAuthRequests: false });
     installed.set(page, receipt);

@@ -170,6 +170,11 @@ impl Machine {
         send(self.request(Method::POST, path::PROJECT_GONE, &[id])).await.map(|_| ())
     }
 
+    /// What a lock that couldn't reach this machine owes it (cl-1064): what it ran in vault view `view` is cancelled and retired.
+    pub(crate) async fn project_gone_at(&self, view: &std::path::Path) -> Result<(), Error> {
+        send(self.request(Method::POST, path::PROJECT_GONE_AT, &[]).json(&api::machine::ViewGone { view: view.to_owned() })).await.map(|_| ())
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
         send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
@@ -234,9 +239,30 @@ impl Machine {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await
     }
 
-    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order.
-    pub(crate) async fn submit_batch(&self, runs: &RunBatch) -> Result<Vec<Result<RunState, Error>>, Error> {
-        let answer: RunBatchAnswer = json(send(self.request(Method::POST, path::RUNS_BATCH, &[]).json(runs)).await?).await?;
+    /// Sends `runs` as one admission (`run-batch/1`): each one's state, or its refusal, in their order; then the events of its
+    /// run `runs.follow` from its start, as `events` reads them, on the same answer (cl-1172). None for the events: a machine
+    /// that answers the batch alone (before cl-1172), whose events its caller asks for.
+    pub(crate) async fn submit_batch(
+        &self,
+        runs: &RunBatch,
+    ) -> Result<(Vec<Result<RunState, Error>>, Option<EventStream>), Error> {
+        let request = self.request(Method::POST, path::RUNS_BATCH, &[]).header(header::ACCEPT, "text/event-stream, application/json");
+        let response = send(request.json(runs)).await?;
+        let streams = (response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()))
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        if !streams {
+            return Ok((Self::admitted(runs, json(response).await?)?, None));
+        }
+        let mut events = Box::pin(sse(response)?);
+        let answer = match events.next().await {
+            Some(Ok(event)) if event.event == ::api::machine::ADMITTED => parse::<RunBatchAnswer>(&event.data)?,
+            Some(Err(e)) => return Err(e),
+            _ => return Err(Error::Answer("the machine's admission stream did not open with its answer".into())),
+        };
+        Ok((Self::admitted(runs, answer)?, Some(Box::pin(run_events(events)))))
+    }
+
+    fn admitted(runs: &RunBatch, answer: RunBatchAnswer) -> Result<Vec<Result<RunState, Error>>, Error> {
         if answer.runs.len() != runs.runs.len() {
             return Err(Error::Answer(format!("the machine answered {} runs of {} sent", answer.runs.len(), runs.runs.len())));
         }
@@ -277,20 +303,7 @@ impl Machine {
         if after > 0 {
             request = request.header("last-event-id", after.to_string());
         }
-        let events = sse(send(request).await?)?;
-        Ok(events.filter_map(|event| async move {
-            match event {
-                // The Responses API's event object alone (xs-209): live, in no log.
-                Ok(event) if event.event == ::api::machine::OUTPUT_TEXT_DELTA => Some(
-                    parse(&event.data).map(|delta| RunEvent { sequence: 0, at_ms: 0, event: Event::OutputTextDelta(delta) }),
-                ),
-                Ok(event) if Event::NAMES.contains(&event.event.as_str()) => {
-                    Some(parse(&event.data))
-                }
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        }))
+        Ok(run_events(sse(send(request).await?)?))
     }
 
     /// The run's newest preview (`path::PREVIEW`); none while it has none. Asking keeps the machine
@@ -313,10 +326,18 @@ impl Machine {
         json(send(self.request(Method::POST, path::CANCEL, &[id])).await?).await
     }
 
-    /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub(crate) async fn log(&self, name: &str, lines: u64) -> Result<Bytes, Error> {
-        let request = self.request(Method::GET, path::LOG, &[name]);
-        bytes(send(request.query(&[("lines", lines)])).await?).await
+    /// The newest `lines` whole lines (0: all) of a log the machine keeps, of those the ones from `since_ms` on, asked for
+    /// as gzip: a machine that knows no gzip answers them plain, and one that knows no `since_ms` answers them all.
+    pub(crate) async fn log(&self, name: &str, lines: u64, since_ms: Option<i64>) -> Result<Bytes, Error> {
+        let request = self.request(Method::GET, path::LOG, &[name]).header(header::ACCEPT_ENCODING, "gzip").query(&[("lines", lines)]);
+        let answer = send(match since_ms { Some(since) => request.query(&[("since_ms", since)]), None => request }).await?;
+        let gzip = answer.headers().get(header::CONTENT_ENCODING).is_some_and(|coding| coding.as_bytes().eq_ignore_ascii_case(b"gzip"));
+        let body = bytes(answer).await?;
+        if !gzip {
+            return Ok(body);
+        }
+        let text = tokio::task::spawn_blocking(move || platform::gzip::unpack(&body)).await.unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        text.map(Bytes::from).map_err(|e| Error::Answer(format!("the machine's log doesn't unpack: {e}")))
     }
 
     /// A log's lines as [`Self::log`] reads them, or those after `after` (a batch's place), then
@@ -444,6 +465,18 @@ pub(crate) struct Bulk {
 }
 
 impl Bulk {
+    /// Lands many whole objects in one request (`PUT /v1/objects`, cl-1123): `body`, `length` bytes of `OBJECTS_TYPE`. Answers
+    /// what the machine holds of each, in their order.
+    pub(crate) async fn put_objects(&self, length: u64, body: impl Into<reqwest::Body>) -> Result<Vec<HeldObject>, Error> {
+        let request = self
+            .request(Method::PUT, path::OBJECTS, &[])
+            .header(header::CONTENT_LENGTH, length)
+            .header(header::CONTENT_TYPE, api::machine::OBJECTS_TYPE)
+            .body(body);
+        let answer: HeldAnswer = json(send(request).await?).await?;
+        Ok(answer.held)
+    }
+
     /// Lands `[first, first + length)` of the object (`sha256:<hex>`, `total` bytes) from `body`;
     /// answers the ranges held after it.
     pub(crate) async fn put(
@@ -541,10 +574,23 @@ fn content_range(value: &str) -> Option<((u64, u64), u64)> {
 }
 
 fn authorized(request: RequestBuilder, auth: &Auth) -> RequestBuilder {
+    let request = request.header(api::machine::CLIENT, client_name());
     match auth.header() {
         Some(value) => request.header(header::AUTHORIZATION, value),
         None => request,
     }
+}
+
+/// This computer as its machines say it sent each run (`api::machine::CLIENT`, cl-1193): its host name.
+fn client_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(unix)]
+        let name = rustix::system::uname().nodename().to_string_lossy().into_owned();
+        #[cfg(not(unix))]
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+        name.chars().filter(|c| c.is_ascii_alphanumeric() || " .-_".contains(*c)).take(64).collect()
+    })
 }
 
 fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
@@ -626,6 +672,24 @@ fn held(response: &Response) -> Result<Ranges, Error> {
     value
         .and_then(parse_held)
         .ok_or_else(|| Error::Answer(format!("the machine answered {HELD} {value:?}")))
+}
+
+/// A run's events, as the machine streams them: those this build reads.
+pub(crate) type EventStream = std::pin::Pin<Box<dyn Stream<Item = Result<RunEvent, Error>> + Send>>;
+
+/// `events`, its SSE read as a run's events: the Responses API's deltas, and each event this build knows.
+fn run_events(events: impl Stream<Item = Result<sse::Event, Error>> + Send + 'static) -> impl Stream<Item = Result<RunEvent, Error>> + Send + 'static {
+    events.filter_map(|event| async move {
+        match event {
+            // The Responses API's event object alone (xs-209): live, in no log.
+            Ok(event) if event.event == ::api::machine::OUTPUT_TEXT_DELTA => Some(
+                parse(&event.data).map(|delta| RunEvent { sequence: 0, at_ms: 0, event: Event::OutputTextDelta(delta) }),
+            ),
+            Ok(event) if Event::NAMES.contains(&event.event.as_str()) => Some(parse(&event.data)),
+            Ok(_) => None,
+            Err(e) => Some(Err(e)),
+        }
+    })
 }
 
 fn sse(response: Response) -> Result<impl Stream<Item = Result<sse::Event, Error>> + Send + 'static, Error> {

@@ -142,7 +142,9 @@ fn seen(store: &Store) -> std::io::Result<Seen> {
     let mut seen = Seen::new();
     for model in store.refs().map_err(storage::io_error)? {
         for (release, lane, reference) in entries(&model) {
-            let Ok(tree) = store.tree(reference) else {
+            // Read off disk, as a reader does: no lock of the store's (cl-1202).
+            let read = store.path(reference).map_err(storage::io_error).and_then(std::fs::read);
+            let Some(tree) = read.ok().and_then(|bytes| tensorfs::format::Tree::from_json(&bytes).ok()) else {
                 continue;
             };
             let Ok((_, header)) = tree.header() else { continue };
@@ -175,9 +177,10 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         if models.last().is_none_or(|m| m.model != *model) {
             models.push(v1::Model { model: model.clone(), ..Default::default() });
         }
-        let (precision, role) = store.checkpoint(header).map(|c| (
-            crate::precision::Profile::of(c.header()).family,
-            c.header().model_role().to_owned(),
+        // Its header read off disk: a listing is Status's, and a reader opens no checkpoint (cl-1202).
+        let (precision, role) = storage::structure(store, &header.sha256).map(|(_, parsed)| (
+            crate::precision::Profile::of(&parsed).family,
+            parsed.model_role().to_owned(),
         )).unwrap_or_else(|_| (String::new(), "unknown".into()));
         models.last_mut().expect("pushed").checkpoints.push(v1::Checkpoint {
             release: release.clone(),

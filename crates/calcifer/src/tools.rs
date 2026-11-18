@@ -1,6 +1,6 @@
-//! The tools cozy runs and never bundles that it fetches itself on first need, pinned builds held
-//! to their sha256, into `~/.cozy/tools`: ffmpeg (cuts, clips) and uv (local code, authoring), as
-//! Calcifer's own work first needs them.
+//! The tools cozy runs and never bundles, pinned builds held to their sha256, in `~/.cozy/tools`: ffmpeg (thumbnails, measures,
+//! cuts, clips), which the installers fetch (`cozy doctor --fix`) and Calcifer at its start when an install didn't, and uv (local
+//! code, authoring), fetched on its first need.
 use std::{
     ffi::{OsStr, OsString},
     io::Read as _,
@@ -18,7 +18,7 @@ use platform::{
 pub type Say<'a> = &'a (dyn Fn(&str) + Sync);
 
 /// What cozy otherwise fetches at its first need, fetched now (`cozy doctor --fix`, which the installers run, cl-1030): each tool and
-/// what it came to, its build or why not. One that fails is fetched again at its first need, as before.
+/// what it came to, its build or why not. ffmpeg that fails is fetched again at Calcifer's next start; uv at its first need.
 pub async fn prefetch(home: &Home, say: Say<'_>) -> Vec<(&'static str, Result<String, String>)> {
     let ffmpeg = ffmpeg(home, say).await.map(|found| found.build).map_err(|error| error.message);
     let uv = uv(home, say).await.map(|path| path.display().to_string()).map_err(|error| error.message);
@@ -202,6 +202,43 @@ static FETCHING_UV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Mac, so it's found once, not on every thumbnail and measure (cl-1054: that held up every request while 100 pictures were imported).
 static USABLE: std::sync::Mutex<Option<(PathBuf, Ffmpeg)>> = std::sync::Mutex::new(None);
 
+/// ffmpeg for an install that didn't fetch it (Homebrew, a copied binary, CI): fetched once, as Calcifer starts, off every request and
+/// every drawing. The fetch's lock is taken here, before anything can want ffmpeg, so what wants it meanwhile waits for this fetch
+/// (`ready_ffmpeg`) holding no turn, and nothing fetches ffmpeg on its first need (projectvault red 44170838119: two thumbnail
+/// drawers held both turns through a first-need download, and another project's thumbnail waited 30 s).
+pub(crate) fn install_at_start(home: Home) {
+    let Ok(fetching) = FETCHING_FFMPEG.try_lock() else { return };
+    tokio::spawn(async move {
+        let _fetching = fetching;
+        if usable_ffmpeg(&home).await.is_some() {
+            return;
+        }
+        if let Err(error) = fetch_ffmpeg(&home, &|line| tracing::info!("{line}")).await {
+            tracing::warn!("installing ffmpeg at start: {}", error.message);
+        }
+    });
+}
+
+/// ffmpeg for work that needs it now (thumbnails, measures, cuts, clips): the pinned build, else PATH's when it encodes libx264,
+/// never fetched here. While Calcifer's start fetches it this waits for that, so it's found before any turn is taken; with none, a
+/// refusal that names the install.
+pub(crate) async fn ready_ffmpeg(home: &Home) -> Result<Ffmpeg, Error> {
+    if let Some(found) = usable_ffmpeg(home).await {
+        return Ok(found);
+    }
+    drop(FETCHING_FFMPEG.lock().await);
+    usable_ffmpeg(home).await.ok_or_else(|| {
+        Error::new(Kind::Unavailable, "ffmpeg_missing", "Cozy's ffmpeg isn't on this computer, so it can't draw, measure or cut media")
+            .remedy("Install what Cozy needs, then try again.")
+            .next("cozy doctor --fix")
+    })
+}
+
+/// Whether Calcifer is fetching ffmpeg now.
+pub(crate) fn installing_ffmpeg() -> bool {
+    FETCHING_FFMPEG.try_lock().is_err()
+}
+
 /// An ffmpeg that encodes libx264 here, the pinned build first: the one found before while its files are there, else found now, from
 /// the blocking pool.
 async fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
@@ -219,8 +256,7 @@ async fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
     found.await.ok().flatten()
 }
 
-/// ffmpeg for work that needs it: the pinned build, else PATH's when it encodes libx264, else the
-/// pinned build fetched now, on this first need.
+/// ffmpeg installed now (`cozy doctor --fix`): the pinned build, else PATH's when it encodes libx264, else the pinned build fetched.
 pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
@@ -229,6 +265,11 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
     }
+    fetch_ffmpeg(home, say).await
+}
+
+/// The pinned ffmpeg fetched, `FETCHING_FFMPEG` held.
+async fn fetch_ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     let archives = tools::ffmpeg_build();
     if archives.is_empty() {
         return Err(unpinned("ffmpeg"));
@@ -285,7 +326,8 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
     let staging = tempfile::tempdir_in(parent).map_err(|e| failed(e.to_string()))?;
     for archive in archives {
         say(&format!("fetching {name}: {}", archive.url));
-        tracing::info!(target: "cozy.service_health", tool = name, "fetching a tool");
+        tracing::info!(target: "cozy.service_health", tool = name, url = archive.url, "fetching a tool");
+        let began = std::time::Instant::now();
         let part = parent.join(format!(".{name}-{}.part", &archive.sha256[..12]));
         let (mut download, got) = tensorfs::fetch::get_pinned_into(archive.url, &part, &mut |_| {}).await.map_err(failed)?;
         if got != archive.sha256 {
@@ -299,6 +341,9 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
         }
         tools::extract(archive, &mut download, staging.path()).map_err(|e| failed(e.to_string()))?;
         let _ = std::fs::remove_file(&part);
+        let ms = began.elapsed().as_millis() as u64;
+        say(&format!("fetched {name} in {:.1} s", ms as f64 / 1000.0));
+        tracing::info!(target: "cozy.service_health", tool = name, url = archive.url, ms, "fetched a tool");
     }
     let staged = staging.keep();
     match std::fs::rename(&staged, dir) {

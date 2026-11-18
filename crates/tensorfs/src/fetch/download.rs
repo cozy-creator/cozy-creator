@@ -2,9 +2,11 @@
 //! 16 MiB ranges (one request for an object of 16 MiB or less), one limit on requests in flight across
 //! every object, and each request asked again by the one retry rule ([`ask`]) from the byte it reached.
 //! A range is written at its offset in the object's one file, as aws-cli writes parts; nothing is joined.
-//! A request place left free with nothing waiting takes the back half of the in-flight range with the most
-//! left (aria2's dynamic split, BitTorrent's end game), so a dripping object's tail gets many requests; a tail too
-//! small to split that moves far slower than its peers is asked again on another connection, racing it (`HEDGES`).
+//! The end game (cl-1180): once nothing is left to start, a place that comes free at once helps a range in flight. A range
+//! behind what a median request takes (`BEHIND`) gives its back away a chunk at a time (`CHUNK`), and once it has one chunk
+//! left is raced by more requests at once, the first to its end stopping the rest (BitTorrent's end game); a range moving
+//! at the median is halved at a chunk's edge only while that pays (`SPLIT`, aria2's dynamic split). No tick: a place
+//! coming free and a range's due are the events. The bulk, with something always waiting to start, never sees it.
 //!
 //! - **Order.** The queue is a plain number, smaller first; equal numbers go in arrival order. Its
 //!   high 32 bits name a job (TensorD's: a run, in job order), its low ones a part within it. An
@@ -21,7 +23,8 @@
 //!   link; then the rest go on (cl-966). Software (order 1: an install's or an update's files) never waits for it.
 //!   While a need is under way (a weight before `BACKGROUND`: what a run reads before it starts), no background weight
 //!   starts and one in flight gives way at its next bytes, in every downloader of the process too: a guess never takes
-//!   the link from what a run waits on (cl-1101).
+//!   the link from what a run waits on (cl-1101). They wait the same while a call starts cold ([`starting`]), until its
+//!   models are loaded: an extra takes no disk, link or page cache from a request's start (cl-1118).
 //! - **Sharing (cl-1007).** Orders 0 and 1 are never paced. Weights (every later order) take the whole link, except while an
 //!   install downloads beside them ([`installing`]): its process group's own sockets, read once a second
 //!   ([`install_received`]), tell when it does and at what rate. Then the weights yield at once to a sixteenth of the most
@@ -36,7 +39,7 @@
 //! - **Every answer that is not 2xx is logged** with its object, range and attempt, and counted.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -66,31 +69,39 @@ const WRITE_BACKS: usize = 2;
 const VOLUME_STALL: Duration = Duration::from_secs(30);
 /// How often an object another process is fetching is looked at again.
 const CLAIM_POLL: Duration = Duration::from_millis(250);
-/// A free place with nothing waiting takes the back half of the in-flight range with the most left,
-/// while that half is at least `STEAL` (aria2's dynamic split, BitTorrent's end game).
+/// The least a cut gives away.
 const STEAL: u64 = 512 << 10;
-/// A range's tail no steal can split (under `2 * STEAL` left) that moves slower than its peers is asked again on another
-/// connection, racing the request it was (a hedged request; AWS's guidance retries the slowest few percent so): judged
-/// over each `HEDGE_AFTER`, slow under an eighth of what a range's request moves (`Shared::typical`) and under
-/// `HEDGE_FLOOR`, at most `HEDGES` times a range. The first of a race to reach the end stops the others. A tail that
-/// sent 16 KiB every 27 s, under the 30 s stall, held a run 15 min (tfs-149, run 47820).
-const HEDGE_AFTER: Duration = Duration::from_secs(2);
-const SLOWER: f64 = 8.0;
-const HEDGE_FLOOR: f64 = 1e6;
-const HEDGES: u32 = 3;
-/// A request that has had no byte yet is judged only after this: R2's first byte of a cold chunk takes 1-8 s (tfs-141),
-/// and at 2 s a pod's 500 small first asks drew 78 hedges through a slow proxy (tfs-149).
-const HEDGE_SILENT: Duration = Duration::from_secs(8);
-/// The most hedges one look sends (`WINDOW`).
-const HEDGES_AT_ONCE: usize = 4;
-/// What a request moves before any range of 4 MiB or more has said (`Shared::typical`).
+/// R2 fills a cold object an aligned MiB at a time: a request inside a chunk being filled waits for that fill, and
+/// requests on other chunks fill theirs side by side (tfs-141). Cuts fall on chunk edges. Cut at any byte and halved
+/// on a 500 ms tick, a 16 MiB object's crawling last 13 MiB took 4.4 s as 26 requests at 24-425 KB/s (hougetsu, 11-17).
+const CHUNK: u64 = 1 << 20;
+/// A range is behind once it has taken `BEHIND` times what a median request takes for its bytes (the median first byte,
+/// then the bytes at the median rate) since its request began or it was last raced. At the end, one with more than a chunk
+/// left gives its last chunk to each place that comes free; one with a chunk left is raced by `COPIES` requests at once on
+/// other connections, each from the furthest its race reached, at most `HEDGES` a range. A tail that sent 16 KiB every
+/// 27 s, under the 30 s stall, held a run 15 min (tfs-149, run 47820).
+const BEHIND: f64 = 2.0;
+const COPIES: u32 = 2;
+const HEDGES: u32 = 4;
+/// The most bytes a download asks for twice (plus one range's): what the end game's races may cost.
+const DUPLICATE: u64 = 64 << 20;
+/// The medians are of the last `SAMPLES` requests (`Speeds`); before any has said, a first byte and a rate. A first byte
+/// from R2 can take seconds (tfs-141), and through a slow proxy every one does (tfs-149: 78 hedges of 500 first asks).
+const SAMPLES: usize = 64;
+const FIRST_BYTE: Duration = Duration::from_secs(2);
 const TYPICAL: f64 = 2e6;
+/// A range not behind is halved at the end only while what it has left takes `SPLIT` median first bytes at the median rate:
+/// a cut costs a first byte and what its request has in flight. Cutting every range a free place found mid-download cost
+/// 100-130 MB and 9% of the middle's speed (oberon, 11-17, 700 cuts a download).
+const SPLIT: f64 = 4.0;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
-/// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window, never
-/// below `START`, and the ramp probes again.
+/// received grow by `GAIN`, up to the cap. A doubling that hasn't shown is judged once its requests could deliver (from their
+/// median first byte, over a range at the median rate) and given back if it didn't pay; the level settles, and probes again
+/// after `REPROBE` such times. An error or a timeout halves them, once a window, never below `START`, and the ramp probes again.
 const START: usize = 8;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
+const REPROBE: u32 = 8;
 
 /// The job a queue order names: its high 32 bits.
 fn job(priority: u64) -> u64 {
@@ -138,6 +149,8 @@ pub(crate) struct Task {
     asked: AtomicU32,
     unanswered: AtomicU32,
     hedged: AtomicU32,
+    /// Bytes it received that another request had already brought, or past a range's end a cut moved back.
+    extra: AtomicU64,
     /// Its slowest range: how long it took, and its bytes.
     slowest: Mutex<(Duration, u64)>,
     /// Where the origin redirected it, and until when (the redirect's `Cache-Control: max-age`): its
@@ -226,16 +239,22 @@ pub struct Fetching {
 static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
 
 /// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
-/// store): how many have an emergency under way, how many a need, and each of them, woken when the last one ends.
-/// While any has an emergency, every other downloader's requests wait as its own do; while any has a need, every
-/// other's background weights do.
+/// store): how many have an emergency under way, how many a need, how many calls start cold ([`starting`]), and each
+/// downloader, woken when the last one ends. While any has an emergency, every other downloader's requests wait as its
+/// own do; while any has a need or a call starts cold, every background weight does.
 struct Link {
     urgent: AtomicUsize,
     needing: AtomicUsize,
+    starting: AtomicUsize,
     sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
 }
 
-static LINK: Link = Link { urgent: AtomicUsize::new(0), needing: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+static LINK: Link = Link {
+    urgent: AtomicUsize::new(0),
+    needing: AtomicUsize::new(0),
+    starting: AtomicUsize::new(0),
+    sharers: Mutex::new(Vec::new()),
+};
 
 impl Link {
     /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
@@ -253,9 +272,10 @@ impl Link {
     }
 
     /// Whether a weight at `order` waits for another downloader's work: any weight for an emergency, a background
-    /// one for a need.
+    /// one for a need or a call starting cold.
     fn holds(&self, order: u64) -> bool {
-        self.urgent.load(Ordering::Acquire) > 0 || order >= BACKGROUND && self.needing.load(Ordering::Acquire) > 0
+        self.urgent.load(Ordering::Acquire) > 0
+            || order >= BACKGROUND && (self.needing.load(Ordering::Acquire) > 0 || self.starting.load(Ordering::Acquire) > 0)
     }
 
     fn calmed(&self) {
@@ -272,6 +292,45 @@ impl Link {
 
 /// The weights' share of the link (cl-1007), across every downloader of the process.
 static SHARE: std::sync::LazyLock<Share> = std::sync::LazyLock::new(Share::default);
+
+/// What the link carried in the windows it set the pace, across every downloader of the process (th-405): each one's ramp
+/// window with every place taken and more to take, bytes arriving through it and the one before, the weights unpaced. A lone
+/// small request, a stall, a tail's last ranges and a download held to a share measure what is asked of the link, or its
+/// latency, and count nothing. [`sustained`] hears each window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sustained {
+    pub bytes: u64,
+    /// The windows' time; two downloaders' that overlap count once.
+    pub time: Duration,
+}
+
+struct Sustain {
+    told: watch::Sender<Sustained>,
+    /// When the last window counted ended.
+    last: Mutex<Option<Instant>>,
+}
+
+static SUSTAIN: std::sync::LazyLock<Sustain> =
+    std::sync::LazyLock::new(|| Sustain { told: watch::Sender::new(Sustained::default()), last: Mutex::default() });
+
+impl Sustain {
+    /// A downloader's window ending `now`, in which the link set the pace of `bytes`.
+    fn window(&self, bytes: u64, now: Instant) {
+        let mut last = lock(&self.last);
+        let from = now.checked_sub(WINDOW).unwrap_or(now);
+        let from = last.map_or(from, |last| last.max(from));
+        *last = Some(now);
+        self.told.send_modify(|sustained| {
+            sustained.bytes += bytes;
+            sustained.time += now.saturating_duration_since(from);
+        });
+    }
+}
+
+/// Every window the link set the pace in, as it ends: the bytes and time of them all since the process started.
+pub fn sustained() -> watch::Receiver<Sustained> {
+    SUSTAIN.told.subscribe()
+}
 
 /// An install under way on this computer, until it drops ([`installing`]).
 pub struct Installing(());
@@ -307,6 +366,28 @@ impl Drop for Installing {
     fn drop(&mut self) {
         if SHARE.installs.fetch_sub(1, Ordering::AcqRel) == 1 {
             SHARE.whole("the install ended");
+        }
+    }
+}
+
+/// A call starting cold on this computer, until it drops ([`starting`]).
+pub struct Starting(());
+
+/// Until the guard drops, a call starts cold on this computer (TensorD's: its executor new or its models not loaded, until
+/// its Load returns): no background weight of any downloader of the process starts, and one in flight gives way at its next
+/// bytes, as while a need downloads (cl-1118). They go on the moment the last such call has loaded.
+pub fn starting() -> Starting {
+    if LINK.starting.fetch_add(1, Ordering::AcqRel) == 0 {
+        tracing::info!("background downloads wait: a call starts cold");
+    }
+    Starting(())
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if LINK.starting.fetch_sub(1, Ordering::AcqRel) == 1 {
+            tracing::info!("background downloads go on: every call that started cold has loaded");
+            LINK.calmed();
         }
     }
 }
@@ -744,8 +825,10 @@ pub(crate) struct Shared {
     pace: Mutex<Pace>,
     /// Ranges in flight, for free places to take from.
     flights: Mutex<Vec<Arc<Flight>>>,
-    /// What a range's request moves, bytes/s: the mean of ranges of 4 MiB or more, the latest weighing a fifth.
-    typical: Mutex<Option<f64>>,
+    /// What its last requests took: the end game's measure of behind (`BEHIND`).
+    speeds: Mutex<Speeds>,
+    /// Bytes the end game's races asked for since the downloader was last idle (`DUPLICATE`).
+    duplicated: AtomicU64,
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
@@ -764,6 +847,8 @@ pub(crate) struct Counters {
     pub steals: AtomicU64,
     /// Slow tails asked again on another connection (`HEDGES`).
     pub hedges: AtomicU64,
+    /// Bytes received twice, or past a range's end a cut moved back (`Task::extra`).
+    pub extra: AtomicU64,
     /// Bytes received from the origin, and the pacing windows (in ms) any of them arrived in, with the bytes of those
     /// windows: the time the machine was pulling, with no wait in a queue or between pulls in it, nor a window the
     /// weights were paced in (cl-1007).
@@ -816,13 +901,67 @@ struct Flight {
     stop: Notify,
 }
 
-/// Where a range began and when, its race's front when last judged and when, and its hedges so far.
+/// When its race was last judged (or its request began) and its front then; its hedges so far, those its last verdict still
+/// owes, and how far behind it was then.
 struct Judged {
-    from: u64,
-    began: Instant,
-    seen: u64,
     since: Instant,
+    seen: u64,
     hedges: u32,
+    owed: u32,
+    late: Duration,
+}
+
+/// What a race may take before it is behind: `BEHIND` times a median request's first byte and its bytes since `seen` at the
+/// median rate, from `since`.
+fn due(judged: &Judged, end: u64, (rate, first): (f64, Duration)) -> Instant {
+    let seconds = BEHIND * (first.as_secs_f64() + end.saturating_sub(judged.seen) as f64 / rate);
+    judged.since + Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX).min(Duration::from_secs(3600))
+}
+
+/// Where a range behind gives its back away: its last chunk edge that leaves a back of at least `STEAL` past `reached`.
+fn back(reached: u64, end: u64) -> Option<u64> {
+    let at = end.saturating_sub(STEAL) / CHUNK * CHUNK;
+    (at > reached).then_some(at)
+}
+
+/// Where a range `[reached, end)` is halved: the chunk edge nearest its middle that leaves a back of at least `STEAL`.
+fn edge(reached: u64, end: u64) -> Option<u64> {
+    let middle = reached + end.saturating_sub(reached) / 2;
+    let below = middle / CHUNK * CHUNK;
+    [below, below + CHUNK].into_iter().filter(|&at| at > reached && end.saturating_sub(at) >= STEAL).min_by_key(|&at| at.abs_diff(middle))
+}
+
+/// What the last `SAMPLES` requests took: their first bytes, and the rate of those that moved a chunk or more after it.
+#[derive(Default)]
+struct Speeds {
+    firsts: VecDeque<Duration>,
+    rates: VecDeque<f64>,
+}
+
+impl Speeds {
+    fn first(&mut self, took: Duration) {
+        self.firsts.push_back(took);
+        if self.firsts.len() > SAMPLES {
+            self.firsts.pop_front();
+        }
+    }
+
+    fn rate(&mut self, rate: f64) {
+        self.rates.push_back(rate);
+        if self.rates.len() > SAMPLES {
+            self.rates.pop_front();
+        }
+    }
+
+    /// The median rate and first byte.
+    fn medians(&self) -> (f64, Duration) {
+        fn median<T: Copy + PartialOrd>(samples: &VecDeque<T>) -> Option<T> {
+            let mut sorted: Vec<T> = samples.iter().copied().collect();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.get(sorted.len() / 2).copied()
+        }
+        (median(&self.rates).unwrap_or(TYPICAL).max(1.0), median(&self.firsts).unwrap_or(FIRST_BYTE))
+    }
 }
 
 impl Flight {
@@ -921,7 +1060,7 @@ impl<'s> Part<'s> {
             span: Mutex::new((from, end)),
             taken,
             race: Arc::clone(&race),
-            judged: Mutex::new(Judged { from, began: Instant::now(), seen: from, since: Instant::now(), hedges: 0 }),
+            judged: Mutex::new(Judged { since: Instant::now(), seen: from, hedges: 0, owed: 0, late: Duration::ZERO }),
             cut: AtomicBool::new(false),
             stop: Notify::new(),
         });
@@ -946,7 +1085,13 @@ impl<'s> Part<'s> {
         };
         self.buffer.extend_from_slice(&data[..take]);
         self.reached += take as u64;
-        task.gained(self.flight.race.advance(self.reached));
+        let gained = self.flight.race.advance(self.reached);
+        task.gained(gained);
+        let extra = (data.len() as u64).saturating_sub(gained);
+        if extra > 0 {
+            task.extra.fetch_add(extra, Ordering::Relaxed);
+            self.shared.stats.extra.fetch_add(extra, Ordering::Relaxed);
+        }
         if self.buffer.len() >= WRITE_BYTES {
             self.flush().await?;
         }
@@ -1000,15 +1145,17 @@ fn lacking(held: &[(u64, u64)], length: u64) -> Vec<(u64, u64)> {
 struct Pace {
     level: usize,
     max: usize,
-    /// The rate at the last doubling, and the bytes received when it last looked.
+    /// The rate the level must beat by `GAIN`: the one it doubled on. And the bytes received when it last looked.
     last: Option<f64>,
     /// The level before the last doubling: settling gives that doubling back when it didn't pay.
     before: usize,
     /// The last window received something: this one, if it did too, was spent whole on the transfer and measures it.
     flowing: bool,
     seen: u64,
-    /// Windows in a row since the last doubling that grew under `GAIN`.
-    flat: u32,
+    /// When it last doubled, and where what it measures began (a window with demand and bytes) with the bytes received then:
+    /// a doubling's own requests' first bytes, or the settled level's hold. A window without either begins it again.
+    doubled: Option<Instant>,
+    mark: Option<(Instant, u64)>,
     settled: bool,
     /// Nothing waits, and every place is taking from ranges in flight: a new probe.
     tail: bool,
@@ -1017,7 +1164,11 @@ struct Pace {
 
 /// The places for requests in flight: as many as the ramp allows, each given back as it drops, in the
 /// order asked.
-struct Slots(Mutex<Places>);
+struct Slots {
+    places: Mutex<Places>,
+    /// A place came free with nothing waiting for it: the end game takes it (`Shared::tail`).
+    freed: Notify,
+}
 
 #[derive(Default)]
 struct Places {
@@ -1029,24 +1180,38 @@ struct Places {
     arrivals: u64,
 }
 
-/// A place among the requests in flight.
-struct Slot(Arc<Slots>);
+/// A place among the requests in flight; given back, it wakes the end game unless that just found nothing for it (`unused`).
+struct Slot {
+    slots: Arc<Slots>,
+    wake: bool,
+}
+
+impl Slot {
+    /// Back with nothing to do: free again, without waking the end game that just looked.
+    fn unused(mut self) {
+        self.wake = false;
+    }
+}
 
 /// A range's ask for a place (`Shared::place`).
 type Asking<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Slot> + Send + 'a>>;
 
 impl Slots {
     fn new(free: usize) -> Arc<Slots> {
-        Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
+        Arc::new(Slots { places: Mutex::new(Places { free, ..Places::default() }), freed: Notify::new() })
+    }
+
+    fn slot(self: &Arc<Self>) -> Slot {
+        Slot { slots: Arc::clone(self), wake: true }
     }
 
     /// A place for a range at `order`.
     async fn take(self: &Arc<Self>, order: u64) -> Slot {
         let waiting = {
-            let mut places = lock(&self.0);
+            let mut places = lock(&self.places);
             if places.free > 0 {
                 places.free -= 1;
-                return Slot(Arc::clone(self));
+                return self.slot();
             }
             let (sent, waiting) = oneshot::channel();
             places.arrivals += 1;
@@ -1060,7 +1225,7 @@ impl Slots {
     /// Whether a range in flight at `order` gives its place up: every place is taken, and a range waits for one at an
     /// earlier job's order, or at an emergency's or software's.
     fn outranked(&self, order: u64) -> bool {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         if places.free > 0 {
             return false;
         }
@@ -1077,37 +1242,41 @@ impl Slots {
 
     /// A free place, when nothing waits for one.
     fn idle(self: &Arc<Self>) -> Option<Slot> {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         places.waiting.retain(|_, waiter| !waiter.is_closed());
         (places.free > 0 && places.waiting.is_empty()).then(|| {
             places.free -= 1;
-            Slot(Arc::clone(self))
+            self.slot()
         })
     }
 
-    /// A place back: owed to the ramp, else to the most urgent waiter still waiting, else free.
-    fn give(self: &Arc<Self>, places: &mut Places) {
+    /// A place back: owed to the ramp, else to the most urgent waiter still waiting, else free, which wakes the end game
+    /// (`wake`).
+    fn give(self: &Arc<Self>, places: &mut Places, wake: bool) {
         if places.owed > 0 {
             places.owed -= 1;
             return;
         }
         while let Some((_, waiter)) = places.waiting.pop_first() {
-            match waiter.send(Slot(Arc::clone(self))) {
+            match waiter.send(self.slot()) {
                 Ok(()) => return,
                 // Its waiter left: the same place goes on to the next.
                 Err(slot) => std::mem::forget(slot),
             }
         }
         places.free += 1;
+        if wake {
+            self.freed.notify_one();
+        }
     }
 
     fn add(self: &Arc<Self>, more: usize) {
-        let mut places = lock(&self.0);
-        (0..more).for_each(|_| self.give(&mut places));
+        let mut places = lock(&self.places);
+        (0..more).for_each(|_| self.give(&mut places, true));
     }
 
     fn forget(&self, gone: usize) {
-        let mut places = lock(&self.0);
+        let mut places = lock(&self.places);
         let now = gone.min(places.free);
         places.free -= now;
         places.owed += gone - now;
@@ -1115,20 +1284,20 @@ impl Slots {
 
     /// Every place taken.
     fn busy(&self) -> bool {
-        lock(&self.0).free == 0
+        lock(&self.places).free == 0
     }
 
     /// Every place taken, with requests waiting for one.
     fn full(&self) -> bool {
-        let places = lock(&self.0);
+        let places = lock(&self.places);
         places.free == 0 && !places.waiting.is_empty()
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        let slots = Arc::clone(&self.0);
-        slots.give(&mut lock(&slots.0));
+        let slots = Arc::clone(&self.slots);
+        slots.give(&mut lock(&slots.places), self.wake);
     }
 }
 
@@ -1151,7 +1320,8 @@ impl Shared {
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
             flights: Mutex::default(),
-            typical: Mutex::default(),
+            speeds: Mutex::default(),
+            duplicated: AtomicU64::new(0),
             pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
@@ -1220,8 +1390,9 @@ impl Shared {
         if self.busy.fetch_sub(1, Ordering::AcqRel) == 1 {
             let statuses = lock(&self.stats.statuses).clone();
             let (requests, retries, steals) = (self.stats.requests.load(Ordering::Relaxed), self.stats.retries.load(Ordering::Relaxed), self.stats.steals.load(Ordering::Relaxed));
-            let hedges = self.stats.hedges.load(Ordering::Relaxed);
-            tracing::info!(requests, retries, steals, hedges, ?statuses, "downloads settled (counts since start)");
+            let (hedges, extra) = (self.stats.hedges.load(Ordering::Relaxed), self.stats.extra.load(Ordering::Relaxed));
+            tracing::info!(requests, retries, steals, hedges, extra, ?statuses, "downloads settled (counts since start)");
+            self.duplicated.store(0, Ordering::Relaxed);
             self.settle.notify_waiters();
         }
     }
@@ -1243,21 +1414,22 @@ impl Shared {
     /// One window of the ramp: true when nothing downloads. The link's share is judged on it too (`Share::judge`).
     fn window(&self) -> bool {
         SHARE.judge();
-        self.steal();
-        self.hedge();
         let received = self.stats.received.load(Ordering::Relaxed);
+        let (median, first) = lock(&self.speeds).medians();
+        let now = Instant::now();
         let mut pace = lock(&self.pace);
-        let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+        let (arrived, unpaced) = (received - pace.seen, !SHARE.paced());
+        let rate = arrived as f64 / WINDOW.as_secs_f64();
         // What the link moves (th-364's report): a window the weights were paced in measures the share, not the link.
-        if received > pace.seen && !SHARE.paced() {
+        if arrived > 0 && unpaced {
             self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
-            self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed);
+            self.stats.unpaced.fetch_add(arrived, Ordering::Relaxed);
         }
         pace.seen = received;
         if self.busy.load(Ordering::Acquire) == 0 {
             let gone = pace.level.saturating_sub(START.min(pace.max));
             self.shrink(&mut pace, gone);
-            (pace.last, pace.settled, pace.flat, pace.flowing) = (None, false, 0, false);
+            (pace.last, pace.settled, pace.doubled, pace.mark, pace.flowing) = (None, false, None, None, false);
             return true;
         }
         // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
@@ -1265,49 +1437,103 @@ impl Shared {
         let (waiting, stealable) = (self.slots.full(), self.stealable());
         let tail = !waiting && stealable && self.slots.busy();
         if tail && !pace.tail {
-            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            (pace.last, pace.settled, pace.doubled, pace.mark) = (None, false, None, None);
         }
         pace.tail = tail;
         // Only a window spent whole on the transfer measures it: one that received nothing, or the first that did, is the requests'
         // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
         let measured = rate > 0.0 && pace.flowing;
         pace.flowing = rate > 0.0;
-        if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
+        // With demand besides, the link set this window's pace (`Sustained`).
+        if measured && unpaced && (waiting || tail) {
+            SUSTAIN.window(arrived, now);
+        }
+        if !(waiting || tail) || pace.level >= pace.max || !measured {
+            pace.mark = None;
             return false;
         }
-        // A doubling's new requests take more than a window to deliver: two flat windows settle it, giving it back, as it
-        // bought nothing.
-        if pace.last.is_some_and(|last| rate < last * GAIN) {
-            pace.flat += 1;
-            if pace.flat >= 2 {
-                pace.settled = true;
-                let gone = pace.level.saturating_sub(pace.before);
-                self.shrink(&mut pace, gone);
-                tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+        // One request's time for a range at the median rate, once its first byte came.
+        let range = Duration::from_secs_f64(PART as f64 / median).max(2 * WINDOW);
+        if pace.settled {
+            let (since, bytes) = *pace.mark.get_or_insert((now, received));
+            if now < since + REPROBE * (first + range) {
+                return false;
             }
+            let held = (received - bytes) as f64 / (now - since).as_secs_f64();
+            pace.settled = false;
+            self.double(&mut pace, held, now, true);
             return false;
         }
-        pace.flat = 0;
-        let grow = (pace.level * 2).min(pace.max) - pace.level;
-        (pace.before, pace.level, pace.last) = (pace.level, pace.level + grow, Some(rate));
-        self.slots.add(grow);
-        tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
+        let Some(last) = pace.last.filter(|&last| rate < last * GAIN) else {
+            self.double(&mut pace, rate, now, false);
+            return false;
+        };
+        // A doubling that hasn't shown yet is judged once its requests could deliver: from their median first byte on, over a
+        // range's time at the median rate. Two flat windows gave back kirill's 8 → 16 a second in, while its requests took
+        // 1-3 s; it pulled 47 GB on 8 streams at 72 MB/s (11-17).
+        if pace.mark.is_none() && now >= pace.doubled.unwrap_or(now) + first {
+            pace.mark = Some((now, received));
+        }
+        let Some((since, bytes)) = pace.mark.filter(|&(since, _)| now >= since + range) else { return false };
+        let judged = (received - bytes) as f64 / (now - since).as_secs_f64();
+        if judged >= last * GAIN {
+            self.double(&mut pace, judged, now, false);
+            return false;
+        }
+        // It bought nothing: given back.
+        let gone = pace.level.saturating_sub(pace.before);
+        self.shrink(&mut pace, gone);
+        (pace.settled, pace.mark) = (true, Some((now, received)));
+        tracing::info!(streams = pace.level, mb_s = judged / 1e6, over_s = (now - since).as_secs_f64(), "streams settled");
         false
     }
 
-    /// Each free place with nothing waiting takes the back half of the in-flight range with the most
-    /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
-    fn steal(&self) {
-        while let Some(slot) = self.slots.idle() {
-            if self.take_half(slot, None).is_some() {
-                return;
+    /// Twice the requests in flight, up to the cap, against `rate`; `again` when a settled level probes again.
+    fn double(&self, pace: &mut Pace, rate: f64, now: Instant, again: bool) {
+        let grow = (pace.level * 2).min(pace.max) - pace.level;
+        (pace.before, pace.level, pace.last, pace.doubled, pace.mark) = (pace.level, pace.level + grow, Some(rate), Some(now), None);
+        self.slots.add(grow);
+        tracing::info!(streams = pace.level, mb_s = rate / 1e6, again, "more streams");
+    }
+
+    /// The end game, woken as a place comes free with nothing waiting for it and as a range in flight may fall behind:
+    /// each such place splits or races a range (`endgame`). In the bulk of a download no place is free for long enough:
+    /// what waits takes it first.
+    pub(crate) async fn tail(self: Arc<Self>) {
+        loop {
+            let (freed, moved) = (self.slots.freed.notified(), self.moved.notified());
+            tokio::pin!(freed, moved);
+            moved.as_mut().enable();
+            let next = self.endgame();
+            let behind = tokio::time::sleep_until(next.unwrap_or_else(Instant::now).into());
+            tokio::select! {
+                () = freed => {}
+                () = moved => {}
+                () = behind, if next.is_some() => {}
+                () = self.closed() => return,
             }
         }
     }
 
-    /// `slot` takes the back half of the in-flight range with the most left of those neither held nor paced whose object is
-    /// an earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The slot back when
-    /// there is none.
+    /// Once nothing is left to start, each place free with nothing waiting helps a range in flight (`help`). When a range may
+    /// next fall behind; None while no place is free, or something waits to start (a place free between two of the
+    /// dispatcher's starts is no end).
+    fn endgame(&self) -> Option<Instant> {
+        if self.next().is_some_and(|next| !self.waits(next)) {
+            return None;
+        }
+        while let Some(slot) = self.slots.idle() {
+            if let Err((slot, next)) = self.help(slot) {
+                slot.unused();
+                return next;
+            }
+        }
+        None
+    }
+
+    /// `slot` takes the back half of the in-flight range with the most left of those a chunk's edge can halve (`edge`),
+    /// neither held nor paced, whose object is an earlier job's than order `before` (of any, when None). The range's own
+    /// request stops where the back begins. The slot back when there is none.
     fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
         let flights = lock(&self.flights).clone();
         let urgent = |flight: &&Arc<Flight>| {
@@ -1316,73 +1542,116 @@ impl Shared {
                 !self.held(order) && !paced(order) && before.is_none_or(|before| job(order) < job(before))
             })
         };
-        let most = flights.iter().filter(urgent).max_by_key(|flight| {
-            let span = lock(&flight.span);
-            span.1.saturating_sub(span.0)
+        let most = flights.iter().filter(urgent).filter_map(|flight| {
+            let span = *lock(&flight.span);
+            edge(span.0, span.1).map(|_| (span.1 - span.0, flight))
         });
-        let Some((flight, (_, taken))) = most.and_then(|flight| Some((flight, flight.taken.as_ref()?))) else { return Some(slot) };
-        let mut span = lock(&flight.span);
-        let left = span.1.saturating_sub(span.0);
-        if left < 2 * STEAL {
-            return Some(slot);
-        }
-        let (half, end) = (span.0 + left / 2, span.1);
-        span.1 = half;
-        // Sent while the span is held: its range can't end and its object can't finish before.
-        if let Err(error) = taken.send(Take::Half(half, end, slot)) {
-            span.1 = end;
-            return Some(error.0.slot());
-        }
-        self.stats.steals.fetch_add(1, Ordering::Relaxed);
-        tracing::debug!(from = half, end, "a free place took the back half of a range");
-        None
+        let Some((_, flight)) = most.max_by_key(|(left, _)| *left) else { return Some(slot) };
+        self.cut(slot, flight, edge).err()
     }
 
-    /// Each free place with nothing waiting races the slow tail of a range no steal can split (`HEDGE_AFTER`): another
-    /// request on another connection from the furthest its race reached, at most `HEDGES` times a range and
-    /// `HEDGES_AT_ONCE` a look.
-    fn hedge(&self) {
-        let floor = (lock(&self.typical).unwrap_or(TYPICAL) / SLOWER).min(HEDGE_FLOOR);
-        let mut sent = 0;
+    /// `slot` helps a range in flight, neither held nor paced (a paced weight is slow by design: asked again it would take more
+    /// of the link). First a range behind its `due` with more than a chunk left, the one with most left: `slot` takes its last
+    /// chunk. Else one behind with a chunk left, the furthest behind: the verdict owes it `COPIES` requests from the furthest
+    /// its race reached, sent as places come free, at most `HEDGES` a range and `DUPLICATE` bytes a download. Else one worth
+    /// halving (`SPLIT`), the one with most left. Err: the slot back, and when the next range may fall behind.
+    fn help(&self, slot: Slot) -> std::result::Result<(), (Slot, Option<Instant>)> {
+        let medians = lock(&self.speeds).medians();
+        let (rate, first) = medians;
+        let racing = self.duplicated.load(Ordering::Relaxed) < DUPLICATE;
+        let now = Instant::now();
+        let (mut next, mut give, mut race, mut halve) = (None::<Instant>, None::<(u64, Arc<Flight>)>, None::<(Duration, Arc<Flight>)>, None::<(u64, Arc<Flight>)>);
         for flight in lock(&self.flights).clone() {
-            let Some((task, taken)) = flight.taken.as_ref() else { continue };
-            let (reached, end) = *lock(&flight.span);
-            let front = flight.race.front();
-            let mut judged = lock(&flight.judged);
-            let took = judged.since.elapsed();
-            // No byte yet: a first byte may take seconds, so it waits longer than a tail that stopped.
-            if took < HEDGE_AFTER || (front == judged.from && judged.began.elapsed() < HEDGE_SILENT) {
-                continue;
-            }
-            let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
-            (judged.seen, judged.since) = (front, Instant::now());
+            let Some((task, _)) = flight.taken.as_ref() else { continue };
             let order = task.priority.load(Ordering::Acquire);
-            // A paced weight is slow by design: asked again on another connection it would take more of the link.
-            if flight.stopped() || self.held(order) || paced(order) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            let (reached, end) = *lock(&flight.span);
+            if flight.stopped() || reached >= end || self.held(order) || paced(order) {
                 continue;
             }
-            if sent >= HEDGES_AT_ONCE {
-                return;
-            }
-            let Some(slot) = self.slots.idle() else { return };
-            if let Err(error) = taken.send(Take::Hedge(Arc::clone(&flight.race), front, end, slot)) {
-                drop(error.0.slot());
+            let (left, front) = (end - reached, flight.race.front());
+            let mut judged = lock(&flight.judged);
+            let due = due(&judged, end, medians);
+            if back(reached, end).is_some() {
+                if now >= due {
+                    if give.as_ref().is_none_or(|(most, _)| left > *most) {
+                        give = Some((left, Arc::clone(&flight)));
+                    }
+                    continue;
+                }
+                next = Some(next.map_or(due, |next| next.min(due)));
+                if edge(reached, end).is_some() && left as f64 / rate > SPLIT * first.as_secs_f64() && halve.as_ref().is_none_or(|(most, _)| left > *most) {
+                    halve = Some((left, Arc::clone(&flight)));
+                }
                 continue;
             }
-            sent += 1;
-            judged.hedges += 1;
-            self.stats.hedges.fetch_add(1, Ordering::Relaxed);
-            task.hedged.fetch_add(1, Ordering::Relaxed);
-            tracing::info!(object = %task.object.sha256, from = front, end, kb_s = rate / 1e3, floor_kb_s = floor / 1e3,
-                hedge = judged.hedges, "a slow tail asked again on another connection");
+            if !racing || judged.hedges >= HEDGES {
+                continue;
+            }
+            if judged.owed == 0 {
+                if now < due {
+                    next = Some(next.map_or(due, |next| next.min(due)));
+                    continue;
+                }
+                (judged.owed, judged.late, judged.since, judged.seen) = (COPIES.min(HEDGES - judged.hedges), now - due, now, front);
+            }
+            if race.as_ref().is_none_or(|(late, _)| judged.late > *late) {
+                race = Some((judged.late, Arc::clone(&flight)));
+            }
         }
+        if let Some((_, flight)) = give {
+            return self.cut(slot, &flight, back).map_err(|slot| (slot, next));
+        }
+        if let Some((late, flight)) = race {
+            return self.hedge(slot, &flight, late, medians).map_err(|slot| (slot, next));
+        }
+        if let Some((_, flight)) = halve {
+            return self.cut(slot, &flight, edge).map_err(|slot| (slot, next));
+        }
+        Err((slot, next))
+    }
+
+    /// `slot` takes `flight`'s range from where `at` cuts it to its end; its own request stops there. Err: no cut, the slot back.
+    fn cut(&self, slot: Slot, flight: &Flight, at: fn(u64, u64) -> Option<u64>) -> std::result::Result<(), Slot> {
+        let Some((_, taken)) = flight.taken.as_ref() else { return Err(slot) };
+        let mut span = lock(&flight.span);
+        let Some(from) = at(span.0, span.1) else { return Err(slot) };
+        let end = span.1;
+        span.1 = from;
+        // Sent while the span is held: its range can't end and its object can't finish before.
+        if let Err(error) = taken.send(Take::Half(from, end, slot)) {
+            span.1 = end;
+            return Err(error.0.slot());
+        }
+        self.stats.steals.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(from, end, "a free place took the back of a range");
+        Ok(())
+    }
+
+    /// `slot` races `flight`'s range, `late` behind: another request on another connection from the furthest its race reached.
+    fn hedge(&self, slot: Slot, flight: &Flight, late: Duration, (rate, first): (f64, Duration)) -> std::result::Result<(), Slot> {
+        let Some((task, taken)) = flight.taken.as_ref() else { return Err(slot) };
+        let (front, end) = (flight.race.front(), lock(&flight.span).1);
+        if let Err(error) = taken.send(Take::Hedge(Arc::clone(&flight.race), front, end, slot)) {
+            return Err(error.0.slot());
+        }
+        let hedge = {
+            let mut judged = lock(&flight.judged);
+            (judged.owed, judged.hedges) = (judged.owed.saturating_sub(1), judged.hedges + 1);
+            judged.hedges
+        };
+        self.duplicated.fetch_add(end.saturating_sub(front), Ordering::Relaxed);
+        self.stats.hedges.fetch_add(1, Ordering::Relaxed);
+        task.hedged.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(object = %task.object.sha256, from = front, end, late_ms = late.as_millis() as u64, median_mb_s = rate / 1e6,
+            median_first_ms = first.as_millis() as u64, hedge, "a slow tail asked again on another connection");
+        Ok(())
     }
 
     /// Whether a range in flight has a back half left to take.
     fn stealable(&self) -> bool {
         lock(&self.flights).iter().any(|flight| {
             let span = lock(&flight.span);
-            span.1.saturating_sub(span.0) >= 2 * STEAL
+            edge(span.0, span.1).is_some()
         })
     }
 
@@ -1396,7 +1665,7 @@ impl Shared {
         }
         let gone = (pace.level / 2).min(pace.level - floor);
         self.shrink(&mut pace, gone);
-        (pace.halved, pace.last, pace.settled, pace.flat) = (Some(Instant::now()), None, false, 0);
+        (pace.halved, pace.last, pace.settled, pace.doubled, pace.mark) = (Some(Instant::now()), None, false, None, None);
         tracing::info!(streams = pace.level, "fewer streams: an error or a timeout");
     }
 
@@ -1443,6 +1712,7 @@ impl Shared {
                     asked: AtomicU32::new(0),
                     unanswered: AtomicU32::new(0),
                     hedged: AtomicU32::new(0),
+                    extra: AtomicU64::new(0),
                     slowest: Mutex::default(),
                     delivery: Mutex::default(),
                     locating: AtomicBool::new(false),
@@ -1678,10 +1948,10 @@ impl Shared {
                     Ok(Tier::Local) => {}
                     Ok(tier) => {
                         let (bytes, kept, requests) = (task.object.length, task.kept(), task.asked.load(Ordering::Relaxed));
-                        let hedged = task.hedged.load(Ordering::Relaxed);
+                        let (hedged, extra) = (task.hedged.load(Ordering::Relaxed), task.extra.load(Ordering::Relaxed));
                         let (took, range) = *lock(&task.slowest);
                         let (slowest_range_s, slowest_range_kbps) = (took.as_secs_f64(), range as f64 / took.as_secs_f64().max(1e-3) / 1e3);
-                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, hedged, slowest_range_s, slowest_range_kbps, priority, "landed");
+                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, hedged, extra, slowest_range_s, slowest_range_kbps, priority, "landed");
                     }
                 }
                 shared.finish(&task, outcome);
@@ -1874,6 +2144,12 @@ impl Shared {
     async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>, flying: &mut Flying) -> Result<bool> {
         let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
+        // Judged from its request's start (`due`), not from when it began waiting for a place.
+        {
+            let front = part.flight.race.front();
+            let mut judged = lock(&part.flight.judged);
+            (judged.since, judged.seen) = (began, front);
+        }
         loop {
             attempt += 1;
             let from = part.reached;
@@ -1894,10 +2170,7 @@ impl Shared {
                         }
                     }
                     if bytes >= 4 << 20 && !paced(task.priority.load(Ordering::Acquire)) {
-                        let rate = bytes as f64 / took.as_secs_f64().max(1e-3);
-                        let mut typical = lock(&self.typical);
-                        *typical = Some(typical.map_or(rate, |was| 0.8 * was + 0.2 * rate));
-                        SHARE.connected(rate);
+                        SHARE.connected(bytes as f64 / took.as_secs_f64().max(1e-3));
                     }
                     return Ok(true);
                 }
@@ -1948,6 +2221,7 @@ impl Shared {
             let _ = task.located.subscribe().wait_for(|located| *located).await;
             delivered = current();
         }
+        let (sent, mut body) = (Instant::now(), None::<Instant>);
         let asked = match &delivered {
             Some((at, _)) => self.client.get_authorized(at, &ranged, None).await,
             None => self.client.get_authorized(here.url, &[here.headers, &ranged].concat(), here.provider).await,
@@ -2035,6 +2309,12 @@ impl Shared {
                 Ok(Some(data)) => {
                     self.stats.received.fetch_add(data.len() as u64, Ordering::Relaxed);
                     let order = task.priority.load(Ordering::Acquire);
+                    if body.is_none() {
+                        body = Some(Instant::now());
+                        if !paced(order) {
+                            lock(&self.speeds).first(sent.elapsed());
+                        }
+                    }
                     SHARE.counted(order, data.len());
                     pacer.spend(data.len());
                     // A steal moved the end back: what is past it is another request's.
@@ -2055,6 +2335,10 @@ impl Shared {
             }
         }
         let end = part.end();
+        let moved = part.reached - from;
+        if let Some(body) = body.filter(|_| part.reached >= end && moved >= CHUNK && !part.flight.stopped() && !paced(task.priority.load(Ordering::Acquire))) {
+            lock(&self.speeds).rate(moved as f64 / body.elapsed().as_secs_f64().max(1e-3));
+        }
         match part.reached >= end {
             true => Ok(()),
             false => Err(Failed::Again(format!("{object}: the body ended at {} of {end}", part.reached), None)),

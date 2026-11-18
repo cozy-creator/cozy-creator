@@ -25,6 +25,8 @@ from cell import NARROW, STEERS, Cell, Json, module, packages, qwen_tokenizer, s
 from tiny import _shared
 
 MOSS = "openmoss-team/moss-image@0.1.1"
+#: moss-image's `text_encoder` slot default (se-160): the same tiny checkpoint, whose encoder it reads.
+TEXT_ENCODER = "pottokao/moss-image-text-encoder-heretic@0.1.0"
 EDIT, POSE = "chinoll/moss-image-edit@0.1.0", "thedeoxen/moss-image-pose-controlnet@0.1.0"
 TEXT_WIDTH, WIDTH, FFN, HEADS, FREQ, LATENT, LAYERS = 32, 32, 64, 2, 32, 16, 23
 #: Each block's linears an adapter adapts, (in, out).
@@ -83,7 +85,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "_class_name": "MOSSImagePipeline", "scheduler": ["moss_image", "MOSSImageScheduler"],
         "text_encoder": ["transformers", "Qwen3_5Model"], "tokenizer": ["transformers", "Qwen2TokenizerFast"],
         "transformer": ["moss_image", "MOSSImageTransformer"], "vae": ["diffusers", "AutoencoderKLFlux2"]}))
-    return {MOSS: out, EDIT: _lora(store, 1, 4), POSE: _lora(store, 2, 4)}
+    return {MOSS: out, TEXT_ENCODER: out, EDIT: _lora(store, 1, 4), POSE: _lora(store, 2, 4)}
 
 
 #: 512², MOSS-Image's smallest canvas (0.25 MP).
@@ -101,12 +103,9 @@ CELLS: list[Cell] = [
             {"box": [0.55, 0.7, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]}},
     {"entry": "image", "name": "tool", "payload": {"instructions": {"text": "a red fox in fresh snow"}, "seed": 7,
                                                    "negative_prompt": "blurry"}, "check": size(1024, 1024)},
-    # `edit` and `control` as `generate` calls them, without the LoRA it stacks: what an adapter not applied makes.
-    {"entry": "edit", "name": "plain", "payload": _EDIT, "files": {"prompt.references.0.file": _shared.picture("fox", 512, 512)},
-     "check": size(512, 512)},
-    {"entry": "control", "name": "plain", "payload": _POSED, "files": {"control.0.image": _shared.bones("bones", 512, 512)},
-     "check": size(512, 512)},
-    # With a picture, Moss-Image-Edit on `model`; with a pose map, thedeoxen's pose LoRA: each away from its plain twin.
+    # With a picture, Moss-Image-Edit on `model`; with a pose map, thedeoxen's pose LoRA: each away from its plain twin,
+    # `edit` and `control` as `generate` calls them without the LoRA it stacks (what an adapter not applied makes). Both
+    # are internal, which no person runs: their references were recorded through the stand-in (drive.py) and stand.
     # Another picture or skeleton moves it 0.2-0.7/255 (e2e 43358050938): the tiny DiT reads its references near their
     # mean, so neither has a bar.
     {"entry": "generate", "name": "edit", "payload": _EDIT, "files": {"prompt.references.0.file": _shared.picture("fox", 512, 512)},

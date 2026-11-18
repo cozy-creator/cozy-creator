@@ -31,9 +31,8 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
         .route("/assets/{file}", get(asset))
         .route("/p/{code}", get(index))
         .route("/p/{code}/{*rest}", get(index))
+        // The Projects drawer. A project's only address is `/p/<code>` (cl-1171).
         .route("/projects", get(index))
-        .route("/projects/{id}", get(index))
-        .route("/projects/{id}/{*rest}", get(index))
         .route("/runs", get(index))
         .route("/runs/{number}", get(index))
         .route("/machines", get(index))
@@ -43,6 +42,7 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
         .route("/models", get(index))
         .route("/models/{name}", get(index))
         .route("/account", get(index))
+        .route("/settings", get(index))
 }
 
 fn not_built() -> Refusal {

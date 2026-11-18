@@ -82,8 +82,8 @@ impl Hub {
         })
     }
 
-    /// The rental's current authorized keys and their lease.
-    pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
+    /// The rental's current authorized keys and their lease, and the floor it holds its first download to.
+    pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration, Option<types::WorkerLinkFloor>), Refusal> {
         let answer = self.client.get_worker_authorized_keys().await;
         let document = self.heard(answer)?;
         let invalid = || Refusal::Transport("rental authority metadata is invalid".into(), None);
@@ -105,7 +105,7 @@ impl Hub {
                 key
             })
             .collect();
-        Ok((keys, Duration::from_secs(document.lease_seconds as u64)))
+        Ok((keys, Duration::from_secs(document.lease_seconds as u64), document.link_floor))
     }
 
     /// What this machine measured of its host (`machine::speed`). A Hub from before the route
@@ -115,12 +115,36 @@ impl Hub {
         download: Option<types::WorkerDownload>,
         cpu: Option<types::WorkerProbe>,
         gpu_heat: Option<types::WorkerGpuHeat>,
+        gpu_power: Option<types::WorkerGpuPower>,
     ) -> Result<(), Refusal> {
-        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu, gpu_heat };
+        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu, gpu_heat, gpu_power, slow_link: None };
         match self.client.report_worker_speed(&report).await {
             Err(::api::hub::Error::Hub { status: 404, .. }) => Ok(()),
             answer => self.heard(answer),
         }
+    }
+
+    /// This rental's first download, held under its lease's floor over `seconds` (`machine::speed`): whether the Hub is placing
+    /// it on another host. Its renter waits on the answer, so a Hub that doesn't answer, or fails, is asked again (1 s, doubling,
+    /// `ATTEMPTS` in all); its refusal stands.
+    pub(crate) async fn report_slow_link(&self, bytes: u64, seconds: f64) -> Result<bool, Refusal> {
+        const ATTEMPTS: u32 = 5;
+        let slow_link = Some(types::WorkerSlowLink { bytes, seconds });
+        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), slow_link, ..Default::default() };
+        let mut pause = Duration::from_secs(1);
+        for attempt in 1.. {
+            let answer = self.client.report_worker_slow_link(&report).await;
+            // 425: the Hub has not made this rental ready yet, and will.
+            let again = |failure: &&::api::hub::Error| failure.retry() || matches!(failure, ::api::hub::Error::Hub { status: 425, .. });
+            let Some(failure) = answer.as_ref().err().filter(again).filter(|_| attempt < ATTEMPTS) else {
+                return self.heard(answer).map(|answer| answer.replacing);
+            };
+            let wait = failure.stated_wait().unwrap_or(pause);
+            tracing::info!("the Hub has not taken this host's slow link (attempt {attempt} of {ATTEMPTS}): {failure}; asking again in {} s", wait.as_secs());
+            tokio::time::sleep(wait).await;
+            pause *= 2;
+        }
+        unreachable!("the last attempt returns")
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.

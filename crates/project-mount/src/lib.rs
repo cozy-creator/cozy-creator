@@ -854,6 +854,15 @@ impl Mounted {
     pub fn supervisor(&self) -> Result<platform::process::Exact> {
         Ok(self.owner.try_clone()?)
     }
+    /// What ends this mount from outside its owner, which a step that never returns may hold.
+    pub fn ender(&self) -> Result<Ender> {
+        Ok(Ender {
+            owner: self.owner.try_clone()?,
+            supervisor: self.child.id(),
+            helpers: self.helpers.iter().map(platform::process::Exact::try_clone).collect::<std::result::Result<_, _>>()?,
+            view: self.view.clone(),
+        })
+    }
     pub fn is_mounted(&self) -> Result<bool> {
         if self.retired { return Ok(false); }
         if self.owner.wait_for(Duration::ZERO)? {
@@ -947,6 +956,30 @@ impl Mounted {
         self.guard.seal()?;
         Ok(())
     }
+
+    /// Ends the view whatever still holds it, for a lock whose machine doesn't answer and so can't let go of the files it has open
+    /// there (cl-1064): the supervisor stops its provider, and the key goes with it. Whatever has files open in the view gets
+    /// errors from then on; the dead mount is detached.
+    pub fn end(&mut self) -> Result<()> {
+        let transition = transition(&self.view);
+        let _transition = transition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.reconcile()?;
+        if self.retired {
+            return Ok(());
+        }
+        self.input.take();
+        if !self.owner.wait_for(CONTROL_ACK)? {
+            return Err(Error::StillRunning);
+        }
+        self.child
+            .try_wait()
+            .map_err(io_error("wait for filesystem shutdown"))?;
+        self.reconcile()?;
+        self.guard.seal()?;
+        Ok(())
+    }
 }
 
 /// How long letting go of a view waits on what serves it before it ends it (cl-1124): a provider under a backing removed from outside
@@ -1018,6 +1051,44 @@ fn unescape_mount_path(encoded: &[u8]) -> Vec<u8> {
         }
     }
     decoded
+}
+
+/// A mount's supervisor, provider and helpers by their handles, and its view: a process stopping past its deadline ends it with them
+/// rather than leave it mounted and its key held.
+pub struct Ender {
+    owner: platform::process::Exact,
+    supervisor: u32,
+    helpers: Vec<platform::process::Exact>,
+    #[cfg_attr(windows, allow(dead_code))]
+    view: PathBuf,
+}
+
+impl Ender {
+    /// Ends it now, whatever it's doing: the supervisor's tree (its provider with it) and the helpers killed, then the view taken off
+    /// the mount table. One that ended already is left as it is.
+    pub fn end(&self) {
+        let live = !self.owner.wait_for(Duration::ZERO).unwrap_or(true);
+        if live {
+            for process in platform::process::tree(self.supervisor) {
+                let _ = process.kill();
+            }
+            let _ = self.owner.kill();
+            let _ = self.owner.wait_for(Duration::from_secs(2));
+        }
+        for helper in &self.helpers {
+            if !helper.wait_for(Duration::ZERO).unwrap_or(true) {
+                let _ = helper.kill();
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if linux_identity(&self.view).is_ok_and(|identity| identity.is_some()) {
+            let _ = unix_unmount(&self.view, true, Duration::from_secs(2));
+        }
+        #[cfg(target_os = "macos")]
+        if live {
+            let _ = unix_unmount(&self.view, true, Duration::from_secs(2));
+        }
+    }
 }
 
 /// Detaches a view an earlier, ended process left mounted, so its runtime folder can go. Only the

@@ -11,6 +11,14 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# cl-1179 (Paul, 11-17: "we should also open the webui anyway, because they can select between different projects in it anyway"): `cozy open`
+# outside a project folder opens Cozy Creator's root, says so in one line, and exits 0 (e2e/cli/open_outside.py).
+open_outside() {
+  step "cozy open outside a project opens Cozy Creator (cl-1179)"
+  ARGV_LOG="$OUT/argv.log" python3 "$here/open_outside.py" --cozy "$COZY" --out "$OUT/open-outside" \
+    || check "open outside a project: see $OUT/open-outside"
+}
+
 # Every command a hint names is one this cozy has: each `cozy …` its code, page and docs tell someone to type, walked down its help.
 hint_commands() {
   step "every command a hint, a next line or a doc names parses"
@@ -297,9 +305,11 @@ in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json
 before=$(envs_in "$HOME/.cozy")
 RUN_PROJECT=$other cell second-parts "$script" || return 0
 after=$(envs_in "$HOME/.cozy")
-# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none waited on the machine's download of a model
+# (`waiting_on`, cl-1205), none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or ((.waiting_on // []) | length > 0)
       or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
@@ -518,6 +528,37 @@ printf 'instructions: "<Amy> waves"\nreferences:\n  - name: Amy\n    image: in/a
 code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" --input "$dir/in/elsewhere.yaml" --on local > "$OUT/own-refs-elsewhere.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q reference_file_missing "$OUT/own-refs-elsewhere.json" && grep -q "starts at that file's folder" "$OUT/own-refs-elsewhere.json" \
   || check "own references: in/elsewhere.yaml's in/amy.png (in/in/amy.png) wasn't refused saying where it starts (exit $code): $(tail -c 300 "$OUT/own-refs-elsewhere.json")"
+}
+
+# cl-1183 (pod-session 44176217146, H3 upscale's `video`: PRO-2 refused, PRO-4 ran): a file a run attaches to a box-shaped input
+# (Image, Video: the call reads its `file`) went under the input's own name while its project didn't hold it yet, so the Runtime,
+# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. And
+# `--file video.file=<plate>`, the path the Runtime names, was left out and refused `tool_input_missing` (pod-session 44185299980).
+# Local code installed here takes a picture no run has sent, twice, then another as `--file picture.file=`: each run completes and
+# reads its bytes.
+given_file() {
+step "a run's own file at a box-shaped input, its first use, again, and by its file's path (cl-1183)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/given-file want got n
+rm -rf "$dir"; mkdir -p "$dir"
+python3 -I - "$dir/picture.png" "$dir/member.png" <<'PY'
+import random, struct, sys, zlib
+def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+for path in sys.argv[1:]:
+    w, h, rgb = 40, 24, random.randbytes(3)
+    rows = b"".join(b"\0" + rgb * w for _ in range(h))
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+PY
+for n in first again member; do
+  case $n in
+    member) want=$(sha256sum "$dir/member.png" | cut -d' ' -f1); set -- --file "picture.file=$dir/member.png" ;;
+    *) want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1); set -- "picture=$dir/picture.png" ;;
+  esac
+  cell "given-$n" "$here/project/given.py/read" "$@" \
+    || { check "given file: the $n run ($*) $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300) $(tail -c 300 "$OUT/given-$n.err" 2> /dev/null)"; continue; }
+  got=$(run_get "$OUT" "given-$n" '"\(.result.sha256) \(.result.width)"')
+  [ "$got" = "$want 40" ] || check "given file: the $n run ($*) read '$got', not '$want 40'"
+done
 }
 
 # xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
@@ -946,11 +987,21 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 rc_floor() {
 step "a package with only an RC floor runs from source and from the Hub, its lock on the RC's newest Runtime (xs-194)"
 [ -n "$LOCAL" ] || return 0
-local src=$OUT/rcfloor runtime rc
-rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
-runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
-  | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
-echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
+local src=$OUT/rcfloor runtime rc minor newest="the open RC's newest"
+if cozy --version | awk '{exit !($2 ~ /-/)}'; then
+  # A dev cozy (X.Y.0-dev) is its open RC's: the lock takes that RC's newest build.
+  rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] ".0"}')
+  runtime=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+    | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
+else
+  # A release's (a run on release/X.Y.Z, its tag, or a PR into it) is its own line's, never the next RC's (cl-1186): the lock takes
+  # the newest released Runtime of the minor its machine runs, as cozy-runtime's release/X.Y.Z is.
+  newest="the release line's newest"
+  minor=$(cozy --json machine show local 2> /dev/null | jq -r '.status.runtime // empty' | awk -F. '{print $1 "." $2}')
+  [ -z "$minor" ] || runtime=$(curl -fsSL --retry 5 --retry-all-errors https://pypi.org/pypi/cozy-runtime/json 2> /dev/null | jq -r '.releases | keys[]' \
+    | grep -xE "${minor//./\\.}\.[0-9]+" | sort -V | tail -1)
+fi
+echo "rc floor: $newest Runtime is ${runtime:-unread}"
 grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
   || check "rc floor: publishing e2e-rcfloor failed: $(tail -c 300 "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
 rm -rf "$src" && cp -r "$here/relay" "$src"
@@ -959,7 +1010,7 @@ cell rc-floor-source "$src/relay" "text=from source" || check "rc floor: its sou
 grep -q 'cozy-runtime = ' "$src/pyproject.toml" && check "rc floor: its pyproject.toml took a Runtime source"
 if [ -f "$src/uv.lock" ] && [ -n "$runtime" ]; then
   grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | grep -qF "version = \"$runtime\"" \
-    || check "rc floor: its lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | tail -1), not the RC's newest $runtime"
+    || check "rc floor: its lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | tail -1), not $newest $runtime"
 fi
 [ -z "${E2E_RCFLOOR:-}" ] || cell rc-floor-hub "$E2E_RCFLOOR/relay" "text=from the Hub" \
   || check "rc floor: the published e2e-rcfloor's run failed: $(run_get "$OUT" rc-floor-hub .reason.message | head -c 300)"
@@ -1002,7 +1053,8 @@ in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on lo
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
-cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+# Its TensorFS too: the RC Runtime's floor is a TensorFS build only the candidate set holds (xs-216).
+cozy --json machine update local --runtime "$was" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
 }
@@ -1168,7 +1220,7 @@ cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
 # says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
 local release
 release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
-cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+cozy --json machine update local --runtime "$release" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-release.json" 2>&1 \
   || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
 machine_ready
 jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \
@@ -1557,6 +1609,33 @@ if [ -z "$n" ]; then check "the waiting run never got a number"; else
   grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run watch $n did not follow it to canceled"
   cozy --json run watch "$n" --once > "$OUT/canceled.json" || true
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
+fi
+
+# cl-1154 (the release coordinator, from xs-208's runs stopped at step 3: "a run canceled mid-call has no measurements and no
+# report"; "a cancel stops the call at its next cancellation point and keeps the executor (warm weights)"): canceled at its
+# step 3, a call stops at its next step, and its record keeps what it measured: its steps, in `--json` and in what
+# `cozy run watch --full` shows. Its executor stays, as after a failure: the next call there finds it started.
+step "a run canceled mid-steps keeps its measurements (cl-1154)"
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=40 seconds:=0.5 --on local > "$OUT/stopped.ndjson" 2>&1) &
+stopping=$! stopped=''
+until stopped=$(run_number "$OUT/stopped.ndjson"); [ -n "$stopped" ] || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+until grep '"type":"run.progress"' "$OUT/stopped.ndjson" 2> /dev/null | jq -se 'any(.[].progress; .completed >= 3)' > /dev/null 2>&1 \
+  || ! kill -0 "$stopping" 2> /dev/null; do sleep 0.2; done
+if [ -z "$stopped" ]; then check "the stepping run never got a number"; else
+  cozy --json run cancel "$stopped" > "$OUT/stopped-cancel.json" || check "run cancel $stopped failed"
+  wait "$stopping" || true
+  cozy --json --full run watch "$stopped" --once > "$OUT/stopped.json" 2>&1 || true
+  J '.status == "canceled" and .measurements != null
+    and ([.report.measured[]?.stages[]? | select(.name == "denoise") | .steps.count] | (length > 0 and all(. >= 3 and . < 10)))' "$OUT/stopped.json" \
+    || check "canceled at step 3, run $stopped kept no steps: $(jq -c '{status, measured: (.measurements != null), stages: [.report.measured[]?.stages[]? | {name, steps}]}' "$OUT/stopped.json" 2>&1 | head -c 600)"
+  cozy --full run watch "$stopped" --once > "$OUT/stopped.txt" 2>&1 || true
+  grep -q denoise "$OUT/stopped.txt" || check "cozy run watch --full $stopped doesn't show its steps: $(head -c 600 "$OUT/stopped.txt")"
+  (cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/steps" steps:=2 seconds:=0.1 --on local > "$OUT/stopped-next.ndjson" 2>&1) \
+    || check "the call after the canceled one failed: $(tail -c 300 "$OUT/stopped-next.ndjson")"
+  cozy --json --full run watch "$(run_number "$OUT/stopped-next.ndjson")" --once > "$OUT/stopped-next.json" 2>&1 || true
+  jq -se '.[0].measurements.execution.executor.started_unix_ms as $was | $was != null and .[1].measurements.execution.executor.started_unix_ms == $was' \
+    "$OUT/stopped.json" "$OUT/stopped-next.json" > /dev/null \
+    || check "after the canceled run $stopped, the next call started another executor: $(jq -c '.measurements.execution.executor' "$OUT/stopped.json" "$OUT/stopped-next.json" 2>&1 | head -c 400)"
 fi
 
 step "run ls filters"

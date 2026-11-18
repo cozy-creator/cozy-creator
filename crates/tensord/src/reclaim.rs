@@ -20,7 +20,7 @@
 //! the disk moves (`usage`).
 use crate::{catalog::Catalog, execution::Engine};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     fs::{self, File},
     io,
@@ -821,6 +821,20 @@ pub(crate) struct Usage {
     pub environments: u64,
     pub runtime: u64,
     pub runs: u64,
+    /// What the store could free for a download (`room_freed`).
+    pub reclaimable: u64,
+}
+
+/// Whether a download may take `lane`: every process holding it is one of the machine's `idle` executors, which end for the room
+/// (`Service::room_for`); never one a queued or running job holds. The one rule (cl-1235) for Status's `reclaimable`, which the quote
+/// weighs a call's weights against, and `room_for`: a call the quote sends is one the machine makes room for.
+pub(crate) fn frees(lane: &tensorfs::store::retention::RoomLane, idle: &BTreeSet<u32>) -> bool {
+    lane.holders.iter().all(|pid| idle.contains(pid))
+}
+
+/// What the store could free for a download (`frees`).
+pub(crate) fn room_freed(room: &tensorfs::store::retention::Room, idle: &BTreeSet<u32>) -> u64 {
+    room.freed(|lane| frees(lane, idle))
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
@@ -844,6 +858,18 @@ pub(crate) fn seen_free(free: u64) {
     }
 }
 
+/// The environments' and the Runtime's bytes (`measure_usage`) as last measured, with the `ENVIRONMENTS_CHANGED` count they were
+/// measured at: walked again only once an environment changed, or at a sweep (cl-1202: each ~43k-file environment, the uv cache
+/// and the toolchain, walked again every 64 MB the disk moved, kept a core busy for a whole download).
+static ENVIRONMENTS: Mutex<Option<(u64, u64, u64)>> = Mutex::new(None);
+static ENVIRONMENTS_CHANGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An environment was built, compiled, installed or swept, or a uv cache entry came or went: the next measure walks them again.
+pub(crate) fn environments_changed() {
+    ENVIRONMENTS_CHANGED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    ask();
+}
+
 /// Wakes the reclaim thread (`wait_asked`).
 pub(crate) fn ask() {
     *ASKED.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
@@ -863,22 +889,35 @@ pub(crate) fn wait_asked(most: Option<Duration>) -> bool {
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
 /// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
-/// `engine` (the Runtime pair, kernels, the toolchain, Pythons).
-pub(crate) fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
+/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free with the machine's `idle` executors
+/// ended, which placement weighs a call's weights against (cl-1175): Status is told when that moved.
+pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>, idle: &BTreeSet<u32>) {
+    let (reclaimable, store) = (store.room().map_or(0, |room| room_freed(&room, idle)), store.root());
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
-    let named = |e: &fs::DirEntry| !e.file_name().to_string_lossy().starts_with('.');
-    let mut environments: u64 = fs::read_dir(&generations).into_iter().flatten().flatten().filter(named).map(|g| own(&g.path())).sum();
-    let homes = fs::read_dir(&editable).into_iter().flatten().flatten().flat_map(|a| fs::read_dir(a.path()).into_iter().flatten().flatten());
-    let envs = homes.flat_map(|home| fs::read_dir(home.path()).into_iter().flatten().flatten()).filter(|e| e.file_name().to_string_lossy().starts_with("env-"));
-    environments += envs.map(|env| own(&env.path())).sum::<u64>();
-    let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
-    environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
+    let changed = ENVIRONMENTS_CHANGED.load(std::sync::atomic::Ordering::Acquire);
+    let kept = (*ENVIRONMENTS.lock().unwrap()).filter(|(at, ..)| *at == changed).map(|(_, environments, runtime)| (environments, runtime));
+    let (environments, runtime) = kept.unwrap_or_else(|| {
+        let named = |e: &fs::DirEntry| !e.file_name().to_string_lossy().starts_with('.');
+        let mut environments: u64 = fs::read_dir(&generations).into_iter().flatten().flatten().filter(named).map(|g| own(&g.path())).sum();
+        let homes = fs::read_dir(&editable).into_iter().flatten().flatten().flat_map(|a| fs::read_dir(a.path()).into_iter().flatten().flatten());
+        let envs = homes.flat_map(|home| fs::read_dir(home.path()).into_iter().flatten().flatten()).filter(|e| e.file_name().to_string_lossy().starts_with("env-"));
+        environments += envs.map(|env| own(&env.path())).sum::<u64>();
+        let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
+        environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
+        let runtime = du(engine, &skip);
+        // Kept at the count it began at: a change while it walked is walked again.
+        *ENVIRONMENTS.lock().unwrap() = Some((changed, environments, runtime));
+        (environments, runtime)
+    });
     let free = measure(store).ok().map(|disk| disk.available);
-    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]) };
-    *USAGE.lock().unwrap() = Some(usage);
+    let usage = Usage { models: du(store, &[]), environments, runtime, runs: du(&engine.join("execution"), &[]), reclaimable };
+    let before = USAGE.lock().unwrap().replace(usage);
     *MEASURED_FREE.lock().unwrap() = free;
+    if before.is_none_or(|before| before.reclaimable != reclaimable) {
+        crate::activity::status_changed();
+    }
 }
 
 /// The bytes only environment `dir` holds (`releasable`: neither its links into a uv cache nor

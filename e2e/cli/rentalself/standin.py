@@ -6,7 +6,13 @@ e2e/cli/rentalself.sh (cl-977). Each request is one line of <dir>/events.jsonl.
 
 The Hub answers the machine's key reads with a 4 s lease (a check-in every 2 s) and refuses its release with worker.ended, so the
 machine must end itself. The provider refuses the end twice (503), then takes the pod: it kills the machine's process group
-(<dir>/machine.pid, its group leader), as a provider ending the container does."""
+(<dir>/machine.pid, its group leader), as a provider ending the container does.
+
+Case `held` (e2e/cli/holdwins.sh, cl-1196): a rental this computer ordered, whose lease grants the keys in <dir>/keys (one a line),
+as a Hub grants the devices of the account that rented it, for 10 min. With <dir>/link_floor.json its lease names that floor for
+the machine's first download, and a slow link the machine reports is answered `replacing` (rentalself.sh's slow_link, th-405).
+
+  standin.py link <dir> slow|paced  prints one line per thing that rental got wrong of its link, <dir>/link_mbit Mbit/s wide"""
 
 import base64
 import http.server
@@ -52,16 +58,27 @@ def serve(dir: str, case: str) -> None:
             if self.path == "/v1/worker/rental/authorized-keys":
                 worker = self.headers.get("X-Cozy-Worker-ID", "")
                 note("check_in", worker=worker)
+                if case == "held":
+                    keys = open(os.path.join(dir, "keys")).read().split()
+                    lease: dict[str, object] = {"worker_id": worker, "authorized_keys": keys, "lease_seconds": 600}
+                    floor = os.path.join(dir, "link_floor.json")
+                    if os.path.exists(floor):
+                        lease["link_floor"] = json.load(open(floor))
+                    return answer(self, 200, lease)
                 return answer(self, 200, {"worker_id": worker, "authorized_keys": [], "lease_seconds": LEASE_SECONDS})
             answer(self, 404, {"error": {"code": "worker.route_not_found", "message": self.path, "remedy": "none"}})
 
         def do_POST(self) -> None:
-            self.body()
+            sent = self.body()
             if self.path == "/v1/worker/rental/release":
                 note("release")
                 return answer(self, 401, {"error": {"code": "worker.ended", "message": "the rental behind this worker has ended",
                                                     "remedy": "a pod whose rental ended holds no lease; rent a new one"}})
             if self.path == "/v1/worker/rental/speed":
+                report = json.loads(sent or b"{}")
+                note("speed", **{signal: report[signal] for signal in ("download", "slow_link") if signal in report})
+                if "slow_link" in report:
+                    return answer(self, 200, {"replacing": True})
                 return answer(self, 204)
             answer(self, 404, {"error": {"code": "worker.route_not_found", "message": self.path, "remedy": "none"}})
 
@@ -152,5 +169,42 @@ def verdict(dir: str, case: str) -> None:
         print(line)
 
 
+def link(dir: str, case: str) -> None:
+    floor = json.load(open(os.path.join(dir, "link_floor.json")))
+    floor_mbps, window = float(floor["mbps"]), float(floor["window_seconds"])
+    wide = float(open(os.path.join(dir, "link_mbit")).read())
+    # (bytes, seconds) of each report, by signal.
+    told: dict[str, list[tuple[float, float]]] = {"slow_link": [], "download": []}
+    for line in open(os.path.join(dir, "events.jsonl")):
+        event = json.loads(line)
+        for signal, reports in told.items():
+            if event["kind"] == "speed" and signal in event:
+                reports.append((float(event[signal]["bytes"]), float(event[signal]["seconds"])))
+    slow, measured = told["slow_link"], told["download"]
+
+    def mbps(report: tuple[float, float]) -> float:
+        return report[0] * 8 / 1e6 / report[1]
+
+    said = "; ".join(f"{signal} {size / 1e6:.0f} MB over {seconds:.1f} s ({mbps((size, seconds)):.0f} Mbit/s)"
+                     for signal, reports in told.items() for size, seconds in reports) or "nothing"
+    wrong: list[str] = []
+    if case == "slow":
+        if len(slow) != 1 or measured:
+            wrong.append(f"through {wide:.0f} Mbit/s, under its lease's {floor_mbps:.0f}, it told its Hub {said}: want one slow_link alone")
+        elif slow[0][1] < window or not 0.5 * wide <= mbps(slow[0]) <= 1.25 * wide:
+            wrong.append(f"its slow_link says {said}: want the {wide:.0f} Mbit/s link's pace over its lease's {window:.0f} s window or more")
+        if "the Hub is placing this rental on another host" not in open(os.path.join(dir, "machine.log"), errors="replace").read():
+            wrong.append("its log doesn't say the Hub is placing it on another host, as the Hub answered")
+    else:
+        if slow or len(measured) != 1:
+            wrong.append(f"through {wide:.0f} Mbit/s, over its lease's {floor_mbps:.0f}, it told its Hub {said}: want one download alone")
+        elif measured[0][0] < 1 << 30 or not floor_mbps <= mbps(measured[0]) <= 1.25 * wide:
+            wrong.append(f"its download says {said}: want 1 GiB or more at the {wide:.0f} Mbit/s link's pace")
+    for found in wrong:
+        print(found)
+    if not wrong:
+        print(f"ok: {said}", file=sys.stderr)
+
+
 if __name__ == "__main__":
-    (serve if sys.argv[1] == "serve" else verdict)(sys.argv[2], sys.argv[3])
+    {"serve": serve, "verdict": verdict, "link": link}[sys.argv[1]](sys.argv[2], sys.argv[3])

@@ -205,6 +205,15 @@ for e in events:
         one = obj(ev.get('machine'))
         machine_events[text(one.get('name'))].append((at, one))
 
+
+def waited_bytes(timeline: list[tuple[float, Obj]]) -> list[float]:
+    """The bytes of each download a run's stream said it waits on (`progress.waiting_on`, cl-1205), as its machine's one item of it
+    said them on the page's stream: its run says none of its own."""
+    ids = {text(i) for _, one in timeline for i in arr(obj(one.get('progress')).get('waiting_on'))}
+    where = {text(one.get('machine')) for _, one in timeline if one.get('machine')}
+    return [num(obj(o).get('bytes_total')) or 0.0 for m in where for _, one in machine_events.get(m, [])
+            for o in arr(one.get('activity')) if text(obj(o).get('id')) in ids]
+
 for failure in arr(flow.get('failures')):
     check('flow', False, text(failure))
 if not renting:
@@ -293,7 +302,8 @@ for s in map(obj, arr(flow.get('sent'))):
     placed = next((at for at, one in timeline if one.get('machine')), None)
     row.placed_s = secs(row.sent_at, placed)
     downloads = [(at, obj(one.get('progress'))) for at, one in timeline if phase(one) == 'downloading']
-    row.dl_bytes = max((num(p.get('bytes_total')) or 0.0 for _, p in downloads), default=0.0)
+    # Its download's bytes: a run waiting on one says which (`progress.waiting_on`, cl-1205), and the machine's one item says them.
+    row.dl_bytes = max([num(p.get('bytes_total')) or 0.0 for _, p in downloads] + waited_bytes(timeline), default=0.0)
     # The time its stream said it was downloading: not its wait for a GPU after, nor a later look at a download long done.
     took = sum(then - at for (at, one), (then, _) in zip(timeline, timeline[1:]) if phase(one) == 'downloading') / 1000
     row.dl_s = took if took > 0 else None
@@ -482,12 +492,20 @@ for r in rows:
     want = num(r.stored.get('cold_exec_s' if cold else 'warm_exec_s')) or 0.0
     # Its own work, as the stored run's time is: that run was alone on a machine that held its weights. This one's download and its wait
     # for a GPU behind another run are not its work; its download's rate and placement judge those.
-    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", r.work_s is not None and r.work_s <= want * TIE,
-          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record'))
+    # A FAIL says its GPU's clock and power beside the stored run's (cl-1161: hiroyuki's 4090, held by its host to ~160 of 450 W,
+    # ran 876 MHz against 2440 and took 2.8× as long): a slow host shows as one, not as the release.
+    clocks = r.record.clocks
+    capped = f", held to {clocks['power_limit_w']} of {clocks['power_default_w']} W" if clocks and clocks['power_limit_w'] else ''
+    beside = ((f"; SM {clocks['sm_mhz']} MHz at up to {clocks['power_w']} W{capped} ({', '.join(clocks['throttles']) or 'no limit'})" if clocks else '; no clocks recorded')
+              + (f" vs stored {r.stored['sm_mhz']} MHz at up to {r.stored['power_w']} W" if 'sm_mhz' in r.stored else '; stored clocks not recorded'))
+    fast = r.work_s is not None and r.work_s <= want * TIE
+    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", fast,
+          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record') + ('' if fast else beside))
     for part, step in (('dense', r.dense), ('sparse', r.sparse)):
         stored = num(r.stored.get(f'{part}_step_s'))
         if stored and step is not None:
-            check(f"request {r.request} {part} steps within 5% of stored ({key})", step <= stored * TIE, f"{step:.1f} s vs {stored} s")
+            check(f"request {r.request} {part} steps within 5% of stored ({key})", step <= stored * TIE,
+                  f"{step:.1f} s vs {stored} s" + ('' if step <= stored * TIE else beside))
 for r in rows:
     if r.record and 'edit' in r.target:
         sparse = (r.sol or {}).get('sparse', 0)
@@ -681,9 +699,12 @@ def take_now(run: Obj, on: Obj | None, machine_state: str) -> tuple[str, float |
         return 'Saving', share(num(arriving.get('bytes_done')), num(arriving.get('bytes_total'))) if arriving else None
     if machine_state == 'booting':
         return 'Starting up', None
+    # Waiting on downloads it says so, with no share of its own: each is its machine's, shown once there (cl-1205).
+    if (on and text(on.get('kind')) == 'download') or arr(obj(run.get('progress')).get('waiting_on')):
+        return 'Waiting for download', None
     if on:
         total = num(on.get('bytes_total'))
-        return ('Downloading' if text(on.get('kind')) == 'download' else 'Installing'), ((num(on.get('bytes_done')) or 0.0) / total if total else None)
+        return 'Installing', ((num(on.get('bytes_done')) or 0.0) / total if total else None)
     if not run.get('machine') or status == 'queued' or run.get('machine_state') == 'queued' or run.get('queue_position') is not None:
         return 'Queued', None
     progress = run.get('progress')
@@ -718,8 +739,10 @@ def waits_on(machine: Obj, run: Obj) -> Obj | None:
     project = run.get('project_id') or None
     its = [obj(o) for o in arr(obj(machine).get('activity')) if (obj(o).get('project') or None) == project]
     number = run.get('number')
+    # Its downloads, as its progress names them (`downloadsOf`, cl-1205).
+    ids = {text(i) for i in arr(obj(run.get('progress')).get('waiting_on'))}
     return next((o for o in its if o.get('kind') == 'install' and number in arr(o.get('runs'))), None) \
-        or next((o for o in its if number in arr(o.get('runs'))), None)
+        or next((o for o in its if o.get('kind') == 'download' and text(o.get('id')) in ids), None)
 
 
 # A phase the page shows for less than this is a flicker no one reads (the flow looks at the page every 500 ms): a run's stream says its

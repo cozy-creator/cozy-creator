@@ -23,7 +23,7 @@ pub(crate) fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, pytho
     if version.is_empty() || !version.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+!".contains(&c)) {
         return Err(io::Error::other("a published wheel requires a concrete version"));
     }
-    let input = format!("{project}=={version}\n");
+    let input = format!("{}\n", api::release::requirement(&project, api::release::Bound::Exactly, version));
     let plan = super::update::compile_sdk(uv, python, &input, stop, true)?
         .map_err(|why| io::Error::other(format!("{project} {version}: {why}")))?;
     let wheel = selected(&plan, &project, version)?;

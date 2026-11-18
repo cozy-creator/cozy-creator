@@ -1,16 +1,19 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
 // press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
-// faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
-// so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
+// faded preview of its latents until its take replaces it, and its finish note's View opens it. The top bar has no Render all (cl-1192),
+// shown at 1440×900, 1920×1080 and 600×900. Render on a box renders it alone (cl-1192, Paul 11-18): one reading a box with no take says
+// to render that first, once, as a toast, and renders nothing; its input rendered and then changed, it reads the take that stands, and
+// nothing renders the input again or says it's out of date, shown at 1440×900 and 600×900. Two boxes rendered one at a time, one reading
+// the other: it waits for the take on its way, says so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
 // A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
 // showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
 // is ready before the other's install ends, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
 // take on its way is, in its takes column, the shape it will be: the one set, else Auto's from the picture it edits (cl-1072).
-const { writeFileSync } = require('fs');
+const { mkdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, focus, middle, openPoint, newCanvas, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, themed, canvasIdle, focus, middle, openPoint, newCanvas, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
 const { toolRow } = require('./hands');
 
 const TOOL = fixtureTool('tool.py');
@@ -235,6 +238,12 @@ const recordViewer = (page, name) => page.evaluate((name) => {
 }, name);
 
 test('render', async ({ page, project, api, cli }) => {
+  // Each step on its own budget (xs-217), the measured maximum on GitHub's loaded runners plus a margin: a slow step fails by its name,
+  // not whichever step the test's 180 s ran out in. Measured, s (e2e 44277123522 green / 44285972438 red / 44292533167 red): the local
+  // tools listed 6/10/6, A still 37/46/32, No Render all 24/46/30, slow box 9/19/12, Cancel 15/53+/56, crash 11/-/11, Focus 11/-/10,
+  // two boxes 17/-/14; Render on a box alone is newer than those runs (unmeasured: 90). The test: their sum and the tools' 570 s.
+  test.setTimeout(570_000);
+  const step = (title, budget, body) => test.step(title, body, { timeout: budget });
   const warns = join(project.path, 'warns.py');
   writeFileSync(warns, WARNS);
   // Its environment readied while the rest goes: no box names it yet, so the palette's list isn't held reading it.
@@ -255,7 +264,7 @@ test('render', async ({ page, project, api, cli }) => {
   await page.evaluate(() => { window.__unreloaded = true; });
   let first;
 
-  await test.step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', async () => {
+  await step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', 75_000, async () => {
     const still = await toolRow(page, 'Image', STILL);
     await expect(still).toHaveAttribute('data-tool-operation', 'image');
     await carry(page, still, await openPoint(page));
@@ -350,21 +359,101 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
-  await test.step('Render all, on a slow box that mentions the first', async () => {
+  await step('No Render all in the top bar: the page at real sizes, with its rendered boxes', 75_000, async () => {
+    // Paul, 11-17 (cl-1192): "remove the 'render all 12' behavior and logic from the top right of the webui".
+    await expect(page.locator('.top .main-menu')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Render all/ })).toHaveCount(0);
+    const shots = join(process.env.OUT, 'web', 'render');
+    mkdirSync(shots, { recursive: true });
+    const size = page.viewportSize();
+    for (const theme of ['paper', 'dark']) {
+      await pull();
+      await project.look(theme);
+      await page.reload();
+      await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
+      for (const [width, height] of [[1440, 900], [1920, 1080], [600, 900]]) {
+        await page.setViewportSize({ width, height });
+        await fit(page);
+        await expect(page.getByRole('button', { name: /^Render all/ })).toHaveCount(0);
+        await page.screenshot({ path: join(shots, `rendered-${width}x${height}-${theme}.png`) });
+      }
+    }
+    await pull();
+    await project.look(null);
+    await page.setViewportSize(size);
+    await page.reload();
+    await expect(page.locator('.stage')).toBeVisible();
+    await fit(page);
+  });
+
+  await step('Render on a box renders it alone: an input with no take is said once; one changed is read as it stands', 90_000, async () => {
+    // Paul, 11-18 (cl-1192): "no you can delete this sort of walking logic. We won't have this idea of 'this is out of date' right now".
+    await project.add({ name: 'source', tool: STILL, kind: 'image', fields: { instructions: 'A source still.' }, at: { x: 0, y: 840 } });
+    await project.add({ name: 'reader', tool: STILL, kind: 'image', fields: { instructions: 'Like <source>.' }, at: { x: 360, y: 840 } });
+    await fit(page);
+    const takes = async () => ({ source: (await project.asset('source'))?.versions ?? 0, reader: (await project.asset('reader'))?.versions ?? 0 });
+    const line = 'Render source first: it has no picture yet';
+    let region = await focus(page, 'reader');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect(page.locator('[data-note]').filter({ hasText: line }), 'a toast names the input to render first').toHaveCount(1, { timeout: 60_000 });
+    await expect.poll(async () => (await project.asset('reader'))?.failure?.message ?? '', { message: "reader's one line" }).toContain(line);
+    await notesOver(page, 2000);
+    expect.soft((await page.evaluate(() => window.__notes)).filter((text) => text.includes(line)), 'said once').toHaveLength(1);
+    expect.soft(await takes(), 'nothing rendered: not source on its behalf, nor reader').toEqual({ source: 0, reader: 0 });
+    await back(page);
+
+    region = await focus(page, 'source');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await takes()).source, { message: "source's take", timeout: 120_000 }).toBe(1);
+    await back(page);
+    await api.patch(project.at('/assets/source'), { fields: { instructions: 'A source still, changed and not rendered.' } });
+    await expect.poll(async () => (await project.asset('source'))?.fields?.instructions).toBe('A source still, changed and not rendered.');
+    region = await focus(page, 'reader');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await takes()).reader, { message: "reader's take", timeout: 120_000 }).toBe(1);
+    await back(page);
+    expect.soft(await takes(), 'only reader rendered').toEqual({ source: 1, reader: 1 });
+    const [source, reader, state] = [await project.asset('source'), await project.asset('reader'), await project.state()];
+    const input = (await api.get(`${project.at(`/runs/${reader.prefixes[0].run}`)}?detail=full`)).request?.input;
+    expect.soft(JSON.stringify(input?.instructions?.references ?? []), "reader was sent source's take as it stands").toContain(shaOf(source, 1));
+    expect.soft({ standing: source.standing, status: source.status, failure: reader.failure ?? null, stale: state.stale ?? null },
+      'nothing is out of date, and reader no longer fails').toEqual({ standing: 'current', status: 'version 1', failure: null, stale: null });
+    const shots = join(process.env.OUT, 'web', 'render');
+    mkdirSync(shots, { recursive: true });
+    const size = page.viewportSize();
+    for (const [width, height] of [[1440, 900], [600, 900]]) {
+      await page.setViewportSize({ width, height });
+      await fit(page);
+      await page.screenshot({ path: join(shots, `read-as-it-stands-${width}x${height}.png`) });
+    }
+    await page.setViewportSize(size);
+    await fit(page);
+  });
+
+  await step('Render a slow box that mentions the first, then a box that reads it', 45_000, async () => {
     await api.patch(project.at('/assets/slow'), { fields: { instructions: `After <${first}>, slowly.` } });
     await expect.poll(async () => (await project.asset('slow'))?.fields?.instructions).toBe(`After <${first}>, slowly.`);
     await recordBox(page, 'after');
     await recordBox(page, 'slow');
-    await page.getByRole('button', { name: /^Render all \d+$/ }).click();
+    for (const name of ['slow', 'after']) {
+      const region = await focus(page, name);
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await back(page);
+    }
     await expect.poll(() => renderState(page, 'after'), { message: 'after waits for slow', timeout: 60_000 }).toMatch(/^Waiting for <slow>/);
   });
 
-  await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
+  await step('Cancel one box while it waits for its input and another while it renders', 90_000, async () => {
     await cancelRender(page, 'after');
     await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(() => renderState(page, 'after')).toBeNull();
-    await expect.poll(() => renderState(page, 'slow'), { message: 'slow renders', timeout: 90_000 }).toMatch(/^Drawing/);
+    // What slow says before it draws, kept on the test (a red's report says what its start waited on: 7 s green, 44-49 s red, xs-217).
+    const before = new Set();
+    await expect.poll(async () => { const state = await renderState(page, 'slow'); before.add(state); return state; }, { message: 'slow renders', timeout: 90_000 })
+      .toMatch(/^Drawing/);
+    test.info().annotations.push({ type: 'slow before drawing', description: [...before].join(' | ') });
     // The whole job's meter, at rest, rises as it goes and never goes back. Nothing like slow ran here, so its estimate is its own steps',
     // and those say no time left until its second (43405964751: 99 from then on, "6s / 6s" then "7s / 21s"): the meter isn't pinned by it.
     const rising = async () => {
@@ -394,7 +483,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(waited.filter((words) => /Drawing|\b\d+ \/ 10\b/.test(words)), "after shows none of slow's progress").toEqual([]);
   });
 
-  await test.step('Render the crash tool', async () => {
+  await step('Render the crash tool', 45_000, async () => {
     // cl-1070 (Paul, 11-16): "do not keep failed runs around as if they were takes I can select"; "an error, when it happens, is a toast
     // notification, and the take disappears". It's said once, its take leaves the column with nothing to delete, and the frame that
     // watched it goes back to the take it showed.
@@ -434,7 +523,7 @@ test('render', async ({ page, project, api, cli }) => {
     await back(page);
   });
 
-  await test.step('Watch one box land in Focus, then reload', async () => {
+  await step('Watch one box land in Focus, then reload', 45_000, async () => {
     const run = await primed;
     expect(run.code, `cozy run of warns.py: ${run.stderr.slice(-400)}`).toBe(0);
     await project.add({ name: 'warned', tool: `${warns}/warned`, kind: 'image', fields: { instructions: 'A still that warns.' }, at: { x: 360, y: 420 } });
@@ -477,7 +566,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
   });
 
-  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", async () => {
+  await step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", 60_000, async () => {
     // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, installed and read by this project in the first step;
     // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
     // cl-1086 (Paul: "a run never waits on something it doesn't need"; "every wait is tied to what it waits on, observed"): a run of

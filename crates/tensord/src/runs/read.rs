@@ -168,15 +168,20 @@ impl Runs {
         records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record).map(|state| state.id)).collect()
     }
     /// The runs here not ended that read `model` (org/name), each once by the id its sender gave it: one downloading it now, and
-    /// one whose plan binds it (a child by its root's).
-    pub(crate) fn reading(&self, model: &str) -> Result<Vec<String>, Error> {
+    /// one whose plan binds it (a child by its root's). `asker` hears its own by their ids, any other's counted (cl-1223).
+    pub(crate) fn reading(&self, model: &str, asker: &str) -> Result<crate::others::Others, Error> {
         let engine = &self.service.engine;
         let named = |name: &str| name.eq_ignore_ascii_case(model);
         let mut runs: Vec<String> = crate::activity::downloading().into_iter()
             .filter(|(_, models)| models.iter().any(|m| named(m)))
             .map(|(run, _)| run)
             .collect();
+        // Who sent each, by the id it sent it under.
+        let mut senders = std::collections::HashMap::new();
         for record in engine.nonterminal(usize::MAX).map_err(problem)? {
+            if let Some(submission) = record.submission.as_ref() {
+                senders.insert(submission.request_id.clone(), submission.actor.clone());
+            }
             let Some(submission) = record.submission.as_ref().filter(|s| !s.preparation_id.is_empty()) else { continue };
             // A closed project's runs run nothing now.
             let Ok(scope) = engine.private_storage(&record.id) else { continue };
@@ -194,7 +199,11 @@ impl Runs {
         }
         runs.sort();
         runs.dedup();
-        Ok(runs)
+        let reads = |id: &str| match senders.get(id).is_some_and(|sender| sender == asker) {
+            true => crate::others::Read::Id,
+            false => crate::others::Read::No,
+        };
+        Ok(crate::others::Others::of(runs, reads))
     }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
@@ -634,7 +643,7 @@ impl Runs {
         let held = self
             .service
             .engine
-            .with_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
+            .read_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
             .map_err(problem)?;
         let Some(length) = held else {
             return Err(Error::not_found("object_not_found", "this signer wrote no such object"));
@@ -654,15 +663,13 @@ impl Runs {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(problem(error)),
             };
-            // `downloaded`: the store still holds every model of a preparation bound to it.
+            // `downloaded`: the store still holds every model of a preparation bound to it, read off its files (cl-1202).
             let bound = self
                 .service
                 .engine
-                .with_journal(|journal| journal.preparations_of(&actor, &installed.alias))
+                .read_journal(|journal| journal.preparations_of(&actor, &installed.alias))
                 .map_err(problem)?;
-            let downloaded = gpu.as_ref().is_some_and(|gpu| {
-                bound.iter().any(|bound| gpu.plan(bound).is_ok_and(|plan| gpu.downloaded(&plan)))
-            });
+            let downloaded = gpu.as_ref().is_some_and(|gpu| bound.iter().any(|bound| gpu.downloaded_now(bound)));
             let base = match downloaded {
                 true => Level::Downloaded,
                 false => Level::Installed,
@@ -717,7 +724,7 @@ impl Runs {
         let kept = self
             .service
             .engine
-            .with_journal(|journal| journal.warm_sets())
+            .read_journal(|journal| journal.warm_sets())
             .map_err(problem)?;
         let holds = self.service.gpu().map(|gpu| gpu.members(&actor));
         let mut items: Vec<v1::WarmItem> = vec![];
@@ -758,10 +765,10 @@ impl Runs {
         let mut record = self.record(actor, id)?;
         let quiet = |record: &Execution| !record.state.terminal() && record.revision <= after && !engine.texts_untold(&record.id, heard);
         if quiet(&record) {
-            let epoch = engine.activity_epoch();
+            let epoch = engine.observed_epoch();
             record = self.record(actor, id)?;
             if quiet(&record) {
-                engine.wait_activity(epoch, Some(Duration::from_secs(30)));
+                engine.wait_observed(epoch, Some(Duration::from_secs(30)));
                 record = self.record(actor, id)?;
             }
         }
@@ -812,7 +819,7 @@ impl Runs {
             let preparing = record.state == State::Queued
                 && record.waiting_reason.as_deref() == Some(crate::journal::PREPARING);
             // What a queued run waits for (another run's install, a GPU) and its place in line are its state,
-            // until its weights arrive meanwhile: then their bytes are its progress, the client
+            // until it waits on downloads meanwhile: then they are its progress, by name (cl-1205), the client
             // saying both.
             let waiting = record.waiting.clone().filter(|_| record.state == State::Queued);
             let place = record.place.filter(|_| waiting.is_some());
@@ -822,7 +829,7 @@ impl Runs {
                     .filter(Value::is_object)
                     .unwrap_or_else(|| json!({"stage":progress,"step_ms":0.0}))
             });
-            let arriving = payload.as_ref().is_some_and(|p| p["bytes_done"].as_u64() < p["bytes_total"].as_u64());
+            let arriving = payload.as_ref().is_some_and(|p| p["waiting_on"].as_array().is_some_and(|on| !on.is_empty()));
             // Its executor starting, what it does there (`importing <package>`, `starting the executor`) is its state's reason.
             let starting = (payload.as_ref())
                 .and_then(|p| p["stage"].as_str().map(str::to_owned))
@@ -1218,6 +1225,9 @@ impl Log {
                     bytes_total: payload["bytes_total"].as_u64().unwrap_or(0),
                     stage_fraction: payload["stage_fraction"].as_f64(),
                     preview: payload["preview"].as_u64().unwrap_or(0),
+                    waiting_on: (payload["waiting_on"].as_array().into_iter().flatten())
+                        .filter_map(|on| on.as_str().map(str::to_owned))
+                        .collect(),
                 })
             }
             "call" => v1::Event::Call(v1::Call {
@@ -1255,6 +1265,7 @@ impl Log {
                     gpus: gpu["gpus"].as_array().into_iter().flatten().filter_map(|g| g.as_u64()).map(|g| g as u32).collect(),
                     width: gpu["width"].as_u64().unwrap_or_default() as u32,
                     behind: gpu["behind"].as_str().unwrap_or_default().into(),
+                    left_ms: gpu["left_ms"].as_u64().unwrap_or_default(),
                 }),
                 None => v1::Event::Log(v1::LogLine {
                     level: body["level"].as_str().unwrap_or("info").into(),
@@ -1352,7 +1363,7 @@ impl Runs {
             if let v1::Event::Outcome(outcome) = &mut event.event {
                 let record = self.record(actor, id)?;
                 let measured = (self.service.engine)
-                    .with_journal(|journal| journal.measurements(&record.id))
+                    .read_journal(|journal| journal.measurements(&record.id))
                     .map_err(problem)?;
                 outcome.measurements = measured.and_then(raw);
                 // Its own time running its callable, every attempt summed (0: unknown).

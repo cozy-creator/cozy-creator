@@ -1,6 +1,17 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    // TensorFS says its Python distribution's version everywhere (`VERSION`): a build of the open RC's dev line is
+    // `0.27.0-dev.3298+g1a2b3c4d` to cargo and `0.27.0.dev3298+g1a2b3c4d` to pip (crates/tensorfs-py/scripts/dev-version.sh).
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let version = match version.split_once("-dev") {
+        Some((release, rest)) => {
+            let (number, local) = rest.split_once('+').map_or((rest, String::new()), |(number, local)| (number, format!("+{local}")));
+            format!("{release}.dev{}{local}", number.trim_start_matches('.').parse::<u64>().unwrap_or(0))
+        }
+        None => version,
+    };
+    println!("cargo:rustc-env=TENSORFS_VERSION={version}");
     match env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {
         "linux" => println!("cargo:rustc-link-arg-bin=tfs=-Wl,-rpath,$ORIGIN/../lib/varena-v1:$ORIGIN/../data/lib/varena-v1"),
         "macos" => println!("cargo:rustc-link-arg-bin=tfs=-Wl,-rpath,@loader_path/../lib/varena-v1"),

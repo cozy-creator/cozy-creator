@@ -1,8 +1,9 @@
-//! What slows this machine's runs, said on each run it slows and in its Status (cl-913): a GPU the driver holds back for heat
-//! most of a run that loads it (a call's readings, `platform::gpu::Peak`), and a Runtime that serves its GPUs none of its native
-//! kernels (its executors' Start). Each is a run warning by its code, once a run, on its root. Heat is also the machine's
-//! (Status `heat`) until a later loaded run there runs cool, and the Hub's (`machine::speed`), which ranks a host that throttles
-//! under load after healthy ones. Recorded readings (`machine.gpu_samples`) go through all of it but the Hub.
+//! What slows this machine's runs, said on each run it slows and in its Status (cl-913): a GPU the driver holds back most of a run
+//! that loads it (a call's readings, `platform::gpu::Peak`), for heat or at a power limit its host set under the card's default
+//! (cl-1161), and a Runtime that serves its GPUs none of its native kernels (its executors' Start). Each is a run warning by its
+//! code, once a run, on its root. A slowed GPU is also the machine's (Status `heat`) until a later loaded run there runs at full
+//! speed, and the Hub's (`machine::speed`: its heat and its power limit), which ranks such a host after healthy ones. Recorded
+//! readings (`machine.gpu_samples`) go through all of it but the Hub.
 use crate::execution::Engine;
 use api::machine::GpuHeat;
 use platform::gpu::{Sample, Used};
@@ -15,14 +16,14 @@ use std::{
 pub(crate) const GPU_THROTTLED: &str = "gpu_throttled";
 pub(crate) const RUNTIME_WITHOUT_KERNELS: &str = "runtime_without_kernels";
 
-/// The machine's hot GPUs, by index.
+/// The machine's slowed GPUs, by index.
 static HEAT: LazyLock<Mutex<BTreeMap<u32, GpuHeat>>> = LazyLock::new(Mutex::default);
 /// Why its Runtime serves its GPUs no native kernels, as its latest executor on GPUs said.
 static KERNELS: Mutex<String> = Mutex::new(String::new());
 /// The roots already told, by code.
 static WARNED: LazyLock<Mutex<HashSet<(String, &'static str)>>> = LazyLock::new(Mutex::default);
 
-/// Its hot GPUs, for its Status.
+/// Its slowed GPUs, for its Status.
 pub(crate) fn heat() -> Vec<GpuHeat> {
     HEAT.lock().unwrap().values().cloned().collect()
 }
@@ -46,49 +47,68 @@ pub(crate) fn without_kernels(engine: &Engine, id: &str, absent: &str) {
     warn(engine, id, RUNTIME_WITHOUT_KERNELS, &text);
 }
 
-/// Run `id`'s GPU readings, so far (`done` false: the call goes on) or whole. One held back for heat most of a loaded run is hot: the
-/// run warns once and the machine is marked, and at the end the Hub is told; one loaded and cool is no longer hot.
+/// Run `id`'s GPU readings, so far (`done` false: the call goes on) or whole. One held back for heat, or at its host's power limit,
+/// most of a loaded run is slowed: the run warns once and the machine is marked, and at the end the Hub is told; one loaded and at
+/// full speed is no longer marked.
 pub(crate) fn ran(engine: &Engine, id: &str, used: &[Used], replayed: bool, done: bool) {
     for gpu in used.iter().filter(|gpu| gpu.loaded()) {
         let mut heat = HEAT.lock().unwrap();
-        match gpu.hot() {
-            true => {
-                heat.insert(gpu.gpu, GpuHeat {
-                    gpu: gpu.gpu,
-                    share: gpu.heat_share,
-                    busy_ms: gpu.busy_ms,
-                    sm_mhz_mean: gpu.sm_mhz_mean,
-                    sm_mhz_limit: gpu.sm_mhz_limit,
-                    temperature_max_c: gpu.temperature_max_c,
-                    throttles: gpu.throttles.iter().map(|name| (*name).to_owned()).collect(),
-                    run: id.to_owned(),
-                    at_unix_ms: crate::machine::lifecycle::now_ms(),
-                    replayed,
-                });
-                drop(heat);
-                let so_far = if done { "" } else { " so far" };
-                let text = format!(
-                    "GPU {} ran throttled for heat {:.0}% of this run{so_far} ({} °C, {} of {} MHz), so it is slower: its host runs too hot, \
-                     and another machine runs it faster",
-                    gpu.gpu,
-                    gpu.heat_share * 100.0,
-                    gpu.temperature_max_c,
-                    gpu.sm_mhz_mean,
-                    gpu.sm_mhz_limit
-                );
-                warn(engine, id, GPU_THROTTLED, &text);
-            }
-            false if done => {
+        if !gpu.slowed() {
+            if done {
                 heat.remove(&gpu.gpu);
             }
-            false => {}
+            continue;
         }
+        // Hot and held to a power limit both: heat is what it says.
+        let capped = gpu.capped() && !gpu.hot();
+        let (limit_w, default_w) = if capped { (gpu.power_limit_w, gpu.power_default_w) } else { (0, 0) };
+        heat.insert(gpu.gpu, GpuHeat {
+            gpu: gpu.gpu,
+            share: if capped { gpu.capped_share } else { gpu.heat_share },
+            busy_ms: gpu.busy_ms,
+            sm_mhz_mean: gpu.sm_mhz_mean,
+            sm_mhz_limit: gpu.sm_mhz_limit,
+            temperature_max_c: gpu.temperature_max_c,
+            throttles: gpu.throttles.iter().map(|name| (*name).to_owned()).collect(),
+            run: id.to_owned(),
+            at_unix_ms: crate::machine::lifecycle::now_ms(),
+            replayed,
+            power_limit_w: limit_w,
+            power_default_w: default_w,
+        });
+        drop(heat);
+        let so_far = if done { "" } else { " so far" };
+        let text = match capped {
+            false => format!(
+                "GPU {} ran throttled for heat {:.0}% of this run{so_far} ({} °C, {} of {} MHz), so it is slower: its host runs too hot, \
+                 and another machine runs it faster",
+                gpu.gpu,
+                gpu.heat_share * 100.0,
+                gpu.temperature_max_c,
+                gpu.sm_mhz_mean,
+                gpu.sm_mhz_limit
+            ),
+            true => format!(
+                "GPU {} ran at a {limit_w} W power limit, under its {default_w} W default, {:.0}% of this run{so_far} ({} of {} MHz), \
+                 so it is slower: its host holds its power down, and another machine runs it faster",
+                gpu.gpu,
+                gpu.capped_share * 100.0,
+                gpu.sm_mhz_mean,
+                gpu.sm_mhz_limit
+            ),
+        };
+        warn(engine, id, GPU_THROTTLED, &text);
     }
     if !done || replayed {
         return;
     }
-    if let Some(most) = used.iter().filter(|gpu| gpu.loaded()).max_by(|a, b| a.heat_share.total_cmp(&b.heat_share)) {
+    let loaded = || used.iter().filter(|gpu| gpu.loaded());
+    if let Some(most) = loaded().max_by(|a, b| a.heat_share.total_cmp(&b.heat_share)) {
         crate::machine::speed::heat(most.heat_share, most.busy_ms as f64 / 1e3);
+    }
+    let share = |gpu: &&Used| gpu.power_limit_w as f64 / gpu.power_default_w as f64;
+    if let Some(lowest) = loaded().filter(|gpu| gpu.power_limit_w > 0 && gpu.power_default_w > 0).min_by(|a, b| share(a).total_cmp(&share(b))) {
+        crate::machine::speed::power(lowest.power_limit_w, lowest.power_default_w, lowest.busy_ms as f64 / 1e3);
     }
 }
 

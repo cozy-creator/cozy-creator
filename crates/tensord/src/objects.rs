@@ -311,7 +311,7 @@ impl Objects {
         let Some(hex) = hex(digest) else {
             return Ok(None);
         };
-        let Some(length) = self.engine.with_journal(|j| j.object(actor, &hex))? else {
+        let Some(length) = self.engine.read_journal(|j| j.object(actor, &hex))? else {
             return Ok(None);
         };
         let path = self.store()?.path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
@@ -521,21 +521,40 @@ impl Objects {
         Ok(Some(upload))
     }
 
+    /// `data`, the whole of object `digest`, written for this signer as its PUT writes it: a batch carries a run's small inputs
+    /// (cl-1172). One already stored is left as it is; bytes that differ from the digest are refused.
+    pub(crate) fn carried(&self, actor: &str, digest: &str, data: &[u8]) -> Result<(), Refused> {
+        let length = data.len() as u64;
+        let Some(upload) = self.upload(actor, digest, length)? else { return Ok(()) };
+        let mut writer = upload.writer()?;
+        upload.write_at(&mut writer, 0, data)?;
+        drop(writer);
+        match self.settle(&upload)? == whole(length) {
+            true => Ok(()),
+            false => Err(refused("object_digest_mismatch", format!("the bytes carried as {digest} are not that object"))),
+        }
+    }
+
     /// Once `upload` holds every byte, the object is verified against its digest and stored for
     /// its signer; bytes that differ are dropped. Answers the ranges held.
     pub(crate) fn settle(&self, upload: &Upload) -> Result<Ranges, Refused> {
+        self.settled(upload).map(|(held, _)| held)
+    }
+
+    /// `settle`, and whether this settle stored the object.
+    pub(crate) fn settled(&self, upload: &Upload) -> Result<(Ranges, bool), Refused> {
         crate::private_io::within(upload.private.clone(), || self.settle_in(upload))
     }
 
-    fn settle_in(&self, upload: &Upload) -> Result<Ranges, Refused> {
+    fn settle_in(&self, upload: &Upload) -> Result<(Ranges, bool), Refused> {
         let digest = format!("sha256:{}", upload.object.sha256);
         let _settling = upload.settling.lock().unwrap();
         if upload.ended.load(Ordering::Acquire) {
-            return self.held(&upload.actor, &digest);
+            return Ok((self.held(&upload.actor, &digest)?, false));
         }
         let held = upload.held();
         if held != whole(upload.object.length) {
-            return Ok(held);
+            return Ok((held, false));
         }
         let _custody = self.guard();
         upload.ended.store(true, Ordering::Release);
@@ -547,7 +566,7 @@ impl Objects {
         self.engine
             .with_journal(|j| j.bind_object(&upload.actor, &upload.object))?;
         self.root_current(std::slice::from_ref(&upload.object))?;
-        Ok(held)
+        Ok((held, true))
     }
 }
 

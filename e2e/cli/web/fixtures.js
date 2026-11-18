@@ -440,6 +440,7 @@ const test = base.extend({
     });
     for (const receipt of receipts) {
       await receipt.dispose();
+      if (receipt.aborted.length) console.log(`candidate delivery: ${receipt.aborted.length} requests the page cancelled itself, not counted as errors: ${[...new Set(receipt.aborted.map(a => a.path))].join(' ')}`);
       expect.soft(receipt.errors, 'candidate delivery errors').toEqual([]);
       expect.soft(receipt.documents.some(document => document.replaced), 'the candidate replaced a real Calcifer HTML/CSP response').toBe(true);
     }
@@ -709,19 +710,30 @@ const zoomOf = (page) => page.evaluate(() => document.querySelector('.canvas-roo
 
 /** No camera/Focus move or input barrier under way; three unchanged camera samples, so a not-yet-started transition cannot pass. */
 async function canvasIdle(page) {
-  let previous, still = 0;
-  await expect.poll(async () => {
-    const state = await page.evaluate(() => {
+  // Judged in the page, on its own clock: still and free for STILL_MS. Asked of it 100 ms apart, each ask a round trip, a page
+  // at 3× on software GL answered one every 2–4 s and three still asks didn't fit (e2e 44142655129, web-density at 1280×800 at 3×).
+  await expect.poll(() => page.evaluate((stillMs) => new Promise((done) => {
+    const began = performance.now();
+    let previous, since = null;
+    const look = () => {
+      const now = performance.now();
       const inspection = document.querySelector('.canvas-root')?.canvasInspection;
-      return { ready: Boolean(inspection?.resources()?.frames), camera: inspection?.camera(), interaction: inspection?.interaction(), moving: Boolean(document.querySelector('.stage[data-moving], [data-focused-asset][data-entering]')) };
-    });
-    const current = JSON.stringify(state.camera);
-    const busy = !state.ready || state.moving || !state.camera || state.interaction?.locked || state.interaction?.pointerDown || state.interaction?.dragging || state.interaction?.marquee;
-    still = !busy && current === previous ? still + 1 : 0;
-    previous = current;
-    return still >= 3;
-  }, { message: 'the canvas is still and accepts input', intervals: [100] }).toBe(true);
+      const interaction = inspection?.interaction();
+      const camera = JSON.stringify(inspection?.camera());
+      const busy = !inspection?.resources()?.frames || !inspection?.camera() || Boolean(document.querySelector('.stage[data-moving], [data-focused-asset][data-entering]'))
+        || interaction?.locked || interaction?.pointerDown || interaction?.dragging || interaction?.marquee;
+      since = !busy && camera === previous ? (since ?? now) : null;
+      previous = camera;
+      if (since !== null && now - since >= stillMs) return done(true);
+      if (now - began > 10_000) return done(false);
+      // A timer, not a frame: a page behind another gets no frames, and still answers.
+      setTimeout(look, 16);
+    };
+    look();
+  }), STILL_MS), { message: 'the canvas is still and accepts input', timeout: 60_000 }).toBe(true);
 }
+/** How long the canvas stays still before it's taken as still: the three 100 ms asks it was. */
+const STILL_MS = 300;
 
 /** Double-click the real card body; Focus names it and finishes drawing in. */
 async function focus(page, name) {

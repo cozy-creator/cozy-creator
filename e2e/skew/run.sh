@@ -253,6 +253,8 @@ export COZY_TEST_HUB_ORIGIN=$ORIGIN
 require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as local"
 export COZY_TEST_HUB_CA=$WORK/ca.pem
 export COZY_TEST_HUB_REQUEST_LOG=$WORK/requests.jsonl
+# While this file exists the ingress takes machines' capability redemptions and answers nothing (cl-1189, ingress.go).
+export COZY_TEST_HUB_HOLD=$WORK/hold-grants
 if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
   # Keep the normal public roots while adding the already-owned fixture's root.
   python3 - "$WORK/ca.pem" "$WORK/seed-ca.pem" <<'PY'
