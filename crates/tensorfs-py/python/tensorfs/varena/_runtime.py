@@ -517,11 +517,16 @@ class Retained:
     def __init__(self, device: Device, pages: Pages, bytes: int) -> None:
         self._native = _ext._VarenaRetained(device._native, pages._native, bytes)
 
-    def write(self, stream: int, parts: Sequence[tuple[int, int, int]], *, spill: bool = True) -> Use:
+    def write(
+        self, stream: int, parts: Sequence[tuple[int, int, int]], *, spill: bool = True
+    ) -> Use | None:
         """Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`,
         into the region on `stream`, pinned for it. Once, before any other use. `spill`: a host
-        copy is taken behind compute and the region is evictable once it lands; else it stays."""
-        return Use(self._native.write(stream, list(parts), spill=spill))
+        copy is taken behind compute and the region is evictable once it lands; else it stays.
+        None: the card had no room for it, so the parts went to its host copy (waited for: the
+        tensors may go), and `use` fills it from there."""
+        native = self._native.write(stream, list(parts), spill=spill)
+        return None if native is None else Use(native)
 
     def use(self, stream: int) -> Use:
         """Pinned for `stream`: refilled from its host copy if it was evicted."""
@@ -531,6 +536,11 @@ class Retained:
     def landed(self) -> bool:
         """Whether its host copy has landed: from then on the core may evict it."""
         return self._native.landed
+
+    @property
+    def ptr(self) -> int:
+        """Its device address, whether or not its bytes are on the card."""
+        return self._native.ptr
 
     @property
     def resident(self) -> bool:
