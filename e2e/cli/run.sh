@@ -786,8 +786,13 @@ case $SHARD in
   # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
   machine-gpus) parts="gpu_use_follows logs" ;;
   # A render or run whose models this computer's disk has no room for waits or is refused before any of them downloads, saying how
-  # much room it lacks and the rental instead; a computer with room takes it (cl-1175).
-  disk-room) parts="disk_room logs" ;;
+  # much room it lacks and the rental instead; a computer with room takes it (cl-1175). One that fits once an idle executor's model
+  # goes is sent, and that model evicted for it (cl-1235).
+  disk-room) parts="
+    disk_freeable
+    disk_room
+    logs
+  " ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="
     estimate_line
