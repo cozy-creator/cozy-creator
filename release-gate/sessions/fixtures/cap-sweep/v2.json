@@ -1,0 +1,150 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 18000,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "seedvr2-2160p-15s",
+   "target": "seedvr2/upscale",
+   "args": [
+    "--file",
+    "video={clip15}",
+    "resolution=2160p",
+    "aspect_ratio=16:9"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "relayvsr-hardest",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip15}",
+    "resolution=2160p",
+    "aspect_ratio=16:9",
+    "window_size:=64"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "h3i-hardest",
+   "target": "minimax-h3-image/generate",
+   "args": [
+    "instructions=One wide photo that puts <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10>, <P11>, <P12>, <P13>, <P14>, <P15>, <P16> together on a quay at dusk",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"},{\"name\":\"P11\",\"image\":\"{pic11}\"},{\"name\":\"P12\",\"image\":\"{pic12}\"},{\"name\":\"P13\",\"image\":\"{pic13}\"},{\"name\":\"P14\",\"image\":\"{pic14}\"},{\"name\":\"P15\",\"image\":\"{pic15}\"},{\"name\":\"P16\",\"image\":\"{pic16}\"}]",
+    "megapixels:=20",
+    "seed:=30014"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "ph3-hardest",
+   "target": "p-h3-image/generate",
+   "args": [
+    "instructions=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"}]",
+    "megapixels:=16",
+    "seed:=30015"
+   ],
+   "max_s": 3600
+  },
+  {
+   "name": "ph3-upscale-hardest",
+   "target": "p-h3-image/upscale",
+   "args": [
+    "--file",
+    "image={pic1}",
+    "megapixels:=16",
+    "denoise:=1.0",
+    "seed:=30016"
+   ],
+   "max_s": 3600,
+   "twin": true
+  },
+  {
+   "name": "seedvr2-1080p-5s",
+   "target": "seedvr2/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9"
+   ],
+   "unless": "seedvr2-2160p-15s",
+   "max_s": 3000
+  },
+  {
+   "name": "seedvr2-default",
+   "target": "seedvr2/upscale",
+   "args": [
+    "--file",
+    "video={clip1}"
+   ],
+   "unless": "seedvr2-1080p-5s"
+  },
+  {
+   "name": "seedvr2-image",
+   "target": "seedvr2/upscale_image",
+   "args": [
+    "--file",
+    "image={seed}"
+   ],
+   "unless": "seedvr2-2160p-15s"
+  },
+  {
+   "name": "relayvsr-1080p-5s",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9"
+   ],
+   "unless": "relayvsr-hardest",
+   "max_s": 3000
+  },
+  {
+   "name": "relayvsr-default",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip1}"
+   ],
+   "unless": "relayvsr-1080p-5s"
+  },
+  {
+   "name": "h3i-default",
+   "target": "minimax-h3-image/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30017"
+   ],
+   "unless": "h3i-hardest",
+   "max_s": 3000
+  },
+  {
+   "name": "ph3-default",
+   "target": "p-h3-image/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30018"
+   ],
+   "unless": "ph3-hardest",
+   "max_s": 3000
+  },
+  {
+   "name": "ph3-upscale-default",
+   "target": "p-h3-image/upscale",
+   "args": [
+    "--file",
+    "image={seed}",
+    "seed:=30019"
+   ],
+   "unless": "ph3-upscale-hardest",
+   "max_s": 3000
+  }
+ ]
+}

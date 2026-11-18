@@ -1,0 +1,68 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 12600,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "ltx-hardest",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "duration_s:=20",
+    "resolution=1080p",
+    "--file",
+    "first_frame={pic1}",
+    "seed:=30009"
+   ],
+   "max_s": 5400,
+   "twin": true
+  },
+  {
+   "name": "pan2-hardest",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=<Start>. A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left, stops at the centre and looks around. One continuous wide shot.",
+    "references:=[{\"name\":\"Start\",\"image\":\"{pic1}\"}]",
+    "duration:=20",
+    "seed:=30010"
+   ],
+   "max_s": 5400,
+   "twin": true
+  },
+  {
+   "name": "ltx-default",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "seed:=30011"
+   ],
+   "unless": "ltx-hardest",
+   "max_s": 3600
+  },
+  {
+   "name": "ltx-720p-5s",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "resolution=720p",
+    "seed:=30012"
+   ],
+   "unless": "ltx-default",
+   "max_s": 3600
+  },
+  {
+   "name": "pan2-5s",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
+    "duration:=5",
+    "seed:=30013"
+   ],
+   "unless": "pan2-hardest",
+   "max_s": 3600
+  }
+ ]
+}

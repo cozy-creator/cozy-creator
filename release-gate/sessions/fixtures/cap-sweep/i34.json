@@ -1,0 +1,283 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 16200,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "krea-gen-hardest",
+   "target": "krea-2/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=4",
+    "seed:=30045"
+   ],
+   "max_s": 3600
+  },
+  {
+   "name": "krea-turbo-hardest",
+   "target": "krea-2/generate_turbo",
+   "args": [
+    "prompt=<P1>, <P2> side by side on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"}]",
+    "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"},{\"kind\":\"lineart\",\"image\":\"{lines}\"}]",
+    "megapixels:=2",
+    "seed:=30046"
+   ],
+   "max_s": 2700,
+   "twin": true
+  },
+  {
+   "name": "klein-gen-hardest",
+   "target": "flux.3-klein/generate",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+    "megapixels:=4",
+    "prompt_upsampling:=true",
+    "seed:=30047"
+   ],
+   "max_s": 3000,
+   "twin": true
+  },
+  {
+   "name": "klein-turbo-hardest",
+   "target": "flux.3-klein/generate_turbo",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+    "megapixels:=4",
+    "prompt_upsampling:=true",
+    "seed:=30048"
+   ],
+   "max_s": 2700
+  },
+  {
+   "name": "klein-upscale",
+   "target": "flux.3-klein/upscale",
+   "args": [
+    "--file",
+    "image={pic1}",
+    "seed:=30049"
+   ],
+   "max_s": 2700,
+   "twin": true
+  },
+  {
+   "name": "fibo-gen-hardest",
+   "target": "fibo-2/generate",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"}]",
+    "megapixels:=1",
+    "prompt_upsampling:=true",
+    "seed:=30050"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "fibo-turbo-hardest",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"}]",
+    "megapixels:=1",
+    "prompt_upsampling:=true",
+    "seed:=30051"
+   ],
+   "max_s": 2700
+  },
+  {
+   "name": "sdxl-gen-hardest",
+   "target": "sdxl/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=16",
+    "aspect_ratio=1:1",
+    "seed:=30052"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "sdxl-upscale",
+   "target": "sdxl/upscale",
+   "args": [
+    "--file",
+    "image={pic1}",
+    "seed:=30053"
+   ],
+   "max_s": 2700,
+   "twin": true
+  },
+  {
+   "name": "anima-gen-hardest",
+   "target": "anima/generate",
+   "args": [
+    "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk, with <P1>, <P2>, <P3>, <P4>",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"}]",
+    "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"},{\"kind\":\"lineart\",\"image\":\"{lines}\"}]",
+    "megapixels:=2.25",
+    "first_block_cache:=0.075",
+    "seed:=30054"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "moss-gen-hardest-edit",
+   "target": "moss-image/generate",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"}]",
+    "megapixels:=4",
+    "seed:=30055"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "moss-gen-hardest-control",
+   "target": "moss-image/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, studio shot",
+    "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"},{\"kind\":\"lineart\",\"image\":\"{lines}\"}]",
+    "megapixels:=4",
+    "seed:=30056"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "moss-i2i-hardest",
+   "target": "moss-image/image_to_image",
+   "args": [
+    "--file",
+    "image={pic1}",
+    "prompt=an oil painting, thick brush strokes",
+    "megapixels:=4",
+    "seed:=30057"
+   ],
+   "max_s": 2700,
+   "twin": true
+  },
+  {
+   "name": "moss-upscale",
+   "target": "moss-image/upscale",
+   "args": [
+    "--file",
+    "image={pic1}",
+    "seed:=30058"
+   ],
+   "max_s": 2700,
+   "twin": true
+  },
+  {
+   "name": "birefnet-hardest",
+   "target": "birefnet/remove_background",
+   "args": [
+    "--file",
+    "image={pic1}"
+   ]
+  },
+  {
+   "name": "krea-gen-default",
+   "target": "krea-2/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30059"
+   ],
+   "unless": "krea-gen-hardest"
+  },
+  {
+   "name": "krea-turbo-default",
+   "target": "krea-2/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30060"
+   ],
+   "unless": "krea-turbo-hardest"
+  },
+  {
+   "name": "klein-gen-default",
+   "target": "flux.3-klein/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30061"
+   ],
+   "unless": "klein-gen-hardest"
+  },
+  {
+   "name": "klein-turbo-default",
+   "target": "flux.3-klein/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30062"
+   ],
+   "unless": "klein-turbo-hardest"
+  },
+  {
+   "name": "fibo-gen-default",
+   "target": "fibo-2/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing",
+    "seed:=30063"
+   ],
+   "unless": "fibo-gen-hardest"
+  },
+  {
+   "name": "fibo-turbo-default",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing",
+    "seed:=30064"
+   ],
+   "unless": "fibo-turbo-hardest"
+  },
+  {
+   "name": "sdxl-gen-default",
+   "target": "sdxl/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "seed:=30065"
+   ],
+   "unless": "sdxl-gen-hardest"
+  },
+  {
+   "name": "anima-gen-default",
+   "target": "anima/generate",
+   "args": [
+    "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
+    "seed:=30066"
+   ],
+   "unless": "anima-gen-hardest"
+  },
+  {
+   "name": "moss-gen-default",
+   "target": "moss-image/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, studio shot",
+    "seed:=30067"
+   ],
+   "unless": "moss-gen-hardest-edit"
+  },
+  {
+   "name": "moss-i2i-default",
+   "target": "moss-image/image_to_image",
+   "args": [
+    "--file",
+    "image={seed}",
+    "prompt=an oil painting, thick brush strokes",
+    "seed:=30068"
+   ],
+   "unless": "moss-i2i-hardest"
+  },
+  {
+   "name": "birefnet-default",
+   "target": "birefnet/remove_background",
+   "args": [
+    "--file",
+    "image={seed}"
+   ],
+   "unless": "birefnet-hardest"
+  }
+ ]
+}
