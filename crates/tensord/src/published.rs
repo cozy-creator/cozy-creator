@@ -809,12 +809,13 @@ impl Publisher {
     /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
+    /// `kept`: a list item's (`ahead::item`), whose capability's answer is kept a while for it (`ASKED`); a call's is asked fresh.
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64, kept: bool) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
-        let answer = if let Some(capability) = &source.capability {
+        let answer = if let Some(capability) = source.capability.as_ref().filter(|_| kept) {
             // An account's earlier read does not authorize this capability's frozen root set: what this one read is kept a while for it
             // alone, asked once however many plans want it at once (cl-1123: a list item's slots resolve while its code installs, and
             // its plan after reads them here).
@@ -835,6 +836,9 @@ impl Publisher {
                     answer
                 }
             }
+        } else if source.capability.is_some() {
+            // An account's earlier read does not authorize this capability's frozen root set.
+            Answer::ask(&self.machine, source, &named, hardware)?
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
             // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
@@ -971,7 +975,7 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, order, false).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
@@ -1673,7 +1677,7 @@ impl Publisher {
             }
             let granted = began.elapsed();
             job.stage(format!("resolving {}", named.shown()));
-            let named = self.resolve(service, source, named, &hardware, job.order)?;
+            let named = self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller))?;
             if crate::ahead::item(&job.caller) {
                 tracing::info!("{}: {path}: the Hub granted its reads in {} ms, resolved {} in {} ms", job.caller, granted.as_millis(), named.model, (began.elapsed() - granted).as_millis());
             }
@@ -1708,7 +1712,7 @@ impl Publisher {
             let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
             if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller));
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
                 if !installation.generation.is_empty() {
