@@ -1,0 +1,62 @@
+{
+ "cells": [
+  {
+   "name": "image-man-t",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  },
+  {
+   "name": "turbo-dragon",
+   "tree": "m",
+   "target": "qwen-image-2/generate_turbo",
+   "args": [
+    "prompt=A cute cartoon dragon sticker on a transparent background.",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "full-perfume",
+   "tree": "m",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "prompt=A clear glass perfume bottle with a gold cap, transparent background.",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "upscale-man",
+   "tree": "m",
+   "target": "qwen-image-2/upscale",
+   "args": [
+    "--file",
+    "image={ref}/../sessions/fixtures/qwen-cutout/man.webp",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  }
+ ],
+ "alpha": [
+  "image-man-t",
+  "turbo-dragon",
+  "full-perfume",
+  "upscale-man"
+ ],
+ "order": "one-way",
+ "need_s": 2400,
+ "max_failures": 2,
+ "install": [
+  "m"
+ ],
+ "show": [
+  "madebyollin/texture-fix-vae@0.3.0"
+ ]
+}
