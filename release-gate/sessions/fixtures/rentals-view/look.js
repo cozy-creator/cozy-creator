@@ -1,7 +1,7 @@
 // rentals-view.sh's browser (cl-1193): the page as Paul reads a rental another computer ordered, on this runner's Calcifer: the tabs top
 // right and that machine's activity under its tab, Machines, and the machine, each at 1440x900 and 1920x1080.
 //   node look.js <the project's page, from `cozy --json open`> <the machine> <phase>
-// $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $SHOT: where its screenshots go. Prints what it read as JSON; exits 1
+// $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $SHOT: where its screenshots go; $SIZES: the viewports. Prints what it read as JSON; exits 1
 // if a look failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 
@@ -11,10 +11,8 @@ const seen = {};
 
 (async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
-  for (const [width, height] of [
-    [1440, 900],
-    [1920, 1080],
-  ]) {
+  // $SIZES: `WxH,WxH` (default 1440x900,1920x1080).
+  for (const [width, height] of (process.env.SIZES || '1440x900,1920x1080').split(',').map((size) => size.split('x').map(Number))) {
     const size = `${width}x${height}`;
     const page = await (await browser.newContext({ viewport: { width, height } })).newPage();
     page.setDefaultTimeout(60_000);

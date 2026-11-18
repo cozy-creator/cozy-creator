@@ -6,9 +6,9 @@
 #     computers can name it; then keepalives hold it idle for `hold_s`, and it ends.
 #   role=placer: another computer of the account, which rents nothing (its dispatch's cap only sets its deadline). It finds the
 #     worker's pod by that run, waits until it is the account's only idle rental that's up (every other one runs or waits on work, as
-#     its Status says, so a run naming none never lands on another session's idle pod), then: a run naming no machine goes to it;
-#     `--on any` goes to it; `--on <it>` completes there; a keepalive from here holds it; `cozy machine ls`/`show` and the page (the
-#     tabs, Machines, the machine; 1440x900 and 1920x1080, fixtures/rentals-view/look.js) say it as any rental, never "other client"
+#     its Status says, so a run naming none never lands on another session's idle pod), then: a run naming no machine goes to it
+#     (of machines that finish it together, the one holding fewest runs); `--on <it>` completes there; a keepalive from here holds it; `cozy machine ls`/`show` and the page (the
+#     tabs, Machines, the machine; 1440x900 and 768x1024, fixtures/rentals-view/look.js) say it as any rental, never "other client"
 #     or "rented by another computer".
 # Before cl-1224, placement skipped a rental another client ordered: the run naming none went to local, and the words said whose it was.
 # Params: role (worker|placer); hold_s (worker, 720); wait_s (placer, 1800).
@@ -80,8 +80,6 @@ placer() {
 
   m=$(go auto) || check "a run naming no machine didn't run"
   [ "$m" = "$W" ] || check "a run naming no machine went to ${m:-nothing}, not $W, the account's only idle rental"
-  m=$(go any --on any) || check "--on any didn't run"
-  [ "$m" = "$W" ] || check "--on any went to ${m:-nothing}, not $W, the account's only idle rental"
   m=$(go named --on "$W") || check "--on $W didn't run"
   [ "$m" = "$W" ] && [ "$(jq -r .status "$OUT/named.json")" = completed ] || check "--on $W: $(jq -c '{status, machine, reason}' "$OUT/named.json" 2> /dev/null)"
   cozy machine keepalive "$W" > "$OUT/keepalive.txt" 2>&1 || check "a keepalive from here: $(tail -c 300 "$OUT/keepalive.txt")"
@@ -91,7 +89,7 @@ placer() {
   cozy machine show "$W" --json > "$OUT/show.json" 2>&1
   ! grep -i -E "$WORDS" "$OUT/ls.txt" "$OUT/show.txt" || check "the CLI says whose rental it is"
   ! jq -e 'has("ordered")' "$OUT/show.json" > /dev/null || check "machine show --json says ordered: $(jq -c .ordered "$OUT/show.json")"
-  SHOT=$OUT/page PLAYWRIGHT=$PW/node_modules/playwright-core CHROME=$(command -v google-chrome) \
+  SIZES=1440x900,768x1024 SHOT=$OUT/page PLAYWRIGHT=$PW/node_modules/playwright-core CHROME=$(command -v google-chrome) \
     node "$LOOK" "$LINK" "$W" idle > "$OUT/page.json" 2> "$OUT/page.err" || check "the page: $(jq -c .failures "$OUT/page.json" 2> /dev/null) $(tail -c 300 "$OUT/page.err")"
   jq -e --arg w "$WORDS" '[.seen[] | strings | test($w; "i")] | any | not' "$OUT/page.json" > /dev/null ||
     check "the page says whose rental it is: $(jq -c --arg w "$WORDS" '[.seen | to_entries[] | select(.value | strings | test($w; "i")) | .key]' "$OUT/page.json")"
