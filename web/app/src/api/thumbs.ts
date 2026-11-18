@@ -1,5 +1,5 @@
 import type { StreamEvent } from "./calcifer"
-import { type HeldMedia, Pending, type Transport } from "./transport"
+import type { HeldMedia, Transport } from "./transport"
 
 /**
  * Thumbnails Calcifer is still making (cl-982). Each is made as its file lands and kept in its project; one asked for before that answers
@@ -128,21 +128,25 @@ export interface HeldPreview {
 }
 
 /**
- * `project`'s preview of `sha256`, Calcifer's `path`, in this page's memory (`Transport.media`) and handed to `then` once it's there, asked
- * for as every file is (`asking`): a `202` waits for the file's `thumb` event, and one that failed or that nothing answered is asked again.
- * `gone` is told when it is unavailable.
+ * `project`'s preview of `sha256`, Calcifer's `path`, handed to `then` (`Transport.media`) once it's made, asked for as every file is
+ * (`asking`): a `202` waits for the file's `thumb` event, and one that failed or that nothing answered is asked again. `gone` is told
+ * when it is unavailable.
  */
-export function heldPreview(transport: Pick<Transport, "media">, project: string, sha256: string, path: string,
+export function heldPreview(transport: Pick<Transport, "fetch" | "media">, project: string, sha256: string, path: string,
   then: (held: HeldMedia) => void, gone?: () => void): HeldPreview {
   let stopped = false
   const ask = () => {
-    transport.media(path).then((held) => {
+    // Made yet? Asked with no body, an answer that completes: `202 thumb_pending` while Calcifer makes it.
+    transport.fetch(path, { method: "HEAD" }).then(async (answer) => {
+      if (stopped) return
+      if (answer.status === 202) return asked.pending()
+      if (!answer.ok) return asked.failed()
+      const held = await transport.media(path)
       if (stopped) return held.release()
       then(held)
-    }, (error) => {
+    }).catch((error: unknown) => {
       if (stopped) return
       if (error instanceof DOMException && error.name === "AbortError") asked.held()
-      else if (error instanceof Pending) asked.pending()
       else asked.failed()
     })
   }

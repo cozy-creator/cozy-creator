@@ -3774,7 +3774,7 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
 async fn file(
     State(api): State<Arc<Api>>,
     Path((id, file)): Path<(String, String)>,
-    Query(saved): Query<crate::files::Download>,
+    Query(asked): Query<crate::files::Asked>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -3784,9 +3784,9 @@ async fn file(
         let said = format!("{file} isn't a project file name. Project files are named <sha256>.<ext>.");
         return Err(Refusal(Error::new(Kind::Usage, "file_name", said)));
     }
-    let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
+    let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers, asked.pieces)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
-    if let Some(name) = saved.download {
+    if let Some(name) = asked.download {
         crate::files::save_as(&mut response, &name, ext);
     }
     Ok(response)
@@ -3796,6 +3796,7 @@ async fn file(
 async fn cut(
     State(api): State<Arc<Api>>,
     Path((id, cut)): Path<(String, String)>,
+    Query(asked): Query<crate::files::Asked>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -3809,18 +3810,18 @@ async fn cut(
     let path = project.folder.dir.join(&cut);
     let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let at = modified.and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |at| at.as_nanos());
-    send(&path, &format!("\"{at:x}\""), &headers)
+    send(&path, &format!("\"{at:x}\""), &headers, asked.pieces)
 }
 
-/// The file at `path` as `headers` ask for it (whole, or one range), or not found.
-fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
+/// The file at `path` as `headers` ask for it (whole, or one range, in `pieces` or whole), or not found.
+fn send(path: &FsPath, etag: &str, headers: &HeaderMap, pieces: bool) -> Result<Response, Refusal> {
     let missing = |e: std::io::Error| {
         let said = format!("{} is missing: {e}.", path.display());
         Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy open"))
     };
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
-    crate::files::send(file, len, media_type(path), etag, headers)
+    crate::files::send(file, len, media_type(path), etag, headers, pieces)
         .map_err(|e| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", path.display()))))
 }
 

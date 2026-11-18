@@ -800,7 +800,7 @@ jobs:
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
         # answers: Status answers while the journal's commits wait for the disk (cl-1202).
         # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
-        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
+        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.

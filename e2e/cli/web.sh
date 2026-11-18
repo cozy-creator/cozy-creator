@@ -19,7 +19,8 @@ web_chrome() {
 
 # web_suite <lane> <cell...> (cl-973): each cell web/<cell>.spec.js, several at once through Playwright Test (web/playwright.config.js)
 # on this job's Calcifer, each on a project and a browser context of its own. Then one check a failed cell, and each cell's time and the
-# 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (`@solo`, one at a time),
+# 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), media (Chrome then Firefox, one
+# at a time), solo (`@solo`, one at a time),
 # native (one at a time, as it holds `@solo` tests), or a cell's own name (by hand: whichever project takes it, one at a time).
 web_suite() {
   local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web xvfb=
@@ -38,8 +39,9 @@ web_suite() {
     || { check "web-$lane: npm install @playwright/test failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
   case $lane in
     1 | 2 | 3) projects=(chrome) ;;
-    engines)
-      projects=(firefox vault)
+    # media: what plays many videos at once and reads this runner's sockets, the job to itself, in Chrome then Firefox (`@engines`).
+    engines | media)
+      if [ "$lane" = engines ]; then projects=(firefox vault); else projects=(chrome firefox) workers=(--workers=1); fi
       # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
       bash "$here/install-browser-deps.sh" "$pw" > "$OUT/web-firefox-deps.log" 2>&1 \
         || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; }

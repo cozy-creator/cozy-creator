@@ -592,6 +592,10 @@ WEB_2D=(
   resize
   nogpu
 )
+# Many videos playing at once, reading this runner's sockets: the job to itself, Chrome then Firefox, one at a time (web.sh's lane `media`).
+WEB_MEDIA=(
+  pieces
+)
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
   upload
@@ -971,6 +975,7 @@ case $SHARD in
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
+  web-media) web_cells=(${WEB_MEDIA[@]+"${WEB_MEDIA[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
