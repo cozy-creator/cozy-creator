@@ -206,7 +206,7 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
         .then(|| path.to_string())
 }
 
-/// The functions that construct a model and that `entrypoint` of `installation`, loading none itself, calls (`needs::callees`): its
+/// The functions that construct a model and that `entrypoint` of `installation` calls (`needs::callees`): its
 /// own, and those of the other packages of its environment it calls (`callees`, cl-1123); none that its rules say the request doesn't
 /// call (`uncalled`, cl-1103).
 fn internal_models(installation: &Installation, callees: &[crate::catalog::Callee], entrypoint: &str, uncalled: &BTreeSet<String>)

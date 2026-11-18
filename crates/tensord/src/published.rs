@@ -797,13 +797,6 @@ impl Publisher {
         Ok((Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local }, held))
     }
 
-    /// `named` downloaded whole at `order`, as a request's weights are: what a caller asked for
-    /// whole (an adapter).
-    fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
-        bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, order, stop, None, bytes).map(|(landed, _)| landed)
-    }
-
     /// A Hub checkpoint's header, landed at once and held by `job` (`Job::held`): which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
@@ -2042,9 +2035,9 @@ fn opens_views(service: &Service, installation: &Installation, choice: &stored::
         VIEWS[0].2, VIEWS[1].2, installation.package, installation.release, runs.join(" / "))))
 }
 
-/// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
+/// A slot's caller adapters applied to its resolved base: each adapter's header landed, then one
 /// adapter view composed (`adapter::compose`) over the components the call `runs`; the grant
-/// then names the view, whose base chunks come with the call's other weights.
+/// then names the view, whose base's and adapters' chunks come with the call's other weights.
 #[allow(clippy::too_many_arguments)]
 fn apply_adapters(
     publisher: &Publisher,
@@ -2085,9 +2078,9 @@ fn apply_adapters(
                 tree,
                 ..Named::default()
             })?;
-            // An adapter is small and its view composes from all of it: it comes whole.
-            let _download = job.within(crate::activity::Kind::Download, &adapter.model);
-            publisher.ensure(source, &named, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+            // Its view composes from its header; its bytes are a need of the call's plan (`Plan::reads`, cl-1281), in its one download
+            // line: a guess's LoRA comes ahead of Render, and one an edit replaces stops with what only it wanted.
+            publisher.structure(source, &named, job)?;
             named.header()?.id()
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
