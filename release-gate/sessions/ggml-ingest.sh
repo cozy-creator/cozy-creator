@@ -39,6 +39,7 @@ drive_lock "$PACKAGES/$TREE/$PACKAGE"
 said=$(uv run -q --no-project --with packaging python "$STANDS" "$PACKAGES/$TREE/$PACKAGE/uv.lock" "$PACKAGE" "$RUNTIME" "$TENSORFS") ||
   fail "$said"
 say "$said"
+kernels "$PACKAGES/$TREE/$PACKAGE"
 cd "$PACKAGES/$TREE" || fail "no checkout"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh

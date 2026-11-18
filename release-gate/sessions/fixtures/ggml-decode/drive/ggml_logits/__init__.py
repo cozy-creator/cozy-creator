@@ -6,15 +6,13 @@
 
 import json
 import time
-from collections import Counter
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import msgspec
 import torch
 from cozy_runtime import lm
 from cozy_runtime.author import App, Context
 from cozy_runtime.vlm import VisionLM
+from torch.overrides import TorchFunctionMode
 
 app = App()
 
@@ -83,64 +81,83 @@ def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float,
     return time.perf_counter() - began, out[0].tolist()
 
 
-@contextmanager
-def _head_reads(net: torch.nn.Module) -> Iterator[list[list[int]]]:
-    """The output head's reads in the body, by pass of the decoder: [the pass's positions, the head's calls after it, the
-    rows they carried]. Only what Python runs shows: the prefill, and each step once as its graph is recorded (a replayed
-    step runs none), which is one step's reads. A plain head reads its weight once a row of a verify pass
-    (`lm._RowByRow`); a leaf's kernel takes a call's rows together."""
-    passes: list[list[int]] = []
+class _HeadLinears(TorchFunctionMode):
+    """Each plain linear in the body whose weight has `vocab` rows (a plain output head's), by the rows it was given: that
+    head's reads of its weight, in call order. A function mode, never a module hook: a hook on the model makes the engine
+    refuse to record its step and stop drafting (`lm._capture_contract`: "custom Python hooks"). Only what Python runs
+    shows; a replayed graph runs none."""
 
-    def passed(_module: torch.nn.Module, _args: object, out: tuple[torch.Tensor, ...]) -> None:
-        passes.append([int(out[0].shape[-2]), 0, 0])
+    def __init__(self, vocab: int) -> None:
+        super().__init__()
+        self.vocab = vocab
+        self.rows: list[int] = []
 
-    def read(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
-        if passes and args and isinstance(args[0], torch.Tensor):
-            passes[-1][1] += 1
-            passes[-1][2] += args[0].numel() // args[0].shape[-1]
+    def __torch_function__(self, func, types, args=(), kwargs=None):  # type: ignore[no-untyped-def]  # torch's hook
+        kwargs = kwargs or {}
+        weight = args[1] if len(args) > 1 else kwargs.get("weight")
+        if func is torch.nn.functional.linear and isinstance(weight, torch.Tensor) and weight.dim() == 2 and weight.shape[0] == self.vocab:
+            self.rows.append(args[0].numel() // args[0].shape[-1])
+        return func(*args, **kwargs)
 
-    handles = (
-        net.get_decoder().register_forward_hook(passed),
-        net.get_output_embeddings().register_forward_pre_hook(read),
-    )
+
+def _head(net: torch.nn.Module) -> dict[str, object]:
+    """The output head's module and the bytes it holds as parameters and buffers; told, never judged."""
     try:
-        yield passes
-    finally:
-        for handle in handles:
-            handle.remove()
+        out = net.get_output_embeddings()
+        held = sum(t.numel() * t.element_size() for t in (*out.parameters(), *out.buffers()))
+        return {"module": type(out).__name__, "rows": int(out.out_features), "bytes": held}
+    except Exception as e:  # noqa: BLE001  # a head of another shape tells what it is, and the timing goes on
+        return {"unread": f"{type(e).__name__}: {e}"[:200]}
 
 
 @app.entrypoint(accelerator=True)
 def decode(ctx: Context, model: VisionLM) -> Agreement:
     """`PROMPT` decoded greedily for 512 tokens, never stopping, with the MTP head drafting and without: wall tokens/s
     (its ~40-token prefill included), each after a warm-up of the same length, so the timed call captures nothing (the
-    windows a 512-token call grows into are captured by the warm-up), and whether both made the same tokens. Beside each:
-    the output head's bytes and its reads a pass, counted in the warm-up (`_head_reads`)."""
+    windows a 512-token call grows into are captured by the warm-up), and whether both made the same tokens; `s` is the
+    timed call's wall time. Beside them the output head's module and bytes."""
     net = model.pipe.components["model"]
     ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
     head = lm.HEADS.get(net)
     rows: dict[str, object] = {"prompt_tokens": int(ids.shape[1]), "gpu": torch.cuda.get_device_name()}
-    out = net.get_output_embeddings()
-    rows["head"] = {
-        "module": type(out).__name__,
-        "bytes": sum(t.numel() * t.element_size() for t in (*out.parameters(), *out.buffers())),
-    }
+    rows["head"] = _head(net)
     made: dict[str, list[int]] = {}
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del lm.HEADS[net]
         try:
-            with _head_reads(net) as passes:
-                _timed(net, ids, 512)
+            _timed(net, ids, 512)
             seconds, made[mode] = _timed(net, ids, 512)
         finally:
             if head is not None:
                 lm.HEADS[net] = head
-        # [positions, head calls, head rows, passes like it], the warm-up's: its prefill and each recorded step.
-        recorded = [[*key, n] for key, n in sorted(Counter(map(tuple, passes)).items())]
-        rows[mode] = {"tokens": len(made[mode]), "s": round(seconds, 3), "tok_s": round(len(made[mode]) / seconds, 1),
-                      "head_reads": recorded}
+        rows[mode] = {"tokens": len(made[mode]), "s": round(seconds, 3), "tok_s": round(len(made[mode]) / seconds, 1)}
     if len(made) == 2:
         a, b = made["drafted"], made["plain"]
         rows["same_tokens"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    return Agreement(json.dumps(rows))
+
+
+@app.entrypoint(accelerator=True)
+def head_reads(ctx: Context, model: VisionLM) -> Agreement:
+    """How often a decode step reads a plain output head's weight, with the MTP head drafting and without: `PROMPT`
+    decoded for 12 tokens, sampled, so its steps are new to an engine that has recorded the greedy ones and Python runs
+    each once before it replays (the prefill, the first step, and the step as it is recorded). `head_linears`: the rows
+    of each plain linear on the head's weight, in call order (`_HeadLinears`); an encoded head shows none, its kernel
+    takes a call's rows together. Never timed: run after the timed calls."""
+    net = model.pipe.components["model"]
+    ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
+    inputs = {"input_ids": ids.to(net.device), "attention_mask": torch.ones_like(ids).to(net.device)}
+    head = lm.HEADS.get(net)
+    rows: dict[str, object] = {"prompt_tokens": int(ids.shape[1]), "head": _head(net)}
+    for mode in ("drafted", "plain") if head is not None else ("plain",):
+        if mode == "plain" and head is not None:
+            del lm.HEADS[net]
+        try:
+            with _HeadLinears(int(net.get_output_embeddings().out_features)) as seen:  # type: ignore[operator]  # a causal LM's
+                made = lm.generate(net, inputs, max_new_tokens=12, stop=[], pad=0, temperature=0.7, seed=213)
+        finally:
+            if head is not None:
+                lm.HEADS[net] = head
+        rows[mode] = {"tokens": int(made.shape[1]), "head_linears": seen.rows}
     return Agreement(json.dumps(rows))
