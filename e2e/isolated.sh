@@ -309,6 +309,8 @@ case $key in
   cli:ondemand-ramp) needs='packages spare' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
+  # A tool whose model a small disk has no room for (cl-1175).
+  cli:disk-room) needs='packages room' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
@@ -470,7 +472,7 @@ if [ -n "$needs" ]; then
       oldcall ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
-    || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
+    || " $needs " == *" disk "* || " $needs " == *" room "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -500,16 +502,20 @@ if [ -n "$needs" ]; then
       mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
       rm -f "$seed/disk.safetensors"
     done
-    # And one bigger than the disk can make free, refused with the sizes.
-    random_weights "$seed/disk.safetensors" 2048 disk-big
-    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
-    rm -f "$seed/disk.safetensors"
     # And disk_run_object's (cl-1076): its asset is a file the package that runs it carries too (cli/tokenizer), as H3 holds
     # the Qwen3-VL processor files minimax-h3 carries.
     random_weights "$seed/disk.safetensors" 384 disk-tokenizer
     mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
       --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
     rm -f "$seed/disk.safetensors"
+  fi
+  if [[ " $needs " == *" disk "* || " $needs " == *" room "* ]]; then
+    # One bigger than a 2.5 GiB disk can make free (disk_full refuses it with the sizes), and disk_room's tool (cl-1175): a still built
+    # from it, published so its quote knows what it fetches.
+    random_weights "$seed/disk.safetensors" 2048 disk-big
+    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/disk.safetensors"
+    publish "$here/cli/project/roomless"
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and

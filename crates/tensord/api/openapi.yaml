@@ -536,11 +536,15 @@ components:
       description: >-
         The filesystem holding the machine's store. What fills it, as the machine's last sweep measured (0 before
         one): its store, its package environments with what they added to uv's cache, its Runtime (pair, kernels,
-        toolchain); the rest is other.
+        toolchain); the rest is other. `reserve_bytes`, what no download writes into, and `reclaimable_bytes`, the
+        models no process holds that the store could free: a call's weights fit when they are within free past the
+        reserve plus reclaimable (cl-1175).
       properties:
         environments_bytes: {type: integer, format: int64, minimum: 0}
         free_bytes: {type: integer, format: int64, minimum: 0}
         models_bytes: {type: integer, format: int64, minimum: 0}
+        reclaimable_bytes: {type: integer, format: int64, minimum: 0}
+        reserve_bytes: {type: integer, format: int64, minimum: 0}
         runs_bytes: {type: integer, format: int64, minimum: 0}
         runtime_bytes: {type: integer, format: int64, minimum: 0}
         total_bytes: {type: integer, format: int64, minimum: 0}

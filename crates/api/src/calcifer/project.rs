@@ -190,6 +190,20 @@ pub struct Queued {
     pub running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
+    /// None of its machines has room on its disk for its models (cl-1175): it waits, nothing of it downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_room: Option<NoRoom>,
+}
+
+/// A render waiting because none of its machines has room on its disk for its models (cl-1175).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NoRoom {
+    /// What it lacks, once: `This computer needs 671MB more disk space for its models: free that much and it renders here, or render it on a
+    /// new rental.`
+    pub line: String,
+    /// What the disk of the machine it would go to lacks for them, after all its store could free, as the line says it: `671MB`.
+    pub short: String,
 }
 
 /// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id.

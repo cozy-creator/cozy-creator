@@ -7,7 +7,8 @@ import { useTo } from "../../app/Shell"
 import type { Machine, MachineList } from "../../api/calcifer"
 import { Failure, useAsk, useNow, useSignedIn } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { usd } from "../format"
+import { bytes, usd } from "../format"
+import { nearlyFull } from "./Disk"
 import { End } from "./End"
 import { Rent } from "./Rent"
 import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
@@ -16,6 +17,8 @@ import { endsWords, stableName } from "./words"
 function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: number; here: boolean; tabbed?: boolean }) {
   const to = useTo()
   const trying = machine.state === "booting" && machine.kind === "rental"
+  // Seen before a render finds it (cl-1175).
+  const full = machine.status && nearlyFull(machine.status)
   return (
     <li className={`runrow machine ${trying ? "trying" : ""} ${here ? "render-here" : ""} ${tabbed ? "tabbed" : ""}`} data-machine={machine.name}>
       <Spec machine={machine} now={now} />
@@ -26,6 +29,11 @@ function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: num
       )}
       {trying && machine.attempt && <small className="under">Starting up, attempt {machine.attempt.number}</small>}
       {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
+      {full && (
+        <small className="under warn">
+          Disk nearly full: {bytes(full.room)} of room for models, and its usual models need {bytes(full.needs)}
+        </small>
+      )}
       {machine.end_failed && <small className="under warn">Didn't shut down and may still cost money: {machine.end_failed}</small>}
       {machine.end_unconfirmed && <small className="under warn">The Hub hasn't confirmed it has ended: {machine.end_unconfirmed}</small>}
       {machine.state === "ending" && !machine.end_unconfirmed && <small className="under warn">{machine.ending ? `Ending once this finishes: ${machine.ending}` : "Costs money until the Hub confirms it has ended"}</small>}

@@ -108,6 +108,8 @@ function faceNow(seen: Seen): Face {
   if (run?.status === "failed") return face("failed", `Failed: ${run.reason?.message ?? "the run failed"}`)
   if (waits && !on) return prepared(`Waiting for <${waits}>`, preparing)
   if (!run) {
+    // None of its machines has room on its disk for its models (cl-1175): it waits, nothing of them downloaded.
+    if (view.noRoom) return face("queued", "Needs", "Waiting for disk space", `${view.noRoom.short} more`)
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
     if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued, ${ordinal((ahead?.length ?? 0) + 1)} in line`, preparing)
     if (view.queued) return face("queued", "Queued,", "Choosing a machine", `${ordinal((ahead?.length ?? 0) + 1)} in line`)

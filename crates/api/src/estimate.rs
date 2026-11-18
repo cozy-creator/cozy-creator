@@ -769,6 +769,16 @@ fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> u64 {
     }
 }
 
+/// The bytes of `model` its machine lands on its disk before a call of it runs (cl-1175): none while an idle executor holds it loaded; else
+/// what its held checkpoint lacks (`absent`), whatever a run of it read.
+fn lands(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
+    let header = header(frame, model);
+    match frame.resident.iter().any(|resident| resident.checkpoints.contains(&header)) {
+        true => 0,
+        false => absent(frame, model),
+    }
+}
+
 /// Each of `job`'s models' `reads` not known yet (cl-967): the most a run of its function read of it on any of `frames`' machines.
 /// Local code's function is known by its package only where it is installed: its machine's own reads count it.
 pub fn learn_reads(frames: &[&StatusFrame], job: &mut EstimateJob) {
@@ -833,7 +843,9 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
     let queue = frame.queue.as_deref().unwrap_or_default();
     let (mut packed, mut line) = machine.queue(queue);
     let mut warm: HashSet<String> = queue.iter().map(|root| root.function.clone()).filter(|function| !function.is_empty()).collect();
-    let free = frame.disk.as_ref().map_or(u64::MAX, |disk| disk.free_bytes);
+    // What a download may take on its disk, and what its queue still brings into it.
+    let room = frame.disk.as_ref().map_or(u64::MAX, v1::Disk::room);
+    let mut coming: u64 = queue.iter().map(|root| root.bytes_left).sum();
     let lost = frame.gpus.iter().any(|gpu| !gpu.out_of_service.is_empty());
     // Each code's install, once, after those ahead of it.
     let (mut installs, mut installing) = (0.0, HashMap::<&str, f64>::new());
@@ -879,15 +891,22 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
             asked.push((None, quote));
             continue;
         }
-        let fetch: u64 = job.models.iter().map(|model| fetches(frame, &function, model)).sum();
-        if fetch > free {
-            quote.refusal = refused("does_not_fit", format!("its weights' {fetch} bytes don't fit in this machine's {free} free"));
+        // What a run ahead brings is not fetched twice. Its weights where the disk has no room for them beside what comes ahead of
+        // them, after all the store could free (cl-1175, Paul 11-17: "stop them from trying to download models they cannot fit"): never
+        // sent there, so none of them starts to download. Judged by what the machine lands before the run, never by what a run read.
+        let coming_here = |model: &&v1::ModelRef| !line.lands.contains_key(&model.model);
+        let lands: u64 = job.models.iter().filter(coming_here).map(|model| lands(frame, model)).sum();
+        if lands.saturating_add(coming) > room {
+            quote.short_bytes = lands.saturating_add(coming) - room;
+            quote.refusal = refused("machine_disk_full", "its disk has no room for its models".into());
             asked.push((None, quote));
             continue;
         }
+        coming += lands;
+        let new: u64 = job.models.iter().filter(coming_here).map(|model| fetches(frame, &function, model)).sum();
         quote.fits = true;
         // Its install after those ahead of it; its download after its install, as the machine resolves its weights once it is
-        // built, and after those ahead of it; what a run ahead brings is not fetched twice.
+        // built, and after those ahead of it.
         let install_end = match held {
             true => 0.0,
             false => *installing.entry(code).or_insert_with(|| {
@@ -895,7 +914,6 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
                 installs
             }),
         };
-        let new: u64 = job.models.iter().filter(|model| !line.lands.contains_key(&model.model)).map(|model| fetches(frame, &function, model)).sum();
         let models: Vec<String> = job.models.iter().map(|model| model.model.clone()).collect();
         quote.fetch_bytes = new;
         let fetched = line.fetch(&models, new, machine.link, install_end);

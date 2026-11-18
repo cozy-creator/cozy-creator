@@ -155,7 +155,7 @@ async fn look(watching: &Watching) -> Result<v1::StatusFrame, Error> {
 /// Page accounting moves with every allocation: never news alone.
 fn changed(last: &v1::StatusFrame, next: &v1::StatusFrame) -> bool {
     let moved = match (&last.disk, &next.disk) {
-        (Some(a), Some(b)) => a.free_bytes.abs_diff(b.free_bytes) >= b.total_bytes / 100,
+        (Some(a), Some(b)) => (a.free_bytes.abs_diff(b.free_bytes)).max(a.reclaimable_bytes.abs_diff(b.reclaimable_bytes)) >= b.total_bytes / 100,
         (a, b) => a != b,
     };
     let still = |frame: &v1::StatusFrame| v1::StatusFrame {
@@ -410,15 +410,17 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
 }
 
 fn disk(path: &std::path::Path) -> Option<v1::Disk> {
-    let space = platform::durable::space(path).ok()?;
-    crate::reclaim::seen_free(space.free);
+    let disk = crate::reclaim::measure(path).ok()?;
+    crate::reclaim::seen_free(disk.available);
     let usage = crate::reclaim::usage().unwrap_or_default();
     Some(v1::Disk {
-        total_bytes: space.total,
-        free_bytes: space.free,
+        total_bytes: disk.capacity,
+        free_bytes: disk.available,
         models_bytes: usage.models,
         environments_bytes: usage.environments,
         runtime_bytes: usage.runtime,
         runs_bytes: usage.runs,
+        reserve_bytes: disk.reserve(),
+        reclaimable_bytes: usage.reclaimable,
     })
 }

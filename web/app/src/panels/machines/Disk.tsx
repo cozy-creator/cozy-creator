@@ -1,23 +1,12 @@
 import type { Machine, MachineStatus } from "../../api/calcifer"
 import { Section } from "../common"
 import { bytes } from "../format"
-import { modelWords } from "./activity"
 
-const GB = 1 << 30
-
-/** What the machine keeps free and never fills, and below which it clears its caches: 1/50 of the disk, 1–10GB (TensorD's
- *  `reclaim.rs` `RESERVE_BYTES`/`RESERVE_DIVISOR`; TensorFS's `fetch/volume.rs` `room` keeps the same beside each download). */
-const reserve = (total: number) => Math.min(10 * GB, Math.max(GB, total / 50))
-
-/** Nearly full (cl-1100): under a tenth of it free, or too little past its reserve for another model the size of its biggest, which a
- *  download then makes room for by clearing models nothing is using. Null when it isn't, or doesn't say. */
-export function nearlyFull(status: MachineStatus): { free: number; total: number; model?: { name: string; bytes: number } } | null {
-  const total = status.disk_total_bytes
-  if (!total) return null
-  const free = status.disk_free_bytes ?? 0
-  const biggest = [...(status.models ?? [])].sort((a, b) => b.total_bytes - a.total_bytes)[0]
-  const model = biggest && free < reserve(total) + biggest.total_bytes ? { name: modelWords(biggest.repository), bytes: biggest.total_bytes } : undefined
-  return free < total / 10 || model ? { free, total, model } : null
+/** Nearly full (cl-1100, cl-1175): its room for downloads (free past what Cozy keeps free, with the models nothing uses, which a download
+ *  clears) is less than its usual models need, as Calcifer judges it. Null when it isn't, or doesn't say. */
+export function nearlyFull(status: MachineStatus): { room: number; needs: number } | null {
+  if (!status.disk_total_bytes || !status.disk_needs_bytes) return null
+  return { room: status.disk_room_bytes ?? 0, needs: status.disk_needs_bytes }
 }
 
 const KINDS = [
@@ -67,9 +56,8 @@ export function Disk({ machine, status }: { machine: Machine; status: MachineSta
       )}
       {full && (
         <p className="disk-full">
-          Nearly full: {bytes(full.free)} free of {bytes(full.total)}
-          {full.model ? `, not enough for another model the size of ${full.model.name} (${bytes(full.model.bytes)})` : ""}. Before a download, Cozy clears out
-          models nothing is using. If a run still doesn't fit, it won't start: {machine.kind === "rental" ? "rent a machine with a bigger disk" : `free up space on ${machine.kind === "local" ? "this" : "that"} computer`}.
+          Nearly full: {bytes(full.room)} of room for models, and its usual models need {bytes(full.needs)}. A render whose models don't fit
+          waits: {machine.kind === "rental" ? "rent a machine with a bigger disk" : `free up space on ${machine.kind === "local" ? "this" : "that"} computer`}, or render on a new rental.
         </p>
       )}
     </Section>

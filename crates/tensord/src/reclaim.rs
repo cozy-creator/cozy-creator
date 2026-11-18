@@ -821,6 +821,8 @@ pub(crate) struct Usage {
     pub environments: u64,
     pub runtime: u64,
     pub runs: u64,
+    /// What the store could free for a download: models no process holds (cl-1175: never one an executor has open).
+    pub reclaimable: u64,
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
@@ -863,8 +865,10 @@ pub(crate) fn wait_asked(most: Option<Duration>) -> bool {
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
 /// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
-/// `engine` (the Runtime pair, kernels, the toolchain, Pythons).
-pub(crate) fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
+/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free, which placement weighs a call's
+/// weights against (cl-1175).
+pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>) {
+    let (reclaimable, store) = (store.room().map_or(0, |room| room.freed(|lane| lane.holders.is_empty())), store.root());
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
@@ -876,7 +880,7 @@ pub(crate) fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>
     let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
     environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
     let free = measure(store).ok().map(|disk| disk.available);
-    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]) };
+    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]), reclaimable };
     *USAGE.lock().unwrap() = Some(usage);
     *MEASURED_FREE.lock().unwrap() = free;
 }

@@ -1183,9 +1183,12 @@ pub struct Quote {
     pub key: String,
     /// It can run here at all; one that can't has no times.
     pub fits: bool,
-    /// Why it can't: `no_gpu`, `does_not_fit` (its weights, the disk).
+    /// Why it can't: `gpu_lost`, `machine_disk_full` (its weights, the disk).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
+    /// With `machine_disk_full`, the bytes its disk lacks for them, after all the store could free (cl-1175).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub short_bytes: u64,
     /// The GPUs it would run on; 0: none.
     pub width: u32,
     pub start_ms: u64,
@@ -1814,4 +1817,23 @@ pub struct Disk {
     pub environments_bytes: u64,
     pub runtime_bytes: u64,
     pub runs_bytes: u64,
+    /// What TensorFS keeps free and no download writes into (cl-1175); 0 from an older machine.
+    pub reserve_bytes: u64,
+    /// What its store could free for a download: models no process holds and nothing queued or running uses, never one an
+    /// executor has open (cl-1175); 0 from an older machine.
+    pub reclaimable_bytes: u64,
+}
+
+impl Disk {
+    /// The bytes a download may take here (cl-1175): free past the reserve, with what the store could free.
+    pub fn room(&self) -> u64 {
+        (self.free_bytes + self.reclaimable_bytes).saturating_sub(self.reserve_bytes)
+    }
+
+    /// The room for downloads its usual models need, when it has less (cl-1175, cl-1100): a model the size of its `biggest`, and a tenth
+    /// of the disk. None: it has room, or doesn't say.
+    pub fn short_of(&self, biggest: u64) -> Option<u64> {
+        let needs = biggest.max(self.total_bytes / 10);
+        (self.total_bytes > 0 && self.room() < needs).then_some(needs)
+    }
 }

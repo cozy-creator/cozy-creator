@@ -1479,6 +1479,13 @@ pub struct MachineStatus {
     pub disk_runtime_bytes: u64,
     #[serde(default)]
     pub disk_runs_bytes: u64,
+    /// What a download may take there: free past the reserve, with what its store could free (`machine::Disk::room`, cl-1175).
+    #[serde(default)]
+    pub disk_room_bytes: u64,
+    /// The room its usual models need, when it has less (`machine::Disk::short_of`): `cozy doctor` and the Machines panel warn. 0: it
+    /// has room.
+    #[serde(default)]
+    pub disk_needs_bytes: u64,
     /// This controller's queued, preparing or running runs there, as the machine says.
     #[serde(default)]
     pub runs: Vec<LiveRun>,
