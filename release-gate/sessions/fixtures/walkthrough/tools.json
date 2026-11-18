@@ -1,0 +1,4 @@
+[
+  {"name": "photo", "kind": "import", "file": "release-gate/ref/seed.jpg"},
+  {"name": "qwen", "tool": "qwen-image-2/image", "fields": {"instructions": "a red kite over a green hill, morning light", "seed": 11}}
+]

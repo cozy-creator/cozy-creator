@@ -1,0 +1,92 @@
+name: walkthrough-install
+# 0.27.0 launch walkthrough (proof branch release/walkthrough-027, never merged): a new user's first minutes on a clean runner of each OS.
+# The documented one-line install (today's release), `cozy doctor`, then the RC's build in its place (dev-build and rc-os runs of the RC
+# head's product), `cozy doctor`, `cozy new`, `cozy open --json` and its page in Chrome (and WebKit on macOS). Nothing signed in.
+on:
+  push:
+    branches: ['release/walkthrough-027']
+    paths: ['.github/workflows/walkthrough-install.yaml', 'e2e/cli/web/walk-install.js']
+permissions:
+  contents: read
+  actions: read
+env:
+  DEV_BUILD: '44274094219'
+  RC_OS: '44271934760'
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OUT: ${{ github.workspace }}/walk
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: e2e/cli/web/walk-install.js
+          path: creator
+      - name: The documented install (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p "$OUT"; t0=$(date +%s)
+          curl -LsSf https://tensorhub.com/install.sh | sh > "$OUT/install.txt" 2>&1 < /dev/null; code=$?
+          echo "EXIT $code in $(( $(date +%s) - t0 )) s" >> "$OUT/install.txt"; cat "$OUT/install.txt"
+      - name: The documented install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:OUT | Out-Null
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          try { irm https://tensorhub.com/install.ps1 | iex *> "$env:OUT/install.txt"; $code = $LASTEXITCODE } catch { "THREW: $_" | Add-Content "$env:OUT/install.txt"; $code = 1 }
+          "EXIT $code in $([int]$sw.Elapsed.TotalSeconds) s" | Add-Content "$env:OUT/install.txt"
+          Get-Content "$env:OUT/install.txt"
+      - name: Today's release in a new terminal
+        run: |
+          export PATH="$HOME/.cozy/bin:$PATH"
+          { echo "which: $(command -v cozy)"; cozy --version; t0=$(date +%s); cozy doctor; echo "EXIT $? in $(( $(date +%s) - t0 )) s"; } > "$OUT/released-doctor.txt" 2>&1 < /dev/null
+          cat "$OUT/released-doctor.txt"
+      - name: The RC build in its place
+        run: |
+          export PATH="$HOME/.cozy/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/rc"
+          case $RUNNER_OS in
+            Linux) gh run download "$DEV_BUILD" -R "$GITHUB_REPOSITORY" -p 'cozy-*' -D "$RUNNER_TEMP/rc" ;;
+            macOS) gh run download "$RC_OS" -R "$GITHUB_REPOSITORY" -n native-cozy-macos-15 -D "$RUNNER_TEMP/rc" ;;
+            Windows) gh run download "$RC_OS" -R "$GITHUB_REPOSITORY" -n native-cozy-windows-2025 -D "$RUNNER_TEMP/rc" ;;
+          esac
+          find "$RUNNER_TEMP/rc" -type f | head -20 | tee "$OUT/rc-files.txt"
+          bin=$(find "$RUNNER_TEMP/rc" -type f \( -name 'cozy' -o -name 'cozy.exe' -o -name 'cozy-linux-x86_64' \) | head -1)
+          [ -n "$bin" ] || { echo "no RC binary"; exit 1; }
+          dest=$(command -v cozy); chmod 755 "$bin"; mv "$dest" "$dest.released" && cp "$bin" "$dest" || exit 1
+          { echo "--- cozy restart onto the RC build"; cozy restart; echo "EXIT $?"; } > "$OUT/rc-restart.txt" 2>&1 < /dev/null; cat "$OUT/rc-restart.txt"
+          { cozy --version; t0=$(date +%s); cozy doctor; echo "EXIT $? in $(( $(date +%s) - t0 )) s"; } > "$OUT/rc-doctor.txt" 2>&1 < /dev/null
+          cat "$OUT/rc-doctor.txt"
+      - name: A first project and its page
+        run: |
+          export PATH="$HOME/.cozy/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
+          head -c 24 /dev/urandom | base64 > "$RUNNER_TEMP/pass.txt"
+          { t0=$(date +%s); cozy new garden; echo "EXIT $? (no flags, no terminal) in $(( $(date +%s) - t0 )) s"
+            t0=$(date +%s); cozy new garden2 --passphrase-file "$RUNNER_TEMP/pass.txt" --recovery-out "$RUNNER_TEMP/recovery.txt"; echo "EXIT $? (encrypted) in $(( $(date +%s) - t0 )) s"
+            t0=$(date +%s); cozy new --unencrypted plain; echo "EXIT $? (unencrypted) in $(( $(date +%s) - t0 )) s"
+            cd plain && cozy status; echo "EXIT $? status"; cozy open --json; echo "EXIT $? open"; } > "$OUT/new.txt" 2>&1 < /dev/null
+          cat "$OUT/new.txt"
+          link=$(grep -aoE 'https?://(127\.0\.0\.1|localhost)[^" ]*' "$OUT/new.txt" | head -1)
+          echo "link: $link"
+          [ -n "$link" ] || exit 0
+          npm install -s --prefix "$RUNNER_TEMP/pw" @playwright/test@1.55.0 > "$OUT/npm.txt" 2>&1
+          engines=chrome; [ "$RUNNER_OS" != macOS ] || { (cd "$RUNNER_TEMP/pw" && npx playwright install webkit) > "$OUT/webkit.txt" 2>&1; engines="chrome webkit"; }
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node "$GITHUB_WORKSPACE/creator/e2e/cli/web/walk-install.js" "$link" "$OUT/page" $engines || true
+        working-directory: ${{ github.workspace }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walk-install-${{ matrix.os }}
+          path: ${{ env.OUT }}
+          retention-days: 14
