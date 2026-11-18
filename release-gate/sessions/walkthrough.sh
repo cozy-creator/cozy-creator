@@ -175,6 +175,15 @@ if has tools; then
   PAGE asset "$P" $(jq -r '.[] | select(.kind != "cli") | .name' "$STEPS") lid stop > "$W/assets.json" 2>&1
   DIR=$P c run-ls-tools run ls
   DIR=$W c machine-show-after machine show "$NAME"
+  # Every run's full record, and what each failed one says about its credential.
+  mkdir -p "$W/records"
+  for r in $(cd "$P" && cozy --json run ls 2> /dev/null < /dev/null | jq -r '(.runs // .)[]? | (.name // .id)' 2> /dev/null | head -40); do
+    (cd "$P" && cozy --json run show "$r" --full) > "$W/records/$r.json" 2>&1 < /dev/null
+  done
+  for f in "$W"/records/*.json; do
+    jq -e '(.status // .run.status) == "failed"' "$f" > /dev/null 2>&1 || continue
+    say "record ${f##*/}: $(jq -c '{target: (.target // .run.target), reason: ((.reason // .run.reason) | tostring | .[0:220])}' "$f" 2> /dev/null); credential words: $(grep -aoiE '"[a-z_]*(sign|credential|token|grant|auth|bearer|account)[a-z_]*": *("[^"]{0,40}"|true|false|null|[0-9]+)' "$f" | sort -u | head -8 | tr '\n' ' ')"
+  done
 fi
 # A Qwen render cancelled from the page near step 3, then the same box again (cozy-creator #3758: the executor kept warm): it completes,
 # starts fast, its peak normal. A warm-up render first, so the cancel lands on a warm executor as a user's would.
