@@ -142,6 +142,16 @@ if has tools; then
   cp "$P/.vault-calcifer/diagnostics/walk.log" "$W/walk-garden.log" 2> /dev/null || find "$P" -name walk.log -exec cp {} "$W/walk-garden.log" \; 2> /dev/null
   grep -ahiE 'expander' "$W/prefetch-log.txt" "$W/walk-garden.log" "$W/prefetch-models.txt" 2> /dev/null | cut -c1-260 | head -20 | sed 's/^/    prefetch: /' >> "$R"
   say "prefetch, an encrypted project's t2i box shown $((SECONDS - t0)) s: $(grep -ahoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.txt" "$W/walk-garden.log" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
+  # Placeholders a step file may use: {klein_lora} (the catalog's first FLUX.3 Klein LoRA, as a CLI user finds one), {klein_model}.
+  if grep -q '{klein_' "$STEPS"; then
+    DIR=$P c lora-klein lora ls klein --limit 10
+    (cd "$P" && cozy --json lora ls klein --limit 10) > "$W/lora-klein.json" 2>&1 < /dev/null
+    KLEIN_LORA=$(jq -r '[.. | objects | select(((.family // "") | test("klein")) and ((.ref // .model // .name // "") | test("/"))) | (.ref // .model // .name)] | first // empty' "$W/lora-klein.json" 2> /dev/null)
+    DIR=$P c describe-klein run flux.3-klein/image --describe
+    KLEIN_MODEL=$(grep -aoE 'default [a-z0-9_.-]+/[a-z0-9_.-]+@[0-9.a-z]+' "$W/cli/describe-klein.txt" | head -1 | cut -d' ' -f2)
+    say "Klein LoRA from the catalog: ${KLEIN_LORA:-none found}; Klein's base model: ${KLEIN_MODEL:-unknown}"
+    sed -e "s#{klein_lora}#${KLEIN_LORA:-none/none}#g" -e "s#{klein_model}#${KLEIN_MODEL:-black-forest-labs/flux.3-klein}#g" "$STEPS" > "$W/steps.json"; STEPS=$W/steps.json
+  fi
   while read -r s; do
     name=$(jq -r .name <<< "$s") tool=$(jq -r '.tool // ""' <<< "$s") kind=$(jq -r '.kind // "page"' <<< "$s")
     case $kind in
