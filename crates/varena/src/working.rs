@@ -19,6 +19,11 @@ pub mod checks;
 mod observer;
 mod escape;
 mod var030;
+
+/// PROOF ONLY (var-030; never merge): the largest allocation asked and the last refusal's figures.
+pub fn var030_stats() -> Vec<(&'static str, u64)> {
+    var030::stats()
+}
 pub use escape::{EscapeRecord, Verdict, escapes_take, pass_mark, set_site, site_id};
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
@@ -1554,13 +1559,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         return Err(Error::Invalid("activate this Varena device before Torch GPU work"));
     }
     if bytes == 0 { return Ok(0); }
-    // PROOF ONLY (var-030; never merge): each new largest working allocation asked of this process.
-    {
-        static LARGEST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(32 << 20);
-        if bytes > LARGEST.fetch_max(bytes, Ordering::Relaxed) {
-            eprintln!("varena-var030 largest allocation so far: {bytes} bytes on stream {stream} (graph pool: {})", pool.is_some());
-        }
-    }
+    var030::asked(bytes); // PROOF ONLY (var-030; never merge)
     let class = size_class(bytes, owner.page())?;
     let exact = if class <= LARGE { owner.page() } else { class };
     let mut pool = pool;

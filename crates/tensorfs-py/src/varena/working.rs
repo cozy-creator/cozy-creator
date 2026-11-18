@@ -459,7 +459,9 @@ fn _varena_working_stats(
         ("cache_ready_bytes", stats.cache_ready_bytes as u64),
         ("caches", stats.caches as u64),
     ]
-    .into())
+    .into_iter()
+    .chain(varena::working::var030_stats()) // PROOF ONLY (var-030; never merge)
+    .collect())
 }
 
 #[pyfunction]
