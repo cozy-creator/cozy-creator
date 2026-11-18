@@ -363,7 +363,13 @@ cell() {
   done
   [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   ahead "$name" "$target" "$@"
+  # Its machine's downloads while it runs, each once (cl-1205): a run waiting on one names it (`progress.waiting_on`) and says no bytes
+  # of its own, so the progress suite reads the download's bytes here.
+  ( while :; do "$CLI" --json machine show "$M" 2>/dev/null | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
+      | {at: $at, activity: .status.activity}'; sleep 1; done ) > "$name.machine.ndjson" 2>/dev/null &
+  local downloads=$!
   if [ -n "${STOP:-}" ]; then stop_cell "$name" "$target" --on "$M" "$@" || code=$?; else run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?; fi
+  kill "$downloads" 2>/dev/null; wait "$downloads" 2>/dev/null
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
   printf '%s\t%s\n' "$name" "$asked" >> asks.tsv

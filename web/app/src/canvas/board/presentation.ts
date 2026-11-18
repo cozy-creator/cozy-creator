@@ -14,6 +14,8 @@ export interface RunContext {
   run?: Run
   machine?: Machine
   on?: Operation
+  /** The downloads its run waits on, each its machine's one (cl-1205). */
+  downloads?: Operation[]
   installing?: Operation
 }
 

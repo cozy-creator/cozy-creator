@@ -27,6 +27,7 @@ import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
+import { leadsTo } from "./RunFace"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bandOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { pressBeganOutside } from "../ui/press"
@@ -518,6 +519,7 @@ function Canvas({
       if (store.projectId && saveMore(store.projectId, names)) keepView({ more: names })
     }
     store.askMachine = () => navigate(to("machines"))
+    store.showDownload = (machine, download) => navigate(to(leadsTo({ machine, download })))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
       navigate(`${to("machines")}${chosen}`)

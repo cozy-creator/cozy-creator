@@ -991,21 +991,38 @@ impl Runs {
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
-            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
+            // The machine's download of it, which its run waits on and says so, never its bytes (cl-1205), opened once bytes of it are
+            // absent: one all here is no download (Paul, 11-17: "when the weights are already resident, it'll do something like
+            // 'downloading weights... installing...' but those are just phases it's skipping").
+            let engine = &self.service.engine;
+            let waits: std::sync::Mutex<std::collections::BTreeMap<String, crate::activity::Waiting>> = std::sync::Mutex::default();
             let room = |absent| self.service.room_for(id, absent);
             let source = hub_access()?;
             // The Hub's grant of the run's reads, waited for as it shows: each attempt it doesn't answer (cl-1189).
             if let Some(capability) = &source.capability {
                 capability.granted(stop, &|said| observe(&said, 0, 0));
             }
-            let (named, landed) = publisher.download(&self.service, source, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
+            let downloaded = publisher.download(&self.service, source, named, &hardware, structure, self.order(id, spec, 0), stop, &room, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
-                wait.moved(now, done, total);
-                observe(now, done, total)
-            })?;
-            drop(wait);
+                let mut waits = waits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if waits.is_empty() && done < total {
+                    waits.insert(choice.model.clone(), crate::activity::wait(crate::activity::Kind::Download, &choice.model, &engine.caller_id(id)));
+                }
+                if waits.is_empty() {
+                    return;
+                }
+                waits.values().for_each(|wait| wait.moved(now, done, total));
+                if let Err(error) = engine.observe_waits(id, crate::access::waits_of(&waits, total.saturating_sub(done))) {
+                    tracing::warn!("run {id}: what it waits on: {error}");
+                }
+            });
+            if let Err(error) = engine.observe_waits(id, None) {
+                tracing::warn!("run {id}: what it waits on: {error}");
+            }
+            drop(waits);
+            let (named, landed) = downloaded?;
             for reason in &named.reasons {
                 let warning = format!("{}: {reason}", named.model);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -1392,7 +1409,6 @@ impl Runs {
                         false => Ok(()),
                     }
                 };
-                let weights = format!("{}'s weights", installation.package);
                 let (sure, guess) = (|rank| self.order(id, &spec, rank), |rank| self.order_guess(id, rank));
                 // A caller's guess (cl-1104): what nothing of was here is its own to bring, the first to go on a short disk, and
                 // its download ends for a run's need that has to make room.
@@ -1402,7 +1418,7 @@ impl Runs {
                     self.record_reads(id, Some(&installation), &reads.needed);
                     crate::ahead::downloading(&stoppable.stop)
                 });
-                let downloaded = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id, &|| crate::ahead::lined(self, &caller));
+                let downloaded = self.download(hub.clone(), &reads, (&sure, &guess), fits, stoppable, id, &|| crate::ahead::lined(self, &caller));
                 // Ended, it holds nothing more before the need that ended it looks (`ahead::make_way`).
                 if downloaded.is_err() {
                     drop(early.take());
@@ -1535,8 +1551,7 @@ impl Runs {
     /// all in the download line.
     #[allow(clippy::too_many_arguments)]
     fn download(&self, hub: Option<hub::Source>, reads: &crate::access::Needs, order: (&dyn Fn(u32) -> u64, &dyn Fn(u32) -> u64),
-        room: impl FnOnce(u64) -> Result<(), Refused>, observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str,
-        id: &str, wanted: &dyn Fn()) -> Result<tensorfs::fetch::Landed, Refused> {
+        room: impl FnOnce(u64) -> Result<(), Refused>, stoppable: &Stoppable, id: &str, wanted: &dyn Fn()) -> Result<tensorfs::fetch::Landed, Refused> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
         let free = match reads.extras.is_empty() {
             true => 0,
@@ -1549,13 +1564,21 @@ impl Runs {
                 crate::private_io::warning(&self.service.engine, id, format_args!("{note} ({error})"));
             }
         }
-        let caller = self.service.engine.caller_id(id);
-        let wait = crate::activity::wait(crate::activity::Kind::Download, weights, &caller);
-        let report = |done, total| {
-            wait.moved("", done, total);
-            observe("downloading its weights", done, total)
+        let (engine, caller) = (&self.service.engine, self.service.engine.caller_id(id));
+        // The machine's download of each repository it needs, waited on by its run (cl-1205): its run says so, never their bytes.
+        let waits = lined.waits(self.publisher.machine(), &caller);
+        let report = |done: u64, total: u64| {
+            waits.values().for_each(crate::activity::Waiting::look);
+            if let Err(error) = engine.observe_waits(id, crate::access::waits_of(&waits, total.saturating_sub(done))) {
+                tracing::warn!("run {id}: what it waits on: {error}");
+            }
         };
-        let (landed, extras) = fetch.download(lined, &stoppable.stop, &report, wanted).map_err(|e| match stoppable.stop.is_cancelled() {
+        let downloaded = fetch.download(lined, &stoppable.stop, &report, wanted);
+        if let Err(error) = engine.observe_waits(id, None) {
+            tracing::warn!("run {id}: what it waits on: {error}");
+        }
+        drop(waits);
+        let (landed, extras) = downloaded.map_err(|e| match stoppable.stop.is_cancelled() {
             true => refused(crate::published::CANCELED, "The run was canceled while its models downloaded."),
             false => {
                 let text = e.to_string();
@@ -1850,10 +1873,9 @@ impl Runs {
                 if let (Level::Downloaded, Some(plan)) = (item.level, &plan) {
                     let room = |absent| self.service.room_for(id, absent)
                         .map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")));
-                    let weights = format!("{}'s weights", installation.package);
                     let reads = crate::access::Needs { needed: plan.read(), ..Default::default() };
                     let (sure, guess) = (|rank| self.order(id, spec, rank), |rank| self.order_guess(id, rank));
-                    self.download(hub.clone(), &reads, (&sure, &guess), room, &**observe, stoppable, &weights, id, &|| ())?;
+                    self.download(hub.clone(), &reads, (&sure, &guess), room, stoppable, id, &|| ())?;
                 }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),
@@ -2272,12 +2294,15 @@ impl Runs {
         let landing = std::sync::atomic::AtomicBool::new(true);
         let fetched = std::thread::scope(|scope| {
             scope.spawn(|| {
-                let wait = crate::activity::wait(crate::activity::Kind::Download, &model, &engine.caller_id(id));
                 let root = engine.get(id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && root.as_str() != id);
-                let tell = |weights: Option<crate::journal::Weights>| {
+                // The machine's download of it, waited on under its root, the run its caller knows (cl-1205).
+                let wait = crate::activity::wait(crate::activity::Kind::Download, &model, &engine.caller_id(root.as_deref().unwrap_or(id)));
+                wait.objects(machine, &remote, &absent);
+                let waits = std::collections::BTreeMap::from([(model.clone(), wait)]);
+                let tell = |waits: Option<crate::journal::Waits>| {
                     for run in root.iter().map(String::as_str).chain([id]) {
-                        if let Err(error) = engine.observe_weights(run, weights.clone()) {
-                            tracing::warn!("run {run}: its on-demand weights' progress: {error}");
+                        if let Err(error) = engine.observe_waits(run, waits.clone()) {
+                            tracing::warn!("run {run}: what it waits on to read now: {error}");
                         }
                     }
                 };
@@ -2289,8 +2314,8 @@ impl Runs {
                             false => state.map_or(0, |state| state.reached.min(object.length)),
                         })
                         .sum();
-                    wait.moved("", done, bytes);
-                    tell(Some(crate::journal::Weights { models: model.clone(), done, total: bytes }));
+                    waits.values().for_each(crate::activity::Waiting::look);
+                    tell(crate::access::waits_of(&waits, bytes.saturating_sub(done)));
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
                 tell(None);

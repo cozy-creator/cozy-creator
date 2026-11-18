@@ -40,12 +40,55 @@ export const waits = (run: Run) => run.status === "queued" || run.machine_state 
 export const ownActivity = (machine: Machine | undefined, project: string | null | undefined) =>
   (machine?.status?.activity ?? []).filter((operation) => !operation.project || operation.project === project)
 
-/** What `run` waits on there: its install before its weights. A project's operations name its runs by its own numbers, this computer's
+/** The downloads `run` waits on there, as its progress names them (cl-1205; Paul, 11-17: "it should show the download occurring, and then
+ *  it should also show the 3 jobs that are like 'waiting for download...'"): each its machine's one, shown once with its bytes. */
+export const downloadsOf = (activity: Operation[], run: Run) => {
+  const ids = run.progress?.waiting_on ?? []
+  return ids.length ? activity.filter((operation) => operation.kind === "download" && ids.includes(operation.id) && (operation.project ?? null) === (run.project_id ?? null)) : []
+}
+
+/** What `run` waits on there: its install before its downloads. A project's operations name its runs by its own numbers, this computer's
  *  by its own. */
 export const waitsOnOf = (activity: Operation[], run: Run) => {
   const its = activity.filter((operation) => (operation.project ?? null) === (run.project_id ?? null))
-  return its.find((operation) => operation.kind === "install" && operation.runs.includes(run.number)) ?? its.find((operation) => operation.runs.includes(run.number))
+  return its.find((operation) => operation.kind === "install" && operation.runs.includes(run.number)) ?? downloadsOf(its, run)[0]
 }
+
+/** A run waiting on these, in words: `Waiting for MiniMax H3 to download`, `Waiting for MiniMax H3 and Qwen3 VL to download`. */
+export function waitingWords(on: Operation[]): string {
+  const names = on.map(operationName)
+  const listed = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : (names[0] ?? "")
+  return `Waiting for ${listed} to ${on[0]?.kind === "install" ? "install" : "download"}`
+}
+
+/** A download's row, by its id, in a list that shows it: what a run waiting on it links to (`#download-…`). */
+export const anchorOf = (id: string) => `download-${id.replace(/[^\w-]+/g, "-")}`
+
+/** The download row `id` in the list holding `from`, scrolled to and lit a moment: where a waiting run's words lead. */
+export function showRow(from: HTMLElement, id: string) {
+  const row = from.closest("ul")?.querySelector<HTMLElement>(`[data-download="${CSS.escape(id)}"]`)
+  if (!row) return
+  row.scrollIntoView({ block: "nearest" })
+  row.classList.remove("lit")
+  void row.offsetWidth
+  row.classList.add("lit")
+  setTimeout(() => row.classList.remove("lit"), 1400)
+}
+
+/** Who waits on it, as this reader may say (cl-1205): its runs by name, then how many it can't name (another project's, another
+ *  client's): `run KEY-1`, `runs KEY-1, KEY-2 and 1 job more`, `3 jobs`. What it fetches is the machine's, shown to every reader. */
+export function waitersWords(operation: Operation): string {
+  const named = operation.names?.length ? operation.names : operation.runs.map(String)
+  const others = operation.unnamed ?? 0
+  const jobs = (n: number) => `${n} job${n === 1 ? "" : "s"}`
+  if (!named.length) return jobs(others)
+  const runs = named.length === 1 ? `run ${named[0]}` : `runs ${named.join(", ")}`
+  return others ? `${runs} and ${jobs(others)} more` : runs
+}
+
+/** What a download fetches, for its row's title: its repository, release and components. */
+export const fetchesWords = (operation: Operation) =>
+  [operation.subject, operation.release, operation.components?.join(", ")].filter(Boolean).join(" · ")
 
 /** Its own work under way: begun, waiting on nothing. */
 export const working = (run: Run, on?: Operation) => run.started_at_ms != null && !waits(run) && !on
@@ -132,6 +175,18 @@ export function useWaitsOn(run: Run | undefined): Operation | undefined {
   })
   return data
 }
+
+/** The downloads `run` waits on, kept by the machines' stream (cl-1205). */
+export function useDownloadsOf(run: Run | undefined): Operation[] {
+  const { client } = useConnection()
+  const { data } = useQuery({
+    ...machinesQuery(client),
+    select: (list) => (run ? downloadsOf(ownActivity(list.machines.find((machine) => machine.name === run.machine), run.project_id), run) : NONE),
+  })
+  return data ?? NONE
+}
+
+const NONE: Operation[] = []
 
 /** Package `pkg` installing on any machine: a box whose render waits for it before its run is sent says so. */
 export function useInstalling(pkg: string | undefined, project: string | null): Operation | undefined {

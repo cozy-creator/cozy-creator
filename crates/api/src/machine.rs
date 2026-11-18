@@ -874,6 +874,10 @@ pub struct Progress {
     /// The number of the run's newest preview (`path::PREVIEW`), from 1; 0: none.
     #[serde(skip_serializing_if = "no_preview")]
     pub preview: u64,
+    /// The downloads it waits on (cl-1205), by their `Operation::id` in `StatusFrame::activity`: while it does, `stage` says so and
+    /// its bytes are theirs, never its own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<String>,
 }
 
 fn no_preview(n: &u64) -> bool {
@@ -1569,7 +1573,8 @@ pub struct GpuHeat {
     pub power_default_w: u32,
 }
 
-/// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.
+/// Weights arriving or a package's environment built for runs: one per repository or package, however many runs wait on it
+/// (cl-1205). A run waiting on one names it by `id` (`Progress::waiting_on`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Operation {
@@ -1579,18 +1584,32 @@ pub struct Operation {
     pub kind: String,
     /// The model's repository (or provider source), or the package.
     pub subject: String,
+    /// A download's release and components (none: the whole checkpoint), what its runs fetch of it together: read by
+    /// `cozy machine show` and the page's download row.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub release: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// Where it is, in words; empty when only its bytes say.
     pub stage: String,
-    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once, however
+    /// many runs wait on it.
     pub bytes_done: u64,
     pub bytes_total: u64,
     /// What of it was here already (shared with another model, or pulled before).
     pub bytes_here: u64,
     /// Its bytes a second over its last 10 s, once a second of them is seen.
     pub bytes_per_s: f64,
+    /// The seconds its bytes still take at that rate; none before it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
     pub started_at_unix_ms: i64,
-    /// The runs waiting on it, by the caller's ids.
+    /// The runs waiting on it, by the caller's ids: a call's root, the run its caller knows. Only the caller's own.
     pub runs: Vec<String>,
+    /// The runs waiting on it the caller can't read (another project's, another client's), counted: a download is the machine's,
+    /// listed to every caller (cl-1205; Paul: models are machine-wide, projects isolate files and runs).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub unnamed: u32,
 }
 
 /// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD

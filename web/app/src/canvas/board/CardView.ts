@@ -6,7 +6,7 @@ import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from
 import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
 import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot" | "waits"
 export interface Hit { name: string; part: Part }
 
 /** Every colour comes from the page's tokens (tokens.css), read once per theme. */
@@ -67,7 +67,7 @@ export class CardView {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
     this.pixels.eventMode = this.labels.eventMode = "none"
     this.root.addChild(this.pulse, this.ground, this.pixels, this.ink, this.labels)
-    for (const part of ["body", "title", "delete", "cancel", "corner", "untool", "dot"] as Part[]) {
+    for (const part of ["body", "title", "delete", "cancel", "corner", "untool", "dot", "waits"] as Part[]) {
       const area = new Container({ eventMode: "static" })
       area.hitArea = new Rectangle(0, 0, 0, 0)
       area.cursor = part === "corner" ? "nwse-resize" : part === "body" || part === "dot" ? "default" : "pointer"
@@ -289,7 +289,10 @@ export class CardView {
     const cancel = progress.cancel ? 70 : 0
     const count = progress.count ? width(progress.count, BODY, false, true) : 0
     const words = ellipsis(progress.state, Math.max(0, w - cancel - count - (count ? 6 : 0) - 8), BODY, false, true)
-    label("progress", words, 0, y + 4, w - cancel - count, { size: BODY, color: progress.phase === "failed" ? colors.failed : colors.ink, bold: true })
+    // Waiting on a download, its words lead to it on its machine (cl-1205).
+    const color = progress.phase === "failed" ? colors.failed : progress.leads ? colors.ember2 : colors.ink
+    label("progress", words, 0, y + 4, w - cancel - count, { size: BODY, color, bold: true })
+    if (progress.leads) this.area("waits", { x: 0, y, w: width(words, BODY, false, true), h: UNDER.cancel })
     if (count) label("count", progress.count!, width(words, BODY, false, true) + (words ? 6 : 0), y + 4, count, { size: BODY, color: colors.ink, bold: true })
     if (cancel) {
       const x = w - cancel

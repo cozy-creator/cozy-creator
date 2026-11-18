@@ -10,7 +10,7 @@ import { Bar } from "../common"
 import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
-import { byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
+import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 import "./MachineTabs.css"
@@ -73,13 +73,7 @@ function Face({ machine, doing }: { machine: Machine; doing: Doing[] }) {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-// The runs waiting on it by name, `KEY-N` (cl-987).
-const numbers = (operation: Operation) => {
-  const runs = operation.names?.length ? operation.names : operation.runs.map(String)
-  return runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`
-}
-
-function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string }) {
+function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string; activity: Operation[] }) {
   if (doing.kind === "boot")
     return (
       <li className="doing">
@@ -120,13 +114,13 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
     const { operation } = doing
     const fraction = fractionOf(operation)
     return (
-      <li className="doing" data-doing={doing.kind}>
+      <li className="doing" data-doing={doing.kind} data-download={doing.kind === "download" ? operation.id : undefined}>
         <MarkOf mark={doing.kind} />
-        <b title={operation.subject}>{operationName(operation)}</b>
+        <b title={fetchesWords(operation)}>{operationName(operation)}</b>
         <span className="kind">{doing.kind === "download" ? "Download" : "Install"}</span>
         {doing.kind === "download" && fraction !== undefined && <Bar fraction={fraction} />}
         <span className="said">
-          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {numbers(operation)}
+          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {waitersWords(operation)}
         </span>
       </li>
     )
@@ -134,8 +128,10 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   const { run, on } = doing
   const fraction = run.progress?.done_fraction
   const going = working(run, on)
+  // Waiting on downloads, it says so and leads to each, which alone shows how far it is (cl-1205).
+  const downloads = on?.kind === "download" ? downloadsOf(activity, run) : []
   const said = on
-    ? `Waiting for ${operationName(on)} to ${on.kind === "download" ? "download" : "install"}`
+    ? waitingWords(downloads.length ? downloads : [on])
     : waits(run)
       ? (run.waiting ? sentence(run.waiting) : run.queue_position ? `Queued, ${ordinal(run.queue_position)} in line` : "Queued")
       : workWords(run) || (run.waiting && sentence(run.waiting))
@@ -147,7 +143,13 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
       </Link>
       <span className="kind">{run.project_id ? `Run ${runLabel(run)}` : "Job"}</span>
       {going && fraction != null && <Bar fraction={fraction} />}
-      {said && <span className="said">{said}</span>}
+      {downloads.length ? (
+        <a className="said waits" href={`#${anchorOf(downloads[0].id)}`} title={downloads.map(fetchesWords).join("; ")} onClick={(event) => { event.preventDefault(); showRow(event.currentTarget, downloads[0].id) }}>
+          {said}
+        </a>
+      ) : (
+        said && <span className="said">{said}</span>
+      )}
     </li>
   )
 }
@@ -155,7 +157,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
 /** What a machine is working on, under its chip, as Chrome's downloads under its button (Paul 11-16): each thing a line with how far it
  *  is, then its Render here and Details. On a project that isn't read, no Render here: a locked one says how to get it (cl-1099). Open
  *  until a press elsewhere or Escape. */
-function Activity({ machine, doing, boxes, to, chip, readable, locked, close }: { machine: Machine; doing: Doing[]; boxes: Map<number, string>; to: (rest?: string) => string; chip: HTMLElement; readable: boolean; locked: boolean; close: () => void }) {
+function Activity({ machine, doing, boxes, to, chip, projectId, readable, locked, close }: { machine: Machine; doing: Doing[]; boxes: Map<number, string>; to: (rest?: string) => string; chip: HTMLElement; projectId: string | null; readable: boolean; locked: boolean; close: () => void }) {
   const held = useRef<HTMLDivElement>(null)
   const [at, setAt] = useState<{ top: number; right: number } | null>(null)
   useLayoutEffect(() => {
@@ -200,7 +202,7 @@ function Activity({ machine, doing, boxes, to, chip, readable, locked, close }: 
       {doing.length ? (
         <ul>
           {doing.map((one) => (
-            <Row key={one.key} doing={one} boxes={boxes} to={to} />
+            <Row key={one.key} doing={one} boxes={boxes} to={to} activity={ownActivity(machine, readable ? projectId : null)} />
           ))}
         </ul>
       ) : (
@@ -322,7 +324,7 @@ export function MachineTabs({ to, projectId, readable, locked }: { to: (rest?: s
           {renting && <span className="ptab add">+</span>}
         </div>
       </div>
-      {open && shown && <Activity machine={shown} doing={doing(shown)} boxes={boxes} to={to} chip={open.chip} readable={readable} locked={locked} close={() => setOpen(null)} />}
+      {open && shown && <Activity machine={shown} doing={doing(shown)} boxes={boxes} to={to} chip={open.chip} projectId={projectId} readable={readable} locked={locked} close={() => setOpen(null)} />}
     </>
   )
 }

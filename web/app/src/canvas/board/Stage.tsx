@@ -6,7 +6,7 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../../app/Connection"
 import { machinesQuery, runFullQuery } from "../../api/queries"
-import { ownActivity, waitsOnOf } from "../../panels/machines/activity"
+import { downloadsOf, ownActivity, waitsOnOf } from "../../panels/machines/activity"
 import { useSignal, tabShown } from "../../ui/signal"
 import { theme } from "../../ui/theme"
 import type { CanvasStore, ElementNode, ElementView } from "../CanvasStore"
@@ -203,11 +203,13 @@ export function Stage(props: StageProps) {
         }
       }
       const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
-      const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
+      const activity = ownActivity(machine, store.projectId)
+      const on = run ? waitsOnOf(activity, run) : undefined
+      const downloads = run ? downloadsOf(activity, run) : undefined
       const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
       const pkg = tool?.installs ?? tool?.package
       const installing = !run && pkg ? machines.flatMap((m) => ownActivity(m, store.projectId)).find((o) => o.kind === "install" && o.subject === pkg) : undefined
-      return run || installing ? { run, machine, on, installing } : undefined
+      return run || installing ? { run, machine, on, downloads, installing } : undefined
     }
 
     const placeWorld = () => {

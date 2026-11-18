@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { useRef } from "react"
+import { Link } from "react-router-dom"
 import type { Ahead, Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
+import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
-import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
+import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
 import { attemptWords, bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
@@ -30,7 +32,12 @@ export interface Face {
   state: string
   /** How far within it and how fast (`frame 3 of 12`, `2GB of 7GB, 100MB/s`): never cut (cl-953). */
   count?: string
+  /** The download it waits on, on its machine, which its words lead to: that alone shows how far it is (cl-1205). */
+  leads?: { machine: string; download: string }
 }
+
+/** Where a box's "Waiting for … to download" leads: its machine's drawer, at that download's row. */
+export const leadsTo = (leads: NonNullable<Face["leads"]>) => `machines/${encodeURIComponent(leads.machine)}#${anchorOf(leads.download)}`
 
 /** A span as Paul writes it: `3s`, `2m 5s`, `5m`, `1h 4m`. */
 export function short(s: number): string {
@@ -79,6 +86,8 @@ export interface Seen {
   machine?: Machine
   /** What its run waits on there: its package's install or its weights. */
   on?: Operation
+  /** The downloads its run waits on there, each its machine's one (cl-1205). */
+  downloads?: Operation[]
   /** Its package installing before its run is sent. */
   installing?: Operation
   /** The box it waits for: that one's render is that box's to show, not this one's (cl-905). */
@@ -99,7 +108,7 @@ export function faceOf(seen: Seen): Face {
 }
 
 function faceNow(seen: Seen): Face {
-  const { view, run, machine, on, installing, waits, ahead, preparing } = seen
+  const { view, run, machine, on, installing, waits, ahead, preparing, downloads } = seen
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()
   const where = run?.machine ? (rented && card ? `${run.machine} (renting ${card})` : run.machine) : "Choosing a machine"
@@ -123,7 +132,9 @@ function faceNow(seen: Seen): Face {
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
   if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? `: ${on.stage}` : ""}`)
-  if (on?.kind === "download") return face("download", `Downloading ${modelWords(on.subject)},`, where, moving(on.bytes_done, on.bytes_total, on.bytes_per_s))
+  // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205;
+  // Paul: "the 3 jobs that are like 'waiting for download...'"). Which models, its machine's rows say: a box's line has no room for them.
+  if (on?.kind === "download") return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: (downloads?.[0] ?? on).id } }
   if (run.queue_position != null) return face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`)
   if (run.status === "completed") {
     const arriving = run.arriving
@@ -131,6 +142,7 @@ function faceNow(seen: Seen): Face {
     return face("result", owed(run) ? "Downloading the result" : "Saving")
   }
   const progress = run.progress
+  if (progress?.waiting_on?.length) return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: progress.waiting_on[0] } }
   if (progress?.stage || progress?.total) {
     const { words, count } = stageParts(progress)
     const phase = bytesKind(progress) === "download" ? "download" : /install/i.test(progress.stage) ? "install" : "work"
@@ -184,6 +196,8 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
+  const downloads = useDownloadsOf(run)
+  const to = useTo()
   const { data: machines } = useQuery(machinesQuery(client))
   const machine = run?.machine ? machines?.machines.find((held) => held.name === run.machine) : undefined
   // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
@@ -195,7 +209,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   useSignal(store.ahead)
   // Its clock ticks only while it has a time to show.
   const now = useNow(run !== undefined && leftOf(run) !== undefined)
-  const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
+  const face = faceOf({ view, run, machine, on, downloads, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` · ${short(since)} of ${short(since + left)}` : ""
@@ -209,7 +223,13 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
       </p>
       <p className="face-state">
         <b>
-          <span className="face-words">{face.count ? `${face.state} ` : face.state}</span>
+          {face.leads ? (
+            <Link className="face-words face-leads" to={to(leadsTo(face.leads))} title="See its download on its machine" onClick={(event) => event.stopPropagation()}>
+              {face.state}
+            </Link>
+          ) : (
+            <span className="face-words">{face.count ? `${face.state} ` : face.state}</span>
+          )}
           {face.count && <span className="face-count">{face.count}</span>}
         </b>
         {cancel && (

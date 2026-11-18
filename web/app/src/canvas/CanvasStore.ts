@@ -338,6 +338,8 @@ export class CanvasStore {
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
   rent: (pick?: RentFor | null) => void = () => {}
+  /** Shows download `download` on `machine`, in its drawer (cl-1205): where a box's "Waiting for … to download" leads. */
+  showDownload: (machine: string, download: string) => void = () => {}
   /** Each open box's typical render time where it would go now, by name, as Calcifer last said (cl-1004). */
   readonly estimates = signal<ReadonlyMap<string, BoxEstimate>>(new Map())
   /** The machines a render may go to, as text: an estimate is asked again when they change. */

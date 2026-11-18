@@ -9,7 +9,7 @@ use crate::{
     execution::Engine,
     held_models::Pulled,
     hub,
-    journal::{Account, Weights},
+    journal::{Account, Waits, Weights},
     origin::{self, priority, Machine, Remote},
     stop::Stop,
     storage::{self, Store},
@@ -144,7 +144,8 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     whole
 }
 
-/// What a queued run waits on while the models it needs download (`waiting_on` says how far).
+/// What a queued run waits on while the models it needs download, with what it has and needs (`Fetch::needs`); TensorD's log says
+/// how far each is (`waiting_on`), and the machine's activity its bytes (cl-1205).
 pub(crate) const WAITING_FOR_MODELS: &str = "waiting for the models to download";
 
 /// Bytes for people (`reclaim::size`).
@@ -262,11 +263,14 @@ struct Guessed {
     held: Vec<Checkpoint>,
 }
 
-/// One component in line: its bytes, origin, repository, name for people, chunks, and those absent.
+/// One component in line: its bytes, origin, repository, its release and component (none: the whole checkpoint), name for people,
+/// chunks, and those absent.
 struct Lining {
     bytes: u64,
     remote: Remote,
     model: String,
+    release: String,
+    component: Vec<String>,
     label: String,
     objects: Vec<ObjectRef>,
     absent: Vec<ObjectRef>,
@@ -276,8 +280,40 @@ impl Lining {
     /// It arriving, for the machine's list.
     fn arriving(self) -> Arriving {
         let fetch = self.absent.iter().map(|o| o.length).sum::<u64>();
-        Arriving { model: self.model, remote: self.remote, fetch, here: self.bytes - fetch, absent: self.absent }
+        Arriving {
+            model: self.model, release: self.release, components: self.component, remote: self.remote, fetch, here: self.bytes - fetch,
+            wanted: self.absent.clone(), absent: self.absent,
+        }
     }
+
+    /// The machine's download of its repository waits on it (cl-1205): its objects absent when wanted, its release and component.
+    fn join(&self, machine: &Arc<Machine>, wait: &crate::activity::Waiting) {
+        wait.objects(machine, &self.remote, &self.absent);
+        wait.fetches(&self.release, &self.component);
+    }
+}
+
+impl Lined {
+    /// The machine's download of each repository its needs bring (cl-1205), waited on by run `caller`: one wait each, its objects
+    /// those absent now, as `download` wants them. A repository all here has none.
+    pub(crate) fn waits(&self, machine: &Arc<Machine>, caller: &str) -> BTreeMap<String, crate::activity::Waiting> {
+        let mut waits = BTreeMap::new();
+        for (_, part) in self.wants.iter().filter(|(_, part)| !part.absent.is_empty()) {
+            let wait = waits.entry(part.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &part.model, caller));
+            part.join(machine, wait);
+        }
+        waits
+    }
+}
+
+/// What run `id` waits on, as `waits` (by repository) say it (`Engine::observe_waits`), with `left` bytes of its own still to come;
+/// none once it waits on nothing.
+pub(crate) fn waits_of(waits: &BTreeMap<String, crate::activity::Waiting>, left: u64) -> Option<crate::journal::Waits> {
+    (!waits.is_empty()).then(|| crate::journal::Waits {
+        on: waits.values().map(|wait| wait.shown().to_owned()).collect(),
+        models: waits.keys().cloned().collect(),
+        left,
+    })
 }
 
 /// One call's fetches: its checkpoints, where each comes from, and what it wants held.
@@ -304,14 +340,25 @@ pub(crate) struct Fetch {
     required: Mutex<Required>,
 }
 
-/// A checkpoint not all here when it was wanted: its repository and where it comes from, the bytes it had to fetch and those it held
-/// already, and its objects still absent.
+/// A checkpoint not all here when it was wanted: its repository, release and components and where it comes from, the bytes it had
+/// to fetch and those it held already, its objects absent when wanted, and those still absent.
 struct Arriving {
     model: String,
+    release: String,
+    components: Vec<String>,
     remote: Remote,
     fetch: u64,
     here: u64,
+    wanted: Vec<ObjectRef>,
     absent: Vec<ObjectRef>,
+}
+
+impl Arriving {
+    /// The machine's download of its repository waits on it (cl-1205): its objects absent when it was wanted.
+    fn join(&self, machine: &Arc<Machine>, wait: &crate::activity::Waiting) {
+        wait.objects(machine, &self.remote, &self.wanted);
+        wait.fetches(&self.release, &self.components);
+    }
 }
 
 /// A repository's checkpoints arriving: the bytes fetched of those to fetch, those that were here, and whether any is still absent.
@@ -509,7 +556,17 @@ impl Fetch {
         };
         match failure {
             Some(error) => Ready::Failed(error),
-            None => Ready::Waiting(self.waiting_on().unwrap_or_default()),
+            None => Ready::Waiting(self.needs()),
+        }
+    }
+
+    /// What its run needs and what was here, in words (cl-1102): what its run says while it waits, which doesn't move as bytes
+    /// arrive (cl-1205: those are its downloads', in the machine's activity).
+    pub(crate) fn needs(&self) -> String {
+        let account = self.required.lock().unwrap().account;
+        match account.has {
+            0 => format!("{} to download", gib(account.needs)),
+            has => format!("{} to download, {} already on this machine", gib(account.needs), gib(has)),
         }
     }
 
@@ -557,13 +614,8 @@ impl Fetch {
             format!("{label}, {} of {} ({} of {} pieces left: {}{last}{attempt}{hedges})",
                 gib(reached), gib(length), absent.len(), objects.len(), phases.join(", "))
         }).collect();
-        // What it needs and what was here, first (cl-1102): `cozy machine show` and its run say it while it waits.
-        let account = self.required.lock().unwrap().account;
-        let needs = match account.has {
-            0 => format!("{} to download", gib(account.needs)),
-            has => format!("{} to download, {} already on this machine", gib(account.needs), gib(has)),
-        };
-        Some(format!("{needs}; {}", each.join("; ")))
+        // What it needs and what was here, first (cl-1102).
+        Some(format!("{}; {}", self.needs(), each.join("; ")))
     }
     /// Want `components` of each of `selected` (header, components) behind everything, held
     /// until the call ends: a warm set member's `downloaded`.
@@ -597,7 +649,7 @@ impl Fetch {
                 let checkpoint = checkpoint(self.store(), header)?;
                 match self.source(checkpoint.id())? {
                     Some(remote) => {
-                        let model = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
+                        let (model, release) = hub_pull(self.store(), checkpoint.id())?.map_or_else(|| (header.clone(), String::new()), |p| (p.model, p.release));
                         let each: Vec<Vec<String>> = match components.is_empty() {
                             true => vec![vec![]],
                             false => components.iter().map(|component| vec![component.clone()]).collect(),
@@ -610,7 +662,9 @@ impl Fetch {
                                 Some(component) => format!("{model} {component}"),
                                 None => model.clone(),
                             };
-                            parts.push(Lining { bytes, remote: remote.clone(), model: model.clone(), label, objects, absent });
+                            parts.push(Lining {
+                                bytes, remote: remote.clone(), model: model.clone(), release: release.clone(), component, label, objects, absent,
+                            });
                         }
                     }
                     // One no Hub brings is all here, or its call can't run.
@@ -738,17 +792,28 @@ impl Fetch {
                     live.watching.store(false, Ordering::Release);
                     return;
                 }
-                drop(live);
                 waits.retain(|model, _| each.iter().any(|e| e.model == *model));
                 for e in &each {
-                    let wait = waits.entry(e.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &e.model, &caller));
+                    let wait = waits.entry(e.model.clone()).or_insert_with(|| {
+                        let wait = crate::activity::wait(crate::activity::Kind::Download, &e.model, &caller);
+                        live.join(&live.hinted, &e.model, &wait);
+                        wait
+                    });
                     wait.here(e.here);
-                    wait.moved("", e.done, e.total);
+                    wait.look();
                 }
+                drop(live);
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         })?;
         Ok(())
+    }
+
+    /// The machine's download of `model` waits on what of it `list` holds (cl-1205): each checkpoint's objects absent when wanted.
+    fn join(&self, list: &Mutex<Vec<Arriving>>, model: &str, wait: &crate::activity::Waiting) {
+        for arriving in list.lock().unwrap().iter().filter(|arriving| arriving.model == model) {
+            arriving.join(&self.machine, wait);
+        }
     }
 
     /// The weights its run waits on that are not all here yet, while any are not; and each
@@ -763,7 +828,7 @@ impl Fetch {
     fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<ModelTransfer> {
         let mut arriving = list.lock().unwrap();
         let mut each: Vec<ModelTransfer> = vec![];
-        for Arriving { model, remote, fetch, here, absent } in arriving.iter_mut() {
+        for Arriving { model, remote, fetch, here, absent, .. } in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
             let mut states = self.machine.fetching(remote, absent).into_iter();
             let mut missing = 0;
@@ -828,31 +893,40 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     let began_ms = crate::machine::lifecycle::now_ms() as u64;
     let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
         let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
-        // What its run waits on, as this machine lists it (`activity`), by repository.
-        let caller = engine.caller_id(&id);
         // A call's weights show on its root's progress too, the box a person watches (cl-921: H3's segment downloaded 2.5 min
         // with no bytes on its shot): over its own stage, until they're here.
         let root = engine.get(&id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && *root != id);
-        let tell = |weights: Option<Weights>| {
+        // What its run waits on, as this machine lists it (`activity`), by repository, under its root: the run its caller knows. A
+        // call's own id named no run there, and its download wasn't shown (cl-1205).
+        let caller = engine.caller_id(root.as_deref().unwrap_or(&id));
+        let tell = |waits: Option<Waits>| {
             if let Some(root) = &root {
-                if let Err(error) = engine.observe_weights(root, weights.clone()) {
-                    tracing::warn!("run {root}: its call's weights' progress: {error}");
+                if let Err(error) = engine.observe_waits(root, waits.clone()) {
+                    tracing::warn!("run {root}: what its call waits on: {error}");
                 }
             }
-            engine.observe_weights(&id, weights)
+            engine.observe_waits(&id, waits)
         };
-        let mut waits: std::collections::HashMap<String, crate::activity::Waiting> = Default::default();
+        let mut waits: BTreeMap<String, crate::activity::Waiting> = BTreeMap::new();
         loop {
             let live = fetch.upgrade().filter(|f| !f.ended());
             let (weights, waited) = live.as_ref().map(|f| f.arriving()).unwrap_or_default();
             waits.retain(|model, _| waited.iter().any(|each| each.model == *model));
             for each in &waited {
-                let wait = waits.entry(each.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &each.model, &caller));
+                let wait = waits.entry(each.model.clone()).or_insert_with(|| {
+                    let wait = crate::activity::wait(crate::activity::Kind::Download, &each.model, &caller);
+                    if let Some(live) = &live {
+                        live.join(&live.arriving, &each.model, &wait);
+                    }
+                    wait
+                });
                 wait.here(each.here);
-                wait.moved("", each.done, each.total);
+                wait.look();
             }
-            if let Err(error) = tell(weights.clone()) {
-                tracing::warn!("run {id}: its weights' progress: {error}");
+            // It says which downloads it waits on, never their bytes: those are the machine's, once (Paul, 11-17).
+            let left = weights.as_ref().map_or(0, |weights| weights.total.saturating_sub(weights.done));
+            if let Err(error) = tell(waits_of(&waits, left)) {
+                tracing::warn!("run {id}: what it waits on: {error}");
                 return;
             }
             let waiting = live.as_ref().and_then(|f| f.waiting_on());
@@ -864,8 +938,11 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                         tracing::info!("run {id}: {WAITING_FOR_MODELS}: {on}");
                         said = state;
                     }
-                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {on}"))) {
-                        tracing::warn!("run {id}: what it waits on: {error}");
+                    // Its own words say what it has and needs, which don't move; how far each is, the log and its downloads say.
+                    if let Some(needs) = live.as_ref().map(|f| f.needs()) {
+                        if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {needs}"))) {
+                            tracing::warn!("run {id}: what it waits on: {error}");
+                        }
                     }
                 }
                 shown = waiting.clone();

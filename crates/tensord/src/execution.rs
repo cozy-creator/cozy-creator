@@ -3,7 +3,7 @@
 use platform::process::Birth;
 use crate::journal::{
     Artifact, CallMemo, Execution, Invocation, Journal, Outcome, ProgressSnapshot,
-    ResultRecord, State, Weights,
+    ResultRecord, State, Waits,
 };
 use serde_json::Value;
 use std::{
@@ -761,7 +761,7 @@ impl Engine {
     /// the memoized result that answered it (`answer`). Its observation ends under the lock a
     /// dispatcher claims under: a claim made the moment the run is queued keeps its ownership
     /// (else `reconcile` takes the attempt for an orphan). Weights it still waits on stay shown
-    /// over its own progress: its meter goes on observing them (`observe_weights`).
+    /// over its own progress: its meter goes on observing them (`observe_waits`).
     pub(crate) fn bind_prepared(
         &self,
         id: &str,
@@ -778,14 +778,14 @@ impl Engine {
             .unwrap()
             .bind_prepared(id, invocation, preparation, memo, answer);
         let held = progress.remove(id);
-        if let (Ok(bound), Some(ProgressSnapshot { weights: Some((arriving, own)), .. })) = (&record, held) {
+        if let (Ok(bound), Some(ProgressSnapshot { waits: Some((arriving, own)), .. })) = (&record, held) {
             if bound.state == State::Queued {
                 progress.insert(id.into(), ProgressSnapshot {
                     completed_units: bound.completed_units,
                     detail: arriving.over(&own),
                     waiting: bound.waiting.clone(),
                     place: bound.place,
-                    weights: Some((arriving, own)),
+                    waits: Some((arriving, own)),
                     revision: bound.revision.saturating_add(1),
                     at_ms: crate::machine::lifecycle::now_ms() as u64,
                 });
@@ -1149,7 +1149,7 @@ impl Engine {
         if record.revision >= record.revision_ceiling {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
-        let weights = progress.get(id).and_then(|held| held.weights.clone());
+        let waits = progress.get(id).and_then(|held| held.waits.clone());
         progress.insert(
             id.into(),
             ProgressSnapshot {
@@ -1157,7 +1157,7 @@ impl Engine {
                 detail: record.progress.clone().unwrap_or_default(),
                 waiting: reason,
                 place,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
@@ -1194,11 +1194,11 @@ impl Engine {
         if record.state.terminal() {
             return Ok(());
         }
-        let weights = progress.get(id).and_then(|snapshot| snapshot.weights.clone());
+        let waits = progress.get(id).and_then(|snapshot| snapshot.waits.clone());
         if let Some(snapshot) = progress.get(id) {
             snapshot.overlay(&mut record);
         }
-        let own = weights.as_ref().map_or(record.progress.as_deref(), |(_, own)| Some(own.as_str()));
+        let own = waits.as_ref().map_or(record.progress.as_deref(), |(_, own)| Some(own.as_str()));
         // Units never regress; a stage or position change without new units still shows.
         if completed_units < record.completed_units
             || completed_units == record.completed_units && own == Some(detail.as_str())
@@ -1209,7 +1209,7 @@ impl Engine {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
         // Weights still arriving show over it; it shows once they are here.
-        let (detail, weights) = match weights {
+        let (detail, waits) = match waits {
             Some((arriving, _)) => (arriving.over(&detail), Some((arriving, detail))),
             None => (detail, None),
         };
@@ -1220,7 +1220,7 @@ impl Engine {
                 detail,
                 waiting: None,
                 place: None,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
@@ -1310,7 +1310,7 @@ impl Engine {
             n
         };
         let held = self.progress.lock().get(id).map(|snapshot| {
-            let own = snapshot.weights.as_ref().map_or(&snapshot.detail, |(_, own)| own);
+            let own = snapshot.waits.as_ref().map_or(&snapshot.detail, |(_, own)| own);
             (snapshot.completed_units, own.clone())
         });
         let Some((units, own)) = held else { return Ok(()) };
@@ -1359,25 +1359,35 @@ impl Engine {
         texts.get(id).is_some_and(|outputs| outputs.iter().any(|(key, text)| text.len() > heard.get(key).copied().unwrap_or(0)))
     }
 
-    /// The weights run `id` waits on while they arrive (`access::meter`), shown over its own
-    /// progress; `None` once they are here, when its own shows again. A queued run keeps why it
-    /// waits. A dispatchable run waits for its weights queued and owned by no dispatcher yet, so
-    /// a queued run is observed whoever owns it (cl-691: its bytes froze at their first value).
-    pub(crate) fn observe_weights(&self, id: &str, weights: Option<Weights>) -> io::Result<()> {
+    /// The downloads run `id` waits on while they arrive (`access::meter`, cl-1205), shown over its own progress with no bytes of its
+    /// own; `None` once they are here, when its own shows again. Their bytes left change it quietly: only its line's estimate reads
+    /// them, and a client hears it once it waits on others. A queued run keeps why it waits. A dispatchable run waits for its
+    /// weights queued and owned by no dispatcher yet, so a queued run is observed whoever owns it (cl-691: its bytes froze at their
+    /// first value).
+    pub(crate) fn observe_waits(&self, id: &str, waits: Option<Waits>) -> io::Result<()> {
         let owned = self.owned.lock().contains(id);
         let mut progress = self.progress.lock();
-        let held = progress.get(id);
-        if held.and_then(|snapshot| snapshot.weights.as_ref().map(|(w, _)| w)) == weights.as_ref() {
+        if let (Some(snapshot), Some(now)) = (progress.get_mut(id), &waits) {
+            if let Some((held, own)) = snapshot.waits.as_mut().filter(|pair| pair.0.same(now)) {
+                if held.left != now.left {
+                    held.left = now.left;
+                    snapshot.detail = now.over(own);
+                }
+                return Ok(());
+            }
+        }
+        if waits.is_none() && progress.get(id).is_none_or(|snapshot| snapshot.waits.is_none()) {
             return Ok(());
         }
+        let held = progress.get(id);
         let mut journal = self.journal.lock().unwrap();
         let mut record = journal.get(id)?;
         if !record.observed() || (!owned && record.state != State::Queued) {
-            // Weights that landed as the run left the queue (it is starting) stop showing over
+            // Downloads that landed as the run left the queue (it is starting) stop showing over
             // its own progress, though it is not observed now: the meter's last word is this.
-            if weights.is_none() {
+            if waits.is_none() {
                 if let Some(held) = progress.get_mut(id) {
-                    if let Some((_, own)) = held.weights.take() {
+                    if let Some((_, own)) = held.waits.take() {
                         held.detail = own;
                     }
                 }
@@ -1387,14 +1397,14 @@ impl Engine {
         if let Some(snapshot) = held {
             snapshot.overlay(&mut record);
         }
-        let own = match held.and_then(|snapshot| snapshot.weights.as_ref()) {
+        let own = match held.and_then(|snapshot| snapshot.waits.as_ref()) {
             Some((_, own)) => own.clone(),
             None => record.progress.clone().unwrap_or_default(),
         };
         if record.revision >= record.revision_ceiling {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
-        let (detail, weights) = match weights {
+        let (detail, waits) = match waits {
             Some(arriving) => (arriving.over(&own), Some((arriving, own))),
             None => (own, None),
         };
@@ -1405,7 +1415,7 @@ impl Engine {
                 detail,
                 waiting: record.waiting.clone(),
                 place: record.place,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
