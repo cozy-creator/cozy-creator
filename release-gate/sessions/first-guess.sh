@@ -119,7 +119,7 @@ turned() {
   run_page boxes "$OUT/boxes-$1.json" > "$OUT/boxes-$1.txt" 2>&1 || fail "turned: $(tail -c 300 "$OUT/boxes-$1.txt")"
   answered=$(date +%s%3N)
   # Guessed, or (on this runner's machine, which serves no Orbit) its quote read and no machine found for it.
-  until cozy machine logs local calcifer --lines 3000 2> /dev/null | grep -qE "$RUN_PROJECT: turned (guessed on|.s guess wasn.t made)"; do
+  until cozy machine logs local calcifer --lines 3000 2> /dev/null | grep -qE "$RUN_PROJECT: turned( guessed on|.s guess wasn.t made)"; do
     [ $((SECONDS - began)) -lt 180 ] || { say "project $1: turned not guessed in 3 min"; break; }
     sleep 2
   done
