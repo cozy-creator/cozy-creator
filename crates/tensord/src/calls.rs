@@ -847,8 +847,9 @@ fn model_choices(
         }
         for lora in chosen["lora"].as_array().into_iter().flatten() {
             let raw = lora["ref"].as_str().ok_or_else(|| refuse(format!("for {name}: a LoRA names no ref")))?;
+            // None given: its release's, as the machine applies it (`apply_adapters`).
             let strength = match &lora["strength"] {
-                Value::Null => "1".to_owned(),
+                Value::Null => String::new(),
                 Value::Number(n) => model_ref::strength(&n.to_string()).map_err(invalid)?,
                 _ => return Err(refuse(format!("for {name}: a LoRA's strength is not a number"))),
             };
