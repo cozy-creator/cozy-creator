@@ -96,25 +96,58 @@ record() {
 }
 row() { run_page board | jq -c --arg n "$1" '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null; }
 version() { cozy --json machine show "$NAME" 2> /dev/null | jq -r '.status.version // empty'; }
+# set_of: what $NAME says it runs: its TensorD, Runtime and TensorFS.
+set_of() { cozy --json machine show "$NAME" 2> /dev/null | jq -r '"\(.status.version // "") \(.status.runtime // "") \(.status.tensorfs // "")"'; }
+RC_SET='' WANT_RT='' WANT_FS=''
+# ours: $NAME on the open RC's whole set, its Runtime, TensorFS and cozy together (a Runtime of the RC's on another TensorFS fails every
+# run: cr-317), then this cozy as its TensorD. One not on that set fails here, before any step.
 ours() {
-  local tries=0 runs
-  step rc machine update "$NAME" -y || fail "$NAME didn't move to the open RC's builds"
+  local tries=0 runs rc=''
+  for _ in 1 2 3; do
+    step rc machine update "$NAME" -y || fail "$NAME didn't move to the open RC's builds"
+    for _ in $(seq 30); do
+      rc=$(cozy --json machine show "$NAME" 2> /dev/null | jq -c '.rc // empty' 2> /dev/null)
+      [ "$(jq -r '.state // empty' <<< "${rc:-null}")" != current ] || break
+      sleep 2
+    done
+    [ "$(jq -r '.state // empty' <<< "${rc:-null}")" != current ] || break
+  done
+  RC_SET=$(jq -r '.detail // empty' <<< "${rc:-null}")
+  [ "$(jq -r '.state // empty' <<< "${rc:-null}")" = current ] && [[ $RC_SET == *Runtime* && $RC_SET == *TensorFS* ]] ||
+    fail "$NAME isn't on the open RC's whole set, Runtime and TensorFS together: ${rc:-its record says nothing of the RC}"
+  read -r _ WANT_RT WANT_FS <<< "$(set_of)"
+  [ -n "$WANT_RT" ] && [ -n "$WANT_FS" ] || fail "$NAME doesn't say its Runtime and TensorFS"
   while runs=$(version); [ "$runs" != "$V" ]; do
     [ "$tries" -lt 3 ] || fail "$NAME doesn't keep the session's TensorD $V: it runs ${runs:-nothing it says}"
     step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "$NAME refused the session's TensorD"
     sleep 30; tries=$((tries + 1))
   done
-  say "$NAME runs the session's TensorD $V"
+  [ "$(set_of)" = "$V $WANT_RT $WANT_FS" ] || fail "$NAME runs $(set_of) with the session's TensorD, not $V $WANT_RT $WANT_FS"
+  say "$NAME runs the open RC's set ($RC_SET) under the session's TensorD: TensorD $V, Runtime $WANT_RT, TensorFS $WANT_FS"
 }
-# kept <what>: $NAME still runs the session's TensorD; one moved off it is put back.
+# kept <step>: before <step>, $NAME runs the Runtime and TensorFS it took from the RC and the session's TensorD (versions.txt). A
+# TensorD moved off the session's is put back; a Runtime or TensorFS that moved is no set this session took: said, and 2 returned.
 kept() {
-  local runs=''
-  for _ in $(seq 20); do runs=$(version); [ -z "$runs" ] || break; sleep 1; done
-  [ "$runs" != "$V" ] || return 0
-  say "$1: $NAME runs ${runs:-nothing it says}, not the session's $V: updated again"
-  step "tensord-$1" machine update "$NAME" --tensord "$(command -v cozy)" -y || return 1
-  sleep 30
-  [ "$(version)" = "$V" ]
+  local now='' tensord runtime tensorfs
+  for _ in $(seq 20); do now=$(set_of); [ -z "${now// /}" ] || break; sleep 1; done
+  read -r tensord runtime tensorfs <<< "$now"
+  if [ "$runtime $tensorfs" != "$WANT_RT $WANT_FS" ]; then
+    say "$1: $NAME runs Runtime ${runtime:-?} and TensorFS ${tensorfs:-?}, not the $WANT_RT and $WANT_FS it took from the RC"
+    return 2
+  fi
+  if [ "$tensord" != "$V" ]; then
+    say "$1: $NAME runs TensorD ${tensord:-?}, not the session's $V: updated again"
+    step "tensord-$1" machine update "$NAME" --tensord "$(command -v cozy)" -y || return 1
+    sleep 30
+    [ "$(set_of)" = "$V $WANT_RT $WANT_FS" ] || return 1
+  fi
+  echo "$(date -u +%T) $1: TensorD $V, Runtime $WANT_RT, TensorFS $WANT_FS" >> "$OUT/versions.txt"
+}
+# set_fault: the session ends if $NAME's log shows a Runtime calling a TensorFS it doesn't go with (cr-317).
+set_fault() {
+  logs
+  ! grep -aq "Device.region() takes" "$OUT/tensord-$NAME.log" ||
+    fail "$NAME's Runtime $WANT_RT and TensorFS $WANT_FS don't go together: $(grep -a -m1 "Device.region() takes" "$OUT/tensord-$NAME.log" | cut -c1-300)"
 }
 PAGE=''
 # unshown: the page closed, and the project's guesses with it.
@@ -310,6 +343,7 @@ print(at - int(re.search(r"guessed on \S+ in (\d+) ms", line).group(1)) - 2000, 
 YIELDED=''
 yield_arm() {
   local began=$SECONDS try sent code
+  kept other-fetch || { say "step 5 skipped: $NAME doesn't keep the session's software"; return 0; }
   (cd "$RUN_PROJECT" && timeout 900 cozy run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4) > "$OUT/other-fetch.txt" 2>&1; code=$?
   case $code in
     0) say "$OTHER's first call, its weights fetched: $((SECONDS - began)) s" ;;
@@ -318,7 +352,7 @@ yield_arm() {
   esac
   for try in 1 2 3; do
     step "restart-$try" machine update "$NAME" --mode dedicated -y || { say "step 5 ended: the restart failed: $(tail -c 300 "$OUT/restart-$try.txt")"; return 0; }
-    kept "restart-$try" || { say "step 5 ended: $NAME didn't keep the session's TensorD"; return 0; }
+    kept "restart-$try" || { say "step 5 ended: $NAME didn't keep the session's software"; return 0; }
     staged loading 300 || { say "step 5 ended: no predicted request was loading within 300 s of the restart: $(stages)"; return 0; }
     sent=$(date +%s%3N)
     (cd "$RUN_PROJECT" && timeout 600 cozy run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=$((4 + try))) > "$OUT/other-$try.txt" 2>&1 ||
@@ -378,9 +412,10 @@ began=$SECONDS
 say "step 0: qwen-image-2 installed on $NAME in $((SECONDS - began)) s"
 sample
 say "step 1: a page shows the encrypted project; own, a box of its own code, is guessed onto $NAME"
+kept own || fail "$NAME doesn't keep the session's software"
 own_ahead
 say "step 2: photo gets Qwen Image 2.1, then an edit"
-kept photo || fail "$NAME doesn't keep the session's TensorD $V"
+kept photo || fail "$NAME doesn't keep the session's software"
 edit photo
 carried photo "$PHOTO" 180
 # Its models too, so its render waits for nothing.
@@ -392,7 +427,12 @@ done
 jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${got:-null}" > /dev/null 2>&1 || fail "photo isn't ready on $NAME after 30 min: ${got:-no row}"
 say "photo ready on $NAME: $got"
 # Its request loaded, and left there: its draft stands unchanged well past the 3 s a machine told to run ahead waits.
-if staged loaded 600; then
+loaded=false
+for _ in $(seq 20); do
+  if staged loaded 30; then loaded=true; break; fi
+  set_fault
+done
+if [ "$loaded" = true ]; then
   sleep 20
   say "20 s on, photo's draft unchanged, the predicted requests on $NAME are: $(stages)"
   [[ " $(stages) " == *" loaded "* ]] || MISMATCH+=("photo's request didn't stay loaded: $(stages)")
@@ -400,6 +440,7 @@ else
   MISMATCH+=("photo's request wasn't loaded on $NAME in 600 s: $(stages)")
 fi
 say "step 3: the uplink shaped to $MBIT Mbit/s; wide gets Qwen and an edit, and photo is rendered while wide's picture goes ahead"
+kept wide || fail "$NAME doesn't keep the session's software"
 sudo tc qdisc add dev "$DEV" root tbf rate "${MBIT}mbit" burst 64kb latency 400ms || fail "the uplink couldn't be shaped"
 TX0=$(cat "/sys/class/net/$DEV/statistics/tx_bytes")
 edit wide
@@ -415,6 +456,7 @@ say "wide: the carry waited for a run's $waits times; it landed $(landed "$WIDE"
 [ "$(landed "$WIDE" | wc -l)" = 1 ] || MISMATCH+=("wide's picture landed $(landed "$WIDE" | wc -l) times")
 [ "$TX" -le $((WIDE_B * 13 / 10)) ] || MISMATCH+=("the runner sent $TX bytes while wide's $WIDE_B went ahead")
 say "step 4: wide rendered"
+kept wide-render || fail "$NAME doesn't keep the session's software"
 rendered wide "$WIDE"
 say "Calcifer's carries ahead: $(grep -o "[a-z]*'s guess carried .*" "$OUT/calcifer.log" | paste -sd ';' -)"
 # Nothing ran ahead: no speculative run in the machine's log, and no predicted request its Status ever said was running or done.
@@ -436,6 +478,7 @@ if [ "$YIELD" = true ]; then
   fi
 fi
 logs
-say "$NAME ends on TensorD $(version)"
+say "$NAME ends on TensorD, Runtime and TensorFS $(set_of); checked before each step:"
+sed 's/^/  /' "$OUT/versions.txt" | tee -a "$R"
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
 say "PASS: an encrypted project's own code and its pictures went ahead to the rental, the pictures behind a render's carry and each landing once; each render found what it reads there and adopted its item; nothing ran ahead${YIELDED:+; $OTHER, sent while a load held the GPU: $YIELDED}"
