@@ -171,6 +171,7 @@ cp "$OUT/tensord.log" "$OUT/tensord-install.log"
 if [ -n "$PROBE" ]; then
   pod 'kill "$(cat /root/cl1202/pid)" 2> /dev/null; tar czf - -C /root/cl1202 . | base64 -w0' | base64 -d > "$OUT/probe.tgz" &&
     mkdir -p "$OUT/probe" && tar xzf "$OUT/probe.tgz" -C "$OUT/probe" || say "probe: the samples weren't fetched"
+  rm -f "$OUT/probe.tgz"  # published only as text, which the scrub reads
 fi
 # TensorD answered throughout the arm (cl-1202): the longest gap between the status reads each second (each `machine show` waits on
 # the pod's Status), and the slowest list put, as Calcifer timed it.

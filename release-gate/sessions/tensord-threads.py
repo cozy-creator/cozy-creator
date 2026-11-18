@@ -8,6 +8,7 @@ pressure, and TensorD's API connections (`ss -tni`: queues, RTT, window).
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -73,7 +74,8 @@ with open(os.path.join(out, "threads.ndjson"), "w") as samples, open(os.path.joi
             while gdb and record is not None and dumps and now >= record + dumps[0]:
                 at = dumps.pop(0)
                 done = subprocess.run(["timeout", "60", "gdb", "-p", str(pid), "-batch", "-nx", "-ex", "set pagination off",
-                                       "-ex", "thread apply all bt 30"], capture_output=True, text=True)
+                                       "-ex", "set print frame-arguments none", "-ex", "thread apply all bt 30"],
+                                      capture_output=True, text=True)
                 with open(os.path.join(out, f"gdb-{at:g}s.txt"), "w") as dump:
                     dump.write(f"pid {pid} at {now:.3f} took {time.time() - now:.3f}s\n{done.stdout}\n{done.stderr}")
         if now >= last_host + 1:
@@ -86,6 +88,8 @@ with open(os.path.join(out, "threads.ndjson"), "w") as samples, open(os.path.joi
             if ports:
                 match = " or ".join(f"sport = :{p}" for p in sorted(ports)).split()
                 api = subprocess.run(["ss", "-tniH", "state", "established", "(", *match, ")"], capture_output=True, text=True).stdout
+                # Queues, RTT and windows only: no address of the pod or its peers goes into a published artifact.
+                api = re.sub(r"\S+:\d+\s+\S+:\d+", "conn", api)
                 host.write(f"{now:.3f} api {' '.join(api.split())[:4000]}\n")
         samples.flush()
         time.sleep(max(0.0, now + 0.25 - time.time()))
