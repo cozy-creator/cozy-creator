@@ -57,6 +57,7 @@ use crate::{
     Calcifer,
     api::{Api, Refusal, parse},
     link::{self, Link, LinkError},
+    project::Unplaced,
     rentals::{Hubs, Shape, Word, hub_refusal},
     store::{AskKind, Endpoint, MachineRow, Store},
     took::Took,
@@ -1818,6 +1819,9 @@ impl Machines {
     /// Calcifer's queue, placed (cl-1132, Paul 11-17: "calcifer has a queue of jobs, it gives that queue of jobs to a machine"): each
     /// job goes where it finishes soonest of its machines (`project::queued_on`), said in its log, or waits in the queue saying why
     /// while none can take it. `new` rents what the Hub places it on; `new:<sku>` that product.
+    /// What calls no function (a package's install or sync, a model's download, a warm set) has no finish to quote (cl-1244): it
+    /// takes the first of its machines that takes work now (`placement::takes`), as the install of a run naming none does. A job
+    /// every machine refuses for the request itself fails with that refusal, once.
     async fn place_unplaced(self: &Arc<Self>) {
         let unplaced = match self.calcifer.each_store(|store| store.unplaced()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
             Ok(unplaced) => unplaced,
@@ -1830,18 +1834,36 @@ impl Machines {
                 continue;
             }
             let set = Box::pin(crate::project::queue_set(&api, &run)).await;
-            let offer = match Box::pin(crate::project::queued_on(&api, &set, &run)).await {
-                Ok(offer) => offer,
-                Err(why) => {
+            let placed = match run.kind {
+                wire::Kind::Call => Box::pin(crate::project::queued_on(&api, &set, &run)).await.map(|offer| (offer.machine.clone(), Some(offer), None)),
+                _ => match Box::pin(crate::placement::takes(&api, &set, &[])).await {
+                    Ok((on, said)) => Ok((on, None, said)),
+                    Err(e) => Err(Unplaced::Waits(format!("waiting for a machine that can take it: {}", e.message))),
+                },
+            };
+            let (name, offer, said) = match placed {
+                Ok((On::Machine(name), offer, said)) => (name, offer, said),
+                Ok(_) => continue,
+                Err(Unplaced::Waits(why)) => {
                     self.calcifer.waiting(&run.id, why);
                     continue;
                 }
+                Err(Unplaced::Never(reason)) => {
+                    if let Err(e) = self.calcifer.fail(&run.id, reason) {
+                        warn!(run = %run.id, "{e}");
+                    }
+                    continue;
+                }
             };
-            let On::Machine(name) = &offer.machine else { continue };
-            match self.calcifer.place(&run.id, name) {
+            match self.calcifer.place(&run.id, &name) {
                 Ok(true) => {
-                    self.calcifer.quoted(&run.id, offer.quoted());
-                    let said = format!("Cozy placed it: {}", crate::placement::said(&offer, crate::store::now_ms()));
+                    let said = match &offer {
+                        Some(offer) => {
+                            self.calcifer.quoted(&run.id, offer.quoted());
+                            format!("Cozy placed it: {}", crate::placement::said(offer, crate::store::now_ms()))
+                        }
+                        None => said.unwrap_or_else(|| format!("Cozy placed it on {name}, the first of its machines that takes work now")),
+                    };
                     match self.calcifer.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
                         Ok(events) => self.calcifer.publish(&run.id, events),
                         Err(e) => warn!(run = %run.id, "{e}"),
