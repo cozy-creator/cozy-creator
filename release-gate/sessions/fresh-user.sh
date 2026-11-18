@@ -38,6 +38,7 @@ if [ "$(param mode published)" = dev ]; then
   DIR=$P t pub-birefnet-2 run "birefnet/remove_background@${rel:-0.9.0}" --file image="$small" --on local
   DIR=$P t update-local machine update local -y
   DIR=$P t local-after machine show local
+  DIR=$P t pub-birefnet-after-update run "birefnet/remove_background@${rel:-0.9.0}" --file image="$small" --on local
   DIR=$P t src-birefnet-after run birefnet/remove_background --file image="$P/picture.jpg" --on local
   PAGE import "$P" "$small" --name pic > "$F/page-import.json" 2>&1
   PAGE add "$P" cut --tool birefnet/remove_background --fields '{"image": "<pic>"}' > "$F/page-add.json" 2>&1
@@ -63,10 +64,16 @@ try() {  # try <name> <cozy run args…>: the run; refused, `cozy machine update
   DIR=$P t local-after-update machine show local
   DIR=$P t "$n-again" run "$@" --on local
 }
+# The page first, as a page-only user meets it: a BiRefNet box on a picture, rendered on local before anything is updated.
+PAGE import "$P" "$small" --name pic0 > "$F/page0-import.json" 2>&1
+PAGE add "$P" cut0 --tool birefnet/remove_background --fields '{"image": "<pic0>"}' > "$F/page0-add.json" 2>&1
+t0=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on local cut0 > "$F/page0-render.json" 2> "$F/page0-render.err"
+say "page render on local before any update: exit $? in $((SECONDS - t0)) s: $(jq -c '{failure: .asset.failure, versions: (.versions | length)}' "$F/page0-render.json" 2> /dev/null | cut -c1-600) $(tail -c 400 "$F/page0-render.err" | tr '\n' ' ')"
+DIR=$P t local-after-page machine show local
 try birefnet birefnet/remove_background --file image="$small"
 try birefnet-2 birefnet/remove_background --file image="$P/picture.jpg"
 DIR=$P t describe-write run qwen3/write --describe
-try write qwen3/write text='Say hello in five words.' --model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated
+try write qwen3/write instructions:='"Say hello in five words."' max_tokens=32 --model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated
 DIR=$P t runs run ls
 # The page's way: a picture box and a BiRefNet box on it, rendered on local as the page asks.
 PAGE import "$P" "$small" --name pic > "$F/page-import.json" 2>&1
