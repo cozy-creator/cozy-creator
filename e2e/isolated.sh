@@ -472,7 +472,7 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" birefnet "* ]]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
-  case $shard in local-code | '') final_model ;; esac
+  case $shard in local-code | grants | '') final_model ;; esac
   # The real Qwen3.5 0.8B, which an LLM tool runs on the CPU (xs-204); it also stands in for the downloads' 1.6 GB.
   if [[ " $needs " == *" qwen "* ]]; then
     mirror hf://Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17 qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B
