@@ -255,7 +255,8 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
       <button type="button" aria-pressed={tab === "loras"} onClick={() => { setTab("loras"); setTyped(""); setLimit(50) }}>LoRAs</button>
     </div>
     <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
-    {!slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
+    {/* A slot with no family lists only its default: say so only when it has none either (cl-1258). */}
+    {!slot.family && !slot.default && <p className="muted">Compatible choices aren't available for this slot.</p>}
     {slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
     {Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
     {error && <p className="warn">Couldn't load models.</p>}
