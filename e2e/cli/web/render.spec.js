@@ -238,6 +238,12 @@ const recordViewer = (page, name) => page.evaluate((name) => {
 }, name);
 
 test('render', async ({ page, project, api, cli }) => {
+  // Each step on its own budget (xs-217), the measured maximum on GitHub's loaded runners plus a margin: a slow step fails by its name,
+  // not whichever step the test's 180 s ran out in. Measured, s (e2e 44277123522 green / 44285972438 red / 44292533167 red): the local
+  // tools listed 6/10/6, A still 37/46/32, No Render all 24/46/30, slow box 9/19/12, Cancel 15/53+/56, crash 11/-/11, Focus 11/-/10,
+  // two boxes 17/-/14; Render on a box alone is newer than those runs (unmeasured: 90). The test: their sum and the tools' 570 s.
+  test.setTimeout(570_000);
+  const step = (title, budget, body) => test.step(title, body, { timeout: budget });
   const warns = join(project.path, 'warns.py');
   writeFileSync(warns, WARNS);
   // Its environment readied while the rest goes: no box names it yet, so the palette's list isn't held reading it.
@@ -258,7 +264,7 @@ test('render', async ({ page, project, api, cli }) => {
   await page.evaluate(() => { window.__unreloaded = true; });
   let first;
 
-  await test.step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', async () => {
+  await step('"A still" from the palette, typed in and rendered by Render; another box by Ctrl+Enter', 75_000, async () => {
     const still = await toolRow(page, 'Image', STILL);
     await expect(still).toHaveAttribute('data-tool-operation', 'image');
     await carry(page, still, await openPoint(page));
@@ -353,7 +359,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
-  await test.step('No Render all in the top bar: the page at real sizes, with its rendered boxes', async () => {
+  await step('No Render all in the top bar: the page at real sizes, with its rendered boxes', 75_000, async () => {
     // Paul, 11-17 (cl-1192): "remove the 'render all 12' behavior and logic from the top right of the webui".
     await expect(page.locator('.top .main-menu')).toBeVisible();
     await expect(page.getByRole('button', { name: /^Render all/ })).toHaveCount(0);
@@ -381,7 +387,7 @@ test('render', async ({ page, project, api, cli }) => {
     await fit(page);
   });
 
-  await test.step('Render on a box renders it alone: an input with no take is said once; one changed is read as it stands', async () => {
+  await step('Render on a box renders it alone: an input with no take is said once; one changed is read as it stands', 90_000, async () => {
     // Paul, 11-18 (cl-1192): "no you can delete this sort of walking logic. We won't have this idea of 'this is out of date' right now".
     await project.add({ name: 'source', tool: STILL, kind: 'image', fields: { instructions: 'A source still.' }, at: { x: 0, y: 840 } });
     await project.add({ name: 'reader', tool: STILL, kind: 'image', fields: { instructions: 'Like <source>.' }, at: { x: 360, y: 840 } });
@@ -425,7 +431,7 @@ test('render', async ({ page, project, api, cli }) => {
     await fit(page);
   });
 
-  await test.step('Render a slow box that mentions the first, then a box that reads it', async () => {
+  await step('Render a slow box that mentions the first, then a box that reads it', 45_000, async () => {
     await api.patch(project.at('/assets/slow'), { fields: { instructions: `After <${first}>, slowly.` } });
     await expect.poll(async () => (await project.asset('slow'))?.fields?.instructions).toBe(`After <${first}>, slowly.`);
     await recordBox(page, 'after');
@@ -438,7 +444,7 @@ test('render', async ({ page, project, api, cli }) => {
     await expect.poll(() => renderState(page, 'after'), { message: 'after waits for slow', timeout: 60_000 }).toMatch(/^Waiting for <slow>/);
   });
 
-  await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
+  await step('Cancel one box while it waits for its input and another while it renders', 90_000, async () => {
     await cancelRender(page, 'after');
     await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
@@ -473,7 +479,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(waited.filter((words) => /Drawing|\b\d+ \/ 10\b/.test(words)), "after shows none of slow's progress").toEqual([]);
   });
 
-  await test.step('Render the crash tool', async () => {
+  await step('Render the crash tool', 45_000, async () => {
     // cl-1070 (Paul, 11-16): "do not keep failed runs around as if they were takes I can select"; "an error, when it happens, is a toast
     // notification, and the take disappears". It's said once, its take leaves the column with nothing to delete, and the frame that
     // watched it goes back to the take it showed.
@@ -513,7 +519,7 @@ test('render', async ({ page, project, api, cli }) => {
     await back(page);
   });
 
-  await test.step('Watch one box land in Focus, then reload', async () => {
+  await step('Watch one box land in Focus, then reload', 45_000, async () => {
     const run = await primed;
     expect(run.code, `cozy run of warns.py: ${run.stderr.slice(-400)}`).toBe(0);
     await project.add({ name: 'warned', tool: `${warns}/warned`, kind: 'image', fields: { instructions: 'A still that warns.' }, at: { x: 360, y: 420 } });
@@ -556,7 +562,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
   });
 
-  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", async () => {
+  await step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", 60_000, async () => {
     // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, installed and read by this project in the first step;
     // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
     // cl-1086 (Paul: "a run never waits on something it doesn't need"; "every wait is tied to what it waits on, observed"): a run of
