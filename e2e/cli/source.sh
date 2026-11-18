@@ -59,7 +59,13 @@ cp -r "$here/project/boxed" "$co/e2e-boxed"
 if [ -n "$PACKAGES" ]; then
   cp -r "$PACKAGES/orbit" "$PACKAGES/minimax-h3" "$co/" || { check "from source: $PACKAGES holds no orbit and minimax-h3"; return; }
   # It reads with the run's candidate Runtime, as the machine runs it (cl-994): until a set lands, the RC's newest build is another.
+  # Beside it the candidate TensorFS, which that Runtime floors on (xs-216: `tensorfs>=0.27.0.dev<n>`, which no index holds), for a
+  # rental's platform as a lock takes it (scripts/lock.sh); uv reads a source only for a dependency the project names.
   [ ! -f "${CAND_RT:-}" ] || sed -i "/^\[tool.uv.sources\]/a cozy-runtime = { path = \"$CAND_RT\" }" "$co/orbit/pyproject.toml"
+  if [ -f "${CAND_RT:-}" ] && [ -f "${CAND_TFS:-}" ]; then
+    sed -i "/^\[tool.uv.sources\]/a tensorfs = { path = \"$CAND_TFS\", marker = \"sys_platform == 'linux' and platform_machine == 'x86_64'\" }" "$co/orbit/pyproject.toml"
+    grep -qE '^ *"tensorfs[][ <>=!~;"]' "$co/orbit/pyproject.toml" || sed -i '0,/^dependencies = \[$/s//dependencies = [\n    "tensorfs",/' "$co/orbit/pyproject.toml"
+  fi
 fi
 git -C "$co" init -q -b rc/e2e && git -C "$co" add -A && git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qm checkout \
   || { check "from source: the checkout's commit failed"; return; }
