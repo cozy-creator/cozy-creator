@@ -42,7 +42,8 @@ MARGIN = 0.03
 BUDGET, KEEP = 0.25, 5
 # se-155 (Paul 11-17: Qwen Image 2.1 "soft, with artifacts at 200%"): Qwen-Image-2.1's stock VAE decoder prints a fixed 2-px
 # pattern, one pixel of every 2x2 a level or two dark (`dots`), as Diffusers' does; madebyollin's texture-fix decoder, the
-# package's default since 0.15.0rc5, cuts it about tenfold. A qwen-image-2 picture whose pattern passes DOTS levels fails.
+# package's default since 0.15.0rc5, cuts it about tenfold. A candidate qwen-image-2's picture whose pattern passes DOTS levels
+# fails; a published release's (the `published` suite: 0.14.0 until promotion) is not this gate's to decide.
 # Pod-session 44237459562, 170 renders at 2 and 4 MP: stock 0.36-1.01 at the package's settings (0.24 at the lowest, CFG 3),
 # texture-fix 0.02-0.11. Known miss: the 0.26.1 gate's qwen-lora (generate_turbo with a LoRA, a dark library) reads 0.177 with the
 # stock decoder and passes, its checker visible at 400%; qwen 0.26 and qwen-refs 1.13 fail there (pod-session 44281082970). Tighten
@@ -124,8 +125,11 @@ def rgb(path: str) -> Image.Image:
     return im.convert('RGB')
 
 
-def package(target: str) -> str:
-    """A run's package: `pkg/fn`, or `local/pkg/fn` for a checkout's (gate.sh `pkg`), as ledger.py reads it."""
+def candidate(target: str) -> str:
+    """The package of a run of the gate's packages checkout (gate.sh `pkg` runs `./pkg/fn`, its record says `local/pkg/fn`), as
+    ledger.py reads it; '' for a published release's run (`pkg/fn`: the `published` suite runs what users already have)."""
+    if not target.startswith(('local/', './')):
+        return ''
     parts = [p for p in target.split('@', 1)[0].split('/') if p not in ('local', '_', '.')]
     return parts[-2] if len(parts) >= 2 else ''
 
@@ -198,7 +202,7 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             flat = [round(float(np.asarray(im, dtype=np.float32).std()), 2) for im in ims]
             if flat and min(flat) < 2.0:
                 fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
-            if run and package(run.target) == 'qwen-image-2' and f.endswith(('.png', '.webp')):
+            if run and candidate(run.target) == 'qwen-image-2' and f.endswith(('.png', '.webp')):
                 level = dots(f)
                 if level > DOTS:
                     fails.append(f'dots {name}: {os.path.basename(f)} carries a 2-px dot grid of {level:.2f} levels, over {DOTS}: '
