@@ -1471,11 +1471,23 @@ impl Calcifer {
     /// Records the machine as gone for good: what it held returns to Calcifer's queue (`Store::requeue_machine`, cl-1132). A project's
     /// run held under a name it had before returns as its driver finds that name is this machine.
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
-        let mut events = self.store.machine_ended(name, reason)?;
-        let why = store::ended_why(name, reason);
+        let events = self.store.machine_ended(name, reason)?;
+        self.requeued(name, events, &store::ended_why(name, reason))
+    }
+
+    /// A rental its Hub is placing on another host (th-405): what its last host held returns to Calcifer's queue as from a machine
+    /// lost, saying `why`. The rental stays, booting.
+    pub(crate) fn machine_replaced(&self, name: &str, why: &str) -> Result<(), Error> {
+        let events = self.store.requeue_machine(name, why)?;
+        self.requeued(name, events, why)
+    }
+
+    /// `events` of the runs `name` held in Calcifer's own journal, and every project's the same (`why`): each is told and woken,
+    /// and nothing dials the address it had.
+    fn requeued(&self, name: &str, mut events: Vec<(RunId, Event)>, why: &str) -> Result<(), Error> {
         for owner in self.owners() {
             if let Ok(store) = owner.store() {
-                events.extend(store.requeue_machine(name, &why)?);
+                events.extend(store.requeue_machine(name, why)?);
             }
         }
         let mut woken = HashSet::new();

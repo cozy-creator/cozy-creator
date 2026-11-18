@@ -293,6 +293,45 @@ impl Link {
 /// The weights' share of the link (cl-1007), across every downloader of the process.
 static SHARE: std::sync::LazyLock<Share> = std::sync::LazyLock::new(Share::default);
 
+/// What the link carried in the windows it set the pace, across every downloader of the process (th-405): each one's ramp
+/// window with every place taken and more to take, bytes arriving through it and the one before, the weights unpaced. A lone
+/// small request, a stall, a tail's last ranges and a download held to a share measure what is asked of the link, or its
+/// latency, and count nothing. [`sustained`] hears each window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sustained {
+    pub bytes: u64,
+    /// The windows' time; two downloaders' that overlap count once.
+    pub time: Duration,
+}
+
+struct Sustain {
+    told: watch::Sender<Sustained>,
+    /// When the last window counted ended.
+    last: Mutex<Option<Instant>>,
+}
+
+static SUSTAIN: std::sync::LazyLock<Sustain> =
+    std::sync::LazyLock::new(|| Sustain { told: watch::Sender::new(Sustained::default()), last: Mutex::default() });
+
+impl Sustain {
+    /// A downloader's window ending `now`, in which the link set the pace of `bytes`.
+    fn window(&self, bytes: u64, now: Instant) {
+        let mut last = lock(&self.last);
+        let from = now.checked_sub(WINDOW).unwrap_or(now);
+        let from = last.map_or(from, |last| last.max(from));
+        *last = Some(now);
+        self.told.send_modify(|sustained| {
+            sustained.bytes += bytes;
+            sustained.time += now.saturating_duration_since(from);
+        });
+    }
+}
+
+/// Every window the link set the pace in, as it ends: the bytes and time of them all since the process started.
+pub fn sustained() -> watch::Receiver<Sustained> {
+    SUSTAIN.told.subscribe()
+}
+
 /// An install under way on this computer, until it drops ([`installing`]).
 pub struct Installing(());
 
@@ -1379,11 +1418,12 @@ impl Shared {
         let (median, first) = lock(&self.speeds).medians();
         let now = Instant::now();
         let mut pace = lock(&self.pace);
-        let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+        let (arrived, unpaced) = (received - pace.seen, !SHARE.paced());
+        let rate = arrived as f64 / WINDOW.as_secs_f64();
         // What the link moves (th-364's report): a window the weights were paced in measures the share, not the link.
-        if received > pace.seen && !SHARE.paced() {
+        if arrived > 0 && unpaced {
             self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
-            self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed);
+            self.stats.unpaced.fetch_add(arrived, Ordering::Relaxed);
         }
         pace.seen = received;
         if self.busy.load(Ordering::Acquire) == 0 {
@@ -1404,6 +1444,10 @@ impl Shared {
         // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
         let measured = rate > 0.0 && pace.flowing;
         pace.flowing = rate > 0.0;
+        // With demand besides, the link set this window's pace (`Sustained`).
+        if measured && unpaced && (waiting || tail) {
+            SUSTAIN.window(arrived, now);
+        }
         if !(waiting || tail) || pace.level >= pace.max || !measured {
             pace.mark = None;
             return false;

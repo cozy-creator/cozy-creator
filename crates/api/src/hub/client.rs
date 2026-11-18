@@ -626,6 +626,11 @@ impl Client {
         self.send(request).await.map(drop)
     }
 
+    /// A report of a slow link alone, which the Hub answers.
+    pub async fn report_worker_slow_link(&self, report: &WorkerSpeedReport) -> Result<WorkerSlowLinkAnswer, Error> {
+        self.json(self.at(Method::POST, "/v1/worker/rental/speed", &[]).json(report)).await
+    }
+
     pub async fn release_worker_rental(&self, worker_id: &str) -> Result<(), Error> {
         let request = self.at(Method::POST, "/v1/worker/rental/release", &[]);
         self.send(request.json(&json!({"worker_id": worker_id})))

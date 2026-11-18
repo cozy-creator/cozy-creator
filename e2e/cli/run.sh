@@ -758,7 +758,14 @@ case $SHARD in
     logs
   " ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
-  ondemand-share) parts="ondemand_share logs" ;;
+  # With it, pagebox's 1.6 GB again through that bottleneck into a stood-in rental held to its lease's floor (th-405).
+  ondemand-share) parts="
+    ondemand_share
+    slow_link
+    logs
+  " ;;
+  # That rental alone, by dispatch.
+  slow-link) parts="slow_link logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # What a request with two prompt enhancers fetches, and when (cl-1101): the one its function's rule names (cl-1103).

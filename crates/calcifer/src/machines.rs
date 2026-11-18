@@ -1236,7 +1236,8 @@ impl Machines {
         let mut hub_at = tokio::time::Instant::now();
         loop {
             match self.store().machine(&name) {
-                Ok(Some(row)) if row.state != MachineState::Ended => {}
+                // A rental with no address is booting again on another host (th-405): its boot is followed, then its Status there.
+                Ok(Some(row)) if row.state != MachineState::Ended && (kind != MachineKind::Rental || row.endpoint.is_some()) => {}
                 _ => return,
             }
             let closing = self.closing(&name).is_some();
@@ -1277,7 +1278,7 @@ impl Machines {
             if ask && tokio::time::Instant::now() >= hub_at {
                 hub_pause = (hub_pause * 2).clamp(Duration::from_secs(5), Duration::from_secs(60));
                 hub_at = tokio::time::Instant::now() + hub_pause;
-                if let Some(Word::Gone(_) | Word::Moved) = self.hub_word(&name).await {
+                if let Some(Word::Gone(_) | Word::Moved | Word::Replaced) = self.hub_word(&name).await {
                     return;
                 }
             }
@@ -1555,6 +1556,13 @@ impl Machines {
         self.calcifer.machine_changed();
     }
 
+    /// A rental its Hub is placing on another host (th-405): what its last host said is forgotten, and it shows its new boot.
+    pub(crate) fn rebooting(&self, name: &str, boot: Option<String>, attempt: Option<wire::Attempt>) {
+        self.calcifer.observe_downloads(name, &[]);
+        lock(&self.seen).insert(name.to_owned(), Seen { boot, attempt, ..Default::default() });
+        self.calcifer.machine_changed();
+    }
+
     /// The workload key `name`'s TensorD last said it holds: what its runs' capabilities bind.
     pub(crate) fn seen_workload_key(&self, name: &str) -> Option<String> {
         let seen = lock(&self.seen);
@@ -1697,7 +1705,7 @@ impl Machines {
         match word {
             Some(Word::Gone(cause)) => return Err(ended_refusal(&name, &cause)),
             Some(Word::Closing(reason)) => return Err(closing_refusal(&name, &reason)),
-            Some(Word::Moved | Word::Booting) => return Ok(()),
+            Some(Word::Moved | Word::Booting | Word::Replaced) => return Ok(()),
             Some(Word::Up) | None => {}
         }
         // Its stream's failure may have been a moment's: one connect of its own.
