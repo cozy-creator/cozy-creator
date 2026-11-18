@@ -10,7 +10,7 @@
 #                move is made or fetched for it first.
 #   rc_yields    a render submitted while the follower's move is being sent: it is accepted at once (no 5–15 s hold, measured),
 #                the move yields, and the rental moves to the RC once it is idle.
-#   rc_held      (cl-1236) a run held behind a move its package needs keeps a third rental, this cozy's image, through the
+#   rc_held      (cl-1236) a render held behind the follower's move keeps a third rental, this cozy's image, through the
 #                move's restart past its idle deadline.
 here_rcmoves=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RM_DIR='' RM_CFG='' RM_SAVED='' RM_GH='' RM_KEY='' RM_DROPIN=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1201-slow-github.conf
@@ -133,61 +133,54 @@ rm_down stand-b
 }
 
 # rc_held (cl-1236, from #3824's review): a rental released itself under the run waiting for its move. Calcifer holds that run in
-# its own journal while it moves the machine first, so TensorD sees no job, and since cl-1203 an update restarts no idle clock: a
-# move that outlasted the deadline released the rental on the restarted service's first pass, before the run was sent, and it
-# requeued (a new rental bought). stand-c, a dev home's rental whose image is this cozy on PyPI's newest Runtime and TensorFS, is
-# asked a run of a package whose `cozy-runtime` floor is this cozy's Runtime minor: it waits behind the move to the RC's Runtime
-# (cl-1201's floor_first). Its idle window is an hour until that move restarts its service, then 45 s, so the restarted service
-# starts with the clock's last start (its boot, or Calcifer's keepalive as the run was held) past it: a move that outlasted it.
-# The run completes on stand-c, which never asked its Hub to release it; before, it released itself and the run never ran there.
+# its own journal while the machine moves first, so TensorD sees no job, and since cl-1203 an update restarts no idle clock: a move
+# that outlasted the deadline released the rental on the restarted service's first pass, before the run was sent, and it requeued
+# (a new rental bought). stand-c, a dev home's rental whose image is this cozy on PyPI's newest Runtime and TensorFS, boots behind
+# the RC, and the follower moves it there; once the machine runs that move, a render is asked of it, held behind it. Its idle window
+# is an hour until the move restarts its service, then 45 s, so the restarted service starts with the clock's last start (its boot)
+# long past, as one a move outlasted would. The render completes on stand-c, which never asked its Hub to release it; before, it
+# released itself as the move's restart came up, and the render never ran there.
 rc_held() {
-local d=$RM_DIR/stand-c image=$RM_DIR/image-c pkg=$RM_DIR/floor floor t0 code=0 runner held='' release settled
-step "a run held for its rental's move keeps that rental through the move's restart, past its idle deadline (cl-1236)"
-floor=$(sed -nE 's/^pub const RUNTIME_MINOR: &str = "(.*)";$/\1/p' "$here_rcmoves/../../crates/api/src/release.rs")
-[ -n "$floor" ] || { check "rc held: no RUNTIME_MINOR in crates/api/src/release.rs"; return; }
+local d=$RM_DIR/stand-c image=$RM_DIR/image-c t0 code=0 runner move='' release settled
+step "a render held for its rental's move keeps that rental through the move's restart, past its idle deadline (cl-1236)"
 mkdir -p "$image/bin" "$image/wheels" && cp "$RM_DIR/image/wheels/"* "$image/wheels/" && install -m 755 "$(readlink -f "$COZY")" "$image/bin/cozy" \
   || { check "rc held: stand-c's image wasn't made"; return; }
-rm -rf "$pkg" && cp -r "$here_rcmoves/weightless" "$pkg" \
-  && sed -i -e 's/^name = "e2e-weightless"/name = "e2e-floor"/' -e "s/\"cozy-runtime>=[^\"]*\"/\"cozy-runtime$floor\"/" "$pkg/pyproject.toml" \
-  && grep -qF "\"cozy-runtime$floor\"" "$pkg/pyproject.toml" || { check "rc held: the package on cozy-runtime$floor wasn't made"; return; }
 rm_rental stand-c "$image" || return
 systemctl --user stop cozy-calcifer || { check "rc held: Calcifer didn't stop"; return; }
 rm_store "UPDATE machines SET kind = 'rental', rental_id = 'rental-stand-c', hub = 'http://127.0.0.1:1' WHERE name = 'stand-c'" \
   || { check "rc held: stand-c wasn't recorded as a rental"; rm_start; return; }
 rm_start || return
 rm_serve stand-c
-for _ in $(seq 360); do rm_show stand-c > "$d/show-ready.json" && J '.status.phase == "ready"' "$d/show-ready.json" && break; sleep 0.5; done
-J '.status.phase == "ready"' "$d/show-ready.json" || { check "rc held: stand-c wasn't ready in 3 min: $(tail -c 600 "$d/machine.log")"; rm_down stand-c; return; }
-echo "rc held: stand-c runs $(jq -c '.status // {} | {version, runtime, tensorfs}' "$d/show-ready.json"); its package needs cozy-runtime$floor"
-t0=$(date +%s%3N)
-(cd "$RUN_PROJECT" && timeout 300 "$COZY" --json run "$pkg/reverse" "text=held$RANDOM" --on stand-c) > "$d/held.ndjson" 2> "$d/held.err" &
-runner=$!
-for _ in $(seq 240); do
-  rm_runs stand-c "$d/runs-held.json"
-  held=$(jq -r '[.runs[]? | select(.kind != "update") | .waiting // "" | select(test("^updating stand-c first"))] | first // empty' "$d/runs-held.json" 2> /dev/null)
-  [ -n "$held" ] && break
-  kill -0 "$runner" 2> /dev/null || break
+for _ in $(seq 480); do
+  rm_show stand-c > "$d/show-move.json" || true
+  move=$(jq -r '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and (.status == "queued" or .status == "in_progress"))] | first | .id // empty' "$d/show-move.json" 2> /dev/null)
+  [ -n "$move" ] && break
   sleep 0.5
 done
-if [ -z "$held" ]; then
-  check "rc held: the run wasn't held behind a move of stand-c: $(jq -c '[.runs[]? | {number, kind, status, waiting, target: .target[0:60]}]' "$d/runs-held.json" 2> /dev/null | head -c 600) $(tail -c 300 "$d/held.err")"
-  kill "$runner" 2> /dev/null || true; wait "$runner" 2> /dev/null || true
-  rm_down stand-c
-  return
-fi
+[ -n "$move" ] || { check "rc held: no move to the RC at stand-c's boot in 4 min: $(jq -c '{state, status: (.status // {} | {phase, version, runtime})}' "$d/show-move.json" 2> /dev/null)"; rm_down stand-c; return; }
 printf '[machine]\nidle_seconds = 45\n' > "$d/home/.cozy/config.toml"
-echo "rc held: $(( $(date +%s%3N) - t0 )) ms after it was asked: $held"
+for _ in $(seq 600); do
+  rm_show stand-c > "$d/show-move.json" || true
+  J --arg m "$move" '[.jobs[]? | select(.id == $m and .status != "queued")] | length > 0' "$d/show-move.json" && break
+  sleep 0.2
+done
+t0=$(date +%s%3N)
+(cd "$RUN_PROJECT" && timeout 300 "$COZY" --json run "$here_rcmoves/weightless/reverse" "text=held$RANDOM" --on stand-c) > "$d/held.ndjson" 2> "$d/held.err" &
+runner=$!
+echo "rc held: asked as stand-c ran $move: $(jq -c --arg m "$move" '.jobs[]? | select(.id == $m) | {number, status, target}' "$d/show-move.json")"
 wait "$runner" || code=$?
 rm_runs stand-c "$d/runs.json"
+echo "rc held: the render waited: $(grep -o '"reason": *"updating stand-c first[^"]*"' "$d/held.ndjson" | head -1)"
 echo "rc held: stand-c's runs: $(jq -c '[.runs | sort_by(.number)[] | {number, kind, status, target: .target[0:60], created: (.created_at_ms - '"$t0"'), accepted: ((.accepted_at_ms // 0) - '"$t0"'), settled: ((.settled_at_ms // 0) - '"$t0"'), reason: .reason.code}]' "$d/runs.json")"
 echo "rc held: stand-c's Hub heard: $(jq -sc --argjson t "$t0" '[.[] | select(.kind != "check_in") | {kind, ms: ((.at * 1000 | floor) - $t)}]' "$d/events.jsonl" 2> /dev/null)"
-grep -E 'idle|releas|update .*restarting|keepalive' "$d/machine.log" | tail -8 | cut -c1-300 || true
+grep -E 'idle|releas|restarting|keepalive' "$d/machine.log" | tail -8 | cut -c1-300 || true
+grep -q '"reason": *"updating stand-c first' "$d/held.ndjson" || check "rc held: the render wasn't held behind stand-c's move: $(tail -c 400 "$d/held.ndjson")"
 release=$(jq -s '[.[] | select(.kind == "release") | .at * 1000 | floor] | min // 0' "$d/events.jsonl" 2> /dev/null || echo 0)
 settled=$(jq -r '[.runs[] | select(.kind != "update") | .settled_at_ms // 0] | max // 0' "$d/runs.json")
 [ "$code" = 0 ] && J '[.runs[] | select(.kind != "update")] | length > 0 and all(.status == "completed")' "$d/runs.json" \
-  || check "rc held: the run held behind stand-c's move didn't complete there (exit $code): $(tail -c 400 "$d/held.err")"
+  || check "rc held: the render held behind stand-c's move didn't complete there (exit $code): $(tail -c 400 "$d/held.err")"
 if [ "${release:-0}" != 0 ] && { [ "${settled:-0}" = 0 ] || [ "$release" -lt "$settled" ]; }; then
-  check "rc held: stand-c asked its Hub to release it $((release - t0)) ms after the run was asked, under the run held for its move"
+  check "rc held: stand-c asked its Hub to release it $((release - t0)) ms after the render was asked, under the render held for its move"
 fi
 rm_down stand-c
 }
