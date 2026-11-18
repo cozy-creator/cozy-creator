@@ -126,7 +126,7 @@ if [ -n "$PROBE" ]; then
   [ "$PROBE" != gdb ] || pod 'export DEBIAN_FRONTEND=noninteractive; apt-get -qq update && apt-get -qq install -y gdb > /dev/null; gdb --version | head -1' \
     >> "$OUT/probe.txt" || say "probe: no gdb on $NAME"
   pod "mkdir -p /root/cl1202 && echo $(base64 -w0 "$(dirname "$0")/tensord-threads.py") | base64 -d > /root/cl1202/threads.py &&
-    (setsid nohup python3 /root/cl1202/threads.py 400 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &
+    (setsid nohup python3 /root/cl1202/threads.py 240 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &
      echo \$! > /root/cl1202/pid)" ||
     fail "probe: the sampler didn't start on $NAME"
   say "probe: $NAME's TensorD threads sampled ($PROBE)"
