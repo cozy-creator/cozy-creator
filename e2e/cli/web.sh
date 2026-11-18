@@ -53,7 +53,7 @@ web_suite() {
     2d) projects=(chrome) ;;
     2d-solo) projects=(solo) workers=(--workers=1) ;;
     # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
-    native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
+    native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects=(webkit) ;;
     *) projects=(chrome vault solo) workers=(--workers=1) ;;
   esac
   for engine in firefox webkit; do
