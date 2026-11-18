@@ -19,6 +19,8 @@ hub_test_target() {
 }
 HUB_PKG= HUB_CREATED= HUB_MODELS= HUB_LIVE= HUB_RENTED= WHO=
 mkdir -p "$HB"
+# Its pods' throwaway SSH key: never under $HB or $OUT, whose files are uploaded (a public repo's artifacts are public).
+HUB_KEY=${HUB_KEY:-$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hub-ssh.XXXXXX")/pod-ssh}
 # hub_5xx <file>: the Hub answered a server failure, which no cell accepts, as a refusal or otherwise.
 hub_5xx() { grep -qE '"status": ?5[0-9][0-9]|HTTP 5[0-9][0-9]|: 5[0-9][0-9]; |unexpected internal failure|"code": ?"(internal|hub_answer)"' "$1"; }
 # hub_do <check> ok|refused <cozy args...>: PASS (returns 0) when the command exits as wanted and the Hub answered no 5xx.
@@ -262,7 +264,7 @@ hub_dev() {
 #             names a key, so the renter is admitted.
 hub_pod_secrets() {
   local p=$1 m=$2 names='' lease='' agent forbidden found SSH_AUTH_SOCK SSH_AGENT_PID  # the agent is this cell's alone
-  agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$HB/pod-ssh" 2>/dev/null
+  agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$HUB_KEY" 2>/dev/null
   for _ in 1 2 3 4 5 6; do  # a pod's sshd may start a few seconds after the machine is ready
     # One argument: ssh hands the remote shell one command line.
     names=$("$CLI" machine ssh "$m" -- 'for f in /proc/[0-9]*/environ; do tr "\0" "\n" <"$f"; echo; done 2>/dev/null | cut -d= -f1 | sort -u' 2>"$HB/pod-env-$p.err") && [ -n "$names" ] && break
@@ -295,13 +297,13 @@ hub_pod() {
   local p=$1 m r before prov=()
   [ "$p" = any ] || prov=(--provider "$p")
   before=$(hub_machines)
-  [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
+  [ -s "$HUB_KEY.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HUB_KEY"
   # A provider with no `cpu` right now answers rental.sku_out_of_stock: ask again each minute, 3 at most, then take its cheapest
   # GPU of HUB_GPU_FALLBACK in turn (vast went without `cpu` for hours on 11-10, and xs-157's proof must still reach it).
   local code sku
   for sku in cpu ${HUB_GPU_FALLBACK:-rtx-3060 rtx-4060-ti rtx-3070 rtx-a4000 rtx-3080 rtx-3090}; do
     for _ in $( [ "$sku" = cpu ] && seq 3 || echo 1 ); do
-      "$CLI" --json machine rent "$sku" "${prov[@]}" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
+      "$CLI" --json machine rent "$sku" "${prov[@]}" --ssh "$HUB_KEY.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
       grep -qE '"rental.sku_out_of_stock"|no provider inventory' "$HB/rent-$p.out" || break 2
       [ "$sku" != cpu ] || { log "hub rent on $p: no cpu inventory on $p right now; asking again in 60 s"; sleep 60; }
     done
