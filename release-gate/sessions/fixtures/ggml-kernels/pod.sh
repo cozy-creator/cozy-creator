@@ -50,10 +50,14 @@ t0=$(date +%s)
   $W/py/bin/cmake -S $W/src -B $W/build -G Ninja -DCMAKE_MAKE_PROGRAM=$W/py/bin/ninja -DCMAKE_BUILD_TYPE=Release \
     -DGGML_CUDA=ON -DGGML_CUDA_FA=OFF -DCUDAToolkit_ROOT=$CUDA -DCMAKE_CUDA_COMPILER=$CUDA/bin/nvcc \
     -DCMAKE_CUDA_ARCHITECTURES=$ARCH -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF > $W/out/build.log 2>&1
-  $W/py/bin/cmake --build $W/build -j "$(nproc)" --target test-backend-ops >> $W/out/build.log 2>&1
+  # A deadline, so a stalled build costs 45 minutes and says so, not the session's whole cap.
+  timeout 2700 $W/py/bin/cmake --build $W/build -j "$(nproc)" --target test-backend-ops >> $W/out/build.log 2>&1 ||
+    { log "FAILED build after $(($(date +%s) - t0)) s"; exit 1; }
 }
 log "built in $(($(date +%s) - t0)) s"
 $W/py/bin/python $W/shapes.py tests > $W/tests.txt
 log "test-backend-ops perf: $(wc -l < $W/tests.txt) cases"
-LD_LIBRARY_PATH=$CUDA/lib:$W/build/bin $W/build/bin/test-backend-ops perf -b CUDA0 --test-file $W/tests.txt > $W/out/llama-perf.txt 2>&1
-log "done: $(grep -c 'us/run' $W/out/llama-perf.txt) timed"
+t0=$(date +%s)
+LD_LIBRARY_PATH=$CUDA/lib:$W/build/bin timeout 1800 $W/build/bin/test-backend-ops perf -b CUDA0 --test-file $W/tests.txt > $W/out/llama-perf.txt 2>&1 ||
+  { log "FAILED test-backend-ops after $(($(date +%s) - t0)) s"; exit 1; }
+log "done: $(grep -c 'us/run' $W/out/llama-perf.txt) timed in $(($(date +%s) - t0)) s"
