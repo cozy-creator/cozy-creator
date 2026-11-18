@@ -45,7 +45,7 @@ export function inspection(o: Sources) {
     }))
     return {
       body: screen({ x: body.x - held.node.box.x, y: body.y - held.node.box.y, w: body.w, h: body.h }, origin, scale),
-      transform: { x: root.x, y: root.y, scaleX: root.scale.x, scaleY: root.scale.y, alpha: root.alpha },
+      transform: { x: root.x, y: root.y, scaleX: root.scale.x, scaleY: root.scale.y, alpha: root.alpha, visible: root.visible },
       labels, words: held.show.words, state: held.show.state, unseen: held.show.unseen,
       progress: held.show.progress ? { ...held.show.progress } : null,
       chips: card.drawn.chips.map((chip) => ({ text: chip.text, missing: chip.struck, struck: chip.struck, ...screen(chip.box, origin, scale)! })),
