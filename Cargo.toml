@@ -26,6 +26,9 @@ members = [
 [workspace.package]
 # An RC branch carries the dev version of the minor it makes (cl-976; builds say `0.26.0-dev+g<sha8>`, crates/api/build.rs). A
 # freeze sets the RC's to the next minor's `-dev`; a release cut sets its plain X.Y.Z.
+# TensorFS's own (crates tensorfs, tensorfs-py and varena, and tensorfs-py's pyproject) moves the same way (xs-216): `0.27.0-dev`
+# and `0.27.0.dev0`, its builds `0.27.0.dev<n>+g<sha8>`, n the commit's first-parent count (crates/tensorfs-py/scripts/dev-version.sh),
+# so the Runtime floors on a build (`tensorfs>=0.27.0.dev3298`). At a freeze the Runtime's range admits the next minor first.
 version = "0.27.0-dev"
 edition = "2024"
 rust-version = "1.99"

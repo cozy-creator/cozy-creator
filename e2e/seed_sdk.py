@@ -172,12 +172,15 @@ def pin_seed_sdk(project: Path, sdk: SeedSdk) -> None:
     tool = document.setdefault("tool", {})
     uv = tool.setdefault("uv", {})
     sources = uv.setdefault("sources", {})
-    if any(
+    if sdk.tensorfs is None or any(
         wheel is not None and not wheel.filename.endswith("-none-any.whl")
         for wheel in (sdk.runtime, sdk.tensorfs)
     ):
         # This fixture locks the native candidate for this runner, not unavailable wheels
         # for the other OS jobs. Each OS seeds its own isolated Hub and SDK cohort.
+        # A runner with no TensorFS in its cohort (it runs no models: macOS, Windows) locks
+        # for itself too: the RC Runtime's floor on a rental's platform is a TensorFS build
+        # only a Linux cohort holds (xs-216).
         runner = f"sys_platform == '{sys.platform}' and platform_machine == '{platform.machine()}'"
         authored = " or ".join(f"({marker})" for marker in uv.get("environments", []))
         # uv rejects an impossible alternative even when another matches. Intersect the

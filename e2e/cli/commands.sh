@@ -1051,7 +1051,8 @@ in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on lo
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
-cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+# Its TensorFS too: the RC Runtime's floor is a TensorFS build only the candidate set holds (xs-216).
+cozy --json machine update local --runtime "$was" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
 }
@@ -1217,7 +1218,7 @@ cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
 # says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
 local release
 release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
-cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+cozy --json machine update local --runtime "$release" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-release.json" 2>&1 \
   || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
 machine_ready
 jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \
