@@ -6,12 +6,14 @@
 # judges it (one download listed, naming the three runs; each run names it and says no bytes of its own; the tab, drawer and boxes say
 # the wait and lead to the download), with screenshots, paper and dark. Meanwhile `cozy run ls` and `cozy machine show` are kept each
 # second (run-ls.txt, machine-show.txt), and each run's events (`cozy --json run watch`) with its machine's downloads, as the release
-# gate's progress cells keep them: progress/check.py judges them, the RC's and this branch's (progress-rc.txt, progress.txt).
-# Without `rent`, $0: the checks, the quote, the guard.
+# gate's progress cells keep them: progress/check.py judges them, the RC's and this branch's (progress-rc.txt, progress.txt). Before
+# anything is rented, user-flow's judge, the RC's and this branch's, on an existing user-flow record (uf-rc/, uf-branch/).
+# Without `rent`, $0: the checks, the judges on the existing record, the quote, the guard.
 # params:
 #   tool    the boxes' tool (default sdxl/image)
 #   model   the repository it reads (default stabilityai/stable-diffusion-xl-base-1.0)
 #   fields  the boxes' other fields, a JSON object (default {"seed": 7})
+#   user_flow_run  a pod-session user-flow run whose record user-flow's judges read (default 43961722220)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -23,6 +25,32 @@ jq -e 'type == "object"' <<<"$FIELDS" > /dev/null || fail "fields $FIELDS"
 PW=$OUT/playwright-test
 npm install -s --prefix "$PW" @playwright/test@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install @playwright/test: $(tail -c 300 "$OUT/npm.log")"
 V=$(cozy --version | awk '{print $2}')
+# The RC's judges and page map, beside this branch's: each judge is run as the RC has it and as this branch has it.
+RCT=$OUT/rc-judge
+git -C "$ROOT" fetch -q --depth=1 origin rc/0.27.0 2> "$OUT/rc-fetch.err" || fail "the RC wasn't fetched: $(head -c 200 "$OUT/rc-fetch.err")"
+for f in release-gate/suites/progress/check.py release-gate/runs.py e2e/cli/stages.py web/app/src/panels/runs/stages.json \
+  release-gate/sessions/fixtures/user-flow/judge.py release-gate/sessions/fixtures/user-flow/bench.json; do
+  mkdir -p "$RCT/$(dirname "$f")" && git -C "$ROOT" show "FETCH_HEAD:$f" > "$RCT/$f" || fail "the RC's $f wasn't read"
+done
+# user-flow's judge on an existing record (`user_flow_run`, a pod-session user-flow run, before this change): the RC's and this
+# branch's must say the same of a product that says each download per run.
+UF=$(param user_flow_run 43961722220)
+if gh run download "$UF" -R cozy-creator/cozy-creator -n "session-user-flow-$UF" -D "$OUT/uf" > "$OUT/uf.log" 2>&1 && [ -f "$OUT/uf/flow/flow.json" ]; then
+  for side in rc branch; do
+    rm -rf "$OUT/uf-$side"; cp -r "$OUT/uf/flow" "$OUT/uf-$side"
+    case $side in
+      rc) python3 -I "$RCT/release-gate/sessions/fixtures/user-flow/judge.py" "$OUT/uf-$side" "$RCT/release-gate/sessions/fixtures/user-flow/bench.json" "$RCT/release-gate" ;;
+      branch) python3 -I "$HERE/fixtures/user-flow/judge.py" "$OUT/uf-$side" "$HERE/fixtures/user-flow/bench.json" "$ROOT/release-gate" ;;
+    esac > "$OUT/uf-$side/report.md" 2> "$OUT/uf-$side/judge.err"
+  done
+  if diff <(sort "$OUT/uf-rc/verdict.txt") <(sort "$OUT/uf-branch/verdict.txt") > "$OUT/uf-verdict.diff" 2>&1; then
+    say "user-flow's judge on run $UF's record: the RC's and this branch's say the same ($(grep -c '^PASS' "$OUT/uf-branch/verdict.txt") PASS, $(grep -c '^FAIL' "$OUT/uf-branch/verdict.txt") FAIL)"
+  else
+    say "user-flow's judge on run $UF's record differs, RC < > branch:"; sed 's/^/    /' "$OUT/uf-verdict.diff" | head -20 | tee -a "$R"
+  fi
+else
+  say "user-flow run $UF's record wasn't read: $(tail -c 200 "$OUT/uf.log")"
+fi
 quote 1800
 rent
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
@@ -68,14 +96,8 @@ tail -40 "$OUT/flow.log" | cut -c1-300 | sed 's/^/    /' >> "$R"
 [ "$code" = 0 ] || { RC=1; say "the spec failed ($code): flow.log"; }
 # The progress cells' verdict on these runs: this branch's judge, and the RC's (its judge and its page's stage map, as the RC has them).
 python3 -I "$ROOT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress.txt" 2>&1; green=$?
-RCT=$OUT/rc-judge
-if git -C "$ROOT" fetch -q --depth=1 origin rc/0.27.0 2> "$OUT/rc-fetch.err"; then
-  for f in release-gate/suites/progress/check.py release-gate/runs.py e2e/cli/stages.py web/app/src/panels/runs/stages.json; do
-    mkdir -p "$RCT/$(dirname "$f")" && git -C "$ROOT" show "FETCH_HEAD:$f" > "$RCT/$f" || say "the RC's $f wasn't read"
-  done
-  python3 -I "$RCT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress-rc.txt" 2>&1
-fi
-say "progress check, this branch's: $(tail -1 "$OUT/progress.txt"); the RC's: $(tail -1 "$OUT/progress-rc.txt" 2> /dev/null || echo "not read: $(head -c 200 "$OUT/rc-fetch.err")")"
+python3 -I "$RCT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress-rc.txt" 2>&1
+say "progress check on these runs, this branch's: $(tail -1 "$OUT/progress.txt"); the RC's: $(tail -1 "$OUT/progress-rc.txt")"
 grep -E '^(FAIL|note)' "$OUT/progress.txt" | sed 's/^/  /' | tee -a "$R"
 [ "$green" = 0 ] || RC=1
 say "shared-download: $([ "$RC" = 0 ] && echo PASS || echo FAIL)"
