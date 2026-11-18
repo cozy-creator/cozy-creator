@@ -10,7 +10,7 @@
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (`tensorfs`, `runtime`: wheel sources
 # as lib.sh `wheel_from` takes; the Runtime a native dev build carrying `_ggml`).
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
-# (3600).
+# (3600); the ride-along's decode, make, model and tree (below).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -20,6 +20,20 @@ MODELS=$(param models "$(python3 "$FIX/shapes.py" models)")
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · $MODELS"
+# The ride-along (optional): `decode` lanes (label=org/name@sha256:…) and `make` lanes (comma-separated recipe lanes of the
+# packages checkout `tree`'s qwen3, quantized on the pod from `model`), each timed by ggml-decode's `decode` drive (warm, plain
+# and with MTP drafting) on this pod after the kernels: one pod tells a lane's kernels from its bytes (q8_0 against q8_0 with
+# its LM head kept bf16, beside int8).
+DECODE=$(param decode '') MAKE=$(param make '') MODEL=$(param model '') TREE=$(param tree '')
+DFIX=$HERE/fixtures/ggml-decode
+. "$DFIX/preflight.sh"
+drive_check "$FIX/drive" ggml_drive
+if [ -n "$DECODE$MAKE" ]; then
+  [ -z "$MAKE" ] || { [[ $MODEL == */*@sha256:* ]] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ]; } ||
+    fail "make needs model (org/name@sha256:…) and a packages checkout tree with qwen3"
+  kernels "$PACKAGES/$TREE/qwen3"
+  drive_check "$DFIX/drive" ggml_logits ${TREE:+"qwen3=$PACKAGES/$TREE/qwen3/uv.lock"}
+fi
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param seconds 3600)"
@@ -53,6 +67,26 @@ for model in "${models[@]}"; do
   n=$(runno "bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/bench-$model.json"
   benches+=("$OUT/bench-$model.json")
 done
+
+if [ -n "$DECODE$MAKE" ]; then
+  read -ra pairs <<<"$DECODE"
+  [ -z "$MAKE" ] || step pull-model model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
+  for lane in ${MAKE//,/ }; do
+    step "make-$lane" model quantize "$MODEL" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME" || fail "quantize $lane"
+    c=$(made "make-$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
+    pairs+=("$lane=${MODEL%@*}@$c"); say "$lane: ${MODEL%@*}@$c"
+  done
+  for pair in "${pairs[@]}"; do
+    label=${pair%%=*} ref=${pair#*=}
+    step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
+    step "pull-$label" model install "$ref" --on "$NAME" || fail "pull $label"
+    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || fail "speed $label"
+    ! grep -qE "it runs on (that series|that|its lock's)|wheel carries no kernels" "$OUT/speed-$label.txt" ||
+      fail "speed-$label did not run on the candidate wheels"
+    n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
+    say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
+  done
+fi
 
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
