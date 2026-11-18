@@ -53,6 +53,7 @@ parse "$@"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
+. "$(dirname "$0")/since.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
 . "$(dirname "$0")/harness.sh"
@@ -1004,6 +1005,8 @@ case $SHARD in
   projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
+  # A machine log's time window cut on the machine: exactly its lines, and only they, cross (cl-1216). About 1 min.
+  log-since) parts="log_since logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
   projectvault-purge-due) parts="vault_purge_due logs" ;;
   projectdb-latency) parts="db_latency logs" ;;

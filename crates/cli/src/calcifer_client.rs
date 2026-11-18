@@ -437,11 +437,18 @@ impl Client {
         Ok(ok(answer).await?.status() != StatusCode::NO_CONTENT)
     }
 
-    /// A plain-text answer, such as a log.
+    /// A plain-text answer, such as a log, asked for as gzip: a Calcifer that knows none answers it plain.
     pub(crate) async fn text(&self, path: &str) -> Result<String, Error> {
         self.read_whole(|| async {
-            let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
-            Ok(answer.text().await.map_err(unreachable))
+            let answer = self.opened(|c, base| c.get(format!("{base}{path}")).header(header::ACCEPT_ENCODING, "gzip")).await?;
+            let gzip = answer.headers().get(header::CONTENT_ENCODING).is_some_and(|coding| coding.as_bytes().eq_ignore_ascii_case(b"gzip"));
+            let body = match answer.bytes().await {
+                Ok(body) if gzip => platform::gzip::unpack(&body)
+                    .map_err(|e| Error::new(Kind::Unavailable, "calcifer_answer_unreadable", format!("Calcifer's answer doesn't unpack: {e}")))?,
+                Ok(body) => body.to_vec(),
+                Err(cut) => return Ok(Err(unreachable(cut))),
+            };
+            Ok(Ok(String::from_utf8_lossy(&body).into_owned()))
         })
         .await
     }
