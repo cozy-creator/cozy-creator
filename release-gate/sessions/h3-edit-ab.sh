@@ -12,6 +12,7 @@
 #   a1 b1 b2 a2 rc, pk, pk, rc: each its own arm (derived state reset, TensorD restarted, uncapped)
 #   c1 c2       pg (optional): its own arms too
 #   cap capa capc  pk, rc, pg under an 8 GiB VRAM cap (params.vram_cap): each must complete
+#   cap11 cap12 pk on the plate's first 11 s and 12 s under that cap: the longest edit that fits (6.9 GiB of room)
 # Per run (results.txt, ab.tsv): exec, conditioning wall (the guide read and encoded), each denoise step (step 1, the dense
 # 2-4 and the sparse 5-8 means, steady 2-8), decode, peak VRAM (driver and allocated), SM clock and throttle share, and its
 # Runtime and TensorFS: a run on another pair than the first's fails the session. A1/A2 and B1/B2 are checked for the same
@@ -21,7 +22,7 @@
 FIX=$(cd "$(dirname "$0")/fixtures/h3-edit-sound" && pwd) || fail "no fixtures"
 CELLS=$(param cells "warm a1 b1 b2 a2 cap") VCAP=$(param vram_cap 8GiB) MOST=$(param max_failures 2)
 [[ $VCAP =~ ^[0-9]+GiB$ ]] || fail "vram_cap $VCAP"
-declare -A TREE=([warm]=pk [a1]=rc [a2]=rc [b1]=pk [b2]=pk [c1]=pg [c2]=pg [cap]=pk [capa]=rc [capc]=pg)
+declare -A TREE=([warm]=pk [a1]=rc [a2]=rc [b1]=pk [b2]=pk [c1]=pg [c2]=pg [cap]=pk [capa]=rc [capc]=pg [cap11]=pk [cap12]=pk)
 for c in $CELLS; do [ -n "${TREE[$c]:-}" ] || fail "no cell $c"; done
 for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
   [ -f "$PACKAGES/$t/minimax-h3/pyproject.toml" ] || fail "no packages_refs checkout $t"
@@ -45,6 +46,10 @@ ffmpeg -v error -y -ss 6.4 -i "$M/kelly.webm" -t 12.6 -c:v libx264 -crf 18 -pix_
   -movflags +faststart "$M/kelly.mp4" || fail "kelly plate"
 ffmpeg -v error -y -ss 6.4 -i "$M/kelly.webm" -t 5 -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 160k \
   -movflags +faststart "$M/kelly5.mp4" || fail "the 5 s plate"
+for s in 11 12; do
+  ffmpeg -v error -y -ss 6.4 -i "$M/kelly.webm" -t "$s" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 160k \
+    -movflags +faststart "$M/kelly$s.mp4" || fail "the $s s plate"
+done
 ffmpeg -v error -y -i "$M/sintel-cover.jpg" -vf "crop=748:1000:330:250" -q:v 2 "$M/sintel.jpg" || fail "sintel"
 say "plate: $(ffprobe -v error -show_entries stream=codec_name,r_frame_rate,duration -of compact=p=0:nk=1 "$M/kelly.mp4" | paste -sd' ')"
 
@@ -77,7 +82,9 @@ step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
 
 run_page import "$M/kelly.mp4" --name kelly > "$OUT/import-kelly.txt" 2>&1 || fail "import kelly: $(cat "$OUT/import-kelly.txt")"
-run_page import "$M/kelly5.mp4" --name kelly5 > "$OUT/import-kelly5.txt" 2>&1 || fail "import kelly5: $(cat "$OUT/import-kelly5.txt")"
+for p in kelly5 kelly11 kelly12; do
+  run_page import "$M/$p.mp4" --name "$p" > "$OUT/import-$p.txt" 2>&1 || fail "import $p: $(cat "$OUT/import-$p.txt")"
+done
 run_page import "$M/sintel.jpg" --name sintel --description "Sintel, a young woman with short red hair, a grey laced top and leather arm wraps, a small dragon on her shoulder" \
   > "$OUT/import-sintel.txt" 2>&1 || fail "import sintel: $(cat "$OUT/import-sintel.txt")"
 SWAP='<sintel> takes the place of the man in the plate, keeping its scene, camera and his whole performance: pose, gestures, head motion, gaze, speech, lip movement and expressions.'
@@ -125,7 +132,7 @@ FIRST=''
 # cell <name>: the edit on its tree, rendered on the pod; its record, log, video and numbers kept.
 cell() {
   local k=$1 t=${TREE[$1]} plate=kelly fields n v t0=$SECONDS
-  [ "$k" != warm ] || plate=kelly5
+  case $k in warm) plate=kelly5 ;; cap11) plate=kelly11 ;; cap12) plate=kelly12 ;; esac
   fields=$(jq -cn --arg p "<$plate>" --arg s "$SWAP" --arg b "$BEAT" \
     '{plate: $p, edit: "character_swap", summary: $s, seed: 163163, beats: [{duration: 15, description: $b}]}')
   run_page add "$k" --tool "$PACKAGES/$t/minimax-h3/edit" --fields "$fields" > "$OUT/add-$k.txt" 2>&1 || fail "add $k: $(cat "$OUT/add-$k.txt")"
@@ -172,7 +179,7 @@ cell() {
 for c in $CELLS; do
   case $c in
     warm) ;;
-    cap|capa|capc) arm "$c" "$VCAP" ;;
+    cap*) arm "$c" "$VCAP" ;;
     *) arm "$c" off ;;
   esac
   cell "$c"
