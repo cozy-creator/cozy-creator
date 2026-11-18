@@ -63,6 +63,8 @@ struct Operation {
     /// Status has listed it: one that ended before then is listed once, however short it was, unless no one looks for [`UNSEEN`].
     listed: bool,
     ended: Option<Instant>,
+    /// An encrypted project's own code installing (`wait`): listed only to the readers of its runs that wait on it.
+    private: bool,
 }
 
 const WINDOW: Duration = Duration::from_secs(10);
@@ -127,9 +129,10 @@ fn operations() -> MutexGuard<'static, BTreeMap<String, Operation>> {
 
 /// One run's wait on one operation, which is listed while any wait on it is open.
 pub(crate) struct Waiting {
-    /// Its id as Status lists it: what its run names in its progress (`journal::Waits`).
     id: String,
     run: String,
+    /// Its id as Status lists it: what its run names in its progress (`journal::Waits`).
+    shown: String,
     /// The objects it wants of a download (`objects`), by sha256.
     wanted: Mutex<Vec<String>>,
 }
@@ -137,9 +140,14 @@ pub(crate) struct Waiting {
 /// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. Each is the machine's, one
 /// however many projects' runs wait on it (Paul: packages and models are machine-wide, projects isolate files and runs). cl-1205: a
 /// project's and the machine's own scope each listed BiRefNet's download once. cl-1218: a package installing for two projects was
-/// an item in each one's scope, and none to a reader outside them.
+/// an item in each one's scope, and none to a reader outside them. An encrypted project's own code (`local/`) is its files, not a
+/// package of the machine's: its install stays in the project's scope, as its installation's record does (`bind_installation`).
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
-    let id = format!("{} {subject}", kind.word());
+    let private = kind == Kind::Install && subject.starts_with("local/") && crate::private_io::current().is_some();
+    let id = match private {
+        true => crate::private_io::resource_key(&format!("{} {subject}", kind.word())),
+        false => format!("{} {subject}", kind.word()),
+    };
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
         kind,
@@ -157,6 +165,7 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         seen: VecDeque::new(),
         listed: false,
         ended: None,
+        private,
     });
     // Joined again after its last wait ended: that wait's run no longer waits, and where it was is no longer where it is.
     if operation.ended.take().is_some() {
@@ -166,7 +175,7 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
     *operation.runs.entry(run.to_owned()).or_default() += 1;
     drop(listed);
     status_changed();
-    Waiting { id, run: run.to_owned(), wanted: Mutex::default() }
+    Waiting { shown: crate::private_io::unscoped_key(&id), id, run: run.to_owned(), wanted: Mutex::default() }
 }
 
 /// Its bytes `done` at `now` count toward its rate over the last [`WINDOW`].
@@ -183,7 +192,7 @@ fn sample(seen: &mut VecDeque<(Instant, u64)>, now: Instant, done: u64) {
 impl Waiting {
     /// Its id as Status lists it (`v1::Operation::id`).
     pub(crate) fn shown(&self) -> &str {
-        &self.id
+        &self.shown
     }
 
     /// Where its job is as it joins: said unless another job's stage says where the operation is already (an install another
@@ -434,19 +443,23 @@ pub(crate) fn drive_left() -> HashMap<String, (u64, u64)> {
 }
 
 /// Every download and install, to every caller (cl-1205, cl-1218): what the machine does is its own. Which runs wait is their
-/// caller's: each names only the runs `mine` admits, the rest counted. One that ended unlisted is listed this once.
+/// caller's: each names only the runs `mine` admits, the rest counted. An encrypted project's own code installing (`private`) is
+/// listed only to a caller whose runs wait on it. One that ended unlisted is listed this once.
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations
         .iter_mut()
-        .map(|(id, operation)| {
+        .filter_map(|(id, operation)| {
             let runs: Vec<String> = operation.runs.keys().filter(|run| mine(run)).cloned().collect();
+            if operation.private && runs.is_empty() {
+                return None;
+            }
             let unnamed = (operation.runs.len() - runs.len()) as u32;
             operation.listed = true;
             let bytes_per_s = rate(&operation.seen);
             let left = operation.total.saturating_sub(operation.done);
-            v1::Operation {
-                id: id.clone(),
+            Some(v1::Operation {
+                id: crate::private_io::unscoped_key(id),
                 kind: operation.kind.word().into(),
                 subject: operation.subject.clone(),
                 release: operation.release.clone(),
@@ -460,7 +473,7 @@ pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
                 started_at_unix_ms: operation.started_at_ms,
                 runs,
                 unnamed,
-            }
+            })
         })
         .collect();
     operations.retain(|_, operation| operation.ended.is_none_or(|at| !operation.listed && at.elapsed() < UNSEEN));
