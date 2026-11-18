@@ -159,7 +159,7 @@ rm_rental() {
   read -r hub provider ca < "$d/ready" 2> /dev/null || { check "rc moves: $name's stand-in Hub didn't start: $(tail -c 400 "$d/standin.log")"; return 1; }
   port=$(rm_port)
   echo "$port" > "$d/port"
-  rm_listen "$d/relay" relay "$(rm_port)" "127.0.0.1:$port" "$RM_UPLINK" > "$d/relay.port" || { check "rc moves: $name's relay didn't start"; return 1; }
+  rm_listen "$d/relay" relay "127.0.0.1:$port" "$RM_UPLINK" > "$d/relay.port" || { check "rc moves: $name's relay didn't start"; return 1; }
   rm_serve "$name"
   for _ in $(seq 240); do
     openssl s_client -connect "127.0.0.1:$port" < /dev/null 2> /dev/null | openssl x509 -outform der > "$d/leaf.der" 2> /dev/null && [ -s "$d/leaf.der" ] && break

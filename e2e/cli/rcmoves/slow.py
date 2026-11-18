@@ -1,11 +1,11 @@
 """Slow links for e2e/cli/rcmoves.sh (cl-1201), as Paul's laptop has them: GitHub at about 2 MB/s (the RC's 99 MB cozy took 49 s) and
 an uplink to a rental at about 2 MB/s (sending it took 37 s).
 
-  slow.py relay <port> <host:port> <bytes/s>      a TCP relay to a machine: what each connection sends it, at most <bytes/s>
-  slow.py connect <port> <bytes/s> <suffix>...    an HTTP CONNECT proxy: what a host ending in a suffix answers, at most <bytes/s> a
-                                                  connection; any other host as fast as it goes
+  slow.py relay <host:port> <bytes/s>      a TCP relay to a machine: what each connection sends it, at most <bytes/s>
+  slow.py connect <bytes/s> <suffix>...    an HTTP CONNECT proxy: what a host ending in a suffix answers, at most <bytes/s> a connection;
+                                           any other host as fast as it goes
 
-Each serves until killed, writing <port> to stdout once it listens."""
+Each listens on a free loopback port, writes it to stdout, and serves until killed."""
 
 import asyncio
 import sys
@@ -34,7 +34,14 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, rate:
             pass
 
 
-async def relay(port: int, target: str, rate: float) -> None:
+async def listening(joined) -> None:
+    server = await asyncio.start_server(joined, "127.0.0.1", 0)
+    print(server.sockets[0].getsockname()[1], flush=True)
+    async with server:
+        await server.serve_forever()
+
+
+async def relay(target: str, rate: float) -> None:
     host, _, to = target.rpartition(":")
 
     async def joined(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -45,13 +52,10 @@ async def relay(port: int, target: str, rate: float) -> None:
             return
         await asyncio.gather(pipe(reader, up_writer, rate), pipe(up_reader, writer, 0))
 
-    server = await asyncio.start_server(joined, "127.0.0.1", port)
-    print(port, flush=True)
-    async with server:
-        await server.serve_forever()
+    await listening(joined)
 
 
-async def connect(port: int, rate: float, slow: list[str]) -> None:
+async def connect(rate: float, slow: list[str]) -> None:
     async def joined(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             head = await reader.readuntil(b"\r\n\r\n")
@@ -71,18 +75,15 @@ async def connect(port: int, rate: float, slow: list[str]) -> None:
         down = rate if any(host == s or host.endswith("." + s) for s in slow) else 0
         await asyncio.gather(pipe(reader, up_writer, 0), pipe(up_reader, writer, down))
 
-    server = await asyncio.start_server(joined, "127.0.0.1", port)
-    print(port, flush=True)
-    async with server:
-        await server.serve_forever()
+    await listening(joined)
 
 
 def main() -> None:
     match sys.argv[1:]:
-        case ["relay", port, target, rate]:
-            asyncio.run(relay(int(port), target, float(rate)))
-        case ["connect", port, rate, *slow]:
-            asyncio.run(connect(int(port), float(rate), slow))
+        case ["relay", target, rate]:
+            asyncio.run(relay(target, float(rate)))
+        case ["connect", rate, *slow]:
+            asyncio.run(connect(float(rate), slow))
         case _:
             sys.exit(__doc__)
 
