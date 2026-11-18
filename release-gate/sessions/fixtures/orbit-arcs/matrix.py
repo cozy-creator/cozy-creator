@@ -269,9 +269,11 @@ if sys.argv[1:] == ["resume"]:
     sword = full("<swordswoman>", SWORD, "in the environment shown in <Picture 1>",
                  "The shot begins from <Picture 1>, with its exact environment, ground, background and light.", STREET,
                  "the completely stationary <swordswoman>", seconds=5)
-    renders = [by[n] for n in ("e2-orb-turn-views", "e3-orb-turn-face", "f2-orb-new-scene", "f3-orb-pictured-scene", "f4-orb-grey-keyed")] + [
+    # The coordinator's order: g1 first (it may fix the dark drift), then f2-f4, e2/e3, g2/g3, so a run cut short answers the main questions.
+    renders = [
         {"name": "g1-orb-turn-unpinned", "tool": T, "files": e1["files"],
          "fields": {**{k: v for k, v in e1["fields"].items() if k not in ("first", "last")}, "aspect_ratio": "3:4"}},
+    ] + [by[n] for n in ("f2-orb-new-scene", "f3-orb-pictured-scene", "f4-orb-grey-keyed", "e2-orb-turn-views", "e3-orb-turn-face")] + [
         {"name": "g2-orb-turn-subject-1", "tool": T, "files": e1["files"],
          "fields": {**e1["fields"], "text": e1["fields"]["text"].replace("<swordswoman>", "<Subject 1>"), "refs": ["Subject 1"]}},
         {"name": "g3-orb-turn-124", "tool": T, "files": e1["files"], "fields": {**e1["fields"], "text": sword, "duration": 5}},
