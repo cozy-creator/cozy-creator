@@ -289,6 +289,33 @@ impl Link {
         Ok(held.into_iter().map(|h| h.ranges).collect())
     }
 
+    /// Lands `objects` (each its digest, length and the file it is), whole, in one request (`PUT /v1/objects`, cl-1123): what the
+    /// machine holds of each after, in their order. One round trip for a tree of small files, where `write` takes a few each.
+    pub(crate) async fn write_many(&self, objects: Vec<(Digest, u64, std::path::PathBuf)>) -> Result<Vec<v1::Ranges>, LinkError> {
+        let lane = self.lane(0, false).ok_or_else(|| LinkError::Unreachable("no connection to the machine".into()))?;
+        let names: Vec<String> = objects.iter().map(|(digest, ..)| digest.to_string()).collect();
+        let framed: Vec<(Vec<u8>, u64, std::path::PathBuf)> = (objects.into_iter())
+            .map(|(digest, length, path)| {
+                let mut line = serde_json::to_vec(&v1::ObjectHeader { digest: digest.to_string(), length }).unwrap_or_default();
+                line.push(b'\n');
+                (line, length, path)
+            })
+            .collect();
+        let total: u64 = framed.iter().map(|(line, length, _)| line.len() as u64 + length).sum();
+        let body = futures_util::stream::iter(framed).then(|(line, length, path)| async move {
+            let data = tokio::fs::read(&path).await?;
+            if data.len() as u64 != length {
+                return Err(std::io::Error::other(format!("{} changed: {} bytes, not {length}", path.display(), data.len())));
+            }
+            Ok::<_, std::io::Error>(bytes::Bytes::from([line, data].concat()))
+        });
+        let held = lane.put_objects(total, reqwest::Body::wrap_stream(body)).await?;
+        if held.len() != names.len() || held.iter().zip(&names).any(|(h, n)| h.digest != *n) {
+            return Err(LinkError::Unanswered("the machine answered for other objects than sent".into()));
+        }
+        Ok(held.into_iter().map(|h| h.ranges).collect())
+    }
+
     /// Uploads the object at `path`: what the machine does not hold yet (`held`, as it last
     /// said), in parts side by side (`lanes`). `progress` hears what the machine holds as its
     /// stream says it lands, with the rate; an object the machine already holds is not written

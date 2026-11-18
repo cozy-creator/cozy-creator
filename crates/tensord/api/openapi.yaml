@@ -125,6 +125,26 @@ paths:
           description: 'SSE `event: gpus`'
           content:
             text/event-stream: {schema: {$ref: '#/components/schemas/GpuUse'}}
+  /v1/objects:
+    put:
+      summary: >-
+        Many whole objects in one body (`application/x-cozy-objects`): each an `ObjectHeader` as one JSON line, then its
+        `length` bytes, written as `PUT /v1/objects/{digest}` writes a whole one (cl-1123). The caller sends what
+        `POST /v1/objects/held` said the machine lacks; one larger than 64 MiB goes by `PUT /v1/objects/{digest}`.
+      operationId: put_objects
+      requestBody:
+        content: {application/x-cozy-objects: {schema: {type: string, format: binary}}}
+        required: true
+      responses:
+        '200':
+          description: Each object's held ranges, in the body's order
+          content: {application/json: {schema: {$ref: '#/components/schemas/HeldAnswer'}}}
+        '400':
+          description: A header that is not JSON, an object past its body or too large, or bytes that are not their digest
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '507':
+          description: '`machine_disk_full`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/objects/held:
     post:
       summary: >-

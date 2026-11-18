@@ -153,6 +153,9 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
+    /// `PUT` many whole objects in one body ([`super::OBJECTS_TYPE`]), each written as `PUT /v1/objects/{digest}` writes a whole
+    /// one; answers a [`super::HeldAnswer`] in their order (cl-1123).
+    pub const OBJECTS: &str = "/v1/objects";
     /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
     pub const UPCOMING: &str = "/v1/upcoming";
     /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
@@ -264,6 +267,18 @@ pub struct HeldRequest {
 #[serde(default)]
 pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
+}
+
+/// `PUT /v1/objects`'s body: objects one after another, each an [`ObjectHeader`] as one JSON line and then its `length` bytes
+/// (cl-1123: a tree of small files, one round trip). What the caller sends is what `POST /v1/objects/held` said the machine lacks.
+pub const OBJECTS_TYPE: &str = "application/x-cozy-objects";
+
+/// One object of a `PUT /v1/objects` body, ahead of its bytes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ObjectHeader {
+    /// `sha256:<hex>` of its bytes.
+    pub digest: String,
+    pub length: u64,
 }
 
 /// One object asked: the byte ranges of `digest` the machine holds.
@@ -1305,6 +1320,9 @@ pub struct StatusFrame {
     /// Its batch admission writes the small objects a batch carries (`RunBatch::objects`, cl-1172); false from an older one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub carried_objects: bool,
+    /// It takes many whole objects in one `PUT /v1/objects` (cl-1123); false from an older one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub objects_batch: bool,
     /// Each native kernel's verdict on this machine's cards, as the Runtime keeps it.
     pub kernels: Vec<KernelVerdict>,
     /// The TensorD service's process (not its stable parent, a pod's PID 1).

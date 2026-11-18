@@ -176,6 +176,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         workload_key: crate::hub::workload_key().thumbprint().into(),
         receipt: identity.readiness.facts().unwrap_or_default(),
         carried_objects: true,
+        objects_batch: true,
         ..Default::default()
     }
 }
