@@ -153,6 +153,7 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     seconds, today = _timed(net, torch.tensor([ids]), 512)
     rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1)}
     head = getattr(net, "mtp", None)
+    sampled: dict[str, list[int]] = {}
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del net.mtp
@@ -169,12 +170,22 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             if head is not None:
                 net.mtp = head
         tokens = made.tokens[0]
+        kept = made.kept[0] if made.kept else []
+        drawn = decoder(Request(prompts=[ids], max_new=512, stops=[], temperature=1.0, top_k=20, top_p=0.95, seed=213))
+        drawn_kept = drawn.kept[0] if drawn.kept else []
+        sampled[mode] = drawn.tokens[0]
+        rows[f"{mode}-sampled"] = {"tokens": len(drawn.tokens[0]), "steps": drawn.steps,
+                                   "kept_a_step": round(sum(drawn_kept) / max(len(drawn_kept), 1), 3)}
         rows[mode] = {
             "tokens": len(tokens), "s": round(seconds, 3), "tok_s": round(len(tokens) / seconds, 1),
             "prefill_s": round(made.prefill_s, 4), "decode_s": round(made.decode_s, 3), "steps": made.steps,
             "ms_step": round(1e3 * made.decode_s / max(made.steps, 1), 3), "captured": made.captured, "notes": made.notes,
+            "kept_a_step": round(sum(kept) / max(len(kept), 1), 3),
             "same_as_today": next((i for i, (x, y) in enumerate(zip(tokens, today)) if x != y), min(len(tokens), len(today))),
         }
+    if len(sampled) == 2:  # a draw is hashed from the seed and the token's index: drafting keeps the same tokens
+        a, b = sampled["drafted"], sampled["plain"]
+        rows["sampled_same"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
     return Agreement(json.dumps(rows))
 
 
