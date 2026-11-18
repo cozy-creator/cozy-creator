@@ -1,5 +1,5 @@
 #!/bin/bash
-# promote.sh [--dry-run] [--phases LIST] [--images '<profile>=sha256:<hex> …'] [--packages DIR] <release-gate run id> | --record <URL> <gate dir>...:
+# promote.sh [--dry-run] [--phases LIST] [--images '<profile>=sha256:<hex> …'] [--packages DIR] [--packages-ref REF] <release-gate run id> | --record <URL> <gate dir>...:
 # the one step that hands a passed candidate set to users, the same bytes the gate ran (tracker design ci-v2, pre-release
 # and promotion). Testing is manual: the evidence is the passing release-gate.yml run the release agent dispatched, or the
 # hand gate's dirs with the URL where their result is recorded. verify.sh first; then, each waiting for the last to succeed:
@@ -24,9 +24,12 @@
 # package's final on the Hub. Unread (PyPI, GitHub or the Hub not answering) is not done.
 # Whatever the phases (so --packages for any), a set that holds packages is refused before anything moves unless every model a
 # slot of theirs loads by default is public, or held in `models` for the models phase (defaults.sh, cl-1243: th-412's 404s).
+# --packages-ref REF: the packages are released from REF, not the gated packages_ref, only when version-only.py finds every
+# difference a package's version alone (each changed pyproject.toml's `version =` line, its uv.lock's own row): the gate's
+# result stands for them (Paul 11-18: test only what changed). Anything else refuses before anything moves, naming the file.
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
-DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,models,packages,images
+DRY= IMAGES= PKGS= RELREF= ALL=pypi,smoke,cozy,models,packages,images
 PHASES=$ALL
 while [ $# -gt 0 ]; do
   case $1 in
@@ -34,6 +37,7 @@ while [ $# -gt 0 ]; do
     --phases) PHASES=$2; shift 2 ;;
     --images) IMAGES=$2; shift 2 ;;
     --packages) PKGS=$(cd "$2" && pwd); shift 2 ;;
+    --packages-ref) RELREF=$2; shift 2 ;;
     *) break ;;
   esac
 done
@@ -51,7 +55,18 @@ else
 fi
 set_=$("$HERE/verify.sh" "$@")
 field() { jq -r ".$1 // empty" <<< "$set_"; }
-ref=$(field packages_ref)
+ref=$(field packages_ref) gated=
+if [ -n "$RELREF" ]; then
+  [ -n "$ref" ] && [ -n "$PKGS" ] || { echo "--packages-ref needs a set that holds packages and --packages <checkout>" >&2; exit 2; }
+  rel=$(git -C "$PKGS" rev-parse -q --verify "$RELREF^{commit}") || { echo "$PKGS has no $RELREF: fetch it" >&2; exit 2; }
+  git -C "$PKGS" cat-file -e "$ref^{commit}" 2> /dev/null || { echo "$PKGS has no gated $ref: fetch it" >&2; exit 2; }
+  if [ "$rel" != "$(git -C "$PKGS" rev-parse "$ref^{commit}")" ]; then
+    moved=$(python3 -I "$HERE/version-only.py" "$PKGS" "$ref" "$rel") ||
+      { echo "$moved" >&2; echo "--packages-ref ${rel:0:10} differs from the gated ${ref:0:10} by more than versions: nothing promoted" >&2; exit 1; }
+    echo "packages: gated on ${ref:0:10}, released from ${rel:0:10} (versions only: $(paste -sd';' <<< "$moved" | sed 's/;/; /g'))"
+    gated=$ref ref=$rel
+  fi
+fi
 mapfile -t models < <(jq -r '.models[]?' <<< "$set_")
 # What it needs, checked before anything moves.
 if want images && [ -n "$(field runtime_sha256)$(field tensorfs_sha256)$(field cozy_sha256)" ] && [ -z "$IMAGES" ]; then
@@ -186,4 +201,4 @@ if want packages && [ -n "$ref" ]; then
   else (cd "$PKGS" && run task publish -- --gated "$ref"); fi
 fi
 ! want images || [ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
-echo "promoted (${PHASES//,/, }): $(jq -c . <<< "$set_").$(want images && echo ' Then the Hub pin, to this set.')"
+echo "promoted (${PHASES//,/, }): $(jq -c . <<< "$set_")${gated:+, packages released from ${ref:0:10} (gated on ${gated:0:10})}.$(want images && echo ' Then the Hub pin, to this set.')"
