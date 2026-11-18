@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{ClientRun, GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
+    calcifer::{ClientRun, GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Operation, Rental},
     error::Error,
 };
 
@@ -366,6 +366,38 @@ pub(crate) fn record(ctx: &Context, m: &Machine, gpus: Option<&GpuUse>) -> outpu
     record
 }
 
+/// A download or install the machine does for runs, once however many wait on it (cl-1205): what it fetches, how far it is, at what
+/// rate and how long it has left, and the runs waiting on it.
+fn operation_line(operation: &Operation) -> (String, String) {
+    let mut cells = vec![];
+    let what = match (operation.release.is_empty(), operation.components.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => operation.release.clone(),
+        (true, false) => operation.components.join(", "),
+        (false, false) => format!("{}: {}", operation.release, operation.components.join(", ")),
+    };
+    cells.extend(Some(what).filter(|what| !what.is_empty()));
+    cells.extend(Some(operation.stage.clone()).filter(|stage| !stage.is_empty()));
+    if operation.bytes_total > 0 {
+        cells.push(format!("{} of {}", output::bytes(operation.bytes_done), output::bytes(operation.bytes_total)));
+    }
+    if let Some(rate) = operation.bytes_per_s {
+        cells.push(format!("{}/s", output::bytes(rate as u64)));
+    }
+    if let Some(left) = operation.eta_s {
+        cells.push(format!("{} left", output::span(left)));
+    }
+    if operation.bytes_here > 0 {
+        cells.push(format!("{} already on this machine", output::bytes(operation.bytes_here)));
+    }
+    let runs = match operation.names.is_empty() {
+        true => operation.runs.iter().map(u64::to_string).collect::<Vec<_>>(),
+        false => operation.names.clone(),
+    };
+    cells.push(format!("for {}", runs.join(", ")));
+    (format!("{} {}", operation.kind, operation.subject), cells.join(" · "))
+}
+
 /// A run the machine holds: its state there, target, stage and why it waits. One whose record
 /// here ended is an executor left behind; a locked project's, its state alone (cl-1130).
 fn live_run(held: &LiveRun) -> (String, String) {
@@ -497,6 +529,8 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
             fields.push(("disk use".into(), parts.join(" · ")));
         }
     }
+    // Each download and install once, then the runs, a run waiting on one saying so (cl-1205).
+    fields.extend(status.activity.iter().map(operation_line));
     fields.extend(status.runs.iter().map(live_run));
     fields.extend(status.others.iter().map(other_run));
     if status.ssh_sessions > 0 {

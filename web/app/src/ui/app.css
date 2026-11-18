@@ -980,6 +980,14 @@ code {
   flex: none;
   white-space: pre;
 }
+/* Waiting on a download, its words lead to it on its machine (cl-1205). */
+.run-face a.face-leads {
+  color: var(--ember2);
+  text-decoration: none;
+}
+.run-face a.face-leads:hover {
+  text-decoration: underline;
+}
 .run-face.failed .face-state b {
   color: var(--bad);
 }
@@ -4551,6 +4559,35 @@ p.warn.slow {
 }
 .activity > p {
   margin: 8px 4px 2px;
+}
+
+/* A run waiting on downloads says so and leads to each, which alone shows how far it is (cl-1205): its words a link, the download's
+   row lit a moment. */
+.activity .doing a.said.waits,
+.qrow a.said.waits {
+  color: var(--ember2);
+  white-space: normal;
+}
+.activity .doing a.said.waits:hover,
+.qrow a.said.waits:hover {
+  text-decoration: underline;
+}
+[data-download].lit {
+  animation: download-lit 1.4s ease-out;
+}
+@keyframes download-lit {
+  from {
+    background: color-mix(in srgb, var(--ember2) 24%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-download].lit {
+    animation: none;
+    outline: 2px solid var(--ember2);
+  }
 }
 
 /* On the canvas a box shows its corner only under the pointer, with nothing else opening. */

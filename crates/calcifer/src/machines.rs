@@ -284,6 +284,18 @@ impl Machines {
             .and_then(|seen| seen.frame.clone())
     }
 
+    /// The time left of downloads `ids` on `machine`, the longest, as its Status says them (cl-1205): what a run waiting on them waits
+    /// at least. None: none of them says one.
+    pub(crate) fn downloads_left_ms(&self, machine: &str, ids: &[String]) -> Option<f64> {
+        if ids.is_empty() {
+            return None;
+        }
+        let left = |activity: &[v1::Operation]| activity.iter().filter(|operation| ids.contains(&operation.id)).filter_map(|operation| operation.eta_s).max();
+        let own = lock(&self.seen).get(machine).and_then(|seen| seen.frame.as_ref().and_then(|frame| left(&frame.activity)));
+        let projects = lock(&self.project_activity).values().filter_map(|activity| left(activity)).max();
+        own.max(projects).map(|s| s as f64 * 1000.0)
+    }
+
     /// The machine's Status while its stream is open: none once the stream broke, until it says it again (cl-967: a machine that stopped
     /// answering is never quoted from what it said before).
     pub(crate) fn live_frame(&self, name: &str) -> Option<v1::StatusFrame> {
@@ -1095,7 +1107,9 @@ impl Machines {
     }
 
     /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a
-    /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
+    /// project's own is in its private scope (`resource_key`), so its runs are all that project's. A run this controller keeps no
+    /// record of (another client's) is no name of it. What it fetches, its bytes, rate and time left are the machine's, as it says
+    /// them (cl-1205).
     fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
         let mut project=None;
         let (mut runs,mut names)=(vec![],vec![]);
@@ -1113,9 +1127,10 @@ impl Machines {
                 names.push(self.calcifer.named(&row));
                 continue;
             }
-            match self.calcifer.run_store(id).ok()? {
+            let Ok(store)=self.calcifer.run_store(id) else { continue };
+            match store {
                 crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
-                    let row=store.run(id).ok().flatten()?;
+                    let Some(row)=store.run(id).ok().flatten() else { continue };
                     project=Some(store.project_id().to_owned());
                     runs.push(row.number);
                     names.push(self.calcifer.run_name(&row));
@@ -1124,9 +1139,12 @@ impl Machines {
             }
         }
         if names.is_empty() {return None;}
-        let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
-        let left=operation.bytes_total.saturating_sub(operation.bytes_done);
-        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,names,project})
+        Some(wire::Operation {
+            id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),release:operation.release.clone(),
+            components:operation.components.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,
+            bytes_here:operation.bytes_here,bytes_per_s:Some(operation.bytes_per_s).filter(|rate|*rate>=1.0),eta_s:operation.eta_s,
+            started_at_ms:operation.started_at_unix_ms,runs,names,project,
+        })
     }
 
     /// What this computer's machine does for `project`'s own runs, followed in the project's scope while it has runs there: its runs

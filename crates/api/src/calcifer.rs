@@ -818,6 +818,10 @@ pub struct Progress {
     /// none until its machine made one for a client asking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<u64>,
+    /// The downloads it waits on (cl-1205), by their `Operation::id` in its machine's `status.activity`: its box and row say it
+    /// waits and link there, and show no bytes of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<String>,
 }
 
 impl Progress {
@@ -1629,10 +1633,15 @@ pub struct Operation {
     pub kind: String,
     /// The model's repository (or provider source), or the package.
     pub subject: String,
+    /// A download's release and components (none: the whole checkpoint), as its machine says: the download row says them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// Where it is, in words.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stage: String,
-    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+    /// Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once.
     #[serde(default)]
     pub bytes_done: u64,
     #[serde(default)]
@@ -1643,7 +1652,7 @@ pub struct Operation {
     /// Its bytes a second over its last 10 s, once a second of them is seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_per_s: Option<f64>,
-    /// The seconds its bytes still take at that rate.
+    /// The seconds its bytes still take at that rate, as its machine says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
     pub started_at_ms: i64,

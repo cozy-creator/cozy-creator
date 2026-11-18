@@ -108,11 +108,12 @@ fn claimed(record: &Execution) -> u64 {
     }
 }
 
-/// The bytes of weights a queued run still waits on, as its progress says.
+/// The bytes of weights a queued run still waits on, as its progress says: of the downloads it waits on, its own still to come
+/// (`journal::Waits`, cl-1205), and what its own preparation transfers.
 fn fetching(record: &Execution) -> u64 {
     let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
     let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
-    count("bytes_total").saturating_sub(count("bytes_done"))
+    count("bytes_left") + count("bytes_total").saturating_sub(count("bytes_done"))
 }
 
 /// How far a run is, as its latest progress says: its stage (none for a private run's), and its step of its steps.

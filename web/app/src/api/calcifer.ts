@@ -2148,11 +2148,15 @@ kind: string,
  */
 subject: string,
 /**
+ * A download's release and components (none: the whole checkpoint), as its machine says: the download row says them.
+ */
+release?: string, components?: Array<string>,
+/**
  * Where it is, in words.
  */
 stage?: string,
 /**
- * Bytes fetched of those it has to fetch (0: unknown), never what was here already.
+ * Bytes fetched of those it has to fetch (0: unknown), never what was here already: a download's each object once.
  */
 bytes_done: number, bytes_total: number,
 /**
@@ -2164,7 +2168,7 @@ bytes_here: number,
  */
 bytes_per_s?: number | null,
 /**
- * The seconds its bytes still take at that rate.
+ * The seconds its bytes still take at that rate, as its machine says.
  */
 eta_s?: number | null, started_at_ms: number,
 /**
@@ -2415,7 +2419,12 @@ eta_basis?: EtaBasis | null,
  * The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
  * none until its machine made one for a client asking.
  */
-preview?: number | null, };
+preview?: number | null,
+/**
+ * The downloads it waits on (cl-1205), by their `Operation::id` in its machine's `status.activity`: its box and row say it
+ * waits and link there, and show no bytes of their own.
+ */
+waiting_on?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.

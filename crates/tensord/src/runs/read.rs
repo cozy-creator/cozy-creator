@@ -810,7 +810,7 @@ impl Runs {
             let preparing = record.state == State::Queued
                 && record.waiting_reason.as_deref() == Some(crate::journal::PREPARING);
             // What a queued run waits for (another run's install, a GPU) and its place in line are its state,
-            // until its weights arrive meanwhile: then their bytes are its progress, the client
+            // until it waits on downloads meanwhile: then they are its progress, by name (cl-1205), the client
             // saying both.
             let waiting = record.waiting.clone().filter(|_| record.state == State::Queued);
             let place = record.place.filter(|_| waiting.is_some());
@@ -820,7 +820,7 @@ impl Runs {
                     .filter(Value::is_object)
                     .unwrap_or_else(|| json!({"stage":progress,"step_ms":0.0}))
             });
-            let arriving = payload.as_ref().is_some_and(|p| p["bytes_done"].as_u64() < p["bytes_total"].as_u64());
+            let arriving = payload.as_ref().is_some_and(|p| p["waiting_on"].as_array().is_some_and(|on| !on.is_empty()));
             // Its executor starting, what it does there (`importing <package>`, `starting the executor`) is its state's reason.
             let starting = (payload.as_ref())
                 .and_then(|p| p["stage"].as_str().map(str::to_owned))
@@ -1216,6 +1216,9 @@ impl Log {
                     bytes_total: payload["bytes_total"].as_u64().unwrap_or(0),
                     stage_fraction: payload["stage_fraction"].as_f64(),
                     preview: payload["preview"].as_u64().unwrap_or(0),
+                    waiting_on: (payload["waiting_on"].as_array().into_iter().flatten())
+                        .filter_map(|on| on.as_str().map(str::to_owned))
+                        .collect(),
                 })
             }
             "call" => v1::Event::Call(v1::Call {

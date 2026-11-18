@@ -532,8 +532,8 @@ pub(crate) struct ProgressSnapshot {
     /// What the run waits for, while it waits (`Execution::waiting`), and its place in line (`Execution::place`).
     pub waiting: Option<String>,
     pub place: Option<u32>,
-    /// The weights it waits on while they arrive, shown in `detail` over its own detail, kept here.
-    pub weights: Option<(Weights, String)>,
+    /// The downloads it waits on while they arrive, shown in `detail` over its own detail, kept here.
+    pub waits: Option<(Waits, String)>,
     pub revision: u64,
     /// When it last moved (Unix ms).
     pub at_ms: u64,
@@ -559,17 +559,43 @@ pub(crate) struct Weights {
     pub total: u64,
 }
 
-impl Weights {
-    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
-    /// stage is part of) and the download, never a step its weights have not reached.
+/// The downloads a run waits on (cl-1205; Paul, 11-17: "it should show the download occurring, and then it should also show the 3
+/// jobs that are like 'waiting for download...' and they don't need to independently report the progress in theirs as well"):
+/// their items in this machine's activity (`activity::Waiting::shown`), their repositories, and the bytes of its own still to come,
+/// which only its line's estimate reads (`estimate::fetching`).
+#[derive(Clone, Debug)]
+pub(crate) struct Waits {
+    pub on: Vec<String>,
+    pub models: Vec<String>,
+    pub left: u64,
+}
+
+impl Waits {
+    /// It waits on the same downloads as `other`, whatever bytes each has left.
+    pub(crate) fn same(&self, other: &Waits) -> bool {
+        self.on == other.on && self.models == other.models
+    }
+
+    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the stage is part of) and that it waits
+    /// on them, by name, with no bytes of its own: they are the downloads'.
     pub(crate) fn over(&self, detail: &str) -> String {
         let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        let label = format!("downloading {} weights", self.models);
+        let label = format!("waiting for {} to download", said(&self.models));
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} / {label}"),
             None => label,
         };
-        serde_json::json!({"stage": stage, "bytes_done": self.done, "bytes_total": self.total, "step_ms": 0.0}).to_string()
+        serde_json::json!({"stage": stage, "waiting_on": self.on, "bytes_left": self.left, "step_ms": 0.0}).to_string()
+    }
+}
+
+/// Repositories as a run's stage names them: `minimax-h3`, `minimax-h3 and qwen3-vl`, `a, b and c`.
+fn said(models: &[String]) -> String {
+    let names: Vec<&str> = models.iter().map(|model| model.trim_end_matches('/').rsplit('/').next().unwrap_or(model)).collect();
+    match names.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => "its models".to_owned(),
     }
 }
 

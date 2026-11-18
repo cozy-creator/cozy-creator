@@ -1743,7 +1743,12 @@ impl Calcifer {
 
     /// Records the run's progress, with how far it is, at what rate its bytes move and its time
     /// left; whether it entered a stage it was not in.
-    fn progress(&self, id: &RunId, mut progress: Progress) -> bool {
+    fn progress(&self, id: &RunId, progress: Progress) -> bool {
+        self.progress_waiting(id, progress, None)
+    }
+
+    /// `progress`, its run waiting on downloads with `waited` ms left (cl-1205): its time left is at least theirs.
+    fn progress_waiting(&self, id: &RunId, mut progress: Progress, waited: Option<f64>) -> bool {
         let entered = {
             let mut live = lock(&self.live);
             let live = live.entry(id.clone()).or_default();
@@ -1757,6 +1762,9 @@ impl Calcifer {
                 let at = if progress.at_ms > 0 { progress.at_ms as f64 } else { received };
                 clock.moving(&progress, at);
                 clock.observe(&progress, at, received);
+                if let Some(ms) = waited {
+                    clock.waits(at, ms);
+                }
                 time_left(clock, &mut progress);
             }
             let was = live.progress.replace(progress.clone()).map(|p| p.stage);
@@ -2809,7 +2817,10 @@ impl Calcifer {
                     // Each stage it enters is kept with the run, so a run whose machine is lost
                     // still says where it got to and when (run 14868, `encoding prompt`).
                     let stage = p.stage.clone();
-                    let entered = self.progress(id, progress_of(p, frame.at_ms));
+                    let progress = progress_of(p, frame.at_ms);
+                    // Waiting on downloads, its time left is at least theirs, as its machine says (cl-1205).
+                    let waited = self.machines().and_then(|machines| machines.downloads_left_ms(machine, &progress.waiting_on));
+                    let entered = self.progress_waiting(id, progress, waited);
                     if entered {
                         self.staged(id, &stage, frame.at_ms);
                         batch.logs.push((frame.at_ms, "stage".into(), stage));
@@ -3292,6 +3303,7 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         step_steady_ms: p.step_steady_ms,
         at_ms,
         preview: (p.preview > 0).then_some(p.preview),
+        waiting_on: p.waiting_on,
         ..Default::default()
     };
     progress.done_fraction = done_fraction(&progress);
@@ -3313,8 +3325,12 @@ fn megapixels(input: &serde_json::Map<String, serde_json::Value>) -> Option<f64>
 }
 
 /// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'; within a part of a whole its scope names
-/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap.
+/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap. Waiting on downloads, none: it
+/// says it waits, and their share is theirs, shown once (cl-1205).
 fn done_fraction(progress: &Progress) -> Option<f64> {
+    if !progress.waiting_on.is_empty() {
+        return None;
+    }
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
     let steps = (!progress.tokens()).then(|| of(progress.completed, progress.total)).flatten();
     let stage = (progress.stage_fraction)

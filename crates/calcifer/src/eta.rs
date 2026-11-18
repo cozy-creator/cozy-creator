@@ -437,6 +437,15 @@ impl Clock {
             .map(|rate| (at, (progress.bytes_total - progress.bytes_done) as f64 / rate * 1000.0));
     }
 
+    /// It waits on downloads with `ms` left at `at`, on its machine's clock (cl-1205): its time left is at least theirs, as bytes it
+    /// moved itself were, and before it starts that is what it waits for.
+    pub(crate) fn waits(&mut self, at: f64, ms: f64) {
+        self.moving = Some((at, ms));
+        if self.started.is_none() {
+            self.fetching_ms = Some(ms);
+        }
+    }
+
     /// Its results take `ms` to come here once it ends.
     pub(crate) fn result(&mut self, ms: f64) {
         self.result_ms = ms.max(0.0);
