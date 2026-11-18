@@ -84,6 +84,26 @@ stage() {
   [ -z "$(jq -r '.queue_position // empty' <<<"$now")" ] || fail "$label: run $WAITING_RUN only stands in line ($(jq -c '{queue_position, waiting, machine_state}' <<<"$now")): no run under way waits for the GPU"
   say "$label: run $WAITING_RUN waits: \"$WAITING_SAID\"; its stage \"$(jq -r '.progress.stage // "none"' <<<"$now")\""
 }
+# line <label>: a run of this computer's own, from a folder that is no project (`cozy run`, as a person runs a tool by hand), holds
+# local's CPU, then `waiting`, this project's box, stands in its line behind it. TensorD names a holder outside any project in the reason
+# of whatever waits for it to every reader, so the machine's own view of `waiting` says why, as Calcifer's does (cl-1263; a project's
+# run it names only to its own caller, cl-1130). Sets ALONE_PID and WAITING_RUN.
+line() {
+  local label=$1 alone
+  alone=$(mktemp -d)
+  (cd "$alone" && exec cozy --json run "$FIX/hold" seconds:="$HOLD" --on local) > "$OUT/$label-alone.ndjson" 2> "$OUT/$label-alone.err" &
+  ALONE_PID=$!
+  for _ in $(seq 600); do
+    grep -qi '"stage":"[^"]*holding' "$OUT/$label-alone.ndjson" && break
+    kill -0 "$ALONE_PID" 2> /dev/null || fail "$label: the run outside any project ended: $(tail -c 300 "$OUT/$label-alone.err")"
+    sleep 1
+  done
+  grep -qi '"stage":"[^"]*holding' "$OUT/$label-alone.ndjson" || fail "$label: the run outside any project never held local"
+  say "$label: a run outside any project holds local for ${HOLD}s"
+  render "$label-waiting" waiting local
+  WAITING_RUN=$(run_of wait) || fail "$label: waiting's render made no run: $(tail -c 300 "$OUT/$label-waiting.err")"
+  follow "$label-waiting" "$WAITING_RUN"
+}
 # ended <label>: both renders ended (holding's `hold` and up to 10 min more), completed.
 ended() {
   local run status
@@ -126,11 +146,17 @@ if [ "$RENTING" != true ]; then
   say "pre-flight: nothing rented; this runner's machine, which has no GPU: the page reads holding as it runs"
   # This runner's machine on the session cozy's builds: a dev build follows no RC, so none is waited for.
   cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
-  stage dry local
-  # Nothing waits for a GPU here. `waiting` stands in this machine's line behind `holding` on its CPU, a run whose box and rows must
-  # tell one story (cl-1263): each page reads it, and a page named red must fail.
+  line dry
+  # Nothing waits for a GPU here. `waiting` stands in this machine's line behind the run outside any project, a run whose box and rows
+  # must tell one story (cl-1263): each page reads it, and a page named red must fail.
   for page in "${PAGE_NAMES[@]}"; do pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE=local; done
-  ended dry
+  wait "$ALONE_PID" || { say "FAIL dry: the run outside any project: $(tail -c 300 "$OUT/dry-alone.err")"; RC=1; }
+  for _ in $(seq 600); do
+    case $(watched "$WAITING_RUN" | jq -r '.status // empty') in completed | failed | canceled) break ;; esac
+    sleep 1
+  done
+  [ "$(watched "$WAITING_RUN" | jq -r '.status // empty')" = completed ] || { say "FAIL dry: run $WAITING_RUN didn't complete"; RC=1; }
+  say "dry: the run outside any project and run $WAITING_RUN ended"
   exit "$RC"
 fi
 GUARD_ALSO=own guard
