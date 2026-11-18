@@ -83,13 +83,14 @@ for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
   say "tree $t: edit described ($(grep -c -i -E 'audio' "$OUT/describe-$t.txt") lines name audio)"
   kernels "$PACKAGES/$t/minimax-h3"
 done
-# The lock a render's staging makes (44296224697 and 44300237631 failed there under a cozy older than #3873), at $0:
-# #1005's tree installed on this runner's local machine through cozy.
-if [ -n "${TREE[b1]:-}" ] && [ -f "$PACKAGES/pk/minimax-h3/pyproject.toml" ]; then
-  timeout 1800 cozy package install "$PACKAGES/pk/minimax-h3" --on local -y > "$OUT/lock-pk.txt" 2>&1 ||
-    fail "pk doesn't install through this cozy's lock: $(tail -c 600 "$OUT/lock-pk.txt")"
-  say "tree pk: installed locally through cozy ($(grep -o -m1 -E 'cozy[-_]runtime[ =]+[0-9][^ ,)]*' "$OUT/lock-pk.txt"; grep -o -m1 -E 'tensorfs[ =]+[0-9][^ ,)]*' "$OUT/lock-pk.txt"))"
-fi
+# The lock a render's staging makes (44296224697 and 44300237631 failed there under a cozy older than #3873), at $0: each
+# tree the session stages installed on this runner's local machine through cozy, which locks local code on the same
+# Calcifer path (`local_code.rs` `locked`) before installing; any that can't lock ends the session here.
+for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
+  timeout 1800 cozy package install "$PACKAGES/$t/minimax-h3" --on local -y > "$OUT/lock-$t.txt" 2>&1 ||
+    fail "$t doesn't lock and install through this cozy: $(tail -c 600 "$OUT/lock-$t.txt")"
+  say "tree $t: locked and installed locally through cozy"
+done
 
 quote "$(param need_s 7800)"
 rent
