@@ -2,8 +2,8 @@
 // middle with the border. Don't do that. Just display the video; delete this little 'fallback thumbnail' or whatever it is and do not show
 // it again when focused on a video node" (and 11-17: "display the full-resolution video / frames always"). A video in Focus is its own
 // frames at their own size: no picture is ever in its frame, from the moment it opens (watched every frame), playing, paused, scrubbed,
-// after another tab takes its player, a take still being made playing its segments, and an orbit. Pictures of each state at 1440×900,
-// paper and dark: $OUT/web/focus-no-poster/.
+// while another tab plays it too (cl-1215: it keeps playing), a take still being made playing its segments, and an orbit. Pictures of
+// each state at 1440×900, paper and dark: $OUT/web/focus-no-poster/.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, focus, canvasVisible, fixtureTool, themed } = require('./fixtures');
@@ -69,7 +69,7 @@ test('focus-no-poster', async ({ page, project, cli, context, signIn }) => {
     await watch.stop();
   });
 
-  await test.step("another tab's play takes its player: still no picture in its frame", async () => {
+  await test.step('another tab plays it too: this one keeps playing, still no picture in its frame', async () => {
     const watch = await watchFrame(page);
     const others = [];
     for (const name of ['turned', 'walk']) {
@@ -79,12 +79,23 @@ test('focus-no-poster', async ({ page, project, cli, context, signIn }) => {
       await expect.poll(() => canvasVisible(tab, name), { timeout: 60_000 }).toBe(true);
       await fit(tab);
       await focus(tab, name);
-      if (name === 'walk') await tab.getByRole('region', { name: 'Focused asset' }).locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
       others.push(tab);
     }
     await page.bringToFront();
-    await expect(live, 'its player let go').toHaveCount(0);
-    await none(watch, 'after its player was taken');
+    await region.getByRole('slider', { name: 'Scrub', exact: true }).fill('0');
+    await transport('Play').click();
+    await expect.poll(async () => (await clock(live)).paused, { message: 'it plays from its start' }).toBe(false);
+    const theirs = others[1].getByRole('region', { name: 'Focused asset' });
+    await others[1].bringToFront();
+    await theirs.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
+    await expect.poll(async () => (await theirs.locator('video.live').count()) ? (await clock(theirs.locator('video.live'))).at : 0, { message: 'the other tab plays it' }).toBeGreaterThan(0.5);
+    await page.bringToFront();
+    await expect(live, 'its player stays').toHaveCount(1);
+    const was = await clock(live);
+    await expect.poll(async () => (await clock(live)).at, { message: 'it keeps playing' }).toBeGreaterThan(was.at + 0.5);
+    expect.soft((await clock(live)).paused, 'still playing here').toBe(false);
+    expect.soft((await clock(theirs.locator('video.live'))).paused, 'still playing in the other tab').toBe(false);
+    await none(watch, 'while another tab plays it');
     await watch.stop();
     for (const tab of others) await tab.close();
   });

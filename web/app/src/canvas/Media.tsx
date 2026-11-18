@@ -502,7 +502,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
         onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
         onClick={field === "video" && controller ? (event) => { event.stopPropagation(); controller.toggle() } : undefined}
-        // Pause/end keeps the decoded video frame. Closing Focus or losing its slot still releases the decoder.
+        // Pause/end keeps the decoded video frame. Closing Focus releases the decoder and the file's bytes.
         onEnded={field === "video" ? undefined : () => stopRef.current()}
         onError={() => {
           const el = element.current

@@ -1,11 +1,11 @@
-// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, under the same rations as any other, there only
-// while it holds its slot. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
+// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, its clip's file in the page's memory (cl-1215),
+// there only while it's played or scrubbed. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
 import type { Client } from "../../api/client"
 import type { Playback } from "../../api/transport"
 import { signal } from "../../ui/signal"
 import { clipAt, isStill, type Layout, type Placed } from "./model"
 
-/** A pause or a scrub keeps its slot this long, for the next seek. */
+/** A pause or a scrub keeps its `<video>` and its file this long, for the next seek. */
 const LET_GO_MS = 1500
 
 /** A frame's middle: exact at the edit's rate, and nearest at any other. */
@@ -16,9 +16,9 @@ export class Preview {
   readonly playing = signal(false)
   /** Which clip is up, by its index. */
   readonly showing = signal<number | null>(null)
-  /** A `<video>` holds a slot. */
+  /** Its `<video>` is open. */
   readonly live = signal(false)
-  /** The selected clip has a decoded frame, rather than only a slot or metadata. */
+  /** The selected clip has a decoded frame, rather than only its `<video>` or metadata. */
   readonly ready = signal(false)
   /** What the canvas holds: which file, at which second. */
   readonly kept = signal<{ path: string; at: number } | null>(null)

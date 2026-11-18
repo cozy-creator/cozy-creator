@@ -144,6 +144,9 @@ test('playback: the page from Vite, as dev = true serves it', { tag: '@solo' }, 
     await plays(page);
   } finally {
     writeFileSync(test.info().outputPath('console.log'), said.join('\n'));
+    // Its server gone under an open page, Vite's client polls for it from a blob SharedWorker (vite client.mjs, waitForSuccessfulPing), which
+    // the page's policy refuses: this test's doing, not the page's (run 44234311382 said it once the cell had already failed).
+    guards.over();
     try { process.kill(-vite.pid, 'SIGKILL'); } catch { /* gone */ }
     closeSync(log);
   }
