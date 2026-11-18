@@ -298,6 +298,9 @@ that pair misses takes its own Runtime in its own environment, and the machine's
 rental as it boots, in a dev home on the session's RC cozy (`cozy=<dev-build run>`): the rental moves to the RC before it takes the code,
 which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install; let go and
 busy on that pair, the code `--on any` is refused there `runtime_floor_unmet`, and Calcifer moves the rental and sends it again.
+`checkout-relock` (cl-1199, 44175857630; one cheap GPU pod held on the RC's builds, `tree` a packages checkout) runs sdxl from the
+checkout in a dev home, its box's draft run ahead, then waits for the RC's next Runtime build: no call locks it again, the pod installs it
+no more and the render adopts the draft; a dependency added to its pyproject.toml locks and installs it once.
 `machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its
 Hub's record of the rental (`released` or `failed`, with an end time, only once its provider holds no pod) and Calcifer's.
 
