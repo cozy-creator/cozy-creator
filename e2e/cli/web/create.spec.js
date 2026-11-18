@@ -34,7 +34,7 @@ const placedAt = (flow) => ({ x: Math.round(flow.x - 120), y: Math.round(flow.y 
 /** A tool as the page names it (shown.ts toolName): its label alone where that says its package's name already. */
 const named = (tool) => (!tool.package_title || tool.label.toLowerCase().includes(tool.package_title.toLowerCase()) ? tool.label : `${tool.package_title} · ${tool.label}`);
 /** Each seeded package's name as it writes it, in its description (cl-1084: "their brands as they write them"). */
-const WRITTEN = { 'qwen-image-2': 'Qwen Image 2.1', 'minimax-h3': 'MiniMax H3', sdxl: 'SDXL', birefnet: 'BiRefNet', 'moss-image': 'MOSS-Image', 'qwen-image': 'Qwen Image 1' };
+const WRITTEN = { 'qwen-image-2': 'Qwen Image 2.1', 'minimax-h3': 'MiniMax H3', sdxl: 'SDXL', birefnet: 'BiRefNet', 'moss-image': 'MOSS-Image', 'qwen-image': 'Qwen Image 1', 'ltx-2.5': 'LTX-2.5' };
 /** Whether a tool reads a picture: a slot of one, or a prompt that takes one. */
 const reads = (fields) => fields.some((field) => (field.type === 'slot' && field.accept === 'image') ||
   (field.type === 'prompt' && (!field.takes || field.takes.includes('image'))) || (field.type === 'group' && reads(field.members ?? [])));
