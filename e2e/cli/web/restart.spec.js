@@ -100,9 +100,12 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
       await calciferControl.stop();
       await calciferControl.start();
       await expect(bar(second), "the plain project's tab is back with Calcifer").toHaveCount(0, { timeout: 60_000 });
-      stopped = false;
       await expect(page.getByText('This project is locked.', { exact: true }), 'the encrypted tab shows the locked page').toBeVisible({ timeout: 60_000 });
       await expect(page.getByRole('button', { name: 'Unlock project', exact: true }), 'with Unlock').toBeVisible();
+      // The stop's window closes once both tabs are past their busy spell: a busy tab shows no pill, so the bar's count alone passed
+      // before either had heard of the stop, and the encrypted tab's 503 from the stopping Calcifer was said after (e2e 44217308449).
+      for (const tab of [page, second]) await tab.evaluate(() => new Promise((done) => setTimeout(done, 0)));
+      stopped = false;
       expect((await api.get(project.at('/vault'))).state, 'Calcifer locked it as it stopped').toBe('locked');
       for (const [tab, which] of [[page, 'the encrypted tab'], [second, 'the plain tab']]) {
         expect.soft(await tab.evaluate(() => window.unreloaded), `${which} didn't load again`).toBe(true);
