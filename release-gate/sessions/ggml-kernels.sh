@@ -122,11 +122,26 @@ for model in "${models[@]}"; do
   benches+=("$OUT/bench-$model.json")
 done
 
+# quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
+# reference is noted in quality.refs.
+quality() {
+  local n
+  if ! step "quality-$1" run "$DFIX/drive/quality" --model "model=$2" --on "$NAME"; then
+    say "quality $1: none ($(tail -n 2 "$OUT/quality-$1.txt" | tr '\n' ' ' | cut -c1-200))"; return 0
+  fi
+  n=$(runno "quality-$1")
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/quality-$1.json"
+  [[ $1 == bf16-* ]] || echo "${2%@*}@ $1 bf16-${2%@*}" | sed 's|bf16-[^ ]*/|bf16-|' >> "$OUT/quality.refs"
+}
 if [ -n "$DECODE$MAKE" ]; then
   read -ra pairs <<<"$DECODE"
-  declare -A pulled=()
+  # Each lane's bf16 reference for `quality`: its model's bf16 commit (`refs`, space-separated org/name@sha256:…; `model`;
+  # a make entry's own).
+  declare -A pulled=() BF=()
+  for r in $(param refs '') ${MODEL:+"$MODEL"}; do BF[${r%@*}]=$r; done
   for entry in ${MAKE//,/ }; do
     lane=${entry%%=*} from=$MODEL; [[ $entry != *=* ]] || from=${entry#*=}
+    BF[${from%@*}]=$from
     [ -n "${pulled[$from]:-}" ] || { step "pull-from-$lane" model install "$from" --on "$NAME" || fail "pull $from"; pulled[$from]=1; }
     step "make-$lane" model quantize "$from" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME" || fail "quantize $lane"
     c=$(made "make-$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
@@ -147,7 +162,18 @@ if [ -n "$DECODE$MAKE" ]; then
     else
       say "head reads $label: no count ($(tail -n 2 "$OUT/heads-$label.txt" | tr '\n' ' ' | cut -c1-200))"
     fi
+    quality "$label" "$ref"
   done
+  # The bf16 references last, each alone on the card (paged where it is larger), then every lane's top-1 agreement with
+  # its reference and both perplexities.
+  for name in "${!BF[@]}"; do
+    grep -qs "^${name}@" "$OUT/quality.refs" || continue
+    label=bf16-${name##*/}
+    step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
+    step "pull-$label" model install "${BF[$name]}" --on "$NAME" || fail "pull ${BF[$name]}"
+    quality "$label" "${BF[$name]}"
+  done
+  python3 "$DFIX/agreement.py" "$OUT" | tee -a "$R" "${GITHUB_STEP_SUMMARY:-/dev/null}"
 fi
 
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
