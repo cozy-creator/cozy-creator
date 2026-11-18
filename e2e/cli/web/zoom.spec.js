@@ -5,7 +5,8 @@
 // zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasVisible, focus, fixtureTool, themed } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, canvasPoint, canvasVisible, focus, fixtureTool, themed } = require('./fixtures');
+const { carry } = require('./geometry');
 const { ffmpeg, fit, leave } = require('./hands');
 
 const CLIP = { name: 'clip', width: 1280, height: 720 };
@@ -80,6 +81,19 @@ function panWent(seen, sign, what) {
   const back = drawn.findIndex((now, i) => i > 0 && [0, 1].some((axis) => (now[axis] - drawn[i - 1][axis]) * sign[axis] < -1));
   expect.soft(back, `${what}: drawn only the way the pointer went, never back (${drawn.map((one) => one.join(',')).join(' → ')})`).toBe(-1);
 }
+
+/** Every CSS transition the page runs from now, by what it moves and on what, looked for at every style or class change and every frame:
+ *  `stop()` returns them. With less motion asked for, a move is drawn as it's made: no transition (cl-1208). */
+const recordTransitions = (page) => page.evaluate(() => {
+  const seen = new Set();
+  const look = () => {
+    for (const one of document.getAnimations()) if (one instanceof CSSTransition) seen.add(`${one.transitionProperty} on ${one.effect?.target?.className || one.effect?.target?.tagName}`);
+  };
+  const observer = new MutationObserver(look);
+  observer.observe(document, { subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+  let raf = requestAnimationFrame(function frame() { look(); raf = requestAnimationFrame(frame); });
+  window.__transitionsStop = () => { observer.disconnect(); cancelAnimationFrame(raf); return [...seen]; };
+}).then(() => ({ stop: () => page.evaluate(() => window.__transitionsStop()) }));
 
 test('zoom', async ({ page, project, cli }) => {
   await cli.json('machine', 'use', 'local');
@@ -182,6 +196,26 @@ test('zoom', async ({ page, project, cli }) => {
     expect.soft(Number(await orbit.getAttribute('data-angle')), 'and turns nothing').toBeCloseTo(angle, 3);
     await page.mouse.dblclick(middle.x, y);
     await soft.poll(async () => (await view(page, '.orbit'))?.scale, { message: 'a double-click: the fit' }).toBe(1);
+    await page.emulateMedia({ reducedMotion: null });
+  });
+
+  // With less motion asked for, app.css gave every element a 0.01 ms transition on every property: each change anywhere (a pan, a carried
+  // box, the canvas moving) was a transition, drawn a frame late. Asked for less motion, a move is drawn as it's made, everywhere.
+  await test.step('less motion asked for: a box carried and the canvas panned run no transition', async () => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    if (await region.count()) await leave(page);
+    await fit(page);
+    const transitions = await recordTransitions(page);
+    const from = await canvasPoint(page, CLIP.name, 'title');
+    const was = (await canvasCard(page, CLIP.name)).body;
+    await carry(page, from, { x: from.x + 40, y: from.y + 160 });
+    await canvasIdle(page);
+    expect.soft(Math.round((await canvasCard(page, CLIP.name)).body.y - was.y), `${CLIP.name} carried down`).toBeGreaterThan(100);
+    const pane = await page.locator('.canvas-root').boundingBox();
+    await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+    for (let i = 0; i < 6; i++) await page.mouse.wheel(40, 30);
+    await canvasIdle(page);
+    expect.soft(await transitions.stop(), 'no transition as a box is carried and the canvas pans').toEqual([]);
     await page.emulateMedia({ reducedMotion: null });
   });
 
