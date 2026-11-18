@@ -1,0 +1,463 @@
+{
+ "seconds": 1800,
+ "sequences": [
+  {
+   "name": "p",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "chain/miyara-0.png",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: make her striped shirt red. Keep everything else exactly the same.",
+     "seed": 1551
+    }
+   ]
+  },
+  {
+   "name": "vae",
+   "tree": "pf",
+   "fn": "vae_roundtrip",
+   "start": "@p/g1",
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {},
+    {},
+    {},
+    {}
+   ]
+  },
+  {
+   "name": "vaefix",
+   "tree": "pf",
+   "fn": "vae_roundtrip",
+   "start": "@p/g1",
+   "flags": [
+    "--model",
+    "vae=madebyollin/texture-fix-vae@0.3.0"
+   ],
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {},
+    {},
+    {},
+    {}
+   ]
+  },
+  {
+   "name": "turbo",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "@p/g1",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  },
+  {
+   "name": "base",
+   "tree": "pf",
+   "fn": "generate",
+   "start": "@p/g1",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  },
+  {
+   "name": "reframe-keep",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "chain/miyara-0.png",
+   "steps": [
+    {
+     "prompt": "Edit <photo>: make her striped shirt red. Keep everything else exactly the same.",
+     "seed": 1551
+    },
+    {
+     "prompt": "Edit <photo>: make this a full body shot of the same woman standing in front of the same pink backdrop, showing her whole body down to her shoes. Keep her face, curly hair, expression and shirt the same.",
+     "seed": 1536,
+     "aspect_ratio": "5:8"
+    },
+    {
+     "prompt": "Edit <photo>: add small gold hoop earrings. Keep everything else exactly the same.",
+     "seed": 1552
+    },
+    {
+     "prompt": "Edit <photo>: make this a full body shot of the same woman standing in front of the same pink backdrop, showing her whole body down to her shoes. Keep her face, curly hair, expression and shirt the same.",
+     "seed": 1537,
+     "aspect_ratio": "5:8"
+    },
+    {
+     "prompt": "Edit <photo>: make her shoes white sneakers. Keep everything else exactly the same.",
+     "seed": 1554
+    }
+   ]
+  },
+  {
+   "name": "reframe-off",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "chain/miyara-0.png",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: make her striped shirt red. Keep everything else exactly the same.",
+     "seed": 1551
+    },
+    {
+     "prompt": "Edit <photo>: make this a full body shot of the same woman standing in front of the same pink backdrop, showing her whole body down to her shoes. Keep her face, curly hair, expression and shirt the same.",
+     "seed": 1536,
+     "aspect_ratio": "5:8"
+    },
+    {
+     "prompt": "Edit <photo>: add small gold hoop earrings. Keep everything else exactly the same.",
+     "seed": 1552
+    },
+    {
+     "prompt": "Edit <photo>: make this a full body shot of the same woman standing in front of the same pink backdrop, showing her whole body down to her shoes. Keep her face, curly hair, expression and shirt the same.",
+     "seed": 1537,
+     "aspect_ratio": "5:8"
+    },
+    {
+     "prompt": "Edit <photo>: make her shoes white sneakers. Keep everything else exactly the same.",
+     "seed": 1554
+    }
+   ]
+  },
+  {
+   "name": "turbofix",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "@p/g1",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "flags": [
+    "--model",
+    "vae=madebyollin/texture-fix-vae@0.3.0"
+   ],
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  },
+  {
+   "name": "turbosdpa",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "@p/g1",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "flags": [
+    "--attention-kernel",
+    "model/transformer=sdpa"
+   ],
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  },
+  {
+   "name": "p2",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "chain/summer-0.png",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "boxes": {
+    "crown": [
+     0.24,
+     0.14,
+     0.82,
+     0.38
+    ],
+    "face": [
+     0.38,
+     0.42,
+     0.7,
+     0.66
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: make all the roses in her flower crown white. Keep everything else exactly the same.",
+     "seed": 1561
+    }
+   ]
+  },
+  {
+   "name": "vae2",
+   "tree": "pf",
+   "fn": "vae_roundtrip",
+   "start": "@p2/g1",
+   "boxes": {
+    "crown": [
+     0.24,
+     0.14,
+     0.82,
+     0.38
+    ],
+    "face": [
+     0.38,
+     0.42,
+     0.7,
+     0.66
+    ]
+   },
+   "steps": [
+    {},
+    {},
+    {},
+    {}
+   ]
+  },
+  {
+   "name": "turbo2",
+   "tree": "pf",
+   "fn": "generate_turbo",
+   "start": "@p2/g1",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "boxes": {
+    "crown": [
+     0.24,
+     0.14,
+     0.82,
+     0.38
+    ],
+    "face": [
+     0.38,
+     0.42,
+     0.7,
+     0.66
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  },
+  {
+   "name": "base80",
+   "tree": "pf",
+   "fn": "generate",
+   "start": "@p/g1",
+   "fields": {
+    "keep_unchanged": false,
+    "steps": 80
+   },
+   "boxes": {
+    "shirt": [
+     0.32,
+     0.62,
+     0.7,
+     0.97
+    ],
+    "eyes": [
+     0.4,
+     0.26,
+     0.58,
+     0.38
+    ]
+   },
+   "steps": [
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1581
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1582
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1583
+    },
+    {
+     "prompt": "Edit <photo>: keep everything exactly the same.",
+     "seed": 1584
+    }
+   ]
+  }
+ ]
+}
