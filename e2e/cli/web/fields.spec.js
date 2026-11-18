@@ -12,6 +12,8 @@
 const { test, expect, themed, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
+const { mkdirSync } = require('fs');
+const { join } = require('path');
 
 const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
@@ -206,9 +208,20 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     }));
     expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
     // Every slot the tool declares is a row (Qwen shows one prompt helper: the one for words, as nothing here edits a picture), and each opens.
+    // Matte (a cutout's BiRefNet, se-154) is declared on every Qwen tool; nothing typed says a request is a cutout, so it is always a row.
     const rows = picker.locator('button[data-model-slot]');
-    await expect(rows, 'one row per slot').toHaveCount(5);
-    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander_t2i', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    await expect(rows, 'one row per slot').toHaveCount(6);
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot'))), 'its slots, in order').toEqual(['expander_t2i', 'model', 'text_encoder', 'vae', 'turbo_lora', 'matte']);
+    const shots = join(process.env.OUT, 'web', 'fields');
+    mkdirSync(shots, { recursive: true });
+    await page.screenshot({ path: join(shots, 'qwen-model-picker.png') });
+    await picker.locator('button[data-model-slot="matte"]').click();
+    // cl-1258: Matte lists its default and nothing else; it never says it has no choices above the one it offers.
+    const matte = picker.locator('section.model-picker-slot[data-model-slot="matte"]');
+    await expect(matte.locator('.model-picker-choices [role="radio"]'), 'Matte: its default, listed').toHaveCount(1);
+    await expect.soft(matte.getByText("Compatible choices aren't available for this slot."), "Matte: no 'no choices' line over its default").toHaveCount(0);
+    await page.screenshot({ path: join(shots, 'qwen-model-picker-matte.png') });
+    await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
     for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
       const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
@@ -220,6 +233,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
+    await page.screenshot({ path: join(shots, 'qwen-model-picker-vae.png') });
     await page.keyboard.press('Escape');
     await expect(picker, 'Escape closes it').toHaveCount(0);
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();

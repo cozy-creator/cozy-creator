@@ -120,8 +120,9 @@ project_cell() {
     "$P/edit.otio" > /dev/null 2>&1 || cli_fail "edit.otio does not cut one's frames 0-96: $(head -c 300 "$P/edit.otio" 2>&1)"
   cli_page render "$P" --on "$M" lead > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
   project_status "$P" project-newest.json
-  jq -e '[.project.stale[].name] | sort == ["one", "two"]' project-newest.json > /dev/null \
-    || cli_fail "a new newest lead put out of date other than one and two: $(jq -c .project.stale project-newest.json)"
+  # A new lead moves what one and two read, and nothing is out of date (cl-1192): every box still stands on a take.
+  jq -e '(.project.stale == null) and ([.project.assets[] | select(.standing != "current")] | length == 0)' project-newest.json > /dev/null \
+    || cli_fail "a new lead put something out of date: $(jq -c '[.project.stale, [.project.assets[] | {name, standing}]]' project-newest.json)"
   cli_page approve "$P" lead 2 > project-approve.log 2>&1 || cli_fail "approve lead 2: $(tail -c 300 project-approve.log)"
   cli_page render "$P" --on "$M" --approve place > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
   project_status "$P" project-status-2.json

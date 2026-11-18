@@ -53,6 +53,7 @@ parse "$@"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
+. "$(dirname "$0")/since.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
 . "$(dirname "$0")/harness.sh"
@@ -62,6 +63,7 @@ parse "$@"
 . "$(dirname "$0")/hubdown.sh"
 . "$(dirname "$0")/overhead.sh"
 . "$(dirname "$0")/grants.sh"
+. "$(dirname "$0")/heldmemo.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -96,7 +98,7 @@ step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is no
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on, and so does a failed web cell (fixtures.js `leftovers`):
 # without them a web lane's artifact held nothing of what Calcifer planned or installed (account-rent, e2e 44011938933).
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | prefetch | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs | disk-room) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -503,6 +505,7 @@ WEB_1=(
   spacing
   turbo-kept
   windows
+  unchanged
 )
 WEB_2=(
   fields
@@ -523,6 +526,7 @@ WEB_2=(
   zoom
   swap-words
   playback
+  steady-face
 )
 WEB_3=(
   focus
@@ -614,6 +618,16 @@ WEB_NATIVE=(
 )
 web_cells=()
 web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }
+# in_lanes <cell> <lane>...: whether one of those lists above runs <cell>.
+in_lanes() {
+  local cell=$1 lane cells
+  shift
+  for lane in "$@"; do
+    eval "cells=\" \${$lane[*]-} \""
+    case $cells in *" $cell "*) return 0 ;; esac
+  done
+  return 1
+}
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
@@ -642,6 +656,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    lora_slot
     ltx_lora
     ltx_msr
     second_project
@@ -678,6 +693,7 @@ case $SHARD in
     machine_show_runs
     writes_once
     answers_while_committing
+    held_memo
     project_stream
     agent_render
     agent_api
@@ -724,12 +740,15 @@ case $SHARD in
   executors) parts="
     second_executor
     lifetime
+    service_killed
     kept_preparing
     released_project
     update
     installed_follow
     remove
   " ;;
+  # A run whose machine's service died under it says so in one plain line (cl-1268), alone.
+  service-killed) parts="service_killed logs" ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
   # Paul's no-traces invariant on this runner's OS (macOS, Windows): containment's lock scans without its browser or root (cl-984).
   notraces) parts="no_traces logs" ;;
@@ -739,6 +758,8 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
   answers) parts="answers_while_committing logs" ;;
+  # A run repeated on another computer's machine is answered from its held memo (cl-1225): a stand-in, three runs.
+  held-memo) parts="held_memo logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
@@ -766,6 +787,8 @@ case $SHARD in
   " ;;
   # That rental alone, by dispatch.
   slow-link) parts="slow_link logs" ;;
+  # A LoRA naming no slot on the slot that takes LoRAs (cl-1241), by dispatch.
+  lora-slot) parts="lora_slot logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # What a request with two prompt enhancers fetches, and when (cl-1101): the one its function's rule names (cl-1103).
@@ -775,8 +798,13 @@ case $SHARD in
   # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
   machine-gpus) parts="gpu_use_follows logs" ;;
   # A render or run whose models this computer's disk has no room for waits or is refused before any of them downloads, saying how
-  # much room it lacks and the rental instead; a computer with room takes it (cl-1175).
-  disk-room) parts="disk_room logs" ;;
+  # much room it lacks and the rental instead; a computer with room takes it (cl-1175). One that fits once an idle executor's model
+  # goes is sent, and that model evicted for it (cl-1235).
+  disk-room) parts="
+    disk_freeable
+    disk_room
+    logs
+  " ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="
     estimate_line
@@ -796,8 +824,10 @@ case $SHARD in
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's; local code is carried to a fresh
-  # machine, which its box then says is ready; a failed guess is tried again or says why it stays failed.
-  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry logs" ;;
+  # machine, which its box then says is ready; a failed guess is tried again or says why it stays failed; an encrypted project's
+  # draft doesn't go ahead to a computer added by address, a plain one's does, nor is its job waiting on one machine prepared there
+  # (cl-1123).
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry prefetch_sealed prefetch_sealed_demand logs" ;;
   # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
   prefetch-retry) parts="prefetch_retry logs" ;;
   entrypoints) parts="entrypoints open_outside hint_commands" ;;
@@ -811,6 +841,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    lora_slot
     ltx_lora
     ltx_msr
     second_project
@@ -877,6 +908,8 @@ case $SHARD in
   hold-wins) parts="hold_wins logs" ;;
   # A dev home's moves to the open RC never hold up work: none from a request, and a pending one yields to a render (cl-1201).
   rc-moves) parts="rc_moves logs" ;;
+  # A render held behind a rental's update keeps it past its idle deadline (cl-1236): by dispatch.
+  rc-held) parts="rc_held_alone logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
@@ -1004,6 +1037,8 @@ case $SHARD in
   projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
+  # A machine log's time window cut on the machine: exactly its lines, and only they, cross (cl-1216). About 1 min.
+  log-since) parts="log_since logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
   projectvault-purge-due) parts="vault_purge_due logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
@@ -1011,6 +1046,8 @@ case $SHARD in
   projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
   projectdb-render) parts="agent_render logs" ;;
+  # The agent API alone (cl-956), with the project part's fixtures: its apply's next step and the render it names (cl-1192).
+  projectdb-agent) parts="agent_api logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
   # A lock passing over a release no rental can install (cl-1011).
@@ -1107,6 +1144,9 @@ case $SHARD in
   web-*)
     if [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
       web_cells=("${SHARD#web-}"); parts="web_lane logs"
+      # A cell only the 2D lanes run (opens, large, nogpu) runs alone as they run it: its bars are the 2D path's (cl-1226: opens alone
+      # on the runner's software WebGL took 885–1,530 ms to a warm preview against its 1,000 ms bar, 600–700 ms in web-2d-solo).
+      if in_lanes "${SHARD#web-}" WEB_2D WEB_2D_SOLO && ! in_lanes "${SHARD#web-}" WEB_1 WEB_2 WEB_3 WEB_SOLO WEB_ENGINES; then export WEB_RENDERER=2d; fi
     else
       [ -f "$(dirname "$0")/web/${SHARD#web-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
       WEB_ALONE_CELL=${SHARD#web-}; parts="tools_read web_alone logs"

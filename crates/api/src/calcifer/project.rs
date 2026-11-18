@@ -302,12 +302,9 @@ pub struct State {
     /// What is running and what is queued, in the order it goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Queued>,
-    /// Assets with no state and no version yet.
+    /// Assets with no version yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
-    /// Assets out of date, and why.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stale: Vec<Stale>,
     /// Assets the project keeps versions of that it no longer names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub orphans: Vec<Orphan>,
@@ -344,14 +341,6 @@ pub struct State {
     pub appearance: Option<super::Appearance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered: Option<super::ProjectEventCursor>,
-}
-
-/// An asset out of date, and why.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Stale {
-    pub name: String,
-    pub why: String,
 }
 
 /// What reading a project said: of the asset or entity `name`, or of the project as a whole.
@@ -711,10 +700,8 @@ pub struct Cut {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
-    /// It has a state: a pin, or a version with these inputs.
+    /// It has a state: its approved version, else its newest.
     Current,
-    /// It has versions, none with these inputs.
-    OutOfDate,
     /// A run is making a version of it now.
     Making,
     /// It has no state and no version to show for it. Also what a reader shows of a standing it doesn't know.
@@ -792,7 +779,7 @@ pub struct Asset {
     /// The function that made its state, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
-    /// For people, in its own noun: current, no take yet, out of date and why, making (run N), …
+    /// For people, in its own noun: approved take 2, take 3, no take yet, rendering (run N), …
     pub status: String,
     /// What it reads by a mention, in the order its text says them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -806,9 +793,6 @@ pub struct Asset {
     /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<Error>,
-    /// A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed: Vec<String>,
     /// The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
     /// A pin lists them too, for its text: it stands, and only fails if it is run again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1015,9 +999,6 @@ pub struct VersionMoved {
     /// What the asset stands on now, else its newest. None: it has none left.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stands: Option<u32>,
-    /// What is out of date now and wasn't.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stale: Vec<String>,
     /// What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_by: Vec<String>,
@@ -1083,9 +1064,9 @@ pub struct Version {
     pub fields: Option<Map<String, Value>>,
 }
 
-/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
-/// only if that has no state. It joins the project's walk, which sends each once what it reads is settled; `on` lists the machines
-/// they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and nothing else: each
+/// reads what it reads has now (cl-1192). It joins the project's walk, which sends each once this render's takes of what it reads have
+/// landed; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Runs {
@@ -1100,10 +1081,6 @@ pub struct Runs {
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
-    /// being made (it's joined), and what they read with no state first, a cut's too.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub missing: bool,
     /// Pick up from here: one box's new take goes on from this take's frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<Pickup>,
@@ -1222,7 +1199,7 @@ pub struct Approve {
     pub version: String,
 }
 
-/// What an approve pinned: the asset's version and files, and what that put out of date.
+/// What an approve pinned: the asset's version and files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Approved {
@@ -1233,8 +1210,6 @@ pub struct Approved {
     pub files: BTreeMap<String, File>,
     /// The file people mean by it.
     pub path: String,
-    /// What this put out of date.
-    pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// What `If-Match` names from here on.
@@ -1242,14 +1217,14 @@ pub struct Approved {
     pub etag: Option<String>,
 }
 
-/// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
+/// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so it stands on its newest version again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Unpin {
     pub name: String,
 }
 
-/// What an unpin left: the version it had pinned and what that put out of date.
+/// What an unpin left: the version it had pinned.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Unpinned {
@@ -1257,9 +1232,7 @@ pub struct Unpinned {
     /// The version it had pinned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
-    /// What this put out of date, itself too.
-    pub stale: Vec<String>,
-    /// What making the tools that read it now said.
+    /// What settling it said.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// What `If-Match` names from here on.

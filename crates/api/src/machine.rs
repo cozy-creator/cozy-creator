@@ -310,6 +310,28 @@ pub struct LogLines {
     pub text: String,
 }
 
+/// When a log's line was written, unix ms: its first word, an RFC 3339 instant (TensorD's own log) or Unix seconds (the TensorFS
+/// and memory logs). A line that carries none goes with the line before it.
+pub fn log_stamp(line: &str) -> Option<i64> {
+    let word = line.split_whitespace().next()?;
+    match word.parse::<jiff::Timestamp>() {
+        Ok(at) => Some(at.as_millisecond()),
+        Err(_) => word.parse::<f64>().ok().map(|seconds| (seconds * 1000.0) as i64),
+    }
+}
+
+/// A log's `text` from its first line stamped at or after `since_ms` on (`GET /v1/logs/{name}?since_ms=`).
+pub fn log_since(text: &str, since_ms: i64) -> &str {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if log_stamp(line).is_some_and(|stamped| stamped >= since_ms) {
+            return &text[at..];
+        }
+        at += line.len();
+    }
+    ""
+}
+
 /// Raw JSON, kept as its exact text: canonical bytes and 64-bit integers survive.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]

@@ -178,8 +178,11 @@ disk-room = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/plan.rs", 
   "crates/calcifer/src/runs/mod.rs", "crates/tensord/src/reclaim.rs", "crates/tensord/src/api/machine_status.rs",
   "crates/cli/src/run/follow.rs", "web/app/src/canvas/RunFace.tsx", "e2e/cli/disk.sh", "e2e/cli/machineset.sh", "e2e/cli/web/room.js"]
 lines = ["crates/tensord/src/line.rs", "crates/tensord/src/queue.rs", "crates/tensord/src/activity.rs", "e2e/cli/lines.sh"]
+log-since = ["crates/platform/src/gzip.rs", "e2e/cli/since.sh"]
 answers = ["crates/tensord/src/execution.rs", "crates/tensord/src/api/machine_status.rs", "crates/tensord/src/runs/read.rs",
   "e2e/cli/control.sh", "e2e/cli/slow-sync.c"]
+held-memo = ["crates/tensord/src/journal.rs", "crates/tensord/src/journal/**", "crates/tensord/src/objects.rs",
+  "crates/tensord/src/project_objects.rs", "crates/tensord/src/call_memo.rs", "e2e/cli/heldmemo.sh", "e2e/cli/project/counted.py"]
 slow = ["crates/calcifer/src/slow.rs", "crates/calcifer/src/store*", "crates/calcifer/src/store/**", "crates/calcifer/src/hub/**",
   "e2e/cli/slow.sh", "e2e/cli/statedb.sh"]
 typed-calls = ["crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs", "e2e/cli/typedcalls.sh", "e2e/cli/typed-calls/**"]
@@ -187,7 +190,7 @@ dev-start = ["crates/calcifer/src/maintenance_source.rs", "crates/calcifer/src/u
 hold-wins = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/floor.rs",
   "crates/tensord/src/machine/update.rs", "crates/tensord/src/api/machine_update.rs", "e2e/cli/holdwins.sh", "e2e/cli/uplink.py", "e2e/cli/rentalself/**"]
 rc-moves = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/lib.rs", "crates/calcifer/src/store.rs",
-  "e2e/cli/rcmoves.sh", "e2e/cli/rcmoves/**", "e2e/cli/rentalself/**"]
+  "crates/calcifer/src/floor.rs", "crates/tensord/src/machine/lifecycle.rs", "e2e/cli/rcmoves.sh", "e2e/cli/rcmoves/**", "e2e/cli/rentalself/**"]
 projectvault-nofuse = ["crates/project-mount/**", "crates/project-vault/**", "e2e/cli/projectvault.sh"]
 projectvault-static = ["crates/project-mount/**", "e2e/cli/projectvault.sh", "e2e/cli/install-vault-driver.sh", "e2e/vault-provider/**"]
 web-1 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",

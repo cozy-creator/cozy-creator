@@ -10,7 +10,8 @@
 #      44236236787: every source install warned "Failed to parse: `cozy-runtime>=0.48.0.dev2316+ge1ab5640,==0.48.*`", PEP 440
 #      taking no commit after `>=`, and ran on the lock's unasked): no run warns of its lock's Runtime, and it runs on that build.
 #   6. patch:    what that requirement asks (cl-795: a patch is fixes): a package alone in its folder, its lock held to the oldest
-#      TensorFS of its series, runs on the series' newest; its lock, written into its folder, still names the oldest.
+#      TensorFS of its series, runs on the series' newest; its lock, written into its folder, still names the oldest. A lock on the
+#      open RC's TensorFS build (xs-216), a series with no release yet, has nothing older to be held to.
 # params: none.
 . "$(dirname "$0")/lib.sh"
 V=$(cozy --version | awk '{print $2}')
@@ -160,7 +161,10 @@ NEWEST=$HELD
 locked() { awk -v row="name = \"$1\"" '$0 == row { getline; gsub(/^version = "|"$/, ""); print; exit }' "$ALONE/patch/uv.lock" 2> /dev/null; }
 OLDEST=$(curl -fsSL --retry 3 https://pypi.org/pypi/tensorfs/json | jq -r '.releases | to_entries[] | select(.value | length > 0 and (all(.yanked) | not)) | .key' |
   grep -xE "$(cut -d. -f1-2 <<<"$NEWEST" | sed 's/\./\\./')\.[0-9]+" | sort -V | head -1)
-if [ -z "$NEWEST" ] || [ -z "$OLDEST" ]; then
+if [[ $NEWEST == *.dev* ]]; then
+  # Its lock takes the open RC's TensorFS beside the RC's Runtime, a build of the next minor (xs-216): no release of it to hold the lock to.
+  say "patch: TensorFS $NEWEST is the open RC's build, of a series with no release yet, so no lock is older"
+elif [ -z "$NEWEST" ] || [ -z "$OLDEST" ]; then
   say "FAIL patch: its environment's TensorFS (${NEWEST:-none}) or PyPI's releases of its series weren't read"; RC=1
 elif [ "$OLDEST" = "$NEWEST" ]; then
   say "patch: TensorFS $NEWEST is its series' only release, so no lock is older"

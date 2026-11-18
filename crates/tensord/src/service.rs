@@ -6,10 +6,11 @@ use crate::{
     execution::Engine,
     gpu_service::{Plan, Pool},
     journal::Execution,
+    others::{Others, Read},
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     io,
     path::Path,
@@ -365,8 +366,10 @@ impl Service {
             if let Err(error) = self.dispatch_ready() {
                 tracing::warn!("dispatch observation: {error}");
             }
-            // Dispatch wakes on events only: an arrival, an exit, a cancel, freed room.
-            self.engine.wait_activity(epoch, None);
+            // Dispatch wakes on events: an arrival, an exit, a cancel, freed room; and when a told GPU wait says its next minute
+            // (cl-1233), as nothing else does while the runs ahead only compute.
+            let due = self.pool().and_then(|pool| pool.told_due());
+            self.engine.wait_activity(epoch, due.map(|due| due.saturating_duration_since(std::time::Instant::now())));
         }
     }
     /// Sweep disk caches each `SWEEP_EVERY` (what each keeps goes once unused that long), the first once its packages are
@@ -376,7 +379,13 @@ impl Service {
         platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
         let mut swept: Option<std::time::Instant> = None;
         loop {
-            let asked = crate::reclaim::wait_asked(swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())));
+            let mut asked = crate::reclaim::wait_asked(swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())));
+            if !asked.whole && asked.reclaimable > 0 {
+                // Asks for `reclaimable` alone settle a moment: a busy executor's calls back to back are one measure.
+                std::thread::sleep(crate::reclaim::SETTLE);
+                let more = crate::reclaim::wait_asked(Some(std::time::Duration::ZERO));
+                asked = crate::reclaim::Asked { whole: more.whole, reclaimable: asked.reclaimable.saturating_add(more.reclaimable) };
+            }
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
@@ -386,7 +395,8 @@ impl Service {
                         // What no event says (a kernel compiled, an update's Runtime) is walked again each sweep.
                         crate::reclaim::environments_changed();
                     }
-                    if due || asked {
+                    let light = !due && !asked.whole && asked.reclaimable > 0 && service.measure_reclaimable(asked.reclaimable);
+                    if (due || asked.whole || asked.reclaimable > 0) && !light {
                         service.measure_usage();
                     }
                 }
@@ -398,8 +408,26 @@ impl Service {
         let publisher = self.publisher.lock().unwrap().clone();
         let generations = self.catalog.root();
         if let Some(publisher) = publisher {
-            crate::reclaim::measure_usage(publisher.store(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
+            let engine = generations.parent().unwrap_or(generations);
+            let (idle, loaded) = self.letting();
+            let released = crate::reclaim::every_idle(&loaded);
+            let letting = crate::reclaim::Letting { ended: &idle, loaded: &loaded, released: &released };
+            crate::reclaim::measure_usage(publisher.store(), engine, Some(&publisher.uv_cache()), &letting);
         }
+    }
+    /// Status's `reclaimable` alone, for `asks` asks (`reclaim::ask_reclaimable`); false when a whole measure must come first.
+    fn measure_reclaimable(&self, asks: u32) -> bool {
+        let Some(publisher) = self.publisher.lock().unwrap().clone() else { return true };
+        let (idle, loaded) = self.letting();
+        let released = crate::reclaim::every_idle(&loaded);
+        let letting = crate::reclaim::Letting { ended: &idle, loaded: &loaded, released: &released };
+        crate::reclaim::measure_reclaimable(publisher.store(), &letting, asks)
+    }
+    /// The processes of the machine's idle executors, and what each executor that takes `release` has loaded: what a download
+    /// may let go (`reclaim::frees`).
+    fn letting(&self) -> (BTreeSet<u32>, BTreeMap<u32, crate::gpu_service::LoadedModels>) {
+        let idle = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
+        (idle, self.pool().map(|pool| pool.executor_models()).unwrap_or_default())
     }
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
     /// pool. Each environment no installation or unfinished run names any more is deleted,
@@ -443,19 +471,20 @@ impl Service {
     }
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
-    /// run objects. Then the idle executors whose open models alone keep the room it needs end
-    /// (`end_idle_for_disk`), so the store's eviction can take those models. True when any ended.
+    /// run objects. Then the executors whose open models alone keep the room it needs let them go
+    /// (`free_executor_holds`), so the store's eviction can take those models. True when any did.
     pub(crate) fn reclaim_for(&self, incoming: u64) -> bool {
         self.sweep(incoming, false);
         let Some(store) = self.store() else {
             return false;
         };
-        !self.end_idle_for_disk(&store, incoming).is_empty()
+        !self.free_executor_holds(&store, incoming).is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the
     /// machine's garbage, then the least recently used models no queued or running job holds,
-    /// those idle executors hold open too (ended first), never one in use. What it evicted is the
+    /// those executors hold open too (an idle one ended, a busy one's idle construction let go
+    /// first), never one in use. What it evicted is the
     /// run's warning. Refused, with the sizes and what would hold it, only when even all of that
     /// would not fit; a disk it cannot measure is said and not judged.
     pub(crate) fn room_for(&self, run: &str, missing: u64) -> Result<(), String> {
@@ -488,8 +517,10 @@ impl Service {
                 return Ok(());
             }
         };
-        let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().flat_map(|(pids, _)| pids).collect()).unwrap_or_default();
-        let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
+        let (idle, loaded) = self.letting();
+        let released = crate::reclaim::every_idle(&loaded);
+        let letting = crate::reclaim::Letting { ended: &idle, loaded: &loaded, released: &released };
+        let evictable = crate::reclaim::room_freed(&room, &letting);
         // A disk below its reserve lacks that too, as the store judges each admit.
         let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
         let short = missing + below - now.min(missing);
@@ -505,7 +536,7 @@ impl Service {
                 pid if pid == me => "this machine's queued or running renders".to_owned(),
                 pid => format!("process {pid}"),
             };
-            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !lane.holders.iter().all(|pid| idle.contains(pid))))
+            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !crate::reclaim::frees(lane, &letting)))
                 .map(|lane| (room.freed(|l| std::ptr::eq(l, lane)).saturating_sub(room.spare), lane))
                 .filter(|(bytes, _)| *bytes > 0)
                 .map(|(bytes, lane)| (bytes, format!("{} ({}, held by {})", lane.name, size(bytes), lane.holders.iter().map(|&pid| who(pid)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "))))
@@ -519,13 +550,16 @@ impl Service {
                 size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }
-        let ended = self.end_idle_for_disk(&store, missing);
+        // The machine's figure beside Status's, which the quote judged it by: one rule (`reclaim::frees`), so they agree.
+        tracing::info!(run = run, "disk: room check: {} short for its models, {} can be freed here (Status's figure: {})", size(short),
+            size(evictable), crate::reclaim::usage().map_or_else(|| "none yet".to_owned(), |usage| size(usage.reclaimable)));
+        let ended = self.free_executor_holds(&store, missing);
         match store.make_room(missing) {
             Ok(made) if !made.evicted.is_empty() => {
                 let each: Vec<String> = made.evicted.iter()
                     .map(|e| format!("{} ({}, unused for {})", e.name, size(e.bytes), api::calcifer::clock(e.idle.as_millis() as i64)))
                     .collect();
-                let idle = if ended.is_empty() { "" } else { ", after closing the idle processes that had them open" };
+                let idle = if ended.is_empty() { "" } else { ", after the processes that had them open let them go" };
                 warn(format!("The disk was {} short for this render's models, so Cozy removed {}{idle}.", size(short), each.join(", ")));
             }
             Ok(_) => {}
@@ -534,46 +568,114 @@ impl Service {
         Ok(())
     }
 
-    /// Ends idle executors, least recently used first, while the models only they hold open
-    /// would give the disk what it lacks for `incoming` more bytes and its reserve, as the store
-    /// judges an admit (0: one of unknown length, or none): an executor ends only when its holds
-    /// alone keep some of that room, never one a queued or running job also holds. The models
-    /// they held, by name.
-    fn end_idle_for_disk(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
+    /// Executors let go of models, while those only they hold open would give the disk what it lacks for `incoming` more bytes
+    /// and its reserve, as the store judges an admit (0: one of unknown length, or none): each executor, idle or busy, lets go
+    /// of constructions none of its calls runs on (tfs-303: one that ran disk-1 and runs disk-5 kept both, and a run was refused
+    /// disk-1's room), its process kept; then idle executors end, least recently used first, for what that doesn't free; never
+    /// a model a queued or running job also holds. Waits, as long as `RELEASE_WAIT`, for what they let go to leave the store's
+    /// holds. The models they held, by name.
+    fn free_executor_holds(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
         let Some(pool) = self.pool() else {
             return vec![];
         };
         let idle = pool.idle_executors();
+        let busy = pool.executor_models();
         // Below its reserve the disk lacks room for any write (kamitsure, 11-16: its idle LTX stayed while outputs went).
         let need = crate::reclaim::measure(store.root()).map_or(0, |disk| (disk.reserve() + incoming.max(1)).saturating_sub(disk.available));
-        if idle.is_empty() || need == 0 {
+        if (idle.is_empty() && busy.is_empty()) || need == 0 {
             return vec![];
         }
         let room = match store.room() {
             Ok(room) => room,
             Err(error) => {
-                tracing::warn!("judging the room idle executors hold: {error}");
+                tracing::warn!("judging the room executors hold: {error}");
                 return vec![];
             }
         };
-        let freed = |ended: &BTreeSet<u32>| room.freed(|lane| lane.holders.iter().all(|pid| ended.contains(pid)));
-        let (mut ended, mut names) = (BTreeSet::new(), vec![]);
-        let mut can = freed(&ended);
+        type Released = BTreeSet<(u32, String)>;
+        let freed = |ended: &BTreeSet<u32>, released: &Released| crate::reclaim::room_freed(&room, &crate::reclaim::Letting { ended, loaded: &busy, released });
+        let (mut ended, mut released, mut names) = (BTreeSet::new(), Released::new(), vec![]);
+        let mut can = freed(&ended, &released);
+        // First each executor, idle or busy, lets go of constructions none of its calls runs on: its process stays warm and
+        // keeps what the disk doesn't need (Paul: keep weights resident while there's room).
+        for (pid, models) in &busy {
+            for construction in models.idle.keys() {
+                if can >= need {
+                    break;
+                }
+                let mut with = released.clone();
+                with.insert((*pid, construction.clone()));
+                let more = freed(&ended, &with);
+                if more > can {
+                    (released, can) = (with, more);
+                }
+            }
+            // A model two idle constructions read goes only with both; then each that frees nothing more stays.
+            if can < need {
+                let mut with = released.clone();
+                with.extend(models.idle.keys().map(|c| (*pid, c.clone())));
+                let more = freed(&ended, &with);
+                if more > can {
+                    for construction in models.idle.keys() {
+                        let pair = (*pid, construction.clone());
+                        with.remove(&pair);
+                        if freed(&ended, &with) < more {
+                            with.insert(pair);
+                        }
+                    }
+                    (released, can) = (with, more);
+                }
+            }
+        }
+        // Then an idle executor ends, for what letting go doesn't free: one whose Runtime takes no `release`, or what it holds
+        // for no construction.
         for (pids, _) in idle {
             if can >= need {
                 break;
             }
             let mut with = ended.clone();
             with.extend(pids.iter().copied());
-            let more = freed(&with);
+            let more = freed(&with, &released);
             // The leader's end ends its whole group.
-            if more > can && pool.end_idle_executor(pids[0]) {
-                names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
-                (ended, can) = (with, more);
+            if more > can {
+                if pool.end_idle_executor(pids[0]) {
+                    names.extend(room.lanes.iter().filter(|lane| pids.iter().any(|pid| lane.holders.contains(pid))).map(|lane| lane.name.clone()));
+                    (ended, can) = (with, more);
+                } else {
+                    // Taken for a call as it was listed idle (e2e 44063971753): what it lets go of above stays its answer.
+                    tracing::info!("executor {} was taken for a call before it could end: it lets go of what that call doesn't read", pids[0]);
+                }
             }
         }
+        released.retain(|(pid, _)| !ended.contains(pid));
+        let mut waits: Vec<(u32, BTreeSet<String>)> = vec![];
+        for (pid, models) in &busy {
+            let which: Vec<String> = released.iter().filter(|(of, _)| of == pid).map(|(_, c)| c.clone()).collect();
+            if which.is_empty() || !pool.release_constructions(*pid, &which) {
+                continue;
+            }
+            let headers: BTreeSet<String> = which.iter().flat_map(|c| models.idle[c].iter().cloned()).collect();
+            names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(pid) && headers.iter().any(|h| lane.keeps(h))).map(|lane| lane.name.clone()));
+            waits.push((*pid, headers));
+        }
         if !names.is_empty() {
-            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(need), names.join(", "));
+            tracing::warn!("the disk is short of {}: executors let go of {}", crate::reclaim::size(need), names.join(", "));
+        } else {
+            let busy: Vec<String> = busy.iter().map(|(pid, models)| format!("{pid}: {} idle", models.idle.len())).collect();
+            tracing::info!("the disk is short of {}: no executor let go of a model ({} free without one; executors {})",
+                crate::reclaim::size(need), crate::reclaim::size(can), busy.join(", "));
+        }
+        // What a busy executor let go leaves the store's holds once it closes them.
+        let deadline = std::time::Instant::now() + RELEASE_WAIT;
+        while !waits.is_empty() && std::time::Instant::now() < deadline {
+            let Ok(room) = store.room() else { break };
+            waits.retain(|(pid, headers)| room.lanes.iter().any(|lane| lane.holders.contains(pid) && headers.iter().any(|h| lane.keeps(h))));
+            if !waits.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        for (pid, _) in &waits {
+            tracing::warn!("process {pid} still held the models it was told to let go {} s later: they stay", RELEASE_WAIT.as_secs());
         }
         names
     }
@@ -613,7 +715,7 @@ impl Service {
                 if disk()?.short().is_some() {
                     // An idle executor's models go before any held output (kamitsure kept its idle LTX's 71.5 GB and let outputs go).
                     if let Some(store) = self.store() {
-                        self.end_idle_for_disk(&store, 0);
+                        self.free_executor_holds(&store, 0);
                     }
                     let (count, bytes) = calls.make_room()?;
                     swept.add(crate::reclaim::Kind::Object, count, bytes);
@@ -770,7 +872,7 @@ impl Service {
                     } else if invocation.degree > 0 && gpu_fenced {
                         "waiting for an earlier process to let go of the GPUs".to_owned()
                     } else if cpu_full {
-                        self.cpu_wait(&holders)
+                        self.cpu_wait(&record, &holders)
                     } else if invocation.degree > 0 {
                         "waiting for a free GPU".to_owned()
                     } else {
@@ -798,14 +900,15 @@ impl Service {
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
     }
-    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them, by their callers' ids,
-    /// which each caller names as people know them (`waiting for LAB2-12 to finish with this machine's CPU`).
-    fn cpu_wait(&self, holders: &[Execution]) -> String {
-        let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
-        match named.as_slice() {
-            [] => "waiting for this machine's CPU to free up".to_owned(),
-            [one] => format!("waiting for {one} to finish with this machine's CPU"),
-            [rest @ .., last] => format!("waiting for {} or {last} to finish with this machine's CPU", rest.join(", ")),
+    /// What deviceless run `record` waits for while this machine's CPU slots are full: the runs holding them as its readers hear them
+    /// (`others`, cl-1223), by their callers' ids, which each caller names as people know them (`waiting for LAB2-12 to finish with
+    /// this machine's CPU`), and another project's only as that.
+    fn cpu_wait(&self, record: &Execution, holders: &[Execution]) -> String {
+        let ids: Vec<(String, &Execution)> = holders.iter().map(|holder| (self.engine.caller_id(&holder.id), holder)).collect();
+        let reads = |id: &str| ids.iter().find(|(held, _)| held == id).map_or(Read::No, |(_, holder)| crate::others::read_between(record, holder));
+        match Others::of(ids.iter().map(|(id, _)| id), reads).said("or") {
+            None => "waiting for this machine's CPU to free up".to_owned(),
+            Some(holders) => format!("waiting for {holders} to finish with this machine's CPU"),
         }
     }
     /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes. A project's run, or a
@@ -866,6 +969,9 @@ impl Service {
         pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, width, claims, calls, admit)
     }
 }
+
+/// The most `free_executor_holds` waits for what busy executors let go to leave the store's holds.
+const RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What a waiting reason says without its counts (`52GB to download`, `215MB of 18GB`, `305 of 484 pieces`): its words.
 fn gist(why: &str) -> String {

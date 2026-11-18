@@ -14,7 +14,7 @@ use std::{
 use api::{
     calcifer::{Component, MachineKind, MachineUpdate, Note, NoteLevel, Run, Status},
     error::{Error, Kind},
-    prerelease,
+    prerelease::{self, Build},
     release::{series, Bound},
 };
 use api::hub::types::Software;
@@ -42,6 +42,9 @@ pub(crate) struct Released {
 }
 
 static RELEASED: Mutex<Option<(Instant, Arc<Vec<Released>>)>> = Mutex::new(None);
+
+/// When `own_runtime` last found PyPI unreachable.
+static UNREACHED: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// What each Runtime release requires of TensorFS, as PyPI said it once: a release never changes.
 static TENSORFS: Mutex<BTreeMap<String, Option<VersionSpecifiers>>> = Mutex::new(BTreeMap::new());
@@ -153,12 +156,15 @@ impl Upgrade {
 impl Machines {
     /// The Runtimes `name` (on `frame`) can move to for a package release on this cozy's line: PyPI's that its TensorFS's protocol
     /// speaks, and on the RC (`rc`, or held off it) the RC's build for its platform; whether it moves (`api::release::Moves`): not
-    /// when held by hand, nor when another computer's (added here, or a rental another client ordered); and the newer cozy, the
+    /// when held by hand, nor when another computer's added here, nor while another client's runs are on it, and a rental another
+    /// computer ordered only by hand (cl-1224); and the newer cozy, the
     /// Hub's, whose line runs Runtimes this one's doesn't (cl-978).
     pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves, Option<api::release::Newer>) {
         let moves = match self.named(name).ok().flatten() {
-            Some(row) if row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(&row)) => api::release::Moves::No,
+            Some(row) if row.kind == MachineKind::Added => api::release::Moves::No,
             _ if self.held_by_hand(name).is_some() => api::release::Moves::Held,
+            Some(row) if !self.ordered_here(&row) => api::release::Moves::ByHand,
+            _ if self.others_on(frame) > 0 => api::release::Moves::Busy,
             _ => api::release::Moves::Yes,
         };
         let released: Vec<String> = match released().await {
@@ -188,7 +194,7 @@ impl Machines {
         // `local` below this cozy's Runtime minor can always move to this cozy's own Runtime (cl-1055), for any run there, a project's
         // or not: a plain run whose package needs a newer Runtime moves it to the minor, not to an older minor's release. On the
         // minor, and on every other machine, nothing changes.
-        runtimes.extend(self.own_runtime(name, frame).await);
+        runtimes.extend(self.own_runtime(name, frame).await.ok().flatten());
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
@@ -217,19 +223,56 @@ impl Machines {
         (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
     }
 
-    /// The Runtime `name` (on `frame`) can move to, for any run, when it is `local` below this cozy's Runtime minor (cl-1055): this
-    /// cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the minor,
-    /// for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
-    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Option<String> {
+    /// The Runtime `name` (on `frame`) moves to first, for any run, when it is `local` below this cozy's Runtime minor or with no
+    /// pair of its own (cl-1055, cl-1254): the RC's newest build for an RC or dev build of cozy; else its Hub's pin when that is of
+    /// this minor, which always wins (a pin is how a release is rolled back or fixed forward); else PyPI's newest final of the minor,
+    /// for the while a new cozy is out and its Hub's pin, which moves last at promotion, still names the last release's pair, or
+    /// while its Hub was never read. None on the minor, for any other machine, or with no RC build to read. Refused, in a line that
+    /// says so, when nothing of the minor is published or PyPI can't be read.
+    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Result<Option<String>, Error> {
         let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
         if !local || api::release::on_runtime_minor(&frame.runtime) {
-            return None;
+            return Ok(None);
         }
-        let own = match crate::update::dev_build() || crate::update::rc_version() {
-            true => self.rc.now().await.ok().and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)),
-            false => self.software().await.map(|software| software.runtime.clone()),
+        if crate::update::dev_build() || crate::update::rc_version() {
+            let sums = self.rc.now().await.ok();
+            return Ok(sums.and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)).filter(|runtime| api::release::of_runtime_minor(runtime)));
+        }
+        // Its Hub's pin of the minor wins. One never read (a computer that hasn't reached its Hub) is no pin: PyPI's, as below (cl-1273).
+        if let Some(software) = self.software().await
+            && api::release::of_runtime_minor(&software.runtime)
+        {
+            return Ok(Some(software.runtime.clone()));
+        }
+        let minor = api::release::RUNTIME_MINOR.trim_start_matches(">=").splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
+        // One read of PyPI for a while (`released`, FRESH); one that failed isn't asked again for a minute, so no run asks it.
+        let unreached = || Error::new(Kind::Unavailable, "release_unreachable", format!("This version of Cozy Creator needs Runtime {minor}, and Cozy couldn't reach PyPI to find it; try again shortly."));
+        if UNREACHED.lock().expect("unreached lock").is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            return Err(unreached());
+        }
+        let released = match released().await {
+            Ok(released) => released,
+            Err(e) => {
+                tracing::warn!("cozy-runtime's releases on PyPI: {}", e.message);
+                *UNREACHED.lock().expect("unreached lock") = Some(Instant::now());
+                return Err(unreached());
+            }
         };
-        own.filter(|runtime| api::release::of_runtime_minor(runtime))
+        // Finals only (`released`): a prerelease is never taken. TensorD pairs its TensorFS by the Runtime's own requirement, as an
+        // install resolves it.
+        let newest = (released.iter())
+            .filter(|release| api::release::of_runtime_minor(&release.version))
+            .filter_map(|release| Some((Version::from_str(&release.version).ok()?, release.version.clone())))
+            .max_by(|a, b| a.0.cmp(&b.0));
+        match newest {
+            Some((_, version)) => Ok(Some(version)),
+            None => Err(Error::new(Kind::Unavailable, "runtime_floor_unreleased", format!("This version of Cozy Creator needs Runtime {minor}, which isn't published yet; try again shortly."))),
+        }
+    }
+
+    /// Whether `e`, from [`Machines::own_runtime`], refuses the run: nothing it may move to is published, or PyPI can't be read.
+    pub(crate) fn unpublished(e: &Error) -> bool {
+        matches!(e.code.as_str(), "runtime_floor_unreleased" | "release_unreachable")
     }
 
     /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read, kept across restarts (`hub::held`), when
@@ -265,18 +308,25 @@ impl Machines {
 
     /// Moves `upgrade.machine` to Runtime `upgrade.to` before the run that needs it, which waits behind it: a release alone
     /// (TensorD keeps or pairs its TensorFS), the RC's build with the RC's other builds it's behind. One update per boot and
-    /// Runtime: its run, none once it finished; one that failed is refused with what happened.
+    /// Runtime: its run, none once it finished; one that failed is refused with what happened. One that ended with an update of the
+    /// machine since (a hand moved it back) is spent: `local`'s boot is its whole life (cl-1254).
     pub(crate) async fn upgrade(self: &Arc<Self>, upgrade: &Upgrade) -> Result<Option<Run>, Error> {
         let name = upgrade.machine.as_str();
         let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't reported what it runs yet.")))?;
         let id = self.named(name).ok().flatten().and_then(|row| row.rental_id).unwrap_or_else(|| name.to_owned());
-        let key = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
+        let base = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
         let refused = |why: String| {
             Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("Couldn't update {name}'s Runtime from {} to {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
                 .next(format!("cozy machine update {name} --runtime {}", upgrade.to))
         };
-        if let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
+        let mut key = base.clone();
+        while let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
+            let ended = matches!(run.status, Status::Completed | Status::Failed | Status::Canceled);
+            if ended && self.store().updated_since(name, row.number).map_err(crate::machines::internal)? {
+                key = format!("{base}-{}", row.number);
+                continue;
+            }
             return match run.status {
                 Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "the update didn't finish".to_owned(), |reason| reason.message))),
                 // What it says it runs may be from before its restart: TensorD holds the release to its floor as ever.
@@ -404,7 +454,8 @@ pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
 /// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`, xs-194), unless
 /// the developer explicitly selected a wheel, which the completed lock binds. The RC build the first of `held` (locks it holds)
 /// takes while that build meets the floor, the RC still serves it and its lock's TensorFS is this cozy's series; else the RC's
-/// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). A new RC build alone moves no lock: a relock is a
+/// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). Its lock takes the RC's TensorFS build beside
+/// it (`rc_tensorfs_wheel`). A new RC build alone moves no lock: a relock is a
 /// new environment on every machine and a new key for every guess made of it, and a machine following the RC runs its own
 /// build over the lock's anyway (TensorD's `stands_in`). None: it names no RC floor, a release meets it, or no RC build does.
 pub(crate) async fn rc_runtime(src: &Path, held: &[&str]) -> Result<Option<Wheel>, Error> {
@@ -499,13 +550,61 @@ fn runtime_wheel(lock: Lock) -> Option<Wheel> {
 }
 
 /// The RC build a lock takes by URL, when the TensorFS it holds is this cozy's series: what a machine with no pair of its own runs
-/// it on (TensorD's `speaks`).
+/// it on (TensorD's `speaks`). A lock for several platforms holds a TensorFS row for each (the RC's build for a rental's, the
+/// index's elsewhere: xs-216): one of this cozy's series is enough.
 fn rc_locked(lock: &str) -> Option<Wheel> {
     let lock: Lock = toml::from_str(lock).ok()?;
-    let tensorfs = lock.package.iter().find(|row| row.name == "tensorfs").map(|row| row.version.clone());
+    let tensorfs: Vec<String> = lock.package.iter().filter(|row| row.name == "tensorfs").map(|row| row.version.clone()).collect();
     let wheel = runtime_wheel(lock).filter(|wheel| prerelease::dev(&wheel.version))?;
-    let pinned = tensorfs.and_then(|version| VersionSpecifiers::from_str(&format!("=={version}")).ok());
-    this_series(pinned.as_ref()).then_some(wheel)
+    let ours = |version: &String| this_series(VersionSpecifiers::from_str(&format!("=={version}")).ok().as_ref());
+    (tensorfs.is_empty() || tensorfs.iter().any(ours)).then_some(wheel)
+}
+
+/// The open RC's TensorFS build a lock takes beside the RC Runtime build `runtime`, by URL for a rental's platform (xs-216): the
+/// RC's set together, never an RC Runtime on the index's TensorFS, which lacks what the RC's added (gate 44238862903:
+/// `Device.region() takes 3 positional arguments but 4 were given`). The one a lock of `held` (those it holds) takes beside this
+/// very Runtime build while the RC still serves it, so a new build alone moves no lock (cl-1199) and nothing is read of the
+/// Runtime's wheel; else the RC's newest that `runtime`'s `tensorfs` requirement admits. Either of this cozy's TensorFS series
+/// first (a lock made before the RC's TensorFS was the next minor's moves to it). None: `src` selects a source for either
+/// itself (the developer's cohort: nothing is put beside it), `runtime` names no requirement, the RC serves no build it admits,
+/// or its builds can't be read; the index resolves it then.
+pub(crate) async fn rc_tensorfs_wheel(src: &Path, runtime: &Wheel, held: &[&str]) -> Option<Wheel> {
+    let project: Option<toml::Value> = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok());
+    let sources = project.as_ref().and_then(|p| p.get("tool")).and_then(|p| p.get("uv")).and_then(|p| p.get("sources"));
+    if sources.is_some_and(|sources| sources.get("cozy-runtime").is_some() || sources.get("tensorfs").is_some()) {
+        return None;
+    }
+    let builds = crate::rc::tensorfs_builds().await.inspect_err(|e| tracing::warn!("the open RC's TensorFS builds: {}", e.message)).ok()?;
+    let wheel = |(build, url): &(Build, String)| Wheel { version: build.version.clone(), url: url.clone(), sha256: build.sha256.clone() };
+    let beside = |lock: &&str| lock.contains(&runtime.url);
+    // This cozy's series first: what a machine with no pair of its own speaks (TensorD's `speaks`). A held build of another stands
+    // while the RC serves none of ours.
+    let ours = |build: &Build| this_series(VersionSpecifiers::from_str(&format!("=={}", build.version)).ok().as_ref());
+    let serves_ours = builds.iter().any(|(build, _)| ours(build));
+    if let Some(taken) = held.iter().copied().filter(beside)
+        .find_map(|lock| builds.iter().find(|(build, url)| lock.contains(url.as_str()) && (ours(build) || !serves_ours)))
+    {
+        return Some(wheel(taken));
+    }
+    let needs = rc_tensorfs(runtime).await?;
+    let admitted = |(build, _): &&(Build, String)| Version::from_str(&build.version).is_ok_and(|version| needs.contains(&version.without_local()));
+    builds.iter().filter(admitted).find(|(build, _)| ours(build)).or_else(|| builds.iter().find(admitted)).map(wheel)
+}
+
+/// Whether a lock is made for a rental's platform, where it takes the RC's TensorFS build (`rc_tensorfs_wheel`): every lock but one
+/// whose declared environments (`supported-markers`) each name another OS or CPU.
+pub(crate) fn locks_rental(lock: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Markers {
+        #[serde(default, rename = "supported-markers")]
+        supported: Vec<String>,
+    }
+    let Ok(Markers { supported }) = toml::from_str::<Markers>(lock) else { return true };
+    let other = |marker: &str, key: &str, ours: &str| {
+        let named = marker.split(&format!("{key} == '")).nth(1).and_then(|rest| rest.split('\'').next());
+        named.is_some_and(|named| named != ours)
+    };
+    supported.is_empty() || supported.iter().any(|marker| !other(marker, "sys_platform", "linux") && !other(marker, "platform_machine", "x86_64"))
 }
 
 /// Whether a `tensorfs` requirement admits a TensorFS of this cozy's series, whose protocol a machine with no pair of its own
@@ -536,16 +635,16 @@ async fn rc_tensorfs(wheel: &Wheel) -> Option<VersionSpecifiers> {
         return needs.clone();
     }
     let bytes = download(wheel).await.inspect_err(|e| tracing::warn!("{}", e.message)).ok()?;
-    let requires = tokio::task::spawn_blocking(move || requires_dist(&bytes)).await.ok()??;
+    let requires = tokio::task::spawn_blocking(move || requires_dist(std::io::Cursor::new(bytes))).await.ok()??;
     let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs");
     RC_TENSORFS.lock().expect("rc tensorfs lock").insert(wheel.version.clone(), needs.clone());
     needs
 }
 
 /// A wheel's `Requires-Dist` lines, from its `.dist-info/METADATA`.
-fn requires_dist(wheel: &[u8]) -> Option<Vec<String>> {
+pub(crate) fn requires_dist<R: std::io::Read + std::io::Seek>(wheel: R) -> Option<Vec<String>> {
     use std::io::Read as _;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(wheel)).ok()?;
+    let mut archive = zip::ZipArchive::new(wheel).ok()?;
     let mut text = String::new();
     for at in 0..archive.len() {
         let mut file = archive.by_index(at).ok()?;

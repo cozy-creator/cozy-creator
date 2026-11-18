@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import cast
 
 from cell import Cell, Json, Seen, Source
-from drive import (HERE, Failed, Files, Interface, Reply, compact, first_line, graphs_off_cuda, judged, load_fixture,
-                   same_model, slot_ref, steered, stored, tiny, tolerance, twin_gap)
+from drive import (HERE, Failed, Files, Interface, Reply, built, compact, first_line, graphs_off_cuda, judged, load_fixture,
+                   slot_ref, steered, stored, tiny, tolerance, twin_gap)
 
 #: An author's page for every tiny model this suite mirrors.
 PAGE = "https://github.com/cozy-creator/cozy-creator/tree/master/e2e/cpu"
@@ -127,8 +127,7 @@ def wanted(interface: Interface, manifests: dict[str, str], cells: list[Cell]) -
         for slot in entry.get("models", []):
             if slot.get("weights") or "default" not in slot:
                 continue
-            ref = slot_ref(slot)
-            want(ref, manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref))
+            want(slot_ref(slot), built(manifests, slot))
     for cell in cells:
         for ref in [*cell.get("models", {}).values(), *cell.get("sources", {}).values()]:
             want(ref, manifests.get(ref))
@@ -202,10 +201,10 @@ def outputs(run: dict[str, Json], folder: Path) -> Files:
     return named
 
 
-def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder: Path, against: Seen | None) -> Seen:
+def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder: Path, against: Seen | None) -> tuple[Seen, str]:
     """A `quantize` cell as an author asks it (`cozy model quantize <ref> --lane <lane> --package <dir>`): a checkpoint in that
     lane (its machine uploads only weights as wide as the lane names: `commit_lane_mismatch`), holding as many tensors as the
-    stand-in's (the reference's `weights`), as `cozy model show` reads it."""
+    stand-in's (the reference's `weights`), as `cozy model show` reads it; and its ref (`<model>@<checkpoint>`)."""
     source = next(iter(cell.get("sources", {}).values()))
     wanted_lane = str(cell["payload"]["lane"])
     run = cozy(binary, project, ["model", "quantize", source, "--lane", wanted_lane, "--package", str(package_dir), "--on", "local",
@@ -221,7 +220,8 @@ def quantized(binary: str, project: Path, package_dir: Path, cell: Cell, folder:
     held = recorded.get(wanted_lane, {}).get("tensors")
     if not tensors or held is not None and held != tensors:
         raise Failed(f"quantize {wanted_lane}'s checkpoint holds {tensors} tensors, the reference's {held}")
-    return {"result": {"lane": wanted_lane}, "outputs": [], "weights": {wanted_lane: {"tensors": tensors}}}
+    return ({"result": {"lane": wanted_lane}, "outputs": [], "weights": {wanted_lane: {"tensors": tensors}}},
+            f"{made['repo_id']}@{made['revision']}")
 
 
 def main() -> int:
@@ -275,6 +275,8 @@ def main() -> int:
 
     ran: dict[str, Seen] = {}
     kept: dict[str, Files] = {}
+    #: each quantize cell's checkpoint, by its key: a model a later cell binds (`Cell.models`)
+    wrote: dict[str, str] = {}
     for cell in cells:
         entry, name = cell["entry"], cell["name"]
         key = f"{entry}/{name}"
@@ -292,13 +294,16 @@ def main() -> int:
             same_as = cell.get("same_as")
             against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
             if "sources" in cell:
-                seen: Seen = quantized(binary, project, code, cell, folder, against)
+                seen, wrote[key] = quantized(binary, project, code, cell, folder, against)
                 named: Files = {}
             else:
                 payload, files = request(cell, out / "made")
                 (folder / "request.json").write_text(json.dumps(payload, indent=1))
+                if absent := [ref for ref in cell.get("models", {}).values()
+                              if any(ref == f"{c['entry']}/{c['name']}" for c in fixture.CELLS) and ref not in wrote]:
+                    raise Failed(f"nothing built or wrote {absent[0]}: run the cell that writes it first")
                 models = [arg for path, ref in sorted(cell.get("models", {}).items())
-                          for arg in ("--model", f"{path.rsplit('.', 1)[-1]}={ref}")]
+                          for arg in ("--model", f"{path.rsplit('.', 1)[-1]}={wrote.get(ref, ref)}")]
                 run = cozy(binary, project, ["--full", "run", f"{code}/{entry}", "--input", str(folder / "request.json"),
                                              *files, *models, "--on", "local", "-o", str(folder / "out")], folder / "run.ndjson")
                 (folder / "run.json").write_text(json.dumps(run, indent=1))

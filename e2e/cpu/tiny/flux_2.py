@@ -117,7 +117,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _dev(root / "dev")
     torch.manual_seed(1)
     _klein(root / "klein")
-    return {DEV: root / "dev", TURBO: _turbo(store), KLEIN: root / "klein"}
+    return {DEV: root / "dev", TURBO: _turbo(store), KLEIN: root / "klein", "upsampler": root / "dev"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:

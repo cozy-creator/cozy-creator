@@ -95,6 +95,9 @@ pub(crate) struct Prepared {
     pub plan: Option<Plan>,
     /// Why the Hub passed over a better lane for the run, held with its resolution.
     pub warnings: Vec<String>,
+    /// Its plan's checkpoints, open from the moment each resolved: the store keeps them until whoever takes these (the run's
+    /// fetch, then its executor) holds them (tfs-302: a model resolved for a run was evicted before its fetch held it).
+    pub held: Vec<tensorfs::store::Checkpoint>,
 }
 
 pub(crate) struct Request {
@@ -197,6 +200,14 @@ impl std::fmt::Debug for Providers {
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
+/// How far a job's run's readers read another run, by its caller's id (`others::read_by`).
+pub(crate) type Reads = Box<dyn Fn(&str) -> crate::others::Read + Send + Sync>;
+
+/// How far the readers of `sender`'s run in this scope read another run: what the words its job says name (cl-1217, cl-1223).
+pub(crate) fn reads_of(engine: &Arc<crate::execution::Engine>, sender: &str) -> Option<Reads> {
+    let (engine, sender, project) = (engine.clone(), sender.to_owned(), crate::private_io::current());
+    Some(Box::new(move |id: &str| crate::others::read_by(&engine, &sender, project.as_ref(), id)))
+}
 
 /// How long a resolve's read of a checkpoint's structure goes before its run says what it waits behind (cl-1185).
 const SAY_AHEAD: std::time::Duration = std::time::Duration::from_secs(3);
@@ -212,8 +223,8 @@ pub(crate) struct Job {
     /// (`Engine::waiting`).
     pub(crate) caller: String,
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
-    /// Whether its run's own readers read run `id` (a caller's id) too: what it waits behind names no other run (cl-1217).
-    pub(crate) reads: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// How far its run's own readers read run `id` (a caller's id): what it waits behind names no other project's run (cl-1217).
+    pub(crate) reads: Option<Reads>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
@@ -221,6 +232,8 @@ pub(crate) struct Job {
     /// While it builds an environment as a caller's guess: what a run's install cancels to take the install line from it
     /// (`line::Turn::outranked`).
     pub(crate) yields: Mutex<Option<Stop>>,
+    /// The checkpoints its resolutions landed, open until its preparation's plan holds them (`Prepared::held`).
+    pub(crate) held: Mutex<Vec<tensorfs::store::Checkpoint>>,
 }
 impl Job {
     /// What ends a step of its build: its run's stop, or a run's install taking the line from a guess (`yields`), as one, with the
@@ -260,8 +273,8 @@ impl Job {
             waiting(reason);
         }
     }
-    fn reads(&self, id: &str) -> bool {
-        self.reads.as_ref().is_some_and(|reads| reads(id))
+    fn reads(&self, id: &str) -> crate::others::Read {
+        self.reads.as_ref().map_or(crate::others::Read::No, |reads| reads(id))
     }
     pub(crate) fn stage(&self, stage: String) {
         self.set(stage, 0, 0);
@@ -569,8 +582,6 @@ impl Publisher {
         }
         let engine = service.engine.clone();
         let run = request.run.clone();
-        // Its run's readers read `actor`'s runs in its project, and those in none (`Engine::get_public`).
-        let (journal, sender, project) = (service.engine.clone(), actor.to_owned(), crate::private_io::current());
         let job = Job {
             observer: observe,
             stop: stop.cloned(),
@@ -583,17 +594,19 @@ impl Publisher {
                     }
                 }) as Box<dyn Fn(Option<String>) + Send + Sync>
             }),
-            reads: Some(Box::new(move |id: &str| {
-                let sent = |scope| crate::private_io::within(scope, || journal.get_public(Some(&sender), id).is_ok());
-                sent(None) || project.clone().is_some_and(|project| sent(Some(project)))
-            })),
+            reads: reads_of(&service.engine, actor),
             ..Default::default()
         };
         // A disk that can't hold it says what fills it and what would.
-        patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
+        let mut prepared = patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
             "machine_disk_full" => (code, crate::reclaim::advised(&why, self.store.root(), 0)),
             _ => (code, why),
-        })
+        })?;
+        // Its plan's checkpoints held before what its resolutions landed lets go.
+        if let (Some(plan), Some(gpu)) = (&prepared.plan, service.pool()) {
+            prepared.held = gpu.hold(plan).map_err(io_failure)?;
+        }
+        Ok(prepared)
     }
 
     /// A slot's model made from its provider source (TensorFS `source_model`), kept as the
@@ -728,7 +741,7 @@ impl Publisher {
     /// components' walk found them). Whatever is here moves nothing.
     #[allow(clippy::too_many_arguments)]
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
-        room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        room: Option<&dyn Fn(u64) -> Result<(), String>>, bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<(Landed, tensorfs::store::Checkpoint), Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
         let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
@@ -766,7 +779,7 @@ impl Publisher {
         let held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
-            return Ok(structure.landed);
+            return Ok((structure.landed, held));
         }
         // Room for all it lacks first, the machine's own way: one object's at a time freed only a bake or a LoRA, never an
         // idle executor's models, and parallel admissions took it before the next (derived-disk 43857521603).
@@ -781,17 +794,17 @@ impl Publisher {
         let pulled = pulled.map_err(failed)?;
         logged(&pulled);
         let landed = pulled.landed;
-        Ok(Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local })
+        Ok((Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local }, held))
     }
 
     /// `named` downloaded whole at `order`, as a request's weights are: what a caller asked for
     /// whole (an adapter).
     fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, order, stop, None, bytes)
+        self.pull(source, named, None, order, stop, None, bytes).map(|(landed, _)| landed)
     }
 
-    /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
+    /// A Hub checkpoint's header, landed at once and held by `job` (`Job::held`): which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
         let said = format!("resolving {}", named.shown());
@@ -810,7 +823,9 @@ impl Publisher {
                     job.waiting(None);
                 }
             });
-            let pulled = self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop);
+            // Its header held by `job` until its preparation's plan holds it (tfs-302).
+            let pulled = self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ())
+                .map(|(_, held)| job.held.lock().unwrap().push(held));
             drop(done);
             pulled
         })
@@ -989,7 +1004,7 @@ impl Publisher {
         let named = self.resolve(service, source, named, hardware, order, false).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
+        let (moved, _) = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
         Ok((named, moved))
     }
 
@@ -1123,6 +1138,7 @@ impl Publisher {
                 installation,
                 plan: None,
                 warnings: vec![],
+                held: vec![],
             }));
         }
         // A prepared plan's account does not prove this capability may read its model roots.
@@ -1146,11 +1162,11 @@ impl Publisher {
             return Ok(None);
         };
         let plan = gpu.plan(&preparation)?;
-        // Its structure may have been reclaimed since; then the model resolves again. An
+        // Its structure may have been reclaimed since; then the model resolves again. Held from here (tfs-302). An
         // object reclaimed is fetched again by whatever reads it.
-        if !gpu.holds(&plan) {
+        let Ok(held) = gpu.hold(&plan) else {
             return Ok(None);
-        }
+        };
         // Made longer ago than `FRESH`, it is made again, reading its names again behind it, by a
         // run that reaches their Hub; one that reaches none keeps it.
         let warnings = service.engine.read_journal(|j| j.named(&warnings_key(&key)))?;
@@ -1163,6 +1179,7 @@ impl Publisher {
             installation,
             plan: Some(plan),
             warnings: serde_json::from_str(&warnings).unwrap_or_default(),
+            held,
         }))
     }
 
@@ -1192,6 +1209,7 @@ impl Publisher {
                 installation,
                 plan: None,
                 warnings: vec![],
+                held: vec![],
             });
         }
         // Cached installations may have lost their import-only parent. Restart the same
@@ -1209,6 +1227,7 @@ impl Publisher {
             installation,
             plan: Some(plan),
             warnings,
+            held: vec![],
         })
     }
 
@@ -1396,7 +1415,8 @@ impl Publisher {
             let holder = self.building.lock().unwrap().get(identity).cloned();
             // A guess building it goes at this run's place in line until it's built (`line::Line::raise`).
             let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, job.order));
-            job.waiting(Some(match holder {
+            // The package is this run's own; the run building it as this run's readers hear it (cl-1223).
+            job.waiting(Some(match crate::others::Others::of(holder.as_deref(), |id| job.reads(id)).said("and") {
                 Some(run) => format!("waiting for {run} to install {package} {release}"),
                 None => format!("waiting for another render to install {package} {release}"),
             }));

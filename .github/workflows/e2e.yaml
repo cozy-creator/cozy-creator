@@ -156,7 +156,7 @@ on:
         type: string
         default: ''
       cpu_cells:
-        description: CPU entry/cell pairs to run, comma-separated; empty runs every cell
+        description: "CPU entry/cell pairs to run, comma-separated; empty runs every cell; `lanes` the lanes cell alone; `public-lanes` it read as anyone, a default that isn't public failing (the release, before any package final)"
         type: string
         default: ''
       cpu_record:
@@ -491,6 +491,9 @@ jobs:
           repository: cozy-creator/${{ matrix.repo }}
           ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && needs.affected.outputs.runtime || needs.affected.outputs.stack }}
           path: .build
+          # TensorFS's version counts the commit's first-parent history (dev-version.sh): all of it, no trees.
+          fetch-depth: ${{ matrix.what != 'tensorfs' && 1 || 0 }}
+          filter: ${{ matrix.what == 'tensorfs' && 'tree:0' || '' }}
       - uses: astral-sh/setup-uv@v7
       # A dispatch on cozy-creator's master always builds: its Rust caches are the ones merge groups restore.
       - id: reuse
@@ -796,11 +799,12 @@ jobs:
         # prefetch, coming, lines, disk, disk-room and selfupdate guard features Paul asked for (xs-199): each on every RC run, as any cell.
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
         # answers: Status answers while the journal's commits wait for the disk (cl-1202).
-        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves"]') }}
+        # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
+        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","log-since"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
-    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 30 || 90 }}
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 40 || 90 }}
     defaults:
       run:
         shell: bash
@@ -851,7 +855,7 @@ jobs:
         working-directory: .web-src/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || matrix.shard == 'local-code' || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-drawers' || startsWith(matrix.shard, 'web-drawers@')) || (matrix.shard == 'web-project-settings' || startsWith(matrix.shard, 'web-project-settings@')) || (matrix.shard == 'web-p-code-only' || startsWith(matrix.shard, 'web-p-code-only@')) || (matrix.shard == 'web-vault-list' || startsWith(matrix.shard, 'web-vault-list@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
+        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || matrix.shard == 'local-code' || (matrix.shard == 'prefetch' || startsWith(matrix.shard, 'prefetch@')) || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-drawers' || startsWith(matrix.shard, 'web-drawers@')) || (matrix.shard == 'web-project-settings' || startsWith(matrix.shard, 'web-project-settings@')) || (matrix.shard == 'web-p-code-only' || startsWith(matrix.shard, 'web-p-code-only@')) || (matrix.shard == 'web-vault-list' || startsWith(matrix.shard, 'web-vault-list@')) || (matrix.shard == 'web-outsider-run' || startsWith(matrix.shard, 'web-outsider-run@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       # cl-1000: the provider probe (e2e/vault-provider) projectvault-static's cells run, not embedding the provider, and FUSE 3 beside
       # libfuse.so.2, which the glibc securefs build it times the static one against loads.
@@ -1244,8 +1248,9 @@ jobs:
 
   # The free CPU test (e2e/cpu): every package's entry points on tiny random weights, as a person runs them (cozy run --on
   # local, real TensorD, its models mirrored on the owned Hub), outputs against stored references; each package uploaded and
-  # locked through the candidate cozy. In shards of every Nth package, slowest first (run.sh --shard K/N): minimax-h3's
-  # stand-in cells alone fill a runner's lane for ~50 min. No GPU or rental.
+  # locked through the candidate cozy. In shards of every Nth package, slowest first (run.sh --shard K/N): shard 1 holds the
+  # stand-in TensorD's packages (minimax-h3's cells alone fill its lane for ~30 min), apart from the machine's (xs-217). No
+  # GPU or rental.
   cpu:
     name: cpu ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: [affected, candidate, hub]
@@ -1255,6 +1260,9 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     runs-on: ubuntu-24.04
+    # The CI account's key (lanes.py reads an RC's held defaults signed in, xs-217) is the release-gate environment's, which
+    # admits rc/*, release/*, master and proof/* runs; any other run has none and reads as anyone.
+    environment: ${{ (startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/proof/') || github.ref == 'refs/heads/master') && 'release-gate' || '' }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
     timeout-minutes: 120
     defaults:
@@ -1300,10 +1308,19 @@ jobs:
       # The CLI cells' cozy (e2e/cpu/cli.sh): installed as a person installs it, the candidate in its place and Calcifer
       # restarted on it, as the cli suite's candidates step does.
       - name: cpu suite
+        env:
+          CI_KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
         run: |
           cpu_args=()
           [ -z "$CPU_ONLY" ] || cpu_args+=(--only "$CPU_ONLY")
-          [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
+          if [ "$CPU_CELLS" = public-lanes ]; then cpu_args+=(--cells lanes --public-lanes)
+          else
+            [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
+            if [ -n "$CI_KEY" ]; then
+              trap 'rm -f "$RUNNER_TEMP/ci-key.json"' EXIT
+              (umask 077; printf '%s' "$CI_KEY" > "$RUNNER_TEMP/ci-key.json"); cpu_args+=(--lanes-key "$RUNNER_TEMP/ci-key.json")
+            fi
+          fi
           if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
           if [ "$CPU_KEEP" = true ]; then cpu_args+=(--keep); fi
           if [ "$CPU_LOCK_FRESH" = true ]; then cpu_args+=(--lock fresh); fi

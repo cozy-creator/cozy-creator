@@ -188,9 +188,13 @@ impl<'a> Choices<'a> {
         self.own.iter().find(|s| s.param == asked || s.path == asked)
     }
 
-    /// Where a LoRA naming no slot goes: [`main_models`], when those are one model. More than one is refused, naming each.
+    /// Where a LoRA naming no slot goes: [`lora_models`], alternatives a request chooses between each, else when those are one
+    /// model. More than one is refused, naming each.
     fn lora_slots(&self, written: &str) -> Result<Vec<String>, Error> {
-        let candidates = main_models(self.own, &self.calls);
+        let (candidates, alternatives) = lora_models(self.own, &self.calls);
+        if alternatives {
+            return Ok(candidates.into_iter().map(|(slot, _)| slot).collect());
+        }
         let mut models: Vec<(String, Vec<&str>)> = Vec::new();
         for (_, slot) in &candidates {
             match models.iter_mut().find(|(m, _)| *m == model_of(slot)) {
@@ -210,8 +214,9 @@ impl<'a> Choices<'a> {
                 Err(usage(
                     "lora_slot_ambiguous",
                     format!(
-                        "--lora {written}: {name} runs {n} models a LoRA could adapt: {}; name one",
-                        each(&|p, m| format!("{p} ({m})")).join(", ")
+                        "--lora {written}: {name} runs {n} models a LoRA could adapt: {}; name one: {}",
+                        each(&|p, m| format!("{p} ({m})")).join(", "),
+                        each(&|p, _| format!("--lora {p}={written}")).join(" or ")
                     ),
                 )
                 .remedy(each(&|p, _| format!("--lora {p}={written}")).join("\n  ")))
@@ -292,6 +297,30 @@ fn main_slot<'s>(mut slots: impl Iterator<Item = &'s Slot>) -> Option<&'s Slot> 
     slots.find(|s| !s.weights && !s.on_demand)
 }
 
+/// Where a LoRA naming no slot goes (cl-1241), and whether those are alternatives a request chooses between. Of the slots that
+/// take LoRAs (`Slot::loras`), the function's own, else its calls': those that load with every call; else, each loading on
+/// demand (behind a `needs` rule: Klein's box's `full` and `model`), each of them, whichever the request loads taking it (the
+/// coordinator, 11-18). Klein's text encoder, a constructed slot before its DiT, takes none. An interface written before
+/// `loras` keeps its main models.
+fn lora_models<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> (Vec<(String, &'s Slot)>, bool) {
+    if !own.iter().chain(calls.iter().copied()).any(|slot| slot.loras.is_some()) {
+        return (main_models(own, calls), false);
+    }
+    let takes = |slot: &&Slot| !slot.weights && slot.loras.as_ref().is_some_and(|loras| !loras.is_empty());
+    let mut named: Vec<(String, &'s Slot)> = own.iter().filter(takes).map(|slot| (slot.param.clone(), slot)).collect();
+    if named.is_empty() {
+        named = calls.iter().copied().filter(takes).map(|slot| (slot.path.clone(), slot)).collect();
+    }
+    let always: Vec<(String, &'s Slot)> = named.iter().filter(|(_, slot)| !slot.on_demand).cloned().collect();
+    match always.is_empty() {
+        true => {
+            let alternatives = !named.is_empty();
+            (named, alternatives)
+        }
+        false => (always, false),
+    }
+}
+
 /// A function's main model: its first constructed slot, or each call's when it has none of its own. Each with what `Choices` names it by.
 fn main_models<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Vec<(String, &'s Slot)> {
     if let Some(slot) = main_slot(own.iter()) {
@@ -313,7 +342,8 @@ fn model_of(slot: &Slot) -> String {
     }
 }
 
-/// What a function runs when that's one model, by its main slot: what `models:` and a LoRA naming no slot go on.
+/// What a function runs when that's one model, by its main slot: what `models:` goes on. A LoRA naming no slot goes on
+/// [`lora_models`].
 pub(crate) fn main_model<'s>(own: &'s [Slot], calls: &[&'s Slot]) -> Option<&'s Slot> {
     let mains = main_models(own, calls);
     let (_, first) = mains.first()?;

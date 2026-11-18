@@ -497,8 +497,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     // anything is resolved there, local code's install too. Of several, placement does this for each.
     if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
         // Not known yet: its driver asks again before it sends.
-        if let Ok(Some(update)) = api.machines.current(&machine).await {
-            return Ok(Prepared::Install(update));
+        match api.machines.current(&machine).await {
+            Ok(Some(update)) => return Ok(Prepared::Install(update)),
+            // Nothing published it may move to (cl-1254): refused here, in that line.
+            Err(e) if crate::machines::Machines::unpublished(&e) => return Err(e),
+            _ => {}
         }
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a
@@ -696,7 +699,7 @@ struct Weighed<'a> {
     gpu: bool,
 }
 
-/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of this controller's rentals up or on their way
+/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of the account's rentals up or on their way
 /// and the computers added here, when it is sooner than a new rental's boot, preparation and run on the card its Hub would place it on;
 /// what it says of that, and the offers. None: it rents. This computer's machine isn't weighed: a run asked to rent wants a rented GPU.
 async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, String, Vec<Vec<crate::placement::Offer>>)> {
@@ -759,7 +762,7 @@ pub(crate) fn default_on(api: &Api) -> On {
         return local;
     }
     let machines = api.calcifer.store().live_machines().unwrap_or_default();
-    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended && api.machines.ordered(row)) {
+    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended) {
         true => On::Any,
         false => local,
     }

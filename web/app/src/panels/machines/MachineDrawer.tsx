@@ -25,7 +25,7 @@ import "./MachineDrawer.css"
 function KeepRunning({ machine }: { machine: Machine }) {
   const { client } = useConnection()
   const ask = useAsk()
-  if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
+  if (machine.kind !== "rental" || machine.state !== "ready") return null
   return (
     <>
       <button type="button" className="tb" title="Restart its 15-minute idle timer" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>

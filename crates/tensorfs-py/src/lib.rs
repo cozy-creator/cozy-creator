@@ -36,14 +36,6 @@ mod resident_decode;
 
 use pyo3::prelude::*;
 
-fn python_distribution_version() -> String {
-    let cargo_version = env!("CARGO_PKG_VERSION");
-    let Some((release, development)) = cargo_version.split_once("-dev.") else {
-        return cargo_version.to_string();
-    };
-    format!("{release}.dev{development}")
-}
-
 #[pymodule]
 fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The library's warnings reach the process's stderr.
@@ -54,7 +46,7 @@ fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ceiling::install(m)?;
     varena::install(m)?;
     executor::install(m)?;
-    m.add("__version__", python_distribution_version())?;
+    m.add("__version__", tensorfs::VERSION)?;
     // The store format every process on the machine shares.
     m.add("STORE_FORMAT", tensorfs::STORE_FORMAT)?;
     #[cfg(feature = "store")]

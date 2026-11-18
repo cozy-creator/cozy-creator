@@ -28,7 +28,8 @@ class Cell(TypedDict):
     #: field path (`image`, `assets.0`) -> the file the machine grants there
     files: NotRequired[dict[str, Source]]
     check: NotRequired[Check]
-    #: a slot (its path) bound to another of the fixture's models (a ref `models` builds), as `model=` binds it
+    #: a slot (its path) bound to another of the fixture's models (a ref `models` builds), or to the checkpoint an earlier
+    #: quantize cell wrote (its `entry/name`: that lane served), as `model=` binds it
     models: NotRequired[dict[str, str]]
     #: ranks of a CPU (gloo) group; 1 when absent
     ranks: NotRequired[int]
@@ -60,8 +61,9 @@ class Fixture(Protocol):
     CELLS: list[Cell]
 
     def models(self, root: Path, store: Path) -> dict[str, Path | str]:
-        """Each model a slot binds (its `default` ref or its path) -> a source folder that TensorFS imports, or a
-        `sha256:` checkpoint already written into `store`."""
+        """Each model a slot binds (its `default` ref, its path, or its name: every slot of that name, under the default
+        its package declares) -> a source folder that TensorFS imports, or a `sha256:` checkpoint already written into
+        `store`."""
         ...
 
 

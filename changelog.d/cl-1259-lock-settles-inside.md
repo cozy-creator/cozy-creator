@@ -1,0 +1,1 @@
+Locking an encrypted project while its computer's machine doesn't answer goes through again, as 0.26.1 shipped it: its runs there settle as canceled, the project's processes on that machine are stopped, and the clean-up finishes when the machine answers. On 0.27.0's candidate the lock failed with "The vault operation could not finish after project access changed".

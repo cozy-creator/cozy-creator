@@ -8,8 +8,9 @@
 #                  the first read of each page of state.db slow as on a busy disk's cold cache (busy-disk.c), PyPI and the Hub 3 s
 #                  late (slow_proxy.py): every route a client asks answers in 200 ms while it takes up what it left, and none is
 #                  said slow in health.log, nor the start's purge (cl-1010)
-#   vault_purge_due a deleted box's next purge is in state.db for a plaintext project only, kept while its folder is away and taken up
-#                  at the next start once it's back, and made by a copy that sets aside a row holding files; an encrypted
+#   vault_purge_due a deleted box's next purge is in state.db for a plaintext project only, kept while its folder is away (unless it's
+#                  found gone and leaves the index: then its next open purges it), taken up at the next start once it's back, and made
+#                  by a copy that sets aside a row holding files; an encrypted
 #                  one's never, unlocked or locked, and it's still purged once its window ended and it's unlocked again (cl-1010)
 #   hub_listing_restart a machine list (`cozy machine ls`) answers the Hubs' last listing at once, kept across a restart, and lists
 #                  them again beside the answer: with the Hub stopped, a restarted Calcifer's refresh answers within a second (cl-1010)
@@ -270,16 +271,17 @@ python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows
 cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start again"
 }
 
-# cl-1010: a start opens only the projects whose deleted boxes are due, by the times state.db keeps (`purge_due`), so a due time once kept
-# is never lost while its files stay: a plaintext project's folder away when its window ends keeps it, and once back the next start purges
-# it, no request naming it; a copy that sets aside a row holding files keeps one too. (A project whose folder is away when the index is
-# listed, by a page or a `cozy new`, leaves the index as cl-1031 says, and is purged once it's opened again.) Of a locked encrypted
+# cl-1010: a start opens only the projects whose deleted boxes are due, by the times state.db keeps (`purge_due`), so a deleted box's
+# files are never kept for good: a plaintext project's folder away when its window ends keeps its due time while it's still indexed, and
+# once back the next start purges it, no request naming it; a copy that sets aside a row holding files keeps one too. A project found
+# gone meanwhile (any lookup that lists the index, a page's stream: cl-1031) leaves the index, its due time with it, and is purged at its next
+# open, from the deleted times its own project.db keeps; either way its file goes once it's back. Of a locked encrypted
 # project Calcifer keeps only its folder (Paul's no-traces rule): a row saying something was deleted in it, and when, is kept for none.
 # An encrypted project's due time is held only while it's unlocked, and its unlock's open reads it again from its own project.db.
 vault_purge_due() (
   step "a deleted box's next purge: kept for a plaintext project while its folder is away, never for an encrypted one; purged after (cl-1010)"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault purge due: Linux runners only"; exit 0; }
-  local work secrets P plain copies view id plain_id copies_id pic plain_pic deleted_at plain_at made rows lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  local work secrets P plain copies view id plain_id copies_id pic plain_pic deleted_at plain_at made rows away lock=$HOME/.cozy/calcifer/calcifer.lock.holder
   work=$(mktemp -d "$OUT/vault-purge-due.XXXXXX") secrets=$(mktemp -d "$OUT/vault-purge-due-credentials.XXXXXX")
   P=$work/encrypted plain=$work/plain copies=$work/copies
   trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; [ ! -d "$plain.away" ] || mv "$plain.away" "$plain"; undo_window "$lock" ""; rm -rf -- "$secrets"' EXIT
@@ -333,7 +335,7 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: state.db holds the locked encrypted project's next purge ($rows rows)"
 
-  step "vault purge due: a plaintext project's deleted box is due in state.db, and stays due while its folder is away"
+  step "vault purge due: a plaintext project's deleted box is due in state.db, kept while its folder is away unless it left the index"
   project_api "$plain" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the plaintext project's box wasn't deleted"
   plain_at=$(date +%s)
   rows=$(due_rows "$plain_id")
@@ -345,8 +347,14 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   while [ $(($(date +%s) - plain_at)) -le 22 ] || [ $(($(date +%s) - deleted_at)) -le 22 ]; do sleep 1; done
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: past its window, state.db holds the locked encrypted project's next purge ($rows rows)"
-  rows=$(due_rows "$plain_id")
-  [ "$rows" = 1 ] || check "vault purge due: its folder away as its window ended, the plaintext project's next purge wasn't kept ($rows rows)"
+  # Found gone meanwhile, it left the index and its due time with it (cl-1031): both are the product's; the step after holds either to
+  # its own promise.
+  away=$(due_rows "$plain_id")
+  case $away in
+    1) echo "vault purge due: its folder away as its window ended, the plaintext project is still indexed and its next purge kept" ;;
+    0) echo "vault purge due: its folder away, the plaintext project was found gone and left the index: it's purged at its next open" ;;
+    *) check "vault purge due: its folder away as its window ended, state.db holds $away rows of the plaintext project's next purge" ;;
+  esac
   mv "$plain.away" "$plain" || fail "vault purge due: the plaintext project's folder couldn't be moved back"
 
   step "vault purge due: unlocked past its window, the deleted box's file goes"
@@ -360,7 +368,7 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the encrypted project's next purge ($rows rows)"
   locked relock || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
 
-  step "vault purge due: the plaintext project's folder back, the next start purges it, no request naming it"
+  step "vault purge due: the plaintext project's folder back, its deleted box's file goes: at the next start if it's indexed, else at its next open"
   calcifer_halt || fail "vault purge due: Calcifer didn't stop"
   # The copies project's row for pic_2 set aside, as a name a box lost leaves it until a rename or `reclaim`: no versions of its own,
   # its file discarded. Rows are keyed by `name_key`: `pic 2`.
@@ -369,7 +377,14 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
     || fail "vault purge due: the copies project's set-aside row wasn't made"
   cozy --json machine ls > /dev/null || fail "vault purge due: Calcifer didn't start again"
   for _ in $(seq 150); do in_files "$plain" "$plain_pic" || break; sleep 0.2; done
-  ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window, the plaintext project's deleted box kept its file past a start"
+  if [ "$away" = 0 ] && in_files "$plain" "$plain_pic"; then
+    echo "vault purge due: out of the index, the plaintext project's deleted box kept its file past a start; opened by its folder"
+    project_api "$plain" "?assets=false" > /dev/null || check "vault purge due: the plaintext project back in its folder didn't open"
+    for _ in $(seq 150); do in_files "$plain" "$plain_pic" || break; sleep 0.2; done
+    ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window and opened, the plaintext project's deleted box kept its file"
+  else
+    ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window, the plaintext project's deleted box kept its file past a start"
+  fi
   # Its row goes as the purge settles, a moment after its files.
   for _ in $(seq 50); do [ "$(due_rows "$plain_id")" != 1 ] && break; sleep 0.2; done
   rows=$(due_rows "$plain_id")

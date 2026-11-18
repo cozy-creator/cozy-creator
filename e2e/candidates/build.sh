@@ -2,7 +2,8 @@
 # e2e/candidates/build.sh <cozy|cozy-before|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
 # its file. cozy-before (e2e/cli/selfupdate.sh, cl-978): the source built as a release of the line before GitHub's Latest
 # (e2e/releases.py: 0.25.99 with TensorFS 0.25.99 while 0.26.0 is Latest), which runs none of the Latest's Runtime minor: the cozy
-# that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
+# that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel
+# (the RC's <x.y.z>.dev<n>+g<sha8>, crates/tensorfs-py/scripts/dev-version.sh) come from the cozy-creator
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
@@ -53,6 +54,14 @@ if [ "$repo" = cozy-creator ]; then
       git -C "$stage_src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock HEAD:rust-toolchain.toml
       sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1
     fi
+    # TensorFS's version is this harness's to stamp (dev-version.sh, xs-216): another harness's build of the same sources is another
+    # wheel. Keyed by sources alone, a branch from before #3873 built the RC's TensorFS as 0.26.0 and every run reused it beside a
+    # Runtime that floors on 0.27.0.dev<n>: the seed's lock_failed (xs-217).
+    if [ "$what" = tensorfs ]; then sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1; fi
+    # And its dev number, the commit's first-parent count (dev-version.sh): the same sources merged in another order are another
+    # wheel. A branch that merged the RC into itself numbered dev3230 and was reused at dev3230 once the RC came first, beside a
+    # Runtime floored on dev3298: lock_failed (e2e 44326430980, xs-218).
+    if [ "$what" = tensorfs ]; then git -C "$src" rev-list --count --first-parent HEAD; fi
   } | sha256sum | cut -c1-40)
 fi
 # Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it, and outside
@@ -103,9 +112,13 @@ elif [ "$what" = tensorfs ]; then
   # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
   # and every dependency compile once for both, and on Linux the Torch allocator shims, without which the candidate runs
   # no GPU work ("this TensorFS wheel has no Torch allocator shim": cli-release, e2e 42749286657).
+  # The RC's dev line (pyproject X.Y.Z.dev0) says its commit's version, as rc-dev's build of it does (dev-version.sh:
+  # 0.27.0.dev<n>+g<sha8>), so the Runtime's floor on a TensorFS build admits or refuses it as it would the RC's own (xs-216).
   (cd "$src/crates/tensorfs-py"
+    ! grep -q '^version = ".*\.dev0"$' pyproject.toml || bash scripts/dev-version.sh >&2
     uv run -q --no-project --python 3.11 python backend/stage_cli.py --release > /dev/null
-    uvx -q maturin@1.15.0 build --release --locked --out "$out")
+    uvx -q maturin@1.15.0 build --release --locked --out "$out"
+    git checkout -- pyproject.toml Cargo.toml ../tensorfs/Cargo.toml ../../Cargo.lock)
 else
   # Its own version, <version>+dev.g<sha8> as the dev cozy's, so the imports suite tells it from PyPI's.
   (cd "$src"

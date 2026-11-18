@@ -25,8 +25,9 @@ then runs every 16th replay of a region's CUDA graph against its call as written
 ## A dev machine may run its predictions ahead (cl-1123 D)
 
 Off by default (Paul 11-18). A machine downloads and loads what the page predicts, and never runs it. With `dev = true` and
-this in its own config.toml, a dedicated machine also runs a loaded prediction once its draft has stood still for 3 s, and
-a render of the same request adopts that run:
+this in its own config.toml, a dedicated rental also runs a loaded prediction once its draft has stood still for 3 s, and
+a render of the same request adopts that run. This computer's own machine never does: its predictions come with no
+project's scope, so a draft run there would run outside its project (cl-1123).
 
 ```toml
 [machine]
@@ -46,6 +47,10 @@ RC is the minor after this cozy's release, or an RC build's own (`0.26.0-dev+g1a
 
 - `cozy machine show <m>` (and the panel) says `rc 0.25.0 current|behind|held|none: …`; a run on dev builds says
   `machine: <m> runs RC builds: Runtime <sha> · TensorFS <sha> · cozy <sha>`.
+- The RC's Runtime and TensorFS builds are dev releases of the minors it makes (`0.48.0.dev<n>+g<sha8>`, `0.27.0.dev<n>+g<sha8>`),
+  and the Runtime floors on a TensorFS build (`tensorfs>=0.27.0.dev<n>`, on Linux x86_64, where the RC builds it): an RC Runtime
+  runs only beside the RC's TensorFS. A lock on an RC Runtime takes the RC's TensorFS build too, and `--runtime <a dev wheel>`
+  alone takes it when the machine's TensorFS is below that floor.
 - An update by hand that names software holds a rental where it is, the RC's own builds too. `cozy machine update <m>`
   with nothing named moves it to the RC again. `--runtime`, `--tensorfs` or `--tensord` with the RC's version
   (`0.26.0-dev+g1a2b3c4d`) takes that build from the prerelease, and holds it there as the RC moves on.

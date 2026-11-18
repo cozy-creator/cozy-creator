@@ -92,11 +92,15 @@ on:
         description: "Replay: the scenario of a logged gate (its \"scenario <name>\"; empty: by time)"
         type: string
         default: ''
+      rent:
+        description: "Rent and run; without it, the $0 pre-flight only: the candidate set resolves on the machine it would rent"
+        type: boolean
+        default: true
       nonce:
         description: "Caller's id, shown in the run name"
         type: string
         default: ''
-run-name: release-gate ${{ inputs.hub }} ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.nonce }}
+run-name: release-gate ${{ inputs.hub }} ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.nonce }}${{ !inputs.rent && ' pre-flight' || '' }}
 
 # Only the baseline job writes (contents: write).
 jobs:
@@ -163,7 +167,7 @@ jobs:
   # installed and one function run from it (release-gate/suites/publish/run.sh).
   hub-fixture:
     needs: select
-    if: needs.select.outputs.hub_fixture == 'true' || needs.select.outputs.publish == 'true'
+    if: inputs.rent && (needs.select.outputs.hub_fixture == 'true' || needs.select.outputs.publish == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -279,7 +283,7 @@ jobs:
   # Suite checkpoints (xs-183): every published checkpoint's headers against what its tool reads. No rental, signed out.
   checkpoints:
     needs: select
-    if: ${{ contains(format(',{0},', inputs.suites), ',checkpoints,') }}
+    if: ${{ inputs.rent && contains(format(',{0},', inputs.suites), ',checkpoints,') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -317,9 +321,54 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # rent=false: the gate's $0 checks alone, once for the dispatch (gate.sh --preflight): the candidates fetch, and the set
+  # resolves on the machine it would rent (resolve.py: the Runtime takes the TensorFS it would run there, an RC Runtime the
+  # RC's TensorFS beside it, and each package the Runtime; xs-216). No environment and no sign-in: any branch can ask.
+  preflight:
+    needs: select
+    if: ${{ !inputs.rent }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read  # a wheel artifact of another run
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HUB: ${{ inputs.hub }}
+      COZY_HUB_URL: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_URL || '' }}
+      COZY_TEST_HUB_ORIGIN: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_ORIGIN || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ github.repository == 'cozy-creator/cozy-creator' && github.sha || 'master' }}
+          path: creator
+      - if: ${{ inputs.packages_ref != '' }}
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/packages
+          ref: ${{ inputs.packages_ref }}
+          path: packages
+      - uses: astral-sh/setup-uv@v7
+      - name: Pre-flight (${{ inputs.suites }})
+        env:
+          SUITES: ${{ inputs.suites }}
+          RUNTIME_WHEEL: ${{ inputs.runtime_wheel }}
+          TENSORFS_WHEEL: ${{ inputs.tensorfs_wheel }}
+          PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
+        run: |
+          args=()
+          wheels=$(creator/release-gate/wheels.sh "$RUNTIME_WHEEL" "$TENSORFS_WHEEL")
+          [ -z "$wheels" ] || { mapfile -t wheels <<< "$wheels"; args+=("${wheels[@]}"); }
+          [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
+          creator/release-gate/gate.sh preflight --suite "$SUITES" --hub "$HUB" --out "$PWD/gate" --preflight "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
   gate:
     needs: select
-    if: ${{ needs.select.outputs.matrix != '[]' }}
+    if: ${{ inputs.rent && needs.select.outputs.matrix != '[]' }}
     name: gate ${{ matrix.sku }} ${{ matrix.suite }}
     strategy:
       fail-fast: false
@@ -392,30 +441,9 @@ jobs:
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
           fi
-          # A wheel is a URL#sha256 the gate fetches and checks, an artifact of this run or of another run of this repo
-          # (e2e's candidate-runtime-*, dev-build's tensorfs-wheel-*): artifact:<run id>/<name>, or for the Runtime a
-          # cozy-runtime dev-build run id (its release files, kernels built: cozy-runtime-<sha>).
-          for w in "runtime-wheel|$RUNTIME_WHEEL|cozy_runtime" "tensorfs-wheel|$TENSORFS_WHEEL|tensorfs"; do
-            IFS="|" read -r flag value dist <<< "$w"
-            [[ $flag != runtime-wheel || ! $value =~ ^[0-9]+$ ]] || value=dev-build:$value
-            case $value in
-              '') ;;
-              dev-build:*)
-                gh run download "${value#dev-build:}" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "wheels-$flag"
-                f=$(find "wheels-$flag" -type f -name "$dist-*manylinux*x86_64*.whl" -print -quit)
-                [ -n "$f" ] || { echo "::error::cozy-runtime dev-build ${value#dev-build:} has no x86_64 wheel"; exit 1; }
-                args+=("--$flag" "$PWD/$f") ;;
-              artifact:*)
-                name=${value#artifact:} run=$GITHUB_RUN_ID
-                [[ $name != */* ]] || { run=${name%%/*}; name=${name#*/}; }
-                gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$name" -D "wheels-$flag"
-                # One of the two globs matches: ls exits 2 for the other, which pipefail would make the step's.
-                f=$(ls "wheels-$flag/$dist"-*manylinux*x86_64*.whl "wheels-$flag/$dist"-*-py3-none-any.whl 2>/dev/null | head -1 || true)
-                [ -n "$f" ] || { echo "::error::no $dist x86_64 wheel in artifact $value"; exit 1; }
-                args+=("--$flag" "$PWD/$f") ;;
-              *) args+=("--$flag" "$value") ;;
-            esac
-          done
+          # The candidate wheels, each a URL#sha256, an artifact or a cozy-runtime dev-build run (release-gate/wheels.sh).
+          wheels=$(creator/release-gate/wheels.sh "$RUNTIME_WHEEL" "$TENSORFS_WHEEL")
+          [ -z "$wheels" ] || { mapfile -t wheels <<< "$wheels"; args+=("${wheels[@]}"); }
           "$bin/cozy" --version
           echo "args=${args[*]}" >> "$GITHUB_OUTPUT"
       - name: Prepare local service session
@@ -548,7 +576,7 @@ jobs:
   # A passed SKU's numbers and references become its baseline.
   baseline:
     needs: [gate, hub-fixture]
-    if: ${{ always() && inputs.publish && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' && (needs['hub-fixture'].result == 'success' || needs['hub-fixture'].result == 'skipped') }}
+    if: ${{ always() && inputs.rent && inputs.publish && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' && (needs['hub-fixture'].result == 'success' || needs['hub-fixture'].result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -476,11 +476,17 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
         return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
     }
     let admitted = m.admit()?;
+    let asker = actor_id(caller.actor);
     let removed = m.call(move |runs| {
-        let reading = runs.reading(&model)?;
-        if let Some(first) = reading.first() {
-            let message = format!("{model} is being used by {}. Remove it once that finishes.", reading.join(" and "));
-            return Err(Error::conflict("model_in_use", message).next(format!("cozy run watch {first}")));
+        // Its asker's own runs by their ids, which its client names as people know them; any other's counted (cl-1223).
+        let reading = runs.reading(&model, &asker)?;
+        if !reading.none() {
+            let who = reading.said("and").unwrap_or_else(|| "another render".to_owned());
+            let refused = Error::conflict("model_in_use", format!("{model} is being used by {who}. Remove it once that finishes."));
+            return Err(match reading.first() {
+                Some(first) => refused.next(format!("cozy run watch {first}")),
+                None => refused,
+            });
         }
         let result = runs.service.engine.store.remove_cached_model(&model)
             .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
@@ -842,11 +848,13 @@ fn from_offset(parts: Parts, mut offset: u64) -> std::io::Result<Box<dyn Read + 
 struct Last {
     #[serde(default)]
     lines: u64,
+    /// Only lines from this instant on (unix ms).
+    since_ms: Option<i64>,
 }
 
-/// `GET /v1/logs/{name}?lines=N`: a machine log's newest N whole lines (0: all it keeps). As SSE,
-/// those and then each batch as it is appended, each event's id the place after it: a
-/// `Last-Event-ID` resumes there.
+/// `GET /v1/logs/{name}?lines=N&since_ms=T`: a machine log's newest N whole lines (0: all it keeps), of those the ones
+/// from T on, gzip to a caller whose `Accept-Encoding` takes it. As SSE, its newest N and then each batch as it is
+/// appended, each event's id the place after it: a `Last-Event-ID` resumes there.
 async fn log(
     State(m): State<Machine>,
     Path(name): Path<String>,
@@ -863,19 +871,36 @@ async fn log(
         "tensord" => logs::Log::daily(m.identity.logs.clone(), "tensord"),
         _ => return Err(Error::not_found("log_not_found", format!("this machine keeps no log {name}")).into()),
     };
-    let start = match headers.get("last-event-id") {
-        None => logs::Start::Last(query(last)?.lines),
-        Some(id) => logs::Start::After(
-            id.to_str()
-                .ok()
-                .and_then(|id| id.trim().parse().ok())
-                .ok_or_else(|| Error::validation("invalid_request", "Last-Event-ID is not a log cursor"))?,
+    let (start, since) = match headers.get("last-event-id") {
+        None => {
+            let last = query(last)?;
+            (logs::Start::Last(last.lines), last.since_ms)
+        }
+        Some(id) => (
+            logs::Start::After(
+                id.to_str()
+                    .ok()
+                    .and_then(|id| id.trim().parse().ok())
+                    .ok_or_else(|| Error::validation("invalid_request", "Last-Event-ID is not a log cursor"))?,
+            ),
+            None,
         ),
     };
     let unreadable = |e: std::io::Error| Error::internal("log_unreadable", e.to_string());
     if !wants_events(&headers) {
-        let text = m.call(move |_| log.read(start).map_err(unreadable)).await?;
-        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
+        let gzip = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(platform::gzip::accepted);
+        let body = m
+            .call(move |_| {
+                let text = log.read(start).map_err(unreadable)?;
+                let text = since.map_or(text.as_str(), |since| v1::log_since(&text, since));
+                Ok(if gzip { platform::gzip::pack(text.as_bytes()) } else { text.as_bytes().to_vec() })
+            })
+            .await?;
+        let mut answer = ([(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::VARY, "accept-encoding")], body).into_response();
+        if gzip {
+            answer.headers_mut().insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        }
+        return Ok(answer);
     }
     let follow = m
         .call(move |_| match log.follow(start) {
@@ -988,13 +1013,14 @@ async fn put_object(
     drop(m.admit()?);
     let (start, end, length) = span(&headers)?;
     let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
-    let objects = runs.clone();
+    let (objects, named) = (runs.clone(), digest.clone());
     let Some(upload) = blocking(&objects, move |runs| runs.objects.upload(&actor, &digest, length).map_err(Into::into)).await? else {
         return Ok((StatusCode::NO_CONTENT, [(v1::HELD, held(&[(0, length)]))]).into_response());
     };
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
     let private = crate::private_io::current();
+    let said = private.is_none();
     let writer = tokio::task::spawn_blocking(move || crate::private_io::within(private, || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
         let mut at = start;
         let mut writer = landing.writer()?;
@@ -1014,7 +1040,12 @@ async fn put_object(
             at += data.len() as u64;
         }
         drop(receiver);
-        let held = runs.objects.settle(&landing)?;
+        let (held, stored) = runs.objects.settled(&landing)?;
+        // What a guess carries ahead lands as a run's inputs do (cl-1123): said where it lands whole. A project's own on this
+        // computer (`private`) leaves nothing of itself in this log, its digest and length least of all.
+        if stored && said {
+            tracing::info!("objects: {named} landed whole in parts, {length} bytes");
+        }
         wrote.map(|()| held)
     }));
     let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {

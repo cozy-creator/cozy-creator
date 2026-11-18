@@ -106,6 +106,10 @@ pub struct Slot {
     /// The components each of its class's methods uses: what's fetched when it declares none.
     #[serde(default, deserialize_with = "or_default")]
     pub component_use: BTreeMap<String, Vec<String>>,
+    /// The components of it that take LoRAs (its class's `Serving(loras=...)` that it fetches, cl-1241): where a LoRA naming
+    /// no slot binds. Empty: it takes none. Absent: an interface written before the field.
+    #[serde(default)]
+    pub loras: Option<Vec<String>>,
 }
 
 impl Slot {

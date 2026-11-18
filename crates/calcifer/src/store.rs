@@ -2343,6 +2343,26 @@ impl Store {
         })
     }
 
+    /// `machine`'s update yet to end, whoever asked it, if one is.
+    pub(crate) fn update_going(&self, machine: &str) -> Result<Option<RunRow>> {
+        self.read(|db| {
+            let id = db.query_row(
+                "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled' ORDER BY number LIMIT 1",
+                params![machine],
+                |r| r.get::<_, String>(0),
+            );
+            id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
+        })
+    }
+
+    /// Whether an update of `machine` after run `number` has ended: what that run moved may be undone.
+    pub(crate) fn updated_since(&self, machine: &str, number: u64) -> Result<bool> {
+        self.read(|db| {
+            let sql = "SELECT EXISTS(SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'settled' AND number > ?2)";
+            Ok(db.query_row(sql, params![machine, number], |r| r.get::<_, bool>(0))?)
+        })
+    }
+
     /// `machine`'s move to the open RC yet to end, if one is.
     pub(crate) fn moving(&self, machine: &str) -> Result<Option<RunRow>> {
         self.read(|db| {
@@ -3061,7 +3081,6 @@ impl From<&MachineRow> for Machine {
             running: 0,
             queued: 0,
             jobs: vec![],
-            ordered: true,
             unverified: false,
             controller_key: None,
             reach: None,

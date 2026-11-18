@@ -59,7 +59,13 @@ cp -r "$here/project/boxed" "$co/e2e-boxed"
 if [ -n "$PACKAGES" ]; then
   cp -r "$PACKAGES/orbit" "$PACKAGES/minimax-h3" "$co/" || { check "from source: $PACKAGES holds no orbit and minimax-h3"; return; }
   # It reads with the run's candidate Runtime, as the machine runs it (cl-994): until a set lands, the RC's newest build is another.
+  # Beside it the candidate TensorFS, which that Runtime floors on (xs-216: `tensorfs>=0.27.0.dev<n>`, which no index holds), for a
+  # rental's platform as a lock takes it (scripts/lock.sh); uv reads a source only for a dependency the project names.
   [ ! -f "${CAND_RT:-}" ] || sed -i "/^\[tool.uv.sources\]/a cozy-runtime = { path = \"$CAND_RT\" }" "$co/orbit/pyproject.toml"
+  if [ -f "${CAND_RT:-}" ] && [ -f "${CAND_TFS:-}" ]; then
+    sed -i "/^\[tool.uv.sources\]/a tensorfs = { path = \"$CAND_TFS\", marker = \"sys_platform == 'linux' and platform_machine == 'x86_64'\" }" "$co/orbit/pyproject.toml"
+    grep -qE '^ *"tensorfs[][ <>=!~;"]' "$co/orbit/pyproject.toml" || sed -i '0,/^dependencies = \[$/s//dependencies = [\n    "tensorfs",/' "$co/orbit/pyproject.toml"
+  fi
 fi
 git -C "$co" init -q -b rc/e2e && git -C "$co" add -A && git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qm checkout \
   || { check "from source: the checkout's commit failed"; return; }
@@ -211,15 +217,17 @@ fi
 source_reads() {
 step "source reads (cl-1126): a machine added or renamed and lists again and again read no source; one file changed is one read, told to the page"
 local co=$1 said=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder uv real log=$OUT/source-uv.log page sse=$OUT/source-page.sse rental='' handle='' name='' on
-local described locks told lists
+local described failed locks told lists
 SOURCE_STAND=''
 : > "$OUT/source-reads.ndjson"
 : > "$log"
-# Calcifer's uv, logging each call it makes: swapped in by a rename, so a call never finds it missing.
+# Calcifer's uv, logging each call it makes, and again as `failed <code>: ` one that failed: swapped in by a rename, so a call
+# never finds it missing.
 uv=$(ls -d "$HOME"/.cozy/tools/uv/*/uv 2> /dev/null | head -1)
 [ -x "$uv" ] || { check "source reads: Calcifer's uv isn't in $HOME/.cozy/tools/uv"; return; }
 real=$uv.real
-ln -f "$uv" "$real" && printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$log" "$real" > "$uv.counting" && chmod 755 "$uv.counting" \
+ln -f "$uv" "$real" && printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n"%s" "$@"; s=$?\n[ $s = 0 ] || printf "failed %%s: %%s\\n" "$s" "$*" >> "%s"\nexit $s\n' \
+  "$log" "$real" "$log" > "$uv.counting" && chmod 755 "$uv.counting" \
   && mv -f "$uv.counting" "$uv" || { check "source reads: Calcifer's uv isn't counted"; rm -f "$real" "$uv.counting"; return; }
 # A page's events stream, as the page's own fetch opens it (prefetch.sh's pre_page).
 curl -sSN -H "Host: $(jq -r .address "$lock")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
@@ -255,7 +263,7 @@ if signin "$E2E_HUB_EMAIL" > "$OUT/source-reads-login.json"; then
 else
   check "source reads: cozy login failed: $(tail -c 300 "$OUT/source-reads-login.json")"
 fi
-described=$(grep -c ' describe$' "$log" || true) locks=$(grep -c '^lock ' "$log" || true) lists=$(wc -l < "$OUT/source-reads.ndjson")
+described=$(grep -v '^failed ' "$log" | grep -c ' describe$' || true) locks=$(grep -c '^lock ' "$log" || true) lists=$(wc -l < "$OUT/source-reads.ndjson")
 echo "source reads: $lists lists, for local, stand-s, ${handle:-no handle} and ${name:-no name}: uv ran $described describes and $locks locks;" \
   "slowest list $(jq -s 'map(.ms) | max' "$OUT/source-reads.ndjson") ms"
 [ "$described" = 0 ] && [ "$locks" = 0 ] \
@@ -283,9 +291,12 @@ for _ in $(seq 240); do
   fi
   sleep 0.5
 done
-# What each describe read: the package its folder's pyproject.toml names.
-described=$(sed -n 's/.* --dir \([^ ]*\) describe$/\1/p' "$log" | while read -r dir; do sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/pyproject.toml" | head -1; done | paste -sd, -)
-echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv described ${described:-nothing}; listed:" \
+# What each describe read: the package its folder's pyproject.toml names. One that failed (GitHub refusing a wheel's download,
+# 44294540054) is read again by its retry, not a second reading.
+read_of() { sed -n 's/.* --dir \([^ ]*\) describe$/\1/p' | while read -r dir; do sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/pyproject.toml" | head -1; done | sort; }
+failed=$(grep '^failed ' "$log" | read_of | paste -sd, -)
+described=$(comm -23 <(grep -v '^failed ' "$log" | read_of) <(grep '^failed ' "$log" | read_of) | paste -sd, -)
+echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv described ${described:-nothing}${failed:+ (and failed: $failed)}; listed:" \
   "$(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-edited.json" 2> /dev/null)"
 J '[.tools[] | select(.id == "e2e-boxed/edited")] != []' "$OUT/source-reads-edited.json" 2> /dev/null \
   || check "source reads: e2e-boxed's new tool wasn't listed after the page was told tools.changed $told times in 2 min"

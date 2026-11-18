@@ -87,7 +87,7 @@ pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placemen
                 let mut tried = assigned.clone();
                 tried[j] = Some(m);
                 let trial = evaluate(pictures, jobs, &order, &tried, now, &mut quotes);
-                if sooner(&trial.1, &best.1) && stays(&jobs[j], &best.0[j], &trial.0[j], now) {
+                if better(&trial, &best) && stays(&jobs[j], &best.0[j], &trial.0[j], now) {
                     (assigned, best, moved) = (tried, trial, true);
                 }
             }
@@ -165,6 +165,18 @@ fn evaluate(pictures: &[Picture], jobs: &[Job], order: &[usize], assigned: &[Opt
     (placed, score)
 }
 
+/// Whether plan `trial` beats `best`: it places more of the jobs, or as many and ends the whole sooner. A job a plan leaves unplaced
+/// (its machine can't run it: no room on its disk, cl-1269) never counts as finishing early.
+#[allow(clippy::type_complexity)]
+fn better(trial: &(Vec<Option<(usize, Offer)>>, (i64, i64)), best: &(Vec<Option<(usize, Offer)>>, (i64, i64))) -> bool {
+    let placed = |plan: &[Option<(usize, Offer)>]| plan.iter().flatten().count();
+    match placed(&trial.0).cmp(&placed(&best.0)) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => sooner(&trial.1, &best.1),
+    }
+}
+
 /// Whether `trial` ends the whole sooner than `best`, by more than a tie.
 fn sooner(trial: &(i64, i64), best: &(i64, i64)) -> bool {
     let tie = |ms: i64| ((ms.max(0) as f64 * TIE) as i64).max(1000);
@@ -191,13 +203,13 @@ pub(crate) fn finishes_clearly_sooner(sooner: i64, than: i64, now: i64) -> bool 
 }
 
 /// Of `offers`, where a job goes: the soonest finish of those that can run it, of those tied a machine that serves before one on its
-/// way, one measured before one not, a rental before this computer, then the sooner (`placement::soonest`); and the machine fetching
+/// way, one measured before one not, a rental before this computer, the one holding fewest runs, then the sooner (`placement::soonest`); and the machine fetching
 /// ahead for it unless another is clearly sooner.
 fn choose(offers: &[(usize, Offer)], stay: Option<usize>, now: i64) -> Option<(usize, Offer)> {
     let fits = || offers.iter().filter(|(_, offer)| offer.fits);
     let first = fits().map(|(_, offer)| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
-    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
+    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
     let soonest = fits().filter(|(_, offer)| offer.finish_at_ms <= first + tie).min_by_key(|(_, offer)| rank(offer))?;
     let kept = stay.and_then(|stay| fits().find(|(m, _)| *m == stay)).filter(|(_, held)| !clearly_sooner(&soonest.1, held, now));
     kept.or(Some(soonest)).cloned()

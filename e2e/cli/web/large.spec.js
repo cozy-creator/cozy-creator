@@ -1,11 +1,13 @@
 // large (Paul, 11-15: "make sure the new pixijs canvas is robust"; cl-991: a project of thousands of cards stays usable): 300 boxes, then
 // 1,000, each its own picture, made by one apply and laid out by one canvas patch. For each: the first open, which makes the thumbnails,
-// and the open again at the fit it kept; a 2 s wheel pan at 50% and at the fit; Ctrl+wheel out to the 5% limit and back; 20 cycles of pan
+// and the open again at the fit it kept; a 2 s wheel pan at 50% and at the fit; Ctrl+wheel out to the 5% limit and back; 40 cycles of pan
 // and zoom. Frame times, the scene's resources and the JS heap go to large.json, with this runner's speed (speed.js), for bars to be set
 // from measured runs. Judged now: every box in view is drawn in every frame of a pan; at 100%, off-screen cards' textures are let go down to
-// the unpinned allowance the scene documents (docs/canvas-migration.md, 64 MiB); and 20 cycles grow neither the heap nor the textures past
-// what cycles 2 and 10 differ by, floored at 3× the heap's own noise at rest. No time bar: opens' bars are Paul's for 50 pictures, and
-// nothing says yet what 300 or 1,000 should take.
+// the unpinned allowance the scene documents (docs/canvas-migration.md, 64 MiB); the cycles grow neither the textures, the listeners nor
+// the DOM past what cycles 2 and 10 differ by; and the JS heap, read after a full collection every 2 cycles from cycle 10 to 40 and fitted,
+// grows no more than 10 KB a cycle at 1,000 boxes and 20 KB at 300 (cl-1227: Pixi's batch pool grew it 68–190 KB a cycle at 1,000 over those
+// cycles; a page warms up in its first 10; fixed code fits at most 3 KB a cycle at 1,000 and 8.5 at 300, whose readings move more).
+// No time bar: opens' bars are Paul's for 50 pictures, and nothing says yet what 300 or 1,000 should take.
 const { randomBytes } = require('crypto');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
@@ -15,8 +17,16 @@ const { runnerSpeed } = require('./speed');
 const SIZES = [300, 1000];
 const [W, DX, DY] = [240, 304, 240];
 const VIEWPORT = { width: 1600, height: 1000 };
-const CYCLES = 20;
+const CYCLES = 40;
 const SAMPLED = [1, 2, 10, 20];
+/** The heap's growth judged as a rate (cl-1227): from cycle WARM, read every 2 cycles, fitted, at most RATE_MOST[boxes] bytes a cycle. */
+const WARM = 10;
+const RATE_MOST = { 300: 20_000, 1000: 10_000 };
+/** Bytes a cycle: the least-squares slope of [cycle, bytes] readings. */
+const slopeOf = (points) => {
+  const mx = points.reduce((sum, [x]) => sum + x, 0) / points.length, my = points.reduce((sum, [, y]) => sum + y, 0) / points.length;
+  return points.reduce((sum, [x, y]) => sum + (x - mx) * (y - my), 0) / points.reduce((sum, [x]) => sum + (x - mx) ** 2, 0);
+};
 const soft = expect.configure({ soft: true });
 
 /** Picture `i`: 160×100, its own colours, so no two share a file or a texture. */
@@ -235,28 +245,28 @@ test('large', { tag: '@solo' }, async ({ context, project, api, signIn, removeAf
         delete seen[`cycle_${cycle}`];
         cycleFrames.push({ cycle, p50: result.p50, p95: result.p95, p99: result.p99, short: result.short.length });
         soft(result.short, `cycle ${cycle}: every box in view drawn in every frame`).toEqual([]);
-        if (!SAMPLED.includes(cycle)) continue;
+        if (!SAMPLED.includes(cycle) && !(cycle >= WARM && cycle % 2 === 0)) continue;
         await still(`cycle ${cycle}`);
         await loaded(`cycle ${cycle}`);
         const at = await camera();
         samples[cycle] = { camera: at, resources: await resources(), memory: await heap() };
-        // The heap's own noise at rest, at cycle 2: two more collections.
-        if (cycle === 2) samples[cycle].noise = [samples[cycle].memory.heap, (await heap()).heap, (await heap()).heap];
       }
       seen.cycles = { home, frames: cycleFrames, samples };
       save();
       const [two, ten, twenty] = [samples[2], samples[10], samples[20]];
-      const noise = Math.max(...two.noise) - Math.min(...two.noise);
-      const allowed = (key, of) => Math.max(Math.abs(of(ten) - of(two)), key === 'heap' ? 3 * noise : 0);
+      const allowed = (of) => Math.abs(of(ten) - of(two));
       const growth = {
-        heap: { two: two.memory.heap, ten: ten.memory.heap, twenty: twenty.memory.heap, noise, allowed: allowed('heap', (s) => s.memory.heap) },
-        textureBytes: { two: two.resources.textureBytes, ten: ten.resources.textureBytes, twenty: twenty.resources.textureBytes, allowed: allowed('textureBytes', (s) => s.resources.textureBytes) },
-        listeners: { two: two.memory.listeners, ten: ten.memory.listeners, twenty: twenty.memory.listeners, allowed: allowed('listeners', (s) => s.memory.listeners) },
-        nodes: { two: two.memory.nodes, ten: ten.memory.nodes, twenty: twenty.memory.nodes, allowed: allowed('nodes', (s) => s.memory.nodes) },
+        textureBytes: { two: two.resources.textureBytes, ten: ten.resources.textureBytes, twenty: twenty.resources.textureBytes, allowed: allowed((s) => s.resources.textureBytes) },
+        listeners: { two: two.memory.listeners, ten: ten.memory.listeners, twenty: twenty.memory.listeners, allowed: allowed((s) => s.memory.listeners) },
+        nodes: { two: two.memory.nodes, ten: ten.memory.nodes, twenty: twenty.memory.nodes, allowed: allowed((s) => s.memory.nodes) },
       };
       seen.growth = growth;
       save();
-      for (const [key, row] of Object.entries(growth)) soft(row.twenty - row.two, `${key} after ${CYCLES} cycles against cycle 2 (allowed: cycles 2–10's difference${key === 'heap' ? ', at least 3× the noise at rest' : ''}): ${JSON.stringify(row)}`).toBeLessThanOrEqual(row.allowed);
+      for (const [key, row] of Object.entries(growth)) soft(row.twenty - row.two, `${key} after 20 cycles against cycle 2 (allowed: cycles 2–10's difference): ${JSON.stringify(row)}`).toBeLessThanOrEqual(row.allowed);
+      const readings = Object.entries(samples).filter(([cycle]) => +cycle >= WARM && +cycle % 2 === 0).map(([cycle, sample]) => [+cycle, sample.memory.heap]);
+      const rate = (seen.heapRate = { from: WARM, to: CYCLES, readings, bytesPerCycle: Math.round(slopeOf(readings)), most: RATE_MOST[count] });
+      save();
+      soft(rate.bytesPerCycle, `the JS heap's growth a cycle at ${count} boxes, fitted over cycles ${WARM}–${CYCLES} (${readings.length} readings after a full collection): ${JSON.stringify(rate)}`).toBeLessThanOrEqual(rate.most);
       soft(twenty.resources.unusedBytes, 'unpinned textures within the allowance after the cycles').toBeLessThanOrEqual(twenty.resources.unusedTargetBytes);
     });
     await page.close();

@@ -406,6 +406,11 @@ impl Fetch {
         remote(&self.machine, hub, header)
     }
 
+    /// `checkpoints` held until it ends, as its own: a run's models from their resolution on, before it wants any (tfs-302).
+    pub(crate) fn hold(&self, checkpoints: Vec<Checkpoint>) {
+        self.held.lock().unwrap().extend(checkpoints);
+    }
+
     /// `previous` (a run's preparation's fetches) ends with the call.
     pub(crate) fn replaces(&self, previous: Option<Arc<Fetch>>) {
         *self.replaced.lock().unwrap() = previous;
@@ -424,6 +429,22 @@ impl Fetch {
     /// What it listed as its run's download is said no more: a call of its run says what it waits on from here (`meter`).
     pub(crate) fn unlist(&self) {
         self.hinted.lock().unwrap().clear();
+    }
+
+    /// The bytes of `lined`'s needed objects absent here whose download is under way, each once: the store took each one's whole
+    /// length as it began (`Store::partial`), so the disk's free bytes have them already.
+    pub(crate) fn under_way(&self, lined: &Lined) -> u64 {
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        for (_, part) in &lined.wants {
+            for (object, state) in part.absent.iter().zip(self.machine.fetching(&part.remote, &part.absent)) {
+                let taken = state.is_some_and(|state| !matches!(state.phase, tensorfs::fetch::Phase::Queued | tensorfs::fetch::Phase::Starting));
+                if taken && seen.insert(object.sha256.clone()) {
+                    bytes += object.length;
+                }
+            }
+        }
+        bytes
     }
 
     /// Want what a call `needs` (cl-1102), before its executor reads it. What of `needed` isn't here (Y) comes next, in Runtime's
@@ -454,9 +475,10 @@ impl Fetch {
         if let Some(unsourced) = lined.unsourced.take() {
             return Err(refuse(unsourced));
         }
-        // Its checkpoints are held from `lined` on: making room never evicts its own.
+        // Its checkpoints are held from `lined` on: making room never evicts its own. What of it a download under way has taken its
+        // room for (its early fetch's, cl-966) isn't asked for again (cl-1256: counted twice, a call that fit failed mid-download).
         let account = lined.account;
-        room(account.needs).map_err(|why| refuse(why))?;
+        room(account.needs.saturating_sub(self.under_way(&lined))).map_err(|why| refuse(why))?;
         let wanted: Vec<(u64, Lining)> = std::mem::take(&mut lined.wants).into_iter().filter(|(_, part)| !part.absent.is_empty()).collect();
         {
             let mut state = self.required.lock().unwrap();
@@ -893,10 +915,9 @@ fn counted(each: &[ModelTransfer]) -> Option<Weights> {
 
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
-/// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
-/// waiting reason says what it has and needs (`Fetch::needs`), and TensorD's log says on what
-/// (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`), never as
-/// their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
+/// or the fetch ends, its own stage shows again. While a required want is unanswered, TensorD's log
+/// says on what (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`),
+/// never as their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
 pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
@@ -942,13 +963,11 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 return;
             }
             let on = live.as_ref().map(|f| f.awaited()).unwrap_or_default();
+            // Its readers hear the downloads it waits on (`waiting_on`) and its record what it had and needed (`weights`), never
+            // has/needs words set here (cl-1230: they showed only once its downloads had landed, still saying what was to download).
             if on != said {
-                if let Some((live, words)) = live.as_ref().and_then(|f| f.waiting_on().map(|words| (f, words))) {
+                if let Some(words) = live.as_ref().and_then(|f| f.waiting_on()) {
                     tracing::info!("run {id}: {WAITING_FOR_MODELS}: {words}");
-                    // Its own words say what it has and needs, which don't move; how far each is, its downloads say.
-                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {}", live.needs()))) {
-                        tracing::warn!("run {id}: what it waits on: {error}");
-                    }
                 }
                 said = on;
             }

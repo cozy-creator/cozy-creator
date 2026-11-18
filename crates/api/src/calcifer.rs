@@ -537,6 +537,63 @@ pub struct Run {
     pub retry: Option<Retry>,
 }
 
+impl Run {
+    /// What a reader outside an encrypted project may know of one of its runs (cl-1242, the release coordinator's ruling): that it
+    /// is there, its id and number, its kind, its machine, its state and times, and how many steps it has gone. Nothing its project
+    /// wrote or chose: not its project's name, nor its key (`KEY-N` is made from that name), its tool, its stage, its outputs or their
+    /// files, its words, its log lines, why it waits or ended, what it asked. The one rule for both kinds of outsider: another project
+    /// on its computer (Calcifer's `Machines::picture_for`) and another computer on the account (TensorD's queue, `estimate::roots`,
+    /// which gives it no function, stage or models). Another run's words name it as TensorD's `others::Others` rules (cl-1223): by
+    /// its id only to its own project's readers. Each field is said here, so one added to `Run` is decided, never passed on.
+    pub fn outsider(&self) -> Run {
+        Run {
+            id: self.id.clone(),
+            number: self.number,
+            name: String::new(),
+            machine_number: self.machine_number,
+            kind: self.kind,
+            target: String::new(),
+            hub: String::new(),
+            machine: self.machine.clone(),
+            project: None,
+            project_id: self.project_id.clone(),
+            status: self.status,
+            cancel_requested: self.cancel_requested,
+            machine_state: self.machine_state.clone(),
+            reason: None,
+            output: vec![],
+            created_at_ms: self.created_at_ms,
+            accepted_at_ms: self.accepted_at_ms,
+            started_at_ms: self.started_at_ms,
+            settled_at_ms: self.settled_at_ms,
+            waiting: None,
+            progress: self.progress.as_ref().map(|progress| Progress {
+                completed: progress.completed,
+                total: progress.total,
+                at_ms: progress.at_ms,
+                ..Progress::default()
+            }),
+            text: vec![],
+            video_progress: None,
+            arriving: None,
+            queue_position: self.queue_position,
+            warnings: vec![],
+            adjustments: vec![],
+            result: None,
+            execution_ms: self.execution_ms,
+            memo: None,
+            measurements: None,
+            stalled: None,
+            calls: vec![],
+            report: None,
+            request: None,
+            gpu: None,
+            placed: None,
+            retry: None,
+        }
+    }
+}
+
 /// A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -911,6 +968,15 @@ pub struct MachineEstimate {
     pub ready_ms: Option<u64>,
 }
 
+/// A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how
+/// many, and about how long until they're free, as its machine times it (cl-1187); 0: it can't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GpuWait {
+    pub width: u32,
+    pub left_ms: u64,
+}
+
 /// One event of a run's stream.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunEvent"))]
@@ -971,9 +1037,13 @@ pub enum Event {
     Call { sequence_number: u64, call: Call },
     #[serde(rename = "run.progress")]
     Progress { progress: Progress },
-    /// Why the run waits now; an empty reason: it waits no longer.
+    /// Why the run waits now; an empty reason: it waits no longer. `gpus`: it waits for GPUs, as its machine said (cl-1247).
     #[serde(rename = "run.waiting")]
-    Waiting { reason: String },
+    Waiting {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gpus: Option<GpuWait>,
+    },
     /// Its results coming here once it ended, each second until they land (`Run::arriving`).
     #[serde(rename = "run.arriving")]
     Arriving { progress: Progress },
@@ -1310,10 +1380,6 @@ pub struct Machine {
     /// machine goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Run>,
-    /// False: a rental another client of this account ordered. This controller reaches it as its
-    /// own (the Hub grants it every device the account signed in on), but places no run on it unasked.
-    #[serde(default = "yes")]
-    pub ordered: bool,
     /// Its Hub did not answer the last listing.
     #[serde(default)]
     pub unverified: bool,
@@ -1361,10 +1427,6 @@ pub struct RcFollow {
     pub state: String,
     /// What it runs or moves to, what holds it, or why there is none, in words.
     pub detail: String,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// A duration as Paul writes it: `41s`, `3m 12s`, `2h 5m`.
@@ -2008,17 +2070,20 @@ impl MachineList {
     }
 }
 
-/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
-/// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
-/// `local`, which says why it can't where it can't. Never a test pod, a rental whose GPU memory is capped (a VRAM-capped matrix pod): it
-/// runs only what names it (cl-920).
+/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of the
+/// account up or on its way, whichever of its computers ordered it (cl-1224), any other computer's that's up, then this one, the last
+/// choice, which starts when used. With none of them, `local`, which says why it can't where it can't. Never a test pod, a rental whose
+/// GPU memory is capped (a VRAM-capped matrix pod): it runs only what names it (cl-920). The rentals up come first, then the least busy,
+/// every client's runs counted: what takes the first of the set (local code, which installs where it resolves; a run no machine quoted)
+/// takes the idlest, never another computer's busy pod for being listed first (cl-1224).
 pub fn render_set(machines: &[Machine]) -> Vec<On> {
-    let held = |machine: &&Machine| machine.ordered;
     let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
-    let rented = (machines.iter().filter(held))
-        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));
-    let added = machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
-    let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+    let mut rented: Vec<&Machine> = machines.iter()
+        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine))
+        .collect();
+    rented.sort_by_key(|machine| (machine.state != MachineState::Ready, machine.running + machine.queued));
+    let added = machines.iter().filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
+    let mut set: Vec<On> = rented.into_iter().chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
     if set.is_empty() || platform::Os::CURRENT.local_inference() {
         set.push(On::Machine("local".into()));
     }

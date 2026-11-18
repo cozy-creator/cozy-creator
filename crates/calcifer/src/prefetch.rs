@@ -37,6 +37,17 @@ use crate::{machines::Machines, project::Project};
 /// What Calcifer's log says of its predictions (cl-1123): each guess round, each box's guess, each list sent and how long each took.
 pub(crate) const TARGET: &str = "cozy.prefetch";
 
+/// A prediction's line about the project in `folder` (its readable folder): Calcifer's log names an unencrypted project's folder and
+/// boxes, and nothing of an encrypted one, whose line goes to its own log in its vault, kept only for a test's diagnostics
+/// (`private_io::diagnose`): a locked project leaves nothing of itself in Calcifer's (cl-1123).
+pub(crate) fn say(folder: &str, line: impl FnOnce() -> String) {
+    let dir = std::path::Path::new(folder);
+    match !crate::project::vault::ordinary_storage(dir) || crate::project::vault::encrypted_within(dir) {
+        true => crate::private_io::diagnose(dir, line),
+        false => tracing::info!(target: TARGET, "{}", line()),
+    }
+}
+
 /// How long a prepare item a render named stays listed for it at most, should its machine never answer the render.
 const PINNED: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -81,6 +92,8 @@ pub(crate) struct Guess {
     pub placed: Placed,
     /// Its box's draft request, hashed (`guess::draft`): edited, it is a new guess, and a failed one starts over.
     pub draft: u64,
+    /// The files its item's request reads (`spec.inputs`), carried to its machine ahead of its render (`Calcifer::carry_ahead`).
+    pub files: Vec<crate::AheadFile>,
 }
 
 /// A guess's tries in a row that failed, on one machine (cl-1104): as any request is asked again (retry-standard-api-practice).
@@ -145,6 +158,8 @@ pub(crate) struct Lists {
 struct Pinned {
     hub: String,
     item: v1::Predicted,
+    /// Its project's folder, and its box.
+    project: String,
     asset: String,
     since: std::time::Instant,
 }
@@ -258,9 +273,9 @@ impl Lists {
     pub(crate) fn taking(&self, project: &str, asset: &str) {
         let Some(guess) = lock(&self.guessed).get(project).and_then(|guesses| guesses.iter().find(|guess| guess.asset == asset).cloned()) else { return };
         let Some(key) = lock(&self.keys).get(&(guess.machine.clone(), identity(&guess.item))).cloned() else { return };
-        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: project.to_owned(), asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((guess.machine.clone(), key.clone()), pinned);
-        tracing::info!(target: TARGET, "{asset}'s render takes its draft's seed: {key} on {} stays listed until the machine answers", guess.machine);
+        say(project, || format!("{asset}'s render takes its draft's seed: {key} on {} stays listed until the machine answers", guess.machine));
     }
 
     /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else the item
@@ -275,18 +290,18 @@ impl Lists {
         let sent = identity(&v1::Predicted { key: String::new(), spec: v1::RunSpec { predicted: None, ..spec.clone() }, interface: None });
         let held = lock(&self.pinned).iter().find(|((on, _), pinned)| on == machine && pinned.asset == asset && identity(&pinned.item) == sent).map(|((_, key), _)| key.clone());
         if let Some(key) = held {
-            tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, the request it made ready");
+            say(project, || format!("{asset}'s render names {key} on {machine}, the request it made ready"));
             return Some(key);
         }
         let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
         let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
         let same = identity(&guess.item) == sent;
-        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: project.to_owned(), asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
-        match same {
-            true => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers"),
-            false => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, its guess, though it isn't the request that guess made ready"),
-        }
+        say(project, || match same {
+            true => format!("{asset}'s render names {key} on {machine}: it stays listed until the machine answers"),
+            false => format!("{asset}'s render names {key} on {machine}, its guess, though it isn't the request that guess made ready"),
+        });
         Some(key)
     }
 
@@ -294,7 +309,7 @@ impl Lists {
     /// (`Project::take_draft_seed`), so that box's next draft is already predicted with a fresh one.
     pub(crate) fn answered(&self, machines: &Arc<Machines>, machine: &str, key: &str) {
         let Some(pinned) = lock(&self.pinned).remove(&(machine.to_owned(), key.to_owned())) else { return };
-        tracing::info!(target: TARGET, "{machine} answered {}'s render, which named {key}", pinned.asset);
+        say(&pinned.project, || format!("{machine} answered {}'s render, which named {key}", pinned.asset));
         self.send(machines);
     }
 
@@ -372,6 +387,25 @@ impl Lists {
             }
             guessed.retain(|guess| guess.machine != "local" || guess.project.upgrade().is_none_or(|project| !owed.iter().any(|folder| *folder == project.folder_root())));
         }
+        // What each machine's guesses read, carried there behind every run's carry (`Calcifer::carry_ahead`, cl-1123): each file of a
+        // project once, with the boxes that read it.
+        let mut files: HashMap<String, Vec<crate::AheadFile>> = HashMap::new();
+        for guess in guessed.iter().filter(|guess| guess.project.strong_count() > 0) {
+            let at = files.entry(guess.machine.clone()).or_default();
+            for file in &guess.files {
+                match at.iter_mut().find(|held| held.project == file.project && held.input.digest == file.input.digest) {
+                    Some(held) => {
+                        for name in &file.boxes {
+                            if !held.boxes.contains(name) {
+                                held.boxes.push(name.clone());
+                            }
+                        }
+                    }
+                    None => at.push(file.clone()),
+                }
+            }
+        }
+        machines.calcifer.carry_ahead(files);
         // Each machine planned or guessed on, sent before, or able to run what's planned: an idle one may prepare it.
         let mut names: Vec<String> = planned.keys().cloned().collect();
         names.extend(lock(&self.sent).keys().cloned());
@@ -384,10 +418,12 @@ impl Lists {
             let planned = if name == "local" { &planned_local } else { &planned };
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
             upcoming.sort_by_key(|listed| listed.start_at_ms);
-            // Its guesses, each once, then what demand elsewhere asks of it that no guess does.
+            // Its guesses, each once, then what demand elsewhere asks of it that no guess does: nothing of an encrypted project where
+            // its request may not go ahead (`Calcifer::sealed_from`, cl-1123).
             let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
+            let sealed = upcoming.is_empty().then(|| machines.calcifer.sealed_from(&name)).flatten();
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
-                .chain(demand(&planned, &name, &frame, upcoming.is_empty()));
+                .chain(demand(&planned, &name, &frame, upcoming.is_empty(), sealed.as_deref()));
             // And what a render named, until the machine answers it (`answered`).
             lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
             let pinned: Vec<(String, v1::Predicted)> = (lock(&self.pinned).iter())
@@ -749,18 +785,23 @@ fn line(message: &str) -> String {
 
 /// What `machine` prepares for demand elsewhere: nothing while it has upcoming jobs or a queue; else the published functions planned
 /// on other machines that it can run, the most-asked first, each once. Local code isn't: it is sent to a machine with the job that
-/// runs it there.
-fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool) -> Vec<(String, v1::Predicted)> {
+/// runs it there. Nor is an encrypted project's where `sealed` says why nothing of it goes ahead (`Calcifer::sealed_from`; cl-1123,
+/// the release coordinator: "for an encrypted project the request should be on the machine that runs the run and nowhere else").
+fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool, sealed: Option<&str>) -> Vec<(String, v1::Predicted)> {
     let queued = frame.queue.as_ref().is_some_and(|queue| !queue.is_empty());
     if !idle || queued {
         return vec![];
     }
     let mut asked: Vec<(String, usize, String, v1::Predicted)> = vec![];
-    for listed in (planned.iter().filter(|(name, _)| name.as_str() != machine))
-        .flat_map(|(_, lists)| lists.values().flatten())
-        .filter(|listed| listed.fits.iter().any(|fits| fits == machine))
-        .filter(|listed| matches!(listed.item.spec.source, Some(v1::Source::Release(_))))
+    for (folder, listed) in (planned.iter().filter(|(name, _)| name.as_str() != machine))
+        .flat_map(|(_, lists)| lists.iter().flat_map(|(folder, listed)| listed.iter().map(move |listed| (folder, listed))))
+        .filter(|(_, listed)| listed.fits.iter().any(|fits| fits == machine))
+        .filter(|(_, listed)| matches!(listed.item.spec.source, Some(v1::Source::Release(_))))
     {
+        if let Some(why) = sealed.filter(|_| crate::project::vault::encrypted_within(listed.project.folder_root())) {
+            withheld(folder, &listed.asset, machine, why);
+            continue;
+        }
         let key = identity(&listed.item);
         match asked.iter_mut().find(|(held, ..)| *held == key) {
             Some((_, count, ..)) => *count += 1,
@@ -769,6 +810,19 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
     }
     asked.sort_by_key(|(_, count, ..)| std::cmp::Reverse(*count));
     asked.into_iter().map(|(_, _, hub, item)| (hub, item)).collect()
+}
+
+/// Why each encrypted project's waiting job isn't prepared on a machine, by its folder, box and machine: said once until it changes.
+static WITHHELD: LazyLock<Mutex<HashMap<(String, String, String), String>>> = LazyLock::new(Mutex::default);
+
+/// Box `asset` of `folder` isn't prepared on `machine` for `why`: said in its project's own log (`say`) when that's new.
+fn withheld(folder: &str, asset: &str, machine: &str, why: &str) {
+    let at = (folder.to_owned(), asset.to_owned(), machine.to_owned());
+    if lock(&WITHHELD).get(&at).is_some_and(|said| said == why) {
+        return;
+    }
+    say(folder, || format!("{folder}: {asset} isn't prepared on {machine} while it waits elsewhere: nothing of this encrypted project goes ahead: {why}"));
+    lock(&WITHHELD).insert(at, why.to_owned());
 }
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.

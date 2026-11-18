@@ -8,7 +8,7 @@ import { useProjectId, useTo } from "../../app/project"
 import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
 import { ordinal } from "../format"
-import { runName as runLabel, workWords } from "../runs/words"
+import { downloadWait, runName as runLabel, waitWords, workWords } from "../runs/words"
 import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
@@ -64,17 +64,13 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
   const waiting = held.waiting || run.waiting
   const said = on
     ? waitingWords(downloads.length ? downloads : [on])
-    : going
-      ? workWords(run) || (waiting ? sentence(waiting) : "Running")
+    : going || downloadWait(run)
+      ? workWords(run) || waitWords(waiting) || "Running"
       : state === "queued"
         ? run.queue_position
           ? `Queued, ${ordinal(run.queue_position)} in line`
-          : waiting
-            ? sentence(waiting)
-            : "Queued"
-        : waiting
-          ? sentence(waiting)
-          : "Getting ready"
+          : waitWords(waiting) || "Queued"
+        : waitWords(waiting) || "Getting ready"
   return (
     <li className="qrow" data-queue="run" data-run={run.number} data-state={state}>
       <span className={`dot ${going && !on ? "work" : "idle"}`} />

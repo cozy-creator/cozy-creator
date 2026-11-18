@@ -3,10 +3,11 @@
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
 """The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
-it's got in steps, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
+it's got in steps, `plain` one from its words alone (it takes no seed), and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
 tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`. `stepped` is no tool either: its stages and
 steps time a run as a model's do. `fetching` spends its first `download` seconds in the stage a machine's weight download is."""
 
+import hashlib
 import os
 import time
 from typing import Annotated, Literal
@@ -52,6 +53,17 @@ def _picture() -> ImageFile:
 def still(payload: StillBox) -> Picture:
     """A still of one colour."""
     return Picture(_picture(), payload.instructions.text)
+
+
+class PlainBox(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+
+
+@app.tool(label="A plain still")
+def plain(payload: PlainBox) -> Picture:
+    """A still of one colour from its words alone: it takes no seed, so the same words always give the same still (web unchanged)."""
+    colour = hashlib.sha256(payload.instructions.text.encode()).digest()[:3]
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, colour * SIDE**2), format="png"), payload.instructions.text)
 
 
 class SlowBox(msgspec.Struct, kw_only=True):

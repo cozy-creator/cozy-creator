@@ -139,8 +139,10 @@ impl Stage {
     }
 
     /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes an RC build, its wheel by URL in this copy alone
-    /// (`floor::rc_runtime`, xs-194): the one its own lock takes while it stands, unless `upgrade` names cozy-runtime (cl-1199). An
-    /// explicitly selected SDK source stays authoritative.
+    /// (`floor::rc_runtime`, xs-194): the one its own lock takes while it stands, unless `upgrade` names cozy-runtime (cl-1199). Beside
+    /// it, the RC's TensorFS build that Runtime admits, by URL for a rental's platform, the only one the RC builds it for
+    /// (`floor::rc_tensorfs_wheel`, xs-216): every other platform's row is the index's. An explicitly selected SDK source stays
+    /// authoritative.
     async fn rc_runtime(&self, upgrade: &[String], say: Say<'_>) -> Result<(), Error> {
         let path = self.src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
@@ -152,14 +154,29 @@ impl Stage {
         }
         let own = fs::read_to_string(self.src.join("uv.lock")).ok().filter(|_| !upgrade.iter().any(|name| distribution(name) == "cozy-runtime"));
         let Some(rc) = crate::floor::rc_runtime(&self.src, own.as_deref().as_slice()).await? else { return Ok(()) };
+        let tensorfs = crate::floor::rc_tensorfs_wheel(&self.src, &rc, own.as_deref().as_slice()).await;
         let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
             .as_table_like_mut()
             .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
         let mut source = toml_edit::InlineTable::new();
         source.insert("url", rc.url.as_str().into());
         sources.insert("cozy-runtime", toml_edit::value(source));
+        if let Some(tensorfs) = &tensorfs {
+            let mut source = toml_edit::InlineTable::new();
+            source.insert("url", tensorfs.url.as_str().into());
+            source.insert("marker", RENTAL_ENVIRONMENT.into());
+            sources.insert("tensorfs", toml_edit::value(source));
+            // uv reads a source only for a dependency the project names itself.
+            let named = |spec: &str| spec.trim_start().strip_prefix("tensorfs").is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || "-_.".contains(c)));
+            let dependencies = doc["project"]["dependencies"].as_array_mut()
+                .ok_or_else(|| refuse("project_invalid", "project.dependencies is not a list"))?;
+            if !dependencies.iter().any(|spec| spec.as_str().is_some_and(named)) {
+                dependencies.push("tensorfs");
+            }
+        }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
-        say(&format!("cozy-runtime {}: the open RC's build (no release meets its floor)", api::prerelease::shown(&rc.version)));
+        let beside = tensorfs.map_or_else(String::new, |tensorfs| format!(" and TensorFS {}", api::prerelease::shown(&tensorfs.version)));
+        say(&format!("cozy-runtime {}{beside}: the open RC's build (no release meets its floor)", api::prerelease::shown(&rc.version)));
         Ok(())
     }
 

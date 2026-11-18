@@ -243,6 +243,47 @@ J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum'
 echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
 }
 
+# cl-1241 (the coordinator, 11-18, from a review of packages #982): FLUX.3 Klein's, Fibo's and Krea 2's `image` boxes gained a
+# `text_encoder` slot, the one slot each of their requests loads, and a LoRA naming no slot (`cozy run --lora <lora>`, a LoRA
+# dropped on the box) went there and was refused. It goes on the slots whose class takes LoRAs (the interface's `loras`): those
+# every request loads; else, each on demand, all of them, whichever the request loads taking it (the coordinator's ruling: "the
+# drop WORKS"). Two models at once is `lora_slot_ambiguous` (cl-680), none `lora_slot_absent`. script/lora_slots.py has each
+# shape on e2e/lora-base and e2e/lora-base-b, e2e/lora-proj adapting their transformers' `proj`. Before (rc/0.27.0): `encoded`'s,
+# `chosen`'s and `plain`'s LoRA went on `text_encoder` and was refused, and `pair`'s on `model` alone; `edited`'s is unchanged.
+lora_slot() {
+step "a LoRA naming no slot goes on the slots that take LoRAs, not the first one built (cl-1241)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora_slots.py lora=e2e/lora-proj turbo slot
+lora_on() { jq -c '[.measurements.models[]? | select((.adapters // []) | length > 0) | .slot] | sort' "$OUT/$1.json" 2> /dev/null || echo none; }
+# Klein's `generate`: its text encoder is built first; its transformer, `model`, takes the LoRA.
+if cell lora-slot "$script/encoded" --lora "$lora" && cell lora-slot-plain "$script/encoded"; then
+  [ "$(lora_on lora-slot)" = '["model"]' ] || check "lora slot: encoded's LoRA is not on model alone: $(lora_on lora-slot)"
+  J --slurpfile plain "$OUT/lora-slot-plain.json" '.result.sum != $plain[0].result.sum and .result.encoded == $plain[0].result.encoded' "$OUT/lora-slot.json" \
+    || check "lora slot: encoded's LoRA did not change the transformer alone: $(jq -c .result "$OUT/lora-slot.json"), without it $(jq -c .result "$OUT/lora-slot-plain.json")"
+fi
+# Klein's box: `model` with turbo, else `full`, two models; the one the request loads takes it.
+for turbo in true false; do
+  slot=model; [ "$turbo" = true ] || slot=full
+  cell "lora-slot-$slot" "$script/chosen" "turbo:=$turbo" --lora "$lora" && cell "lora-slot-$slot-plain" "$script/chosen" "turbo:=$turbo" || continue
+  J --arg s "$slot" '[.measurements.models[]? | select(.slot == $s) | .adapters | length] == [1]' "$OUT/lora-slot-$slot.json" \
+    || check "lora slot: chosen with turbo $turbo: its LoRA is not on $slot: $(lora_on "lora-slot-$slot")"
+  J --slurpfile plain "$OUT/lora-slot-$slot-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-slot-$slot.json" \
+    || check "lora slot: chosen with turbo $turbo: the LoRA changed nothing: $(jq -c .result "$OUT/lora-slot-$slot.json") as without it"
+done
+# qwen-image's: `model`, which every request loads, not the edit model it loads on demand (as on rc/0.27.0).
+cell lora-slot-edited "$script/edited" --lora "$lora" \
+  && { [ "$(lora_on lora-slot-edited)" = '["model"]' ] || check "lora slot: edited's LoRA is not on model alone: $(lora_on lora-slot-edited)"; }
+# Two models every request loads: refused, naming each slot and what to type.
+rm -f "$OUT/lora-slot-pair.refused" "$OUT/lora-slot-none.refused"
+ALLOW=lora_slot_ambiguous cell lora-slot-pair "$script/pair" --lora "$lora" || true
+{ [ -f "$OUT/lora-slot-pair.refused" ] && grep -q -- "--lora other=$lora" "$OUT/lora-slot-pair.ndjson" "$OUT/lora-slot-pair.err" 2> /dev/null; } \
+  || check "lora slot: pair's LoRA was not refused as lora_slot_ambiguous naming --lora other=$lora"
+# A function no slot of which takes LoRAs.
+ALLOW=lora_slot_absent cell lora-slot-none "$script/plain" --lora "$lora" || true
+[ -f "$OUT/lora-slot-none.refused" ] || check "lora slot: plain's LoRA was not refused as lora_slot_absent"
+echo "lora slot: encoded on $(lora_on lora-slot), chosen on $(lora_on lora-slot-model) with turbo and $(lora_on lora-slot-full) without, edited on $(lora_on lora-slot-edited); pair $(cat "$OUT/lora-slot-pair.refused" 2> /dev/null || echo ran), plain $(cat "$OUT/lora-slot-none.refused" 2> /dev/null || echo ran)"
+}
+
 # ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
 # take an LTX-2.5 LoRA (including IC-LoRAs such as Lightricks' Ingredients) and store it as a LoRA whose component is
 # `transformer`, with Diffusers' `LTX2VideoTransformer3DModel` module names and a PEFT adapter config"; Paul 11-16: "convert
@@ -305,9 +346,11 @@ in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json
 before=$(envs_in "$HOME/.cozy")
 RUN_PROJECT=$other cell second-parts "$script" || return 0
 after=$(envs_in "$HOME/.cozy")
-# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none waited on the machine's download of a model
+# (`waiting_on`, cl-1205), none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or ((.waiting_on // []) | length > 0)
       or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
@@ -1051,7 +1094,8 @@ in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on lo
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
-cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+# Its TensorFS too: the RC Runtime's floor is a TensorFS build only the candidate set holds (xs-216).
+cozy --json machine update local --runtime "$was" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
 }
@@ -1217,7 +1261,7 @@ cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
 # says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
 local release
 release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
-cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+cozy --json machine update local --runtime "$release" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-release.json" 2>&1 \
   || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
 machine_ready
 jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \

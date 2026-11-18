@@ -74,7 +74,7 @@ use api::{
     machine as v1,
     calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, AppearanceKept as ProjectAppearance, Moved as ProjectMoved, Name as ProjectName, MainFile, Open, Opened,
-        NoRoom, Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
+        NoRoom, Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         TakeNow, Unused, VersionPrefix, Warning as ProjectWarning,
     },
 };
@@ -617,6 +617,12 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
         return Ok(root);
     }
     Ok(known(api, text)?.path)
+}
+
+/// Whether a reader of project `id` hears its names now (runs, boxes, local packages): one this computer knows, never a locked one.
+/// The one test for its events and for machines' pictures (cl-1230).
+pub(crate) fn readable(api: &Api, id: &str) -> bool {
+    api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| vault::require_path(&known.path).is_ok())
 }
 
 /// The index, last used first: each project opened here whose folder still holds it. One whose folder is gone (deleted, moved, on a
@@ -1796,8 +1802,7 @@ impl Project {
                 }
             }
             let asked = walker::Asked {
-                tried: ask.sent.clone(),
-                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve, covers: take.covers }).collect(),
+                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect(),
             };
             graph.add(&ask.id, &mut Now { reading, lock }, &asked);
         }
@@ -2100,7 +2105,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}. The render that's going keeps the text it started with, and Cozy can't start a new one until the project reads again.", inner(&error.message));
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder), appearance: project.folder.appearance() }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder), appearance: project.folder.appearance() }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -2493,13 +2498,10 @@ fn row(reading: &Reading, i: usize) -> Row {
         .collect();
     let status = match &standing.state {
         _ if !gone.is_empty() => format!("{} isn't on this computer; open the project in the browser to download it", gone.join(", ")),
-        Stand::Pinned { version: None, .. } => "approved".into(),
-        Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("approved {noun} {version}"),
-        Stand::Pinned { version: Some(version), changed } => format!("approved {noun} {version}, though {} changed", changed.join(", ")),
-        Stand::Current(_) => "up to date".into(),
+        Stand::Pinned { version: None } => "approved".into(),
+        Stand::Pinned { version: Some(version) } => format!("approved {noun} {version}"),
+        Stand::Current(version) => format!("{noun} {version}"),
         Stand::Words => "text only".into(),
-        Stand::Waits => "waiting for what it reads".into(),
-        Stand::Stale(why) => format!("out of date: {why}"),
         Stand::Missing if asset.hollow => "nothing to make".into(),
         Stand::Missing => format!("no {noun} yet"),
     };
@@ -2508,14 +2510,8 @@ fn row(reading: &Reading, i: usize) -> Row {
     let measured = |number: fn(&folder::File) -> u64| main.map(number).filter(|&number| number > 0);
     let (absent, machine) = main.map_or((false, None), whereabouts);
     let failure = held.and_then(|held| held.failed.as_ref()).filter(|failed| failed.inputs == standing.inputs).map(|failed| failed.error.clone());
-    let changed = match &standing.state {
-        Stand::Pinned { changed, .. } => changed.clone(),
-        _ => vec![],
-    };
     let row_standing = match &standing.state {
-        Stand::Stale(_) => RowStanding::OutOfDate,
-        Stand::Pinned { .. } if !changed.is_empty() => RowStanding::OutOfDate,
-        Stand::Missing | Stand::Waits => RowStanding::Missing,
+        Stand::Missing => RowStanding::Missing,
         _ => RowStanding::Current,
     };
     Row {
@@ -2574,7 +2570,6 @@ fn row(reading: &Reading, i: usize) -> Row {
         fields: doc.flat_fields(i),
         etag: None,
         failure,
-        changed,
         missing: tags_now(doc, known, i).map_or_else(|| doc.versions_missing(i, lock), |tags| doc.missing_names(i, tags, lock)),
         timeline: (doc.tool(i) == Some(Tool::Cut)).then(|| {
             let files = |name: &str| {
@@ -2942,7 +2937,7 @@ impl Restamp {
 }
 
 /// What renaming `from` to `to` moves of each key, `doc` being `written`, which says `to`, and `lock` what stands of `from`. It's read from that
-/// said back, the same whether this call renames it or an import did. What was out of date stays so.
+/// said back, the same whether this call renames it or an import did.
 fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str, written: &written::Written) -> Vec<Restamp> {
     let mut back = written.clone();
     let then = back.renamed(to, from).and_then(|()| Doc::of(folder, &back, lock));
@@ -2954,7 +2949,7 @@ fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str, writt
         let name = &doc.assets[i].name;
         let j = then.find(if name_key(name) == name_key(to) { from } else { name })?;
         let (old, new) = (was[j].inputs.clone()?, is[i].inputs.clone()?);
-        let stood = was[j].version().filter(|_| !matches!(&was[j].state, Stand::Pinned { changed, .. } if !changed.is_empty()));
+        let stood = was[j].version();
         (old != new).then(|| Restamp { key: name_key(name), was: old, is: new, stood })
     };
     (0..doc.assets.len()).filter_map(moved).collect()
@@ -3069,9 +3064,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     let say = |message: String| lines.borrow_mut().push(Said { level: NoteLevel::Warning, message, names: vec![] });
     let said = |name: &str, message: String| lines.borrow_mut().push(Said { level: NoteLevel::Info, message, names: vec![name.to_owned()] });
     let n = asked.n.max(1);
-    // Every render makes new versions, unless it asks only to bring what it names up to date (`cozy render`): then what has its state
-    // stands, and `-n` is how many takes of each named node that renders.
-    let missing = asked.missing;
+    // Every render makes new versions of what it names, and nothing else: what they read is read as it is (cl-1192, Paul 11-18).
     if asked.pickup.is_some() && asked.names.len() != 1 {
         say("A pickup works only for one box, so Cozy ignored it for several boxes.".into());
     }
@@ -3103,40 +3096,6 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
         }
         !seen.is_disjoint(&asked_of)
     };
-    // Already on its way: a run of it with these inputs, or a job of a render of the project as its text says now, which reads what
-    // stands when its turn comes.
-    let now: HashSet<&str> = lock.walk.asks.iter().filter(|ask| ask.digest == digest).map(|ask| ask.id.as_str()).collect();
-    let open: Vec<String> = {
-        let walker = project.walker.lock().expect("walker lock");
-        walker.graph.open_jobs().into_iter().map(|id| &walker.graph.jobs[id]).filter(|job| now.contains(job.ask.as_str())).map(|job| name_key(&job.asset)).collect()
-    };
-    let being_made = |i: usize| {
-        let key = name_key(&doc.assets[i].name);
-        lock.pending.values().any(|pending| name_key(&pending.asset) == key && Some(&pending.version.inputs) == stand[i].inputs.as_ref())
-            || lock.walk.asks.iter().any(|ask| ask.digest == digest && ask.takes.iter().any(|take| name_key(&take.asset) == key))
-            || open.contains(&key)
-    };
-    // A node named that reads, all the way up, something out of date or with no take isn't brought up to date by standing: a cut reads
-    // an out-of-date clip's newest take, so it can stand on one its words no longer make. What it reads renders first, then it. A read
-    // of one take (`<shot_2.1>`) is that take, whatever its box's words say now.
-    let behind = |i: usize| {
-        if !matches!(stand[i].state, Stand::Current(_)) {
-            return false;
-        }
-        let (mut up, mut seen) = (vec![i], HashSet::new());
-        while let Some(k) = up.pop() {
-            for j in doc.assets[k].reads.iter().filter(|read| read.number.is_none()).map(|read| read.asset) {
-                if !seen.insert(j) {
-                    continue;
-                }
-                if doc.makes(j) && matches!(stand[j].state, Stand::Stale(_) | Stand::Missing) {
-                    return true;
-                }
-                up.push(j);
-            }
-        }
-        false
-    };
     for i in named {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -3144,40 +3103,16 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
             said(&name, format!("{name} is just a file, so there's nothing to render"));
             continue;
         }
-        // Brought up to date: what is on its way is joined, and what has its state stands, unless something it reads renders first.
-        if missing && !(one && asked.pickup.is_some()) && !(asset.hollow && stand[i].files.is_none()) {
-            if being_made(i) {
-                said(&name, format!("{name} is rendering: joined"));
-                continue;
-            }
-            if stand[i].files.is_some() && !behind(i) {
-                said(&name, match &stand[i].state {
-                    Stand::Pinned { version: Some(version), changed } if !changed.is_empty() => {
-                        format!("{name} take {version} is approved, though {} changed (use --new to render it again)", changed.join(", "))
-                    }
-                    Stand::Pinned { version: Some(version), .. } => format!("{name} take {version} is approved (use --new to render it again)"),
-                    Stand::Current(version) => format!("{name} take {version} is up to date (use --new to render it again)"),
-                    _ => format!("{name} is up to date (use --new to render it again)"),
-                });
-                continue;
-            }
-            // A cut is cut once; what it and the rest read with no state renders first.
-            let count = if doc.tool(i).is_some() { 1 } else { n };
-            let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: count > 1, pickup: None, covers: true };
-            takes.extend((0..count).map(take));
-            continue;
-        }
-        // A cut that stands on what it reads now would only be cut the same again: answered now, with nothing queued (cl-910).
+        // A cut that already cuts what it reads now would only be cut the same again: answered now, with nothing queued (cl-910).
         if doc.tool(i) == Some(Tool::Cut) && !reads_asked(i)
             && let Some(version) = stand[i].inputs.as_deref().and_then(|inputs| same_cut(&project.folder, &lock, asset, &stand[i].reads, inputs))
         {
-            said(&name, format!("{name} version {} is up to date: nothing it cuts has changed, so cutting it again would make the same film", version.number));
+            said(&name, format!("{name} version {} already cuts what it reads now, so cutting it again would make the same film", version.number));
             continue;
         }
         if doc.tool(i).is_some() {
-            said(&name, format!("{name} is made on this computer for free once everything it reads is ready"));
-            // Named, it is made again, as anything named is.
-            takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None, covers: false });
+            said(&name, format!("{name} is made on this computer, for free"));
+            takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, pickup: None });
             continue;
         }
         if asset.hollow {
@@ -3185,7 +3120,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
             continue;
         }
         let pickup = asked.pickup.clone().filter(|_| one);
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: pickup.clone(), covers: missing };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, pickup: pickup.clone() };
         takes.extend((0..n).map(take));
     }
     if let (Some(error), true) = (first, takes.is_empty()) {
@@ -3279,7 +3214,7 @@ async fn retry(
     let project = api.projects.get(&api, &id)?;
     let made = project.folder.lock().map_err(Refusal)?.assets.values().find(|held| held.failed.as_ref().and_then(|failed| failed.run) == Some(row.number)).map(|held| held.name.clone());
     if let Some(made) = made {
-        let asked = Runs { names: vec![made], n: 1, on: vec![], hub: String::new(), approve: false, missing: false, pickup: None, takes: vec![] };
+        let asked = Runs { names: vec![made], n: 1, on: vec![], hub: String::new(), approve: false, pickup: None, takes: vec![] };
         return Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)).into_response());
     }
     if row.kind != RunKind::Call {
@@ -3693,30 +3628,27 @@ async fn approve(
     let field = lock.files.get(&chosen).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
     let version = wanted.and_then(|number| versions.iter().copied().find(|version| version.number == number))
         .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
-    let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
-    // Its answer is kept with it, in its transaction (cl-885): what it approved. What that put out of date, and what settling found, its
-    // answer after says.
+    // Its answer is kept with it, in its transaction (cl-885): what it approved. What settling found, its answer after says.
     let approved = folder.act(|| {
         folder.edit(|written| match version {
             Some(version) => written.selected(&name, version.number, &chosen),
             None => written.approved(&name, &chosen),
         })?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
-        let approved = Approved { name: name.clone(), noun: noun.into(), number, files, path, stale: vec![], warnings: vec![], etag };
+        let approved = Approved { name: name.clone(), noun: noun.into(), number, files, path, warnings: vec![], etag };
         keyed::answering(StatusCode::OK, &approved);
         Ok(approved)
     }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
-    let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Approved { stale, warnings, etag, ..approved }))
+    Ok(Json(Approved { warnings, etag, ..approved }))
 }
 
-/// `POST /v1/projects/{id}/unpin`: `approved` gone from its box, so the asset's state follows its inputs again. A constant,
+/// `POST /v1/projects/{id}/unpin`: `approved` gone from its box, so the asset stands on its newest version again. A constant,
 /// nothing but its file, keeps it: it is all it is.
 async fn unpin(
     State(api): State<Arc<Api>>,
@@ -3732,7 +3664,6 @@ async fn unpin(
     let name = asset.name.clone();
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
-    let before = stale_names(&doc, &stand);
     if asset.pin.is_some() && asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
         let said = format!("{name} is just a file, so there's nothing to change. To get rid of it, delete the box.");
         return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
@@ -3743,65 +3674,34 @@ async fn unpin(
             folder.edit(|written| written.unapproved(&name))?;
         }
         let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
-        keyed::answering(StatusCode::OK, &Unpinned { name: name.clone(), version, stale: vec![], warnings: vec![], etag });
+        keyed::answering(StatusCode::OK, &Unpinned { name: name.clone(), version, warnings: vec![], etag });
         Ok(())
     }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
-    let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Unpinned { name, version, stale, warnings, etag }))
+    Ok(Json(Unpinned { name, version, warnings, etag }))
 }
 
-fn stale_names(doc: &Doc, stand: &[Standing]) -> BTreeSet<String> {
-    (0..doc.assets.len()).filter(|&i| matches!(stand[i].state, Stand::Stale(_))).map(|i| doc.assets[i].name.clone()).collect()
-}
-
-/// What is out of date now and wasn't in `before`.
-fn newly_stale(folder: &Folder, before: &BTreeSet<String>) -> Result<Vec<String>, Error> {
-    let doc = Doc::load(folder)?;
-    let lock = folder.lock()?;
-    Ok(stale_names(&doc, &doc.stand(&lock)).into_iter().filter(|name| !before.contains(name)).collect())
-}
-
-/// The tools whose reads have settled, made now, or by the walker if one is going. What fails is answered.
+/// What an approval moves at the root: each cut's film and timeline, as it stands now. Nothing is made again (cl-1192): a box is rendered
+/// by name. What fails is answered.
 async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
     let walker = Walk::new(api, project);
-    // Of the file as it is now, whatever renders are going: they have their own text.
-    let now = Ask::default();
-    let mut tried: HashSet<String> = HashSet::new();
-    loop {
-        let read = |measure: bool| -> Result<_, Error> {
-            if measure { walker.measure()?; }
-            let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
-            let stand = doc.stand(&lock);
-            let tools: Vec<usize> = tools_ready(&doc, &stand, &lock).into_iter().filter(|&i| !tried.contains(&doc.assets[i].name)).collect();
-            let cuts: Vec<usize> = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).collect();
-            Ok((doc, lock, stand, tools, cuts))
-        };
-        // A tool or a cut reads what it's made from at its measured size: measured first, for them only. An approval with neither waits on no
-        // ffprobe (a Windows runner's approve took 3-4 s starting ffmpeg and ffprobe, e2e 44022988318): measure_soon measures it off the answer.
-        let ready = read(false).and_then(|ready| match (ready.3.is_empty() && ready.4.is_empty()) || !ready.1.files.values().any(folder::File::unmeasured) {
-            true => Ok(ready),
-            false => read(true),
-        });
-        let (doc, lock, stand, tools, cuts) = match ready {
-            Ok(ready) => ready,
-            Err(error) => return vec![error.message],
-        };
-        if tools.is_empty() {
-            for i in cuts {
-                walker.film_follows(&doc, &stand, &lock, i).await;
-            }
-            if lock.files.values().any(folder::File::unmeasured) { measure_soon(api, project); }
-            return vec![];
-        }
-        tried.extend(tools.iter().map(|&i| doc.assets[i].name.clone()));
-        for i in tools {
-            if let Err(error) = walker.tool(&now, &doc, &stand, &lock, i).await {
-                return vec![error.message];
-            }
-        }
+    let read = || -> Result<_, Error> {
+        let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
+        let stand = doc.stand(&lock);
+        Ok((doc, lock, stand))
+    };
+    let (doc, lock, stand) = match read() {
+        Ok(read) => read,
+        Err(error) => return vec![error.message],
+    };
+    for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+        walker.film_follows(&doc, &stand, &lock, i).await;
     }
+    if lock.files.values().any(folder::File::unmeasured) {
+        measure_soon(api, project);
+    }
+    vec![]
 }
 
 /// One of the project's files by its name in files/ (`<sha256>.<ext>`): content-addressed, so its sha256 is its ETag.
@@ -4679,7 +4579,7 @@ impl Walk {
         for id in graph.open_jobs() {
             let job = &graph.jobs[id];
             // One waiting for disk room fetches nothing ahead anywhere (cl-1175): none of its machines has room for it.
-            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) || no_room.contains_key(&job.key) {
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free) || no_room.contains_key(&job.key) {
                 continue;
             }
             let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
@@ -4931,7 +4831,7 @@ impl Walk {
                 .filter(|&id| graph.jobs[id].state == walker::State::Waiting)
                 .filter_map(|id| {
                     let job = &graph.jobs[id];
-                    if job.node == usize::MAX || matches!(job.kind, JobKind::Free { .. }) {
+                    if job.node == usize::MAX || matches!(job.kind, JobKind::Free) {
                         return None;
                     }
                     let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
@@ -5354,7 +5254,7 @@ impl Walk {
                 // With several machines it stays here while its planned machine has no GPU for it, or is still on its way (a rental
                 // booting, whose boot counts as its preparation: no wait past it), so nothing commits early to the wrong queue or to a
                 // machine that may never serve; it is placed again as their Status moves, or once that machine serves or ends.
-                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) > 0) {
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) > 0) {
                     acts.push(Act::Held { id });
                     continue;
                 }
@@ -5366,17 +5266,13 @@ impl Walk {
                 };
                 match turn {
                     Turn::Wait => {}
-                    Turn::Stands => {
-                        let number = row_of(reading).version();
-                        acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
-                    }
                     Turn::Unread { read } => {
                         let standing = row_of(reading);
                         let doc = reading.doc.clone();
                         let stand = reading.cone(node, &lock);
                         let why = match gone(&reading.nodes[read].name) && !stand[read].files.is_some() {
                             true => format!("{} was deleted", reading.nodes[read].name),
-                            false => unread(&doc, &stand, &lock, &ask, node),
+                            false => unread(&doc, &stand, &ask, node),
                         };
                         let message = format!("{asset}: {}.", inner(&why));
                         let kind = doc.assets[node].kind.clone();
@@ -5389,22 +5285,17 @@ impl Walk {
                         let standing = &stand[node];
                         match kind {
                             // Asked for by name with nothing it reads ever made: it fails and says why, or the press does nothing at all.
-                            JobKind::Free { named: true } if standing.inputs.is_none() => {
-                                let message = format!("{asset}: {}.", unread(&doc, &stand, &lock, &ask, node));
+                            JobKind::Free if standing.inputs.is_none() => {
+                                let message = format!("{asset}: {}.", unread(&doc, &stand, &ask, node));
                                 let kind = doc.assets[node].kind.clone();
                                 acts.push(Act::Unread { id, ask: ask_id, on: ask.target.on.clone(), key, asset, kind, inputs: None, message });
                             }
-                            JobKind::Free { named } => {
-                                let makes = doc.makes(node) && standing.inputs.is_some() && (named || standing.files.is_none());
-                                match makes {
-                                    true => acts.push(Act::Tool { id, ask, doc, stand, lock: lock.clone(), i: node }),
-                                    false => {
-                                        let number = standing.version();
-                                        acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
-                                    }
-                                }
+                            JobKind::Free if doc.makes(node) => acts.push(Act::Tool { id, ask, doc, stand, lock: lock.clone(), i: node }),
+                            JobKind::Free => {
+                                let number = standing.version();
+                                acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
                             }
-                            JobKind::Owed | JobKind::Take => {
+                            JobKind::Take => {
                                 let take = ask.takes.iter().find(|take| take.key == key).cloned();
                                 let next = Next { i: node, key: key.clone(), take };
                                 acts.push(Act::Send { id, key, ask, doc, stand, lock: lock.clone(), next });
@@ -5802,9 +5693,9 @@ impl Walk {
                 mine.takes.retain(|take| take.key != key);
             }
         };
-        let (mut target, approve, new) = match &next.take {
-            None => (ask.target.clone(), false, false),
-            Some(take) => (take.target.clone(), take.approve, take.new),
+        let (mut target, approve) = match &next.take {
+            None => (ask.target.clone(), false),
+            Some(take) => (take.target.clone(), take.approve),
         };
         target.on = self.sending(&ask.id, &self.wider(&target));
         if target.on.is_empty() {
@@ -5813,14 +5704,6 @@ impl Walk {
         }
         let standing = &stand[i];
         let noun = noun(doc, lock, i);
-        if !new && standing.files.is_some() {
-            return self.folder().update_walk(|walk| settle(&mut walk.walk));
-        }
-        match &standing.state {
-            Stand::Stale(why) if !new => self.say(Told::Said { message: format!("{name} is out of date: {}.", inner(why)), name: Some(name.clone()) }),
-            Stand::Missing if !new => self.say(Told::Said { message: format!("{name} has no {noun} yet."), name: Some(name.clone()) }),
-            _ => {}
-        }
         let sent = async {
             let inputs = standing.inputs.clone().ok_or_else(|| cannot(&name, "something it reads isn't ready yet".into()))?;
             for read in &standing.reads {
@@ -5883,10 +5766,11 @@ impl Walk {
             let seeded = !fixed && maker.accepts.contains("seed");
             if !seeded && pickup.is_none() && (holds.is_some() || going) {
                 let stands = holds.map_or_else(|| "one is already being made".to_owned(), |number| format!("{noun} {number} stays"));
-                let why = if fixed { "uses a fixed seed" } else { "takes no seed" };
+                // A fixed seed is the box's (or its tool's), never the package's.
+                let why = if fixed { "its seed is fixed".to_owned() } else { format!("{} takes no seed", package.name) };
                 match holds {
-                    Some(number) => self.stands(&name, noun, number, format!("{} {why}, so the same inputs always give the same result", package.name)),
-                    None => self.say(Told::Said { message: format!("{name}: {} {why}, so the same inputs always give the same result, and {stands}.", package.name), name: Some(name.clone()) }),
+                    Some(number) => self.stands(&name, noun, number, format!("{why}, so the same inputs always give the same result")),
+                    None => self.say(Told::Said { message: format!("{name}: {why}, so the same inputs always give the same result, and {stands}."), name: Some(name.clone()) }),
                 }
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
@@ -6583,12 +6467,6 @@ impl Walk {
         let name = asset.name.clone();
         let standing = &stand[i];
         let Some(inputs) = standing.inputs.clone() else { return Ok(()) };
-        for read in &standing.reads {
-            if let Some(number) = read.newest {
-                let noun = noun(doc, lock, read.asset);
-                self.say(Told::Warning { message: format!("{name} uses {}'s newest {noun}, {number}, which is out of date.", read.name), name: None });
-            }
-        }
         let id = ask.takes.iter().find(|take| name_key(&take.asset) == name_key(&doc.assets[i].name)).map(|take| take.key.clone()).unwrap_or_default();
         let mut version = Version { id, inputs, fields: Some(doc.authoring_fields(i)), ..Default::default() };
         match doc.tool(i).expect("a tool") {
@@ -6914,32 +6792,17 @@ fn cannot(name: &str, why: String) -> Error {
 }
 
 /// The tools with no state whose reads have settled: those nothing that's on its way goes into.
-fn tools_ready(doc: &Doc, stand: &[Standing], lock: &Lock) -> Vec<usize> {
-    let going: HashSet<String> = lock.pending.values().map(|pending| name_key(&pending.asset)).collect();
-    let mut waiting = vec![false; doc.assets.len()];
-    let mut ready = vec![];
-    for &i in &doc.order {
-        let pinned = doc.assets[i].pin.is_some();
-        let reads_going = !pinned && doc.upstream[i].iter().any(|&read| waiting[read]);
-        waiting[i] = reads_going || (!pinned && going.contains(&name_key(&doc.assets[i].name)));
-        if !reads_going && doc.tool(i).is_some() && doc.makes(i) && stand[i].inputs.is_some() && stand[i].files.is_none() {
-            waiting[i] = true;
-            ready.push(i);
-        }
-    }
-    ready
-}
-
-/// Why asset `i` can't read what it reads: the first read with no state.
-fn unread(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask, i: usize) -> String {
+/// Why asset `i` can't read what it reads, in one line: the first read with nothing to read. Nothing renders it on `i`'s behalf (cl-1192).
+fn unread(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize) -> String {
     let Some(&j) = doc.upstream[i].iter().find(|&&j| stand[j].files.is_none()) else { return "something it reads isn't ready yet".into() };
     let name = &doc.assets[j].name;
-    match &stand[j].state {
+    match doc.assets[j].kind.as_str() {
         _ if ask.sent.contains(&name_key(name)) => format!("{name} failed in this render"),
         _ if doc.assets[j].hollow => format!("{name} has nothing to make"),
-        Stand::Stale(why) => format!("{name} is out of date ({})", inner(why)),
-        _ if lock.asset(name).is_some_and(|held| !held.versions.is_empty()) => format!("{name} has no version made from its current inputs"),
-        _ => format!("{name} has no version yet"),
+        "image" => format!("Render {name} first: it has no picture yet"),
+        "video" => format!("Render {name} first: it has no video yet"),
+        "audio" => format!("Render {name} first: it has no sound yet"),
+        _ => format!("Render {name} first: it has nothing yet"),
     }
 }
 
@@ -7014,6 +6877,16 @@ fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, pac
         true => placement::soonest(&others, now).unwrap_or(soonest).clone(),
         false => soonest.clone(),
     }
+}
+
+/// Why a render placed on `offer` (`well_placed`) wouldn't simply run there (cl-1123), so nothing goes there ahead of it: its machine
+/// has no GPU and the function builds a model on one (`gpu`), so it would run on its CPU, slowly or not at all (`runs::gpuless`). A
+/// GPU that runs it slowly is no reason: a render sent there runs on it, asking nothing (cl-1066). None: it runs there.
+fn not_simply(api: &Api, offer: &Offer, gpu: bool) -> Option<String> {
+    let On::Machine(name) = &offer.machine else { return None };
+    let here = if offer.machine.is_local() { "this computer" } else { name.as_str() };
+    (gpu && api.machines.frame(name).is_some_and(|frame| frame.gpus.is_empty()))
+        .then(|| format!("{here} has no GPU, so its render would run on its CPU: slowly, or not at all"))
 }
 
 /// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.

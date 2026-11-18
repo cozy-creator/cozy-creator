@@ -1,0 +1,1 @@
+- A run waiting for GPUs another run holds counts its time down again while that run computes (`about 3 min`, `2 min`, `1 min`, `under a minute`): since progress stopped waking the machine's dispatch, the time it said froze until the run ahead ended or logged (cl-1233).

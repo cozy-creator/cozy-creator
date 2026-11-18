@@ -2,7 +2,7 @@
 
 # estimate_line: a job's weights wait behind the download ahead of it on its machine (one download at a time, in job order), and
 # its quote says so. BiRefNet runs once, so its time here is measured; its weights go and the machine restarts, so nothing holds
-# them. Qwen3.5 0.8B's weights (1.6 GiB, `cozy model install`) come once, so the machine has measured its link, and go. They come
+# them. Qwen3.5 0.8B's weights (1.6 GiB, `cozy model install`) come twice, so the machine has measured its link, and go. They come
 # again, and while they do BiRefNet is quoted and sent on another picture (the first's would be answered from its memo): its quote
 # counts what Qwen has left, its own weights after them, and its measured time, and it finishes within 20% (or 15 s) of it.
 estimate_line() {
@@ -15,22 +15,32 @@ run_cell "$OUT" line-first "$target" --file "image=$dog" --on local || { check "
 cozy --json machine show local > "$OUT/line-models.json" || { check "estimate line: machine show local"; return; }
 model=$(jq -r '[.status.models[]?.repository] | map(select(test("birefnet"; "i"))) | first // empty' "$OUT/line-models.json")
 [ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; return; }
-cozy --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 || { check "estimate line: model uninstall $model: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
 machine_stop || { check "estimate line: the local machine did not stop"; return; }
 machine_ready
-run_submit "$OUT" line-link model install qwen/qwen3.5-0.8b --on local > /dev/null
-run_wait "$OUT" line-link && [ "$(run_get "$OUT" line-link .status)" = completed ] || { check "estimate line: Qwen's first install: $(run_get "$OUT" line-link .reason.message)"; return; }
-cozy --json model uninstall qwen/qwen3.5-0.8b > "$OUT/line-uninstall-qwen.json" 2>&1 || { check "estimate line: model uninstall qwen: $(tail -c 300 "$OUT/line-uninstall-qwen.json")"; return; }
+# Uninstalled once no executor holds them: one holding them keeps their bytes (`retained_bytes`, as plan_picks found), and BiRefNet
+# then fetches nothing and waits behind no download (e2e 44294017297: 446 MB kept, quoted 42 s, done in 25 s).
+cozy --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 || { check "estimate line: model uninstall $model: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
+J '.retained_bytes == 0' "$OUT/line-uninstall.json" || { check "estimate line: BiRefNet's weights weren't removed: $(cat "$OUT/line-uninstall.json")"; return; }
+# A machine's link is measured past the first GiB its fetches ramp over, on 1 GiB more, in this TensorD (cl-1107, `estimate::link`); it
+# restarted above. Qwen once is 0.6 GiB past the ramp, so the quote took the default 100 MB/s on a link that ran at 200-430 MB/s
+# (e2e 44300651346: prepare quoted 15.6 s, took 6.5 s). Twice is 2.2 GiB past it.
+local k
+for k in 1 2; do
+  run_submit "$OUT" "line-link-$k" model install qwen/qwen3.5-0.8b --on local > /dev/null
+  run_wait "$OUT" "line-link-$k" && [ "$(run_get "$OUT" "line-link-$k" .status)" = completed ] || { check "estimate line: Qwen's install $k: $(run_get "$OUT" "line-link-$k" .reason.message)"; return; }
+  cozy --json model uninstall qwen/qwen3.5-0.8b > "$OUT/line-uninstall-qwen-$k.json" 2>&1 || { check "estimate line: model uninstall qwen: $(tail -c 300 "$OUT/line-uninstall-qwen-$k.json")"; return; }
+done
 
 n=$(run_submit "$OUT" line-qwen model install qwen/qwen3.5-0.8b --on local)
 [ -n "$n" ] || { check "estimate line: model install qwen/qwen3.5-0.8b was never a run: $(tail -c 300 "$OUT/line-qwen.err")"; return; }
+# What it has left is its machine's download item's: the run names that item in `waiting_on` and says no bytes of its own (cl-1205, #3842).
 for _ in $(seq 600); do
-  run_show "$OUT" line-qwen "$n"
-  left=$(jq -r '(.progress.bytes_total // 0) - (.progress.bytes_done // 0)' "$OUT/line-qwen.json" 2> /dev/null || echo 0)
+  cozy --json machine show local > "$OUT/line-qwen-item.json" 2> /dev/null || true
+  left=$(jq -r '[.status.activity[]? | select(.kind == "download" and .subject == "qwen/qwen3.5-0.8b") | .bytes_total - .bytes_done] | max // 0' "$OUT/line-qwen-item.json" 2> /dev/null || echo 0)
   [ "${left:-0}" -gt $((256 << 20)) ] && break
   sleep 0.2
 done
-[ "${left:-0}" -gt $((256 << 20)) ] || { check "estimate line: Qwen's download never had 256 MiB left to come: $(jq -c .progress "$OUT/line-qwen.json")"; return; }
+[ "${left:-0}" -gt $((256 << 20)) ] || { check "estimate line: Qwen's download never had 256 MiB left to come: $(jq -c '[.status.activity[]? | {kind, subject, bytes_done, bytes_total, runs}]' "$OUT/line-qwen-item.json" 2> /dev/null)"; return; }
 asked=$(date +%s%3N)
 python3 "$here/plan.py" "$target" --on local --project "$RUN_PROJECT" --file "image=$other" > "$OUT/line-quote.json" 2> "$OUT/line-quote.err" \
   || { check "estimate line: run-estimates: $(tail -c 300 "$OUT/line-quote.err")"; return; }
@@ -102,6 +112,7 @@ went=$(plan_machine near)
 # quoted there (`placed`; GPU session 43352204256: the second and third shots of one weren't planned, and went to the first of their
 # machines saying nothing). BiRefNet, as its isolated Hub publishes it, cuts out three stills: twice on stand-w, then on local or
 # stand-w. Each cut's run is placed (the first two on stand-w), and no job's line in Calcifer's diagnostics says it `isn't planned`.
+# A box renders only itself (cl-1192): each still is rendered first, on the machines its cut is sent to, as a user does.
 plan_published() {
 step "plan (cl-967): each job of a published tool is planned, and its run says where it went"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
@@ -112,6 +123,8 @@ jq -n --arg t "$tool" --arg r "$r" '[range(1; 4) as $i | (
   {name: "cut_\($i)", tool: "birefnet/remove_background", kind: "image", fields: {image: "<still_\($i)>"}})]' | boxes_in "$P" || return
 for at in 1 2 3; do
   on='["stand-w"]'; [ "$at" != 3 ] || on='["local","stand-w"]'
+  coming_go "still_$at" "$on"
+  coming_done "still_$at" 900
   coming_go "cut_$at" "$on"
   coming_done "cut_$at" 900
   job=$(status "$P" | jq -c --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a)] | last // empty')

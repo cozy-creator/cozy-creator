@@ -221,19 +221,6 @@ def refusal(device: DeviceLike = 0) -> Refusal | None:
     return _ext._varena_refusal(_device(device))
 
 
-@contextmanager
-def fallback(on: bool = True) -> Iterator[None]:
-    """Allocations on this thread inside have a cheaper way out than varena moving live tensors to
-    host pages (cr-305 rung 5), such as a finer split level or a split's whole on host: a refusal
-    comes back to the caller. An enclosing `fallback` holds inside: only `on` can set it."""
-    prior = _ext._varena_fallback(True)
-    _ext._varena_fallback(prior or on)
-    try:
-        yield
-    finally:
-        _ext._varena_fallback(prior)
-
-
 def reset_peak(device: DeviceLike = 0) -> None:
     """Reset measured working peaks to current live and mapped bytes."""
     _installed()

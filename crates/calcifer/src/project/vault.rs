@@ -67,6 +67,8 @@ struct Session {
     closing: bool,
     readable: Arc<AtomicBool>,
     runtime: PathBuf,
+    /// Its folder watched while it's unlocked (cl-1124): its keybag leaving, or the folder moving, wakes the clock, which ends it.
+    _folder: Option<platform::watch::Watcher>,
 }
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
@@ -713,7 +715,12 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
-    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
+    // A removal or a move of its folder is a delete (cl-1124): seen at once, not at the clock's next deadline.
+    // Windows needs none: a removal there ends the view with its backing, and a move is refused while it serves.
+    let folder = (!cfg!(windows)).then(|| platform::watch::Watcher::new("vault-folder", &[(root, platform::watch::Writes::None)], stir)
+        .inspect_err(|e| tracing::warn!("{}: its folder's removal is seen at its next deadline: {e}", root.display()))
+        .ok()).flatten();
+    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime, _folder: folder };
     // Its supervisor's exit is its mount's end: a lock, its provider dying, an unmount from outside.
     let supervisor = session.mount.supervisor();
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
@@ -929,11 +936,18 @@ fn unanswered_seal() -> Error {
 
 /// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled. Whether it didn't answer.
 /// Its journal is read only for a project with runs going whose local doesn't answer: a lock whose local answers reads nothing more
-/// than it did, so it never meets a journal busy a moment (43969581564).
-fn settle_unanswered(api: &Arc<Api>, root: &FsPath) -> Result<bool, Error> {
+/// than it did, so it never meets a journal busy a moment (43969581564). Under the lock's own transition (`close`) the journal is
+/// read and written through it: any other read waits behind that transition's exclusive hold, and the lock waited on itself for
+/// `JOURNAL_BUSY` and failed `run_cancel` (cl-1259).
+fn settle_unanswered(api: &Arc<Api>, root: &FsPath, transition: Option<&ProjectTransition>) -> Result<bool, Error> {
     let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
     if !api.calcifer.has_runs(&id) || tokio::runtime::Handle::current().block_on(api.machines.answers("local")) {
         return Ok(false);
+    }
+    if let Some(transition) = transition {
+        let store = api.projects.transition_store(api, &id, transition)?;
+        let settled = api.calcifer.cancel_unanswered_sealing(&store, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+        return Ok(!settled.is_empty());
     }
     if !journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
         return Ok(false);
@@ -974,7 +988,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
     vault_operation::revoke(root);
     // A lock never waits on a machine that doesn't answer (cl-1064): the project's runs on local settle here as the lock ends them,
     // and what local ran in its view is owed a clean-up for when it answers.
-    let unanswered = settle_unanswered(api, root)?;
+    let unanswered = settle_unanswered(api, root, Some(transition))?;
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root, transition)?;
     let sealed = match unanswered {
@@ -1060,7 +1074,25 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
     crate::events::project_vault(&id, "locked");
     CLOSED.notify_waiters();
-    let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || drop(session));
+    // Its view let go, what Calcifer kept in the folder goes too (`.vault-runtime`), so the delete under way finishes on its next pass.
+    // Where its runtime folder is now: a folder moved away (to the Trash) took it along.
+    let runtime = { let session = session.lock().expect("vault session"); session.mount.view_now().and_then(|view| view.parent().map(FsPath::to_path_buf)).unwrap_or_else(|| session.runtime.clone()) };
+    let _ = std::thread::Builder::new().name("vault-let-go".into()).spawn(move || {
+        drop(session);
+        let began = Instant::now();
+        while retire_runtime(&runtime).is_err() && began.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        // Only Calcifer's own: a `.vault-runtime` holding nothing but its owner mark.
+        if let Some(base) = runtime.parent()
+            && base.file_name().is_some_and(|name| name == RUNTIME_DIR)
+            && fs::read(base.join("owner")).is_ok_and(|mark| mark == RUNTIME_MARKER)
+            && fs::read_dir(base).is_ok_and(|mut left| left.all(|entry| entry.is_ok_and(|entry| entry.file_name() == "owner")))
+        {
+            let _ = fs::remove_file(base.join("owner"));
+            let _ = fs::remove_dir(base);
+        }
+    });
     true
 }
 
@@ -1267,7 +1299,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     }
     // Its runs on a local that doesn't answer settle here, before its gate, as an explicit lock's do (cl-1064): a client following one
     // holds the gate until it settles, and it settles only when the lock gives up on local.
-    if clocked && let Err(failure) = settle_unanswered(api, root) {
+    if clocked && let Err(failure) = settle_unanswered(api, root, None) {
         idle_lock_failed(root, &failure);
         return;
     }
@@ -1344,7 +1376,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
         // Its runs on a local that doesn't answer settle here now (cl-1064), so the lock goes on rather than wait for them.
-        unanswered = settle_unanswered(api, root)?;
+        unanswered = settle_unanswered(api, root, None)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
         (cut, deferred) = drain_saves(api, root, false, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.

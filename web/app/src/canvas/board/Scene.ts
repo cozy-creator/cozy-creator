@@ -92,6 +92,7 @@ export class Scene {
         animating = this.card(held, node, viewOf, frame, env, tools, takes) || animating
         const show = held.show
         if (show?.progress?.time) wake = Math.min(wake ?? 1000, 1000 - (Date.now() % 1000))
+        if (show?.progress?.settles != null) wake = Math.min(wake ?? Infinity, Math.max(0, show.progress.settles - Date.now()) + 1)
       } catch (error) {
         held.view.fault(held.node ?? { id: node.id, name: node.data.name, box: node.bounds, view: viewOf, selected: Boolean(node.selected) }, env)
         // The broken tile stands in its own box, never where its view last was (a new view sits at 0,0, over the box there).
@@ -185,7 +186,9 @@ export class Scene {
       ? previous : { id: node.id, name, box: node.bounds, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering, runContext }
     const second = held.show?.progress?.time ? Math.floor(Date.now() / 1000) : 0
     const key = held.key ?? (held.key = [])
-    const inputs = [view, tools, runContext?.run, runContext?.machine, runContext?.on, runContext?.installing, second, store.names.get()] as const
+    // A phase its face held back, due: presented again to draw it.
+    const due = held.show?.progress?.settles != null && Date.now() >= held.show.progress.settles
+    const inputs = [view, tools, runContext?.run, runContext?.machine, runContext?.on, runContext?.installing, second, store.names.get(), due] as const
     let stale = key.length !== inputs.length
     for (let i = 0; i < inputs.length; i++) if (key[i] !== inputs[i]) { key[i] = inputs[i]; stale = true }
     if (stale || !held.show) held.show = present(store, scene)

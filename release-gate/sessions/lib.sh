@@ -53,9 +53,13 @@ wheel_from() {
   esac
   find "$1" -name '*manylinux*x86_64*.whl' | head -1
 }
-# made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
-# (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
-made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
+# made <name>: the checkpoint a step's upload, quantize or run made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…`
+# line, or a run's `<slot> commit <org/name>@sha256:…` one (a machine's own `checkpoint sha256:…` line names no model);
+# cozy 0.24's quantize says `commit`.
+made() {
+  awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} $2=="commit" && $3 ~ /@sha256:/ {c=$3}
+    END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"
+}
 # runno <name>: the run a step's output names last (its own, after a local source's sync run): its KEY-N.
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 # handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
@@ -126,6 +130,18 @@ claim() {
   local r
   for r in $(own); do
     [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
+  done
+}
+# others_busy <machine> [seconds]: waits (900 s by default) until every other live rental of the account that's up runs or waits on
+# work, every client's, as its Status says. The account's rentals are one pool (cl-1224): a run naming no machine may go to any of them,
+# so a session that sends one waits until no other session's pod would take it idle. Fails naming them when they never are.
+others_busy() {
+  local until=$(($(date +%s) + ${2:-900}))
+  until cozy machine ls --json > "$OUT/others.json" 2> /dev/null && jq -e --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0)] | length == 0' "$OUT/others.json" > /dev/null; do
+    [ "$(date +%s)" -lt "$until" ] || fail "another rental of the account stayed idle, which a run naming no machine could take: $(jq -c --arg m "$1" \
+      '[.machines[] | select(.kind == "rental" and .state == "ready" and .name != $m and (.running + .queued) == 0) | .name]' "$OUT/others.json" 2> /dev/null)"
+    sleep 15
   done
 }
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that

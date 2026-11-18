@@ -26,10 +26,10 @@ use crate::{
 /// A machine's bulk lanes, each its own HTTP/1.1 connections: output reads use them all, an
 /// upload `UPLOAD_LANES` of them.
 pub(crate) const LANES: usize = 8;
-/// Parts of an upload in flight side by side, each on its own connection.
-const UPLOAD_LANES: usize = 4;
-/// The most one upload part carries.
-const PART: u64 = 64 << 20;
+/// Parts of a run's upload in flight side by side, each on its own connection.
+pub(crate) const UPLOAD_LANES: usize = 4;
+/// The most one part of a run's upload carries.
+pub(crate) const PART: u64 = 64 << 20;
 /// What an upload reads from its file at a time.
 const FRAME: usize = 64 << 10;
 
@@ -239,8 +239,8 @@ impl Link {
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub(crate) async fn read_log(&self, log: &str, lines: u64) -> Result<Vec<u8>, LinkError> {
-        Ok(self.machine.log(log, lines).await?.to_vec())
+    pub(crate) async fn read_log(&self, log: &str, lines: u64, since_ms: Option<i64>) -> Result<Vec<u8>, LinkError> {
+        Ok(self.machine.log(log, lines, since_ms).await?.to_vec())
     }
 
     /// A log's lines as `read_log` reads them, or those after `after` (a batch's place), then
@@ -317,7 +317,7 @@ impl Link {
     }
 
     /// Uploads the object at `path`: what the machine does not hold yet (`held`, as it last
-    /// said), in parts side by side (`lanes`). `progress` hears what the machine holds as its
+    /// said), in parts of at most `most` bytes, `flights` of them side by side. `progress` hears what the machine holds as its
     /// stream says it lands, with the rate; an object the machine already holds is not written
     /// and `progress` hears nothing. A failed or stalled part resumes on a fresh connection; the
     /// upload gives up only when every lane has failed since a byte last moved, or a whole pass
@@ -328,6 +328,7 @@ impl Link {
         length: u64,
         path: &Path,
         mut held: v1::Ranges,
+        (flights, most): (usize, u64),
         mut progress: impl FnMut(u64, Option<f64>),
     ) -> Result<(), LinkError> {
         let name = digest.to_string();
@@ -353,8 +354,8 @@ impl Link {
         let landed = Arc::new(AtomicU64::new(from));
         loop {
             let before = v1::held_bytes(&held);
-            let parts = lanes::parts(&held, length, UPLOAD_LANES, PART);
-            let sent = lanes::transfer(parts, UPLOAD_LANES, |leg| {
+            let parts = lanes::parts(&held, length, flights, most);
+            let sent = lanes::transfer(parts, flights, |leg| {
                 let lane = self.lane(leg.lane, leg.fresh);
                 put(lane, name.clone(), path.to_owned(), length, leg, landed.clone())
             });

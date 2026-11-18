@@ -861,12 +861,13 @@ impl Journal {
         })
     }
 
-    /// A second connection on `root`'s journal for reads alone (cl-1202): in WAL mode it reads the last committed state while a
-    /// commit waits for the disk, so a reader (Status, a run's state) never waits on a writer. Opened after `open`, which made the
-    /// schema.
+    /// The status reader's connection (cl-1202): a second, ordinary connection on `root`'s journal. In WAL mode it reads the last
+    /// committed state while a commit waits for the disk, so Status and a run's state never wait on a writer. Every write is the
+    /// writer's (`Engine::with_journal`); one misplaced here waits on the writer's lock like any second writer, as SQLite allows
+    /// (cl-1225). Opened after `open`, which made the schema.
     pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
         let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
-        connection.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;").map_err(db_error)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_error)?;
         let workspace_id: String = connection
             .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
             .map_err(db_error)?;
@@ -1101,7 +1102,8 @@ impl Journal {
 
     /// The journal rewritten whole, its WAL emptied before and after: `secure_delete` zeroes a deleted cell, but not the older
     /// copies of its rows a build without it (0.24, 0.25) left in free space, which only a rewrite overwrites. Run after a
-    /// retirement, never at start; atomic (a crash leaves the journal as it was); its scratch copy stays in RAM. Once done,
+    /// retirement, and at the one start that forgets an earlier build's list requests (`forget_lists`); atomic (a crash leaves the
+    /// journal as it was); its scratch copy stays in RAM. Once done,
     /// the journal holds no such copy and a lock's retirement no longer rewrites it.
     fn compact(&self) {
         self.truncate_wal();
@@ -1304,6 +1306,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
+    /// The record held for `actor`'s `computation`, its use recorded now: a write, so the writer's (cl-1225).
     pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
         if let Some(scope) = crate::private_io::current() {
             return crate::project_objects::held(&crate::project_objects::open(&scope)?, actor, computation);
@@ -1700,6 +1703,35 @@ impl Journal {
             Ok(held)
         })?;
         Ok((held, record.invocation.parent))
+    }
+
+    /// A starting machine forgets its list items' runs (`ahead`: an upcoming job's, a guess's), every row of theirs, the WAL emptied
+    /// (cl-1123): their callers send their lists again, and an earlier build kept each one's request whole, an encrypted project's
+    /// draft too, outside its vault. `secure_delete` zeroes a deleted cell, not a copy of it a page's rebalancing left in free space:
+    /// a journal that held such a request is rewritten (`compact`), so none of its bytes stays in the file.
+    pub(crate) fn forget_lists(&mut self) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let rows: Vec<(i64, String, bool)> = {
+            let mut statement = tx.prepare("SELECT id, invocation, EXISTS(SELECT 1 FROM run_specs WHERE execution=executions.id) FROM executions
+                WHERE substr(request_id,1,length(?1))=?1 OR substr(request_id,1,length(?2))=?2").map_err(db_error)?;
+            let rows = statement.query_map(params![crate::ahead::PREPARE, crate::ahead::UPCOMING], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let empty = |invocation: &str| serde_json::from_str::<Value>(invocation).is_ok_and(|value| value["input"].as_object().is_some_and(|input| input.is_empty()));
+        let requests = rows.iter().any(|(_, invocation, spec)| *spec || !empty(invocation.as_str()));
+        for (id, ..) in &rows {
+            delete_execution(&tx, *id)?;
+        }
+        tx.commit().map_err(db_error)?;
+        match requests {
+            true => self.compact(),
+            false => self.truncate_wal(),
+        }
+        tracing::info!("{} list items' runs forgotten: their lists come again{}", rows.len(), if requests { "; the journal rewritten, as it held their requests" } else { "" });
+        Ok(())
     }
 
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares

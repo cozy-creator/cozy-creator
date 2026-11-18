@@ -516,8 +516,9 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
-        callees: callees(&project_dir)?.into_iter().chain(sibling_callees(&project_dir)).collect(),
+        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195): read from the
+        // package as sent, as `locked` bound them, for the copy it locked names them by path (xs-217).
+        callees: callees(&project_dir)?.into_iter().chain(sibling_callees(&copied(home, code)?)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -564,7 +565,8 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
 }
 
 /// The first-party siblings the package at `project` takes by path (`sibling_sources`), as the packages they are: `minimax-h3` →
-/// `_/minimax-h3`, as a checkout names them (xs-195).
+/// `_/minimax-h3`, as a checkout names them (xs-195). `project` is the package as sent (`copied`), whose `{ index = "tensorhub" }`
+/// sources name them: `api::code::siblings` follows no path source.
 fn sibling_callees(project: &Path) -> impl Iterator<Item = (String, String)> {
     shared::siblings(project).into_iter().filter_map(|(distribution, dir)| Some((distribution, format!("{}/{}", api::names::ROOT, crate::checkout::application(&dir)?))))
 }
@@ -713,7 +715,15 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     // never for a new RC build alone (cl-1199).
     let held: Vec<&str> = made.as_deref().into_iter().chain(kept.as_ref().map(|kept| kept.lock.as_str())).chain(own.as_deref()).collect();
     let rc = crate::floor::rc_runtime(&sent, &held).await?;
-    let takes = |lock: &str| rc.as_ref().is_none_or(|rc| lock.contains(&rc.url));
+    // Beside it, the RC's TensorFS build for a rental's platform (xs-216): a lock made for one without it is made again.
+    let rc_tensorfs = match &rc {
+        Some(rc) => crate::floor::rc_tensorfs_wheel(&sent, rc, &held).await,
+        None => None,
+    };
+    let takes = |lock: &str| {
+        rc.as_ref().is_none_or(|rc| lock.contains(&rc.url))
+            && rc_tensorfs.as_ref().is_none_or(|tensorfs| lock.contains(&tensorfs.url) || !crate::floor::locks_rental(lock))
+    };
     if rc.is_some() && done.is_dir() && !made.as_deref().or(own.as_deref()).is_some_and(takes) {
         let _ = fs::remove_dir_all(&done);
         shared = shared_lock(home, &within, &sent, hub)?;
@@ -1404,7 +1414,17 @@ fn locked_requirement(root: &Path, name: &str) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    let locked = lock.package.into_iter().find(|p| p.name == name)?;
+    // A lock for several platforms holds a row for each (TensorFS: the RC's build by URL for a rental's, a candidate's wheel by path,
+    // the index's elsewhere, xs-216): the one this computer installs, a wheel built for it first.
+    let rows: Vec<Locked> = lock.package.into_iter().filter(|p| p.name == name).collect();
+    fn file(p: &Locked) -> Option<&str> {
+        ["url", "path"].into_iter().find_map(|kind| p.source.get(kind).and_then(toml::Value::as_str))
+    }
+    let fits = |p: &&Locked| file(p).is_none_or(installs_here);
+    let wheel = |p: &&Locked| file(p).is_some_and(|at| at.ends_with(".whl") && installs_here(at));
+    let locked = rows.iter().find(wheel)
+        .or_else(|| rows.iter().filter(|p| p.source.contains_key("url")).find(fits))
+        .or_else(|| rows.iter().find(fits))?;
     if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
         return Some(format!("{name} @ {url}"));
     }
@@ -1432,6 +1452,20 @@ fn locked_requirement(root: &Path, name: &str) -> Option<String> {
         return Some(format!("{name} @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
     }
     Some(api::release::requirement(name, api::release::Bound::Exactly, &locked.version))
+}
+
+/// Whether this computer installs `url`: no wheel, a pure one, or one whose platform tag names its OS and CPU (`manylinux_2_28_x86_64`,
+/// an e2e candidate's `linux_x86_64`, `macosx_11_0_arm64`, `win_amd64`).
+fn installs_here(url: &str) -> bool {
+    let Some(file) = url.rsplit('/').next().and_then(|file| file.strip_suffix(".whl")) else { return true };
+    let arch = std::env::consts::ARCH;
+    file.rsplit('-').next().unwrap_or_default().split('.').any(|tag| match std::env::consts::OS {
+        _ if tag == "any" => true,
+        "linux" => (tag.starts_with("manylinux") || tag.starts_with("linux_")) && tag.ends_with(arch),
+        "macos" => tag.starts_with("macosx_") && (tag.ends_with("universal2") || tag.ends_with(if arch == "aarch64" { "arm64" } else { arch })),
+        "windows" => tag == if arch == "aarch64" { "win_arm64" } else { "win_amd64" },
+        _ => false,
+    })
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else

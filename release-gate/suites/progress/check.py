@@ -13,6 +13,8 @@ is doing, where, how far and how long the whole run has left:
   steps is a denoising loop's, never tokens or a cap (Paul, 11-12: "Denoise steps: 65 / 2176" was a rewriter's tokens).
 - **a time left:** a warm cell's throughout; a cold cell's while bytes move at a known rate, and while a stage steps from its
   second step (what follows a first run's last stepping stage isn't known yet); a result over RESULT_TIMED as it comes.
+  None is owed while the run waits for GPUs its machine can't time (cl-1247): from a `run.waiting` whose typed `gpus` has no
+  `left_ms`, to the next `run.waiting`. Each cell's note counts the samples so excused.
 - **never silent:** no stretch of over SILENT_MS where nothing moved, and never `stalled`.
 - **no false alarms:** a run that completed warns of nothing the Runtime caught and recovered from (`HANDLED`).
 
@@ -82,6 +84,8 @@ class Seen:
     known: bool = True
     # A `run.log` stage line: its words are checked, but it arrives in batches behind the progress it repeats, so it holds no place.
     logged: bool = False
+    # Taken while the run waited for GPUs its machine couldn't time (`run.waiting`'s typed `gpus`, cl-1247): it owes no time left.
+    untimed: bool = False
 
 
 def parts(stage: str) -> list[str]:
@@ -109,13 +113,18 @@ def read(path: str, stages: Stages) -> tuple[list[Event], list[Seen]]:
             except ValueError:
                 pass
     seen: list[Seen] = []
+    # In a wait for GPUs its machine can't time, by its event's typed `gpus` alone, until the next `run.waiting` (cl-1247).
+    untimed = False
     for e in events:
         kind = e.get('type')
+        if kind == 'run.waiting':
+            gpus = e.get('gpus')
+            untimed = isinstance(gpus, dict) and not cast(dict[str, object], gpus).get('left_ms')
         if kind == 'run.progress':
             p = cast(dict[str, object], e.get('progress') or {})
             stage = str(p.get('stage') or '')
             phase, known = phase_of(stage, stages)
-            seen.append(Seen(phase, stage, cast(int | None, p.get('at_ms')), p, known))
+            seen.append(Seen(phase, stage, cast(int | None, p.get('at_ms')), p, known, untimed=untimed))
         elif kind == 'run.arriving':
             p = cast(dict[str, object], e.get('progress') or {})
             seen.append(Seen('result', 'downloading the result', cast(int | None, p.get('at_ms')), p))
@@ -178,7 +187,8 @@ def came(said: list[dict[str, object]]) -> bool:
     return total > 0 and (max(done) > min(done) or max(done) >= total)
 
 
-def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, items: dict[str, list[dict[str, object]]] | None = None) -> list[str]:
+def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, items: dict[str, list[dict[str, object]]] | None = None,
+          excused: list[Seen] | None = None) -> list[str]:
     fails: list[str] = []
     items = items or {}
     cold = name.endswith('-cold')
@@ -255,6 +265,10 @@ def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, item
         stepping = int(cast(int, p.get('completed') or 0)) >= 2 and int(cast(int, p.get('total') or 0)) > 0 and not p.get('unit')
         due = (not cold) or stepping or (s.kind in BYTES and p.get('bytes_per_s'))
         if due and p.get('eta_s') is None:
+            if s.untimed:
+                if excused is not None:
+                    excused.append(s)
+                continue
             fails.append(f'{name}: no time left at {s.kind} {s.stage!r} ({p.get("eta_basis") or "no basis"})')
             break
     # Never silent.
@@ -283,13 +297,14 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
             fails.append(f'{name}: no event stream')
             continue
         events, seen = read(path, stages)
-        found = judge(name, events, seen, stages, downloads(os.path.join(out, name + '.machine.ndjson')))
+        excused: list[Seen] = []
+        found = judge(name, events, seen, stages, downloads(os.path.join(out, name + '.machine.ndjson')), excused)
         fails += found
         order: list[str] = []
         for s in seen:
             if not order or order[-1] != s.kind:
                 order.append(s.kind)
-        notes.append(f'{name}: {" > ".join(order)}{"" if found else " (PASS)"}')
+        notes.append(f'{name}: {" > ".join(order)}{"" if found else " (PASS)"}; {len(excused)} samples owed no time in untimed GPU waits')
     return fails, notes
 
 

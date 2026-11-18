@@ -15,6 +15,7 @@ import type {
   BoxEstimate,
   ErrorBody,
   HistoryStepped,
+  Job,
   MainFile,
   Pickup,
   RentFor,
@@ -247,6 +248,11 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 /** What an Undo or Redo brought back without its files, as Calcifer says it (cl-919). */
 const lostSaid = (lost: string[]) => lost.map((said) => `${said}.`).join(" ")
 
+/** What a job that ended with no run of its own on one of its box's takes says came of it (a cut, which no run makes either, is timed by
+ *  its seconds; these say what they are by themselves): as `cozy render` reads it. */
+const SAYS_ITSELF = ["it stands", "nothing to do", "stays pinned"]
+const stood = (job: Job) => job.state === "done" && job.run == null && job.number != null && job.seconds == null && Boolean(job.why) && !SAYS_ITSELF.includes(job.why!)
+
 /** What the state says of one element: an asset, or an entity. */
 type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "noRoom" | "warnings">
 
@@ -256,7 +262,7 @@ function linksOf(entity: Entity): string[] {
   return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
 }
 
-const WORST = ["making", "failed", "out_of_date", "missing", "current"] as const
+const WORST = ["making", "failed", "missing", "current"] as const
 
 /** How an entity stands: the worst of what it links. */
 const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((standing) => standings.includes(standing)) ?? "current"
@@ -297,6 +303,11 @@ export class CanvasStore {
   private pulling: { name: string; was?: Box; field?: Field; shown: Set<string> } | null = null
   /** The note offering Undo of each edit, and the one saying what Undo or Redo last did: each goes once that's moved on. */
   private offers = new Map<string, number>()
+  /** The failure said of each box since it was last asked to render: said once, though a read before its render's answer and one after both
+   *  find it (a render that fails before it is sent, as one whose input has no take does, cl-1192). */
+  private told = new Map<string, string>()
+  /** Each job that ended on a take its box already had, said once; those on the board when this page first read it never (cl-1271). */
+  private stoodSaid = new Set<string>()
   private stepped = 0
   /** The tools known so far, by id. */
   readonly tools = signal<Map<string, Tool>>(new Map())
@@ -951,6 +962,13 @@ export class CanvasStore {
       this.unsentSaid.add(failure.message)
       say(failure.message, new ApiError(0, failure))
     }
+    // A render that made nothing new: its tool takes no seed, or its box names one, and a take already holds its inputs, so that take
+    // stands and no run went (Calcifer's `Project::stands`). Said once in a note as it ends, as a failed try is: never silence (cl-1271).
+    for (const job of state.board?.jobs ?? []) {
+      if (!stood(job) || this.stoodSaid.has(job.id)) continue
+      this.stoodSaid.add(job.id)
+      if (this.seen) say(`${job.asset}: nothing new to render: ${job.why}`)
+    }
     // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
     const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])
     const noRoom = new Map((state.queue ?? []).flatMap((item) => (item.no_room ? [[item.name, item.no_room] as const] : [])))
@@ -974,7 +992,10 @@ export class CanvasStore {
         // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
         // in a note that goes by itself (Paul, 11-16). One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) this.failed(asset.name, asset.failure)
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message) && this.told.get(asset.name) !== asset.failure.message) {
+          this.told.set(asset.name, asset.failure.message)
+          this.failed(asset.name, asset.failure)
+        }
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.noRoom?.line !== noRoom.get(asset.name)?.line) change.noRoom = noRoom.get(asset.name)
         if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
@@ -1361,7 +1382,7 @@ export class CanvasStore {
   }
 
   /**
-   * Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date.
+   * Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes.
    * Only boxes themselves: the room each keeps around it is for placing and settling, so a project laid out closer than that stays as it is.
    */
   private separate() {
@@ -1574,6 +1595,7 @@ export class CanvasStore {
     const aimed = !id || this.aims.get(id) === take
     if (aimed && id) this.aims.delete(id)
     if (aimed && (asset.kind === "image" || asset.kind === "video")) this.watchTake(key, take, asset.kind === "video")
+    this.told.delete(key)
     this.patch(key, { waiting: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
     const settle = (asked?: number) => {
@@ -1623,6 +1645,7 @@ export class CanvasStore {
     if (!asset?.timeline || !this.projectId) return
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
+    this.told.delete(key)
     this.patch(key, { asked: NOT_YET })
     const once = `join-${crypto.randomUUID()}`
     this.act(key, {
@@ -1704,7 +1727,7 @@ export class CanvasStore {
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays.
    *  With none yet, `send` shows it as it goes (`show`), or answers nothing when there's nothing to ask, and its step goes. */
-  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
+  private over<T extends object>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -1724,11 +1747,11 @@ export class CanvasStore {
         this.readAfter([id])
         // A write of its own: its read back isn't news.
         const held = now()
-        if (held && answer.etag) {
-          this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
-          this.patch(held.name, { known: answer.etag })
+        const etag = "etag" in answer && typeof answer.etag === "string" ? answer.etag : null
+        if (held && etag) {
+          this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(etag))
+          this.patch(held.name, { known: etag })
         }
-        if (answer.stale?.length) say(`${answer.stale.join(", ")} ${answer.stale.length === 1 ? "is" : "are"} now out of date`)
         then?.done?.(answer)
       },
       refused: (error) => {
@@ -2000,7 +2023,7 @@ export class CanvasStore {
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "approve", by)
   }
 
-  /** Starred, it leads the project's Files list (cl-892). A star is no input: nothing goes out of date, and it's no approval. */
+  /** Starred, it leads the project's Files list (cl-892). A star is no input, and it's no approval. */
   star(name: string, on: boolean) {
     const key = this.resolveName(name)
     const edit = this.step(`${on ? "Starred" : "Unstarred"} ${key}`, [key])

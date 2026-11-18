@@ -59,9 +59,6 @@ pub(crate) struct Protect<'a> {
     /// request, with nothing of ours left to give, it waits for memory held outside this process
     /// (`OUTSIDE_WAIT`).
     pub(crate) outside: bool,
-    /// An eager working allocation: with every other lever gone, in a request, live working pages
-    /// may move to host pages for it (`Step::DemoteWorking`, cr-305 rung 5).
-    pub(crate) demote: bool,
 }
 
 /// How long a demand with no lever left of its own waits for memory outside this process to come
@@ -106,12 +103,11 @@ enum Step {
     OwnerCaches,
     Peers,
     HighWeights,
-    DemoteWorking,
 }
 
 // Scratch comes before any weight: it costs a remap or a wait, while every evicted weight is
 // read again (H3 estimate for pending working: 112 GB per run). Time is measured, not assumed.
-pub(crate) const STEPS: usize = 11;
+pub(crate) const STEPS: usize = 10;
 const ORDER: [Step; STEPS] = [
     Step::CompletedWorking,
     Step::Contentless,
@@ -123,8 +119,6 @@ const ORDER: [Step; STEPS] = [
     Step::OwnerCaches,
     Step::Peers,
     Step::HighWeights,
-    // Last: live tensors keep their addresses on host pages, read over the link (cr-305 rung 5).
-    Step::DemoteWorking,
 ];
 
 static HOST_LOCK: OnceLock<fn() -> bool> = OnceLock::new();
@@ -265,11 +259,6 @@ impl<'a> Sequence<'a> {
             // Only `Yes` has asked the owner caches these rank above.
             Step::HighWeights if self.wait == Wait::Yes && self.gpu.any_high.load(Ordering::Acquire) => {
                 self.weights(want, HIGH..=HIGH, true, true)
-            }
-            Step::DemoteWorking if self.wait == Wait::Yes && self.protect.demote && self.gpu.in_request() => {
-                let moved = working::demote(self.device, want)?;
-                self.released += moved;
-                Ok(moved != 0)
             }
             _ => Ok(false),
         }

@@ -328,15 +328,21 @@ else:
 JUDGE
 while read -r why; do check "prefetch yields: $why"; done < "$OUT/pre-yields.failed"
 
-# A second box, deleted while its transformer comes.
+# A second box, deleted while its transformer comes. The store goes to 10 MB/s for it, so its transformer (384 MiB) is still
+# coming when its drop lands: at 30 MB/s all six of its objects were in flight at once and had landed 10 ms before the drop came,
+# leaving nothing to stop (e2e 44306642437, 44312762038). It goes back to 30 MB/s after.
+local added deleted went=''
+sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch 80mbit || { pre_end; return 0; }
+added=$(date -u +%s%3N)
 jq -n --arg t "$tool" '[{name: "gone", tool: $t, kind: "image", fields: {instructions: "A still never rendered.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
 # Its row counts the VAE, here already (320 MiB), with what comes: 32 MiB of its transformer in.
 came=$(pre_wait "$P" gone 352)
 [ "$came" -ge $((352 << 20)) ] || { check "prefetch yields: stand-p fetched nothing of e2e/pre-b's transformer for the second box: its row: $(pre_row "$P" gone)"; pre_end; return 0; }
+deleted=$(date -u +%s%3N)
 project_api "$P" /assets/gone -X DELETE > "$OUT/pre-yields-delete.json" 2>&1 || check "prefetch yields: the second box wasn't deleted: $(tail -c 300 "$OUT/pre-yields-delete.json")"
 for _ in $(seq 100); do
-  [ -z "$(pre_row "$P" gone)" ] && { gone=0; break; }
+  [ -z "$(pre_row "$P" gone)" ] && { gone=0; went=$(($(date -u +%s%3N) - deleted)); break; }
   sleep 0.2
 done
 [ "$gone" = 0 ] || check "prefetch yields: 20 s after its box was deleted a row still names it: $(pre_row "$P" gone)"
@@ -347,10 +353,11 @@ first=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
 sleep 5
 pre_machine stand-p "$OUT/pre-yields-gone.json"
 second=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
-echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them its VAE) when its box was deleted; of e2e/pre-b stand-p holds $first, and 5 s on $second"
+echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them its VAE) $((deleted - added)) ms after its box was made, when it was deleted; its row went ${went:-never} ms after; of e2e/pre-b stand-p holds $first, and 5 s on $second"
 [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-b went on coming after its box was deleted: $first, then $second"
 J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"
+sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch || { pre_end; return 0; }
 }
 
 # prefetch_load (cl-1104): a guess goes where a render would go now as the machines' loads change, with no edit. A project of this
@@ -686,4 +693,213 @@ else
   check "prefetch retry: its row never said why its guess failed in 3 min: ${row:-no row}"
 fi
 pre_end
+}
+
+# prefetch_sealed (cl-1123; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What really matters is that we can
+# trust the remote machine as safe"): an encrypted project's draft never goes ahead to a computer added by address, which isn't trusted
+# with its content until Paul rules it is, while a plain project's still does. stand-s, a stand-in, is such a computer. An encrypted
+# project of it shows sealpic (its picture under e2e-prefetched/still, on e2e/pre-b's transformer, its draft holding a marker) and
+# sealown (a box of the project's own code); a plain project of it shows openpic (the same tool on e2e/pre-a). Shown together, openpic
+# is listed on stand-s and its picture carried there. Nothing of the encrypted project is listed there: no row, stand-s fetches none
+# of e2e/pre-b and names neither its picture nor its draft, and the project's own log says why. Calcifer's log names nothing of the
+# encrypted project. sealpic's Render still goes to stand-s and runs.
+prefetch_sealed() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch (cl-1123): an encrypted project's draft doesn't go ahead to a computer added by address; a plain one's does"
+local name=stand-s sealed=$OUT/sealedcarry open=$OUT/opencarry secrets view sid oid shex ohex mark said walk held row='' job box P _
+cozy --json machine show local > "$OUT/set-local.json" || { check "sealed: machine show local"; return 0; }
+stand_in "$name" || return 0
+secrets=$(mktemp -d)
+printf '%s\n' 'synthetic sealed-guess passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+cozy --json new "$sealed" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$OUT/sealed-new.json" 2> "$OUT/sealed-new.err" \
+  || { check "sealed: new encrypted project: $(tail -c 300 "$OUT/sealed-new.err")"; sealed_end; return 0; }
+view=$(jq -r '.view // empty' "$OUT/sealed-new.json")
+[ -n "$view" ] && [ -d "$view" ] || { check "sealed: no unlocked view: $(head -c 300 "$OUT/sealed-new.json")"; sealed_end; return 0; }
+cozy --json new --unencrypted "$open" > "$OUT/open-new.json" 2>&1 || { check "sealed: new plain project: $(tail -c 300 "$OUT/open-new.json")"; sealed_end; return 0; }
+for P in "$sealed" "$open"; do
+  in_project "$P" --json machine use "$name" > "$OUT/sealed-use.json" 2>&1 || { check "sealed: machine use $name: $(tail -c 300 "$OUT/sealed-use.json")"; sealed_end; return 0; }
+done
+# Two pictures of noise, 3 MiB each: past a carry's 1 MiB batch, so each lands in parts, its digest named in the machine's log.
+python3 -I - "$OUT/sealed-pic.png" "$OUT/open-pic.png" <<'PY'
+import os, struct, sys, zlib
+side = 1024
+def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+for path in sys.argv[1:]:
+    rows = b"".join(b"\0" + os.urandom(side * 3) for _ in range(side))
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b""))
+PY
+shex=$(sha256sum "$OUT/sealed-pic.png" | cut -c1-64) ohex=$(sha256sum "$OUT/open-pic.png" | cut -c1-64) mark=sealdraft$RANDOM$RANDOM
+python3 "$E2E/page.py" import "$sealed" "$OUT/sealed-pic.png" --name sealpic > "$OUT/sealpic.json" 2>&1 \
+  && python3 "$E2E/page.py" set "$sealed" sealpic --tool e2e-prefetched/still \
+    --fields "$(jq -nc --arg m "$mark" '{instructions: "<self.1> at dusk, \($m)", models: {model: {ref: "e2e/pre-b@0.1.0"}}}')" > "$OUT/sealpic-set.json" 2>&1 \
+  || { check "sealed: sealpic: $(tail -c 300 "$OUT/sealpic.json") $(tail -c 300 "$OUT/sealpic-set.json" 2> /dev/null)"; sealed_end; return 0; }
+cp -r "$here/project/boxed" "$view/boxed" || { check "sealed: its own code not copied into its view"; sealed_end; return 0; }
+python3 "$E2E/page.py" add "$sealed" sealown --tool ./boxed/plain --fields '{"instructions": "a still, a shade lighter"}' > "$OUT/sealown.json" 2>&1 \
+  || { check "sealed: sealown: $(tail -c 300 "$OUT/sealown.json")"; sealed_end; return 0; }
+python3 "$E2E/page.py" import "$open" "$OUT/open-pic.png" --name openpic > "$OUT/openpic.json" 2>&1 \
+  && python3 "$E2E/page.py" set "$open" openpic --tool e2e-prefetched/still --fields '{"instructions": "<self.1> at dusk"}' > "$OUT/openpic-set.json" 2>&1 \
+  || { check "sealed: openpic: $(tail -c 300 "$OUT/openpic.json") $(tail -c 300 "$OUT/openpic-set.json" 2> /dev/null)"; sealed_end; return 0; }
+echo "sealed: sealpic's picture sha256:$shex, openpic's sha256:$ohex, $(stat -c %s "$OUT/sealed-pic.png") bytes each"
+pre_page || { sealed_end; return 0; }
+sid=$(status "$sealed" | jq -r '.id // empty') oid=$(status "$open" | jq -r '.id // empty')
+[ -n "$sid" ] && [ -n "$oid" ] || { check "sealed: the projects' ids: '$sid' '$oid'"; sealed_end; return 0; }
+sealed_show "[\"$sid\", \"$oid\"]" || { sealed_end; return 0; }
+
+# The plain project: listed on stand-s, its picture carried there.
+for _ in $(seq 360); do row=$(pre_row "$open" openpic); J --arg m "$name" '.machine == $m' <<< "${row:-null}" && break; sleep 0.5; done
+echo "sealed: openpic's row: ${row:-none}"
+J --arg m "$name" '.machine == $m' <<< "${row:-null}" || { check "sealed: the plain project's openpic was never listed on $name in 3 min: ${row:-none}"; sealed_end; return 0; }
+for _ in $(seq 90); do
+  cozy machine logs local calcifer --lines 20000 > "$OUT/sealed-calcifer.log" 2>&1 || true
+  grep -qE "openpic's guess carried [0-9]+ files .* ahead to $name" "$OUT/sealed-calcifer.log" && break
+  sleep 2
+done
+grep -E "openpic's guess carried" "$OUT/sealed-calcifer.log" | tail -2 | cut -c1-400 | sed 's/^/sealed: Calcifer: /' || true
+grep -qE "openpic's guess carried [0-9]+ files .* ahead to $name" "$OUT/sealed-calcifer.log" || check "sealed: openpic's picture was never carried to $name (3 min)"
+
+# The encrypted project: nothing of it listed there, and its own log says why.
+said="nothing of this encrypted project goes ahead: $name is another computer's, which this account doesn't own"
+walk=$view/.vault-calcifer/diagnostics/walk.log
+for _ in $(seq 60); do grep -qF "sealpic isn't guessed: $said" "$walk" 2> /dev/null && grep -qF "sealown isn't guessed: $said" "$walk" 2> /dev/null && break; sleep 2; done
+grep -E "sealpic|sealown" "$walk" 2> /dev/null | tail -6 | cut -c1-400 | sed 's/^/sealed: its vault log: /' || true
+for box in sealpic sealown; do
+  grep -qF "$box isn't guessed: $said" "$walk" 2> /dev/null || check "sealed: the encrypted project's own log doesn't say why $box isn't guessed onto $name"
+  row=$(pre_row "$sealed" "$box")
+  [ -z "$row" ] || check "sealed: the encrypted project's $box is listed on $name, a computer added by address: $row"
+done
+sleep 10
+pre_machine "$name" "$OUT/sealed-$name.json"
+held=$(pre_held "$OUT/sealed-$name.json" e2e/pre-b)
+echo "sealed: of e2e/pre-b, which only sealpic's draft reads, $name holds $held before any render"
+J 'all(.unique_bytes == 0)' <<< "$held" || check "sealed: $name fetched e2e/pre-b for the encrypted project's draft before any render: $held"
+pre_log "$name" "$OUT/sealed-$name.log"
+! grep -q "$shex" "$OUT/sealed-$name.log" || check "sealed: $name's log names sealpic's picture before any render"
+! grep -qF "$mark" "$OUT/sealed-$name.log" || check "sealed: $name's log holds the encrypted draft's words before any render"
+! grep -qi "e2e.boxed" "$OUT/sealed-$name.log" || check "sealed: $name's log names the encrypted project's own code (e2e-boxed)"
+cozy machine logs local calcifer --lines 20000 > "$OUT/sealed-calcifer.log" 2>&1 || true
+! grep -qE "sealpic|sealown|sealedcarry|$shex|$mark" "$OUT/sealed-calcifer.log" \
+  || check "sealed: Calcifer's log names the encrypted project: $(grep -E "sealpic|sealown|sealedcarry|$shex|$mark" "$OUT/sealed-calcifer.log" | head -2 | cut -c1-300)"
+
+# Its Render isn't held: sealpic renders on stand-s.
+timeout 900 python3 "$E2E/page.py" render "$sealed" --on "$name" sealpic > "$OUT/sealed-render.txt" 2>&1 \
+  || check "sealed: sealpic's render on $name: $(tail -c 400 "$OUT/sealed-render.txt")"
+job=$(status "$sealed" | jq -c '[.board.jobs[]? | select(.asset == "sealpic")] | last // empty')
+echo "sealed: sealpic's render: ${job:-no job}"
+J --arg m "$name" '.machine == $m and .state == "done"' <<< "${job:-null}" || check "sealed: sealpic's render didn't end done on $name: ${job:-no job}"
+sealed_end
+}
+# sealed_show <ids JSON>: the page shows those projects. sealed_end: the page gone, stand-s ended, the encrypted project locked.
+sealed_show() {
+  local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  curl -fsS -X PUT "${PRE_HEADERS[@]}" -H "Origin: http://$(jq -r .address "$lock")" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --argjson ids "$1" '{projects: $ids}')" "http://$(jq -r .address "$lock")/v1/events/$PRE_STREAM" > "$OUT/sealed-show.json" 2>&1 \
+    || { check "sealed: the page couldn't show $1: $(tail -c 300 "$OUT/sealed-show.json")"; return 1; }
+}
+sealed_end() {
+  [ -z "${PRE_PAGE:-}" ] || kill "$PRE_PAGE" 2> /dev/null || true
+  PRE_PAGE=''
+  timeout 60 "$COZY" --json machine end stand-s --force -y > "$OUT/stand-s-end.json" 2>&1 || true
+  in_project "$OUT/sealedcarry" --json vault lock > /dev/null 2>&1 || true
+}
+
+# prefetch_sealed_demand (cl-1123; the release coordinator, 11-18: "for an encrypted project the request should be on the machine that
+# runs the run and nowhere else; that the user listed that computer among the machines a run could go to is consent to it RUNNING the
+# work, not to it holding a copy of a request another machine is running"). A job waiting on one machine is prepared on an idle one
+# that could run it (cl-967's demand), but an encrypted project's never on a computer added by address. An encrypted project and a
+# plain one each run their tool on local once (`warm`), then render `src`, a 4-minute still, on local, and `after`, e2e-prefetched/still
+# on `<src>`, on local or stand-d, a stand-in added by address that runs nothing: planned on local, where its model is, `after` waits
+# there. The plain project's (e2e/pre-a) is prepared on stand-d. The encrypted one's (e2e/pre-b, its words a marker) isn't: stand-d's
+# prepare list never holds more than the plain one's item, stand-d fetches none of pre-b and its log holds no marker, the project's
+# own log says why, and Calcifer's log names nothing of it. Both `after`s then run on local.
+prefetch_sealed_demand() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch (cl-1123): an encrypted project's job waiting on one machine isn't prepared on a computer added by address; a plain one's is"
+local name=stand-d S=$OUT/sealeddemand O=$OUT/opendemand wait=$here/project/waits.py/wait secrets view mark job box P most said walk
+cozy --json machine show local > "$OUT/set-local.json" || { check "sealed demand: machine show local"; return 0; }
+stand_in "$name" || return 0
+secrets=$(mktemp -d)
+printf '%s\n' 'synthetic sealed-demand passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+cozy --json new "$S" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$OUT/sd-new.json" 2> "$OUT/sd-new.err" \
+  || { check "sealed demand: new encrypted project: $(tail -c 300 "$OUT/sd-new.err")"; sd_end; return 0; }
+view=$(jq -r '.view // empty' "$OUT/sd-new.json")
+[ -n "$view" ] && [ -d "$view" ] || { check "sealed demand: no unlocked view: $(head -c 300 "$OUT/sd-new.json")"; sd_end; return 0; }
+cozy --json new --unencrypted "$O" > "$OUT/od-new.json" 2>&1 || { check "sealed demand: new plain project: $(tail -c 300 "$OUT/od-new.json")"; sd_end; return 0; }
+mark=sealdemand$RANDOM$RANDOM
+jq -n --arg w "$wait" --arg m "$mark" '[
+  {name: "sdwarm", tool: "e2e-prefetched/still", kind: "image", fields: {instructions: "a warm still", models: {model: {ref: "e2e/pre-b@0.1.0"}}}},
+  {name: "sdsrc", tool: $w, kind: "image", fields: {instructions: "a still that takes 4 min", megapixels: 0.25, seconds: 240}},
+  {name: "sdafter", tool: "e2e-prefetched/still", kind: "image", fields: {instructions: "<sdsrc> at dusk, \($m)", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
+  | boxes_in "$S" || { sd_end; return 0; }
+jq -n --arg w "$wait" '[
+  {name: "odwarm", tool: "e2e-prefetched/still", kind: "image", fields: {instructions: "a warm still"}},
+  {name: "odsrc", tool: $w, kind: "image", fields: {instructions: "a still that takes 4 min", megapixels: 0.25, seconds: 240}},
+  {name: "odafter", tool: "e2e-prefetched/still", kind: "image", fields: {instructions: "<odsrc> at dusk"}}]' \
+  | boxes_in "$O" || { sd_end; return 0; }
+# Each project's tool run on local first: local holds its model and has timed it there.
+sd_go "$S" sdwarm '["local"]'
+sd_go "$O" odwarm '["local"]'
+for box in sdwarm odwarm; do
+  P=$S; [ "$box" = sdwarm ] || P=$O
+  job=$(sd_done "$P" "$box" 300)
+  J '.state == "done" and .machine == "local"' <<< "${job:-null}" || { check "sealed demand: $box didn't run on local: ${job:-no job}"; sd_end; return 0; }
+done
+sd_go "$S" sdsrc '["local"]'
+sd_go "$O" odsrc '["local"]'
+sd_go "$S" sdafter "[\"local\",\"$name\"]"
+sd_go "$O" odafter "[\"local\",\"$name\"]"
+# The plain project's waiting job prepared on stand-d: its prepare list holds an item.
+for _ in $(seq 115); do
+  pre_log "$name" "$OUT/sd-$name.log"
+  grep -qE 'cozy:prepare: list: [1-9][0-9]* items admitted' "$OUT/sd-$name.log" && break
+  sleep 2
+done
+sleep 20
+pre_log "$name" "$OUT/sd-$name.log"
+pre_machine "$name" "$OUT/sd-$name.json"
+grep -hE "(sdafter|odafter) waits; fetched ahead on" "$view/.vault-calcifer/diagnostics/walk.log" "$O/.vault-calcifer/diagnostics/walk.log" 2> /dev/null | tail -4 | cut -c1-400 | sed 's/^/sealed demand: /' || true
+grep -E 'cozy:(prepare|upcoming): list: [0-9]+ items admitted' "$OUT/sd-$name.log" | tail -6 | cut -c1-200 | sed "s/^/sealed demand: $name: /" || true
+! grep -qE 'cozy:upcoming: list: [1-9][0-9]* items admitted' "$OUT/sd-$name.log" \
+  || check "sealed demand: a job was planned on $name, which was to run nothing: the scene doesn't hold"
+most=$(grep -oE 'cozy:prepare: list: [0-9]+ items admitted' "$OUT/sd-$name.log" | grep -oE '[0-9]+' | sort -n | tail -1)
+echo "sealed demand: $name's prepare list held at most ${most:-no} items; of e2e/pre-a it holds $(pre_held "$OUT/sd-$name.json" e2e/pre-a), of e2e/pre-b $(pre_held "$OUT/sd-$name.json" e2e/pre-b)"
+[ "${most:-0}" -ge 1 ] || check "sealed demand: the plain project's odafter, waiting on local, was never prepared on $name"
+[ "${most:-0}" -le 1 ] || check "sealed demand: $name's prepare list held $most items: the encrypted project's sdafter was listed there beside the plain one's"
+J 'all(.unique_bytes == 0)' <<< "$(pre_held "$OUT/sd-$name.json" e2e/pre-b)" \
+  || check "sealed demand: $name fetched e2e/pre-b, which only the encrypted project's sdafter reads: $(pre_held "$OUT/sd-$name.json" e2e/pre-b)"
+! grep -qF "$mark" "$OUT/sd-$name.log" || check "sealed demand: $name's log holds the encrypted request's words"
+said="sdafter isn't prepared on $name while it waits elsewhere: nothing of this encrypted project goes ahead: $name is another computer's, which this account doesn't own"
+walk=$view/.vault-calcifer/diagnostics/walk.log
+grep -F "isn't prepared on" "$walk" 2> /dev/null | tail -2 | cut -c1-400 | sed 's/^/sealed demand: its vault log: /' || true
+grep -qF "$said" "$walk" 2> /dev/null || check "sealed demand: the encrypted project's own log doesn't say why sdafter isn't prepared on $name"
+[ "$(grep -cF "$said" "$walk" 2> /dev/null)" -le 1 ] || check "sealed demand: its own log said why more than once: $(grep -cF "$said" "$walk")"
+cozy machine logs local calcifer --lines 20000 > "$OUT/sd-calcifer.log" 2>&1 || true
+! grep -qE "sdwarm|sdsrc|sdafter|sealeddemand|$mark" "$OUT/sd-calcifer.log" \
+  || check "sealed demand: Calcifer's log names the encrypted project: $(grep -E "sdwarm|sdsrc|sdafter|sealeddemand|$mark" "$OUT/sd-calcifer.log" | head -2 | cut -c1-300)"
+# Both waiting jobs run where they were planned.
+for box in sdafter odafter; do
+  P=$S; [ "$box" = sdafter ] || P=$O
+  job=$(sd_done "$P" "$box" 600)
+  echo "sealed demand: $box: ${job:-no job}"
+  J '.state == "done" and .machine == "local"' <<< "${job:-null}" || check "sealed demand: $box didn't end done on local: ${job:-no job}"
+done
+sd_end
+}
+# sd_go <project> <box> <machines JSON>: renders it as the page does. sd_done <project> <box> <seconds>: its job once done or failed,
+# within that. sd_end: stand-d ended, the encrypted project locked.
+sd_go() {
+  project_api "$1" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: sd-$2-$RANDOM$RANDOM" \
+    -d "{\"names\":[\"$2\"],\"on\":$3}" > "$OUT/sd-go-$2.json" 2>&1 || check "sealed demand: render $2: $(tail -c 300 "$OUT/sd-go-$2.json")"
+}
+sd_done() {
+  local job='' _
+  for _ in $(seq $(($3 * 2))); do
+    job=$(status "$1" | jq -c --arg a "$2" '[.board.jobs[]? | select(.asset == $a)] | last // empty' 2> /dev/null || true)
+    J '.state == "done" or .state == "failed"' <<< "${job:-null}" && break
+    sleep 0.5
+  done
+  echo "${job:-}"
+}
+sd_end() {
+  timeout 60 "$COZY" --json machine end stand-d --force -y > "$OUT/stand-d-end.json" 2>&1 || true
+  in_project "$OUT/sealeddemand" --json vault lock > /dev/null 2>&1 || true
 }

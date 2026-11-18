@@ -4,8 +4,8 @@
 # problem in TensorD, please investigate".
 # A dev home on this runner's cozy, its packages from the packages_refs checkout `tree`: the rental moves to the RC's builds, then
 # to this session's cozy as its TensorD and the Runtime `runtime` names, held there for the session.
-#   placed  Qwen3.5's and Qwen3.6's `write`, a short question each (cold: install, download): each on a GPU of its own (its run's
-#           GPU uuid against the pod's nvidia-smi).
+#   placed  qwen3's `write` on Qwen3.5-9B and on Qwen3.6-35B-A3B (se-145 folded the qwen3.5 and qwen3.6 packages into qwen3), a
+#           short question each (cold: install, download): each on a GPU of its own (its run's GPU uuid against nvidia-smi).
 #   writes  both write a long story at once (max_tokens 6000): both complete, each on its executor from `placed` (no second
 #           executor), with each GPU's peak memory from nvidia-smi once a second.
 #   paged   with `cap`: every GPU limited to it, so Qwen3.6 pages, its write (300 tokens) cold then three times warm, on the
@@ -16,18 +16,19 @@
 #   cap       a per-GPU limit for `paged`, e.g. 24GiB (default: none, no `paged`)
 #   baseline  the Runtime `paged` compares against, as `runtime` names one (required with `cap`)
 #   seconds   what the cap must buy (default 3600)
+#   q35, q36  the two models (default qwen/qwen3.5-9b@0.2.0, qwen/qwen3.6-35b-a3b@0.1.0)
 . "$(dirname "$0")/lib.sh"
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 TREE=$(param tree '') FROM=$(param runtime '') LIMIT=$(param cap '') BASE_FROM=$(param baseline '')
+Q35=$(param q35 qwen/qwen3.5-9b@0.2.0) Q36=$(param q36 qwen/qwen3.6-35b-a3b@0.1.0)
 [ -z "$LIMIT" ] || [ -n "$BASE_FROM" ] || fail "params.cap pages Qwen3.6 against params.baseline's Runtime: name it"
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run of the build under test>"
-[ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3.5/pyproject.toml" ] && [ -f "$PACKAGES/$TREE/qwen3.6/pyproject.toml" ] ||
+[ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] ||
   fail "the packages run from a checkout: dispatch with -f packages_refs=<name>=<the packages RC> and params.tree=<name>"
 [ -n "$FROM" ] || fail "params.runtime names the Runtime under test: a cozy-runtime dev-build or rc-dev run id"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
-kernels "$SOURCE/qwen3.5"
-kernels "$SOURCE/qwen3.6"
+kernels "$SOURCE/qwen3"
 WHEEL=$(wheel_from "${RUNNER_TEMP:-$OUT}/runtime" "$FROM") && [ -f "$WHEEL" ] || fail "no Runtime wheel from $FROM"
 say "Runtime under test: ${WHEEL##*/}"
 if [ -n "$LIMIT" ]; then
@@ -75,10 +76,10 @@ grep -q '^1, GPU-' "$OUT/uuids.csv" || fail "no GPU uuids from $NAME: $(head -c 
 cozy machine ssh "$NAME" "timeout 3000 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits -l 1 | while IFS= read -r l; do echo \"\$(date +%s%3N),\$l\"; done" \
   < /dev/null > "$SMI" 2> "$OUT/smi.err" & smi=$!
 BG="$BG $smi"
-# write <cell> <package> <inputs…>: its `write` from the checkout on the rental, then its whole record (<cell>.json).
+# write <cell> <model> <inputs…>: qwen3's `write` from the checkout on the rental, on that model, then its whole record (<cell>.json).
 write() {
-  local cell=$1 package=$2 n code; shift 2
-  step "$cell" run "$SOURCE/$package/write" "$@" --on "$NAME"; code=$?
+  local cell=$1 model=$2 n code; shift 2
+  step "$cell" run "$SOURCE/qwen3/write" --model "model=$model" "$@" --on "$NAME"; code=$?
   n=$(runno "$cell"); [ -n "$n" ] || n=$(grep -oE '^Run [A-Z]+-[0-9]+ failed' "$OUT/$cell.txt" | awk '{print $2}' | tail -1)
   [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$cell.json" 2> "$OUT/$cell.err"
   say "$cell: run ${n:-none} $(jq -r '.status // "unrecorded"' "$OUT/$cell.json" 2> /dev/null), GPU $(gpu "$cell") pid $(pid "$cell"): $(jq -r '.result.text // .error.message // empty' "$OUT/$cell.json" 2> /dev/null | tr '\n' ' ' | cut -c1-300)"
@@ -89,11 +90,11 @@ gpu() { local u; u=$(jq -r 'first(.measurements.execution.gpus[]?.uuid) // empty
 pid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json" 2> /dev/null; }
 status() { jq -r '.status // empty' "$OUT/$1.json" 2> /dev/null; }
 
-write q35-short qwen3.5 instructions='Name three things a lighthouse keeper does each night.' max_tokens:=200
-write q36-short qwen3.6 instructions='Name three things a lighthouse keeper does each night.' max_tokens:=200
+write q35-short "$Q35" instructions='Name three things a lighthouse keeper does each night.' max_tokens:=200
+write q36-short "$Q36" instructions='Name three things a lighthouse keeper does each night.' max_tokens:=200
 STORY='Write a very long story, at least 3000 words in twenty numbered chapters, about a lighthouse keeper through one winter of storms.'
-write q35-story qwen3.5 "instructions=$STORY" max_tokens:=6000 & s35=$!
-write q36-story qwen3.6 "instructions=$STORY" max_tokens:=6000 & s36=$!
+write q35-story "$Q35" "instructions=$STORY" max_tokens:=6000 & s35=$!
+write q36-story "$Q36" "instructions=$STORY" max_tokens:=6000 & s36=$!
 BG="$BG $s35 $s36"
 wait "$s35"; wait "$s36"
 sleep 3; kill "$smi" 2> /dev/null
@@ -122,7 +123,7 @@ arm() {
   step "limit-$a" machine update "$NAME" --runtime "$wheel" --gpu-memory-limit "$LIMIT" -y || fail "limit-$a: $(tail -c 300 "$OUT/limit-$a.txt")"
   for _ in $(seq 120); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
   for k in cold warm1 warm2 warm3; do
-    write "$a-$k" qwen3.6 "instructions=List the twelve months, each with a paragraph on a lighthouse keeper's work then." max_tokens:=300 seed:=$RANDOM
+    write "$a-$k" "$Q36" "instructions=List the twelve months, each with a paragraph on a lighthouse keeper's work then." max_tokens:=300 seed:=$RANDOM
     [ "$(status "$a-$k")" = completed ] || { say "FAIL paged $a-$k: $(status "$a-$k")"; RC=1; }
   done
   say "paged $a ($(cozy machine show "$NAME" --json | jq -r '.status.runtime') under $LIMIT): $(regions "$a-cold") regions; cold $(ms "$a-cold") ms, warm $(ms "$a-warm1") $(ms "$a-warm2") $(ms "$a-warm3") ms"

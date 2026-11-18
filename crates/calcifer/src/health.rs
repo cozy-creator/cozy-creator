@@ -17,6 +17,7 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
     DIAGNOSTICS.store(diagnostics, std::sync::atomic::Ordering::Relaxed);
     let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Cozy can't open its health record.");
     home.open().and_then(|()| durable::private_dir(&home.calcifer())).map_err(|_| failed())?;
+    cleared(&home.calcifer());
     let open = |path: std::path::PathBuf| -> Result<std::fs::File, ::api::error::Error> {
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -47,6 +48,18 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
     tracing_subscriber::registry().with(layer).with(warnings).try_init().map_err(|_| failed())?;
     std::panic::set_hook(Box::new(|_| service_health(HealthEvent::Panicked)));
     Ok(())
+}
+
+/// The health log an earlier build wrote goes, once: its `cozy.prefetch` lines named encrypted projects' folders and boxes (cl-1123).
+fn cleared(dir: &std::path::Path) {
+    let marker = dir.join("health.cleared");
+    if marker.exists() {
+        return;
+    }
+    for name in ["health.log", "health.log.1"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    let _ = std::fs::write(marker, b"cl-1123\n");
 }
 
 pub(crate) fn service_health(event: HealthEvent) {

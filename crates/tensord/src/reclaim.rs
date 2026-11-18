@@ -20,7 +20,7 @@
 //! the disk moves (`usage`).
 use crate::{catalog::Catalog, execution::Engine};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     fs::{self, File},
     io,
@@ -821,8 +821,37 @@ pub(crate) struct Usage {
     pub environments: u64,
     pub runtime: u64,
     pub runs: u64,
-    /// What the store could free for a download: models no process holds (cl-1175: never one an executor has open).
+    /// What the store could free for a download (`room_freed`).
     pub reclaimable: u64,
+}
+
+/// What may let a model go for a download: the idle executors `ended`, and the constructions `released` of the executors `loaded`
+/// that take `release` (tfs-303), their processes kept warm.
+pub(crate) struct Letting<'a> {
+    pub ended: &'a BTreeSet<u32>,
+    pub loaded: &'a BTreeMap<u32, crate::gpu_service::LoadedModels>,
+    pub released: &'a BTreeSet<(u32, String)>,
+}
+
+/// Every construction of `loaded` that no call runs on: what `Letting` lets go when the room is asked for.
+pub(crate) fn every_idle(loaded: &BTreeMap<u32, crate::gpu_service::LoadedModels>) -> BTreeSet<(u32, String)> {
+    loaded.iter().flat_map(|(pid, models)| models.idle.keys().map(|c| (*pid, c.clone()))).collect()
+}
+
+/// Whether a download may take `lane`: every process holding it is an idle executor `ended` for the room, or an executor, idle or
+/// busy, holding it only for constructions no call of its runs on, each `released` (tfs-303); never one a queued or running job
+/// holds. The one rule (cl-1235) for Status's `reclaimable`, which the quote weighs a call's weights against, and `room_for`: a call
+/// the quote sends is one the machine makes room for.
+pub(crate) fn frees(lane: &tensorfs::store::retention::RoomLane, letting: &Letting) -> bool {
+    lane.holders.iter().all(|pid| letting.ended.contains(pid) || letting.loaded.get(pid).is_some_and(|models| {
+        let mut held = models.idle.iter().filter(|(_, headers)| headers.iter().any(|h| lane.keeps(h))).peekable();
+        !models.live.iter().any(|h| lane.keeps(h)) && held.peek().is_some() && held.all(|(c, _)| letting.released.contains(&(*pid, c.clone())))
+    }))
+}
+
+/// What the store could free for a download (`frees`).
+pub(crate) fn room_freed(room: &tensorfs::store::retention::Room, letting: &Letting) -> u64 {
+    room.freed(|lane| frees(lane, letting))
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
@@ -830,8 +859,11 @@ static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
 static MEASURED_FREE: Mutex<Option<u64>> = Mutex::new(None);
 /// The disk's free bytes moved this far from the last measure: what fills it is measured again.
 const USAGE_MOVED: u64 = 64 << 20;
-/// A measure (or the first sweep) is asked for: the reclaim thread wakes.
-static ASKED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// What is asked of the reclaim thread: a whole measure (or the first sweep), and how many asks for `reclaimable` alone came since
+/// it last measured.
+static ASKED: (Mutex<(bool, u32)>, Condvar) = (Mutex::new((false, 0)), Condvar::new());
+/// How long the reclaim thread waits after an ask for `reclaimable` alone, so a busy executor's calls back to back are one measure.
+pub(crate) const SETTLE: Duration = Duration::from_secs(1);
 
 /// The last measure of what fills the disk; none before the first.
 pub(crate) fn usage() -> Option<Usage> {
@@ -858,29 +890,70 @@ pub(crate) fn environments_changed() {
     ask();
 }
 
-/// Wakes the reclaim thread (`wait_asked`).
+/// Wakes the reclaim thread for a whole measure (`wait_asked`).
 pub(crate) fn ask() {
-    *ASKED.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    ASKED.0.lock().unwrap_or_else(PoisonError::into_inner).0 = true;
     ASKED.1.notify_all();
 }
 
-/// Waits until asked (true) or `most` passes (false); forever with no `most`.
-pub(crate) fn wait_asked(most: Option<Duration>) -> bool {
+/// Only what a download may take moved: an executor, or a construction of one, went idle or took a call (cl-1235, tfs-303). The
+/// reclaim thread measures `reclaimable` again (`measure_reclaimable`), never the caller, which returns at once; asks while one is
+/// measured, or within `SETTLE` of the first, are one measure.
+pub(crate) fn ask_reclaimable() {
+    let mut asked = ASKED.0.lock().unwrap_or_else(PoisonError::into_inner);
+    asked.1 = asked.1.saturating_add(1);
+    drop(asked);
+    ASKED.1.notify_all();
+}
+
+/// What the reclaim thread was asked: a whole measure, and how many asks for `reclaimable` alone.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Asked {
+    pub whole: bool,
+    pub reclaimable: u32,
+}
+
+/// Waits until asked or `most` passes (nothing asked); forever with no `most`.
+pub(crate) fn wait_asked(most: Option<Duration>) -> Asked {
     let asked = ASKED.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let quiet = |asked: &mut (bool, u32)| !asked.0 && asked.1 == 0;
     let mut asked = match most {
-        Some(most) => ASKED.1.wait_timeout_while(asked, most, |asked| !*asked).unwrap_or_else(PoisonError::into_inner).0,
-        None => ASKED.1.wait_while(asked, |asked| !*asked).unwrap_or_else(PoisonError::into_inner),
+        Some(most) => ASKED.1.wait_timeout_while(asked, most, quiet).unwrap_or_else(PoisonError::into_inner).0,
+        None => ASKED.1.wait_while(asked, quiet).unwrap_or_else(PoisonError::into_inner),
     };
-    std::mem::take(&mut *asked)
+    let (whole, reclaimable) = std::mem::take(&mut *asked);
+    Asked { whole, reclaimable }
+}
+
+/// Measures `reclaimable` alone, for `asks` asks (`ask_reclaimable`): what the store could free with `letting`, a read of the store's
+/// holders and lanes (`Store::room`), none of the disk walks of `measure_usage`. False before the first whole measure.
+pub(crate) fn measure_reclaimable(store: &crate::storage::Store, letting: &Letting, asks: u32) -> bool {
+    if USAGE.lock().unwrap().is_none() {
+        return false;
+    }
+    let began = std::time::Instant::now();
+    let reclaimable = store.room().map_or(0, |room| room_freed(&room, letting));
+    let mut kept = USAGE.lock().unwrap();
+    let Some(usage) = kept.as_mut() else { return false };
+    let before = std::mem::replace(&mut usage.reclaimable, reclaimable);
+    drop(kept);
+    let took = began.elapsed().as_millis();
+    if before != reclaimable {
+        tracing::info!("disk: a download may take {} of models here (was {}), measured again for {asks} asks in {took} ms", size(reclaimable), size(before));
+        crate::activity::status_changed();
+    } else {
+        tracing::debug!("disk: a download may take {} of models here, unchanged, measured again for {asks} asks in {took} ms", size(reclaimable));
+    }
+    true
 }
 
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
 /// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
-/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free, which placement weighs a call's
-/// weights against (cl-1175).
-pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>) {
-    let (reclaimable, store) = (store.room().map_or(0, |room| room.freed(|lane| lane.holders.is_empty())), store.root());
+/// `engine` (the Runtime pair, kernels, the toolchain, Pythons). And what the store could free with `letting` (`frees`), which
+/// placement weighs a call's weights against (cl-1175): Status is told when that moved.
+pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cache: Option<&Path>, letting: &Letting) {
+    let (reclaimable, store) = (store.room().map_or(0, |room| room_freed(&room, letting)), store.root());
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
@@ -901,8 +974,11 @@ pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cac
     });
     let free = measure(store).ok().map(|disk| disk.available);
     let usage = Usage { models: du(store, &[]), environments, runtime, runs: du(&engine.join("execution"), &[]), reclaimable };
-    *USAGE.lock().unwrap() = Some(usage);
+    let before = USAGE.lock().unwrap().replace(usage);
     *MEASURED_FREE.lock().unwrap() = free;
+    if before.is_none_or(|before| before.reclaimable != reclaimable) {
+        crate::activity::status_changed();
+    }
 }
 
 /// The bytes only environment `dir` holds (`releasable`: neither its links into a uv cache nor

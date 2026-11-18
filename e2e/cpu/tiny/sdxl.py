@@ -70,4 +70,9 @@ CELLS: list[Cell] = [
     {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox", "seed": 7, "aspect_ratio": "1:1"}},
     # fp8.rowwise needs columns in 32s, which every tiny matrix has; int8.convrot's 256 none does.
     quantize("stabilityai/sdxl@1.0.0", "fp8", "sdxl", "sdxl@0.7.1"),
+    # That fp8 lane served (cr-338): a CPU has no fp8 GEMM, so each fp8.rowwise weight decodes to float, as on every card
+    # without fp8 tensor cores (Ampere). RC 0.27.0's decoder raised KeyError 'rotation_size' there. Its picture is the
+    # 16-bit one's to within fp8 rounding (1.1/255 measured); a decode that drops or misplaces scales is far off.
+    {"entry": "generate", "name": "fp8", "payload": {"prompt": "a red fox", "steps": 2, "seed": 7},
+     "models": {"generate.models.model": "quantize/fp8"}, "same_as": "generate/text", "tolerance": 3.0},
 ]

@@ -17,8 +17,7 @@ for tool in jq node npm curl python3 sudo ss iptables tc; do command -v "$tool" 
 [ -f ~/.ssh/id_ed25519.pub ] || { mkdir -p ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519; } || fail "no SSH key"
 RENT_ARGS=--ssh
 
-# What this runner's Calcifer ordered is this session's (another client's rentals read `ordered: false`), so a lost answer's order is
-# ended too.
+# What this runner's Calcifer ordered is this session's (machines.sh `own`), so a lost answer's order is ended too.
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
 PW=$(mktemp -d)

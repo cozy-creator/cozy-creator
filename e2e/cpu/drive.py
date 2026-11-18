@@ -583,6 +583,15 @@ def same_model(manifests: Mapping[str, str], ref: str) -> str | None:
     return found[0] if len(found) == 1 else None
 
 
+def built(manifests: Mapping[str, str], slot: Slot) -> str | None:
+    """The fixture's build for a slot, keyed by its path, its default ref, or its name (`text_encoder`). Each slot of that
+    name binds a name-keyed build under the default its package declares, so a fixture keyed by name never has to repeat
+    the ref and still matches when the default moves to another model (se-160)."""
+    ref = slot_ref(slot)
+    return (manifests.get(slot["path"]) or manifests.get(ref) or manifests.get(slot["path"].rsplit(".", 1)[-1])
+            or same_model(manifests, ref))
+
+
 def held(manifest: str, store: Path) -> list[str]:
     import tensorfs
 
@@ -662,7 +671,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         if slot.get("weights"):
             continue
         ref = slot_ref(slot)
-        manifest = manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref)
+        manifest = built(manifests, slot)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
@@ -1259,7 +1268,9 @@ def main() -> int:
                 (out / "requests" / f"{request}.json").write_text(json.dumps({
                     "entry": entry, "payload": cell["payload"], "files": {f: g["local"] for f, g in granted.items()},
                     "models": bool(cell.get("models"))}))
-                # A cell may bind a slot to another of the fixture's models (`model=` on a request).
+                # A cell may bind a slot to another of the fixture's models, or an earlier cell's lane (`model=` on a request).
+                if absent := [ref for ref in cell.get("models", {}).values() if ref not in manifests]:
+                    raise Failed(f"nothing built or wrote {absent[0]}: run the cell that writes it first")
                 chosen = {**manifests, **{path: manifests[ref] for path, ref in cell.get("models", {}).items()}}
                 rows = bindings(interface, str(interface_path), row, chosen, store, f"{package}@{version}", package)
                 executor = executors.get(ranks)
@@ -1323,6 +1334,9 @@ def main() -> int:
                 items = executor.items
                 seen, named = judge(cell, reply, spool, against, lambda: written(cell, items, store))
                 ran[key], kept[key] = seen, named
+                # The checkpoint it wrote is a model a later cell binds by this cell's key (`Cell.models`).
+                for output in cell.get("weights", {}):
+                    manifests[key] = next(item["revision"] for item in reversed(items) if item["output"] == output)
                 if same_as is not None and same_as in kept:
                     where, gap = twin_gap(named, kept[same_as], seen["result"])
                     if gap > tolerance(cell):

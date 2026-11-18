@@ -93,20 +93,33 @@ impl Machines {
             }
         };
         let own = this_release();
+        // `local` with a pair below this cozy's Runtime minor on this cozy's TensorD (cozy updated and `local` started again on it, its
+        // pair as it was: every upgrading user's first render was refused `runtime_outdated`) moves to this cozy's Runtime first, as a
+        // project's `cozy run` moves it (cl-1055, cl-1254). So does one with no pair of its own (a fresh install): a lock on any other
+        // pair is refused there. With nothing of the minor published, the run is refused in a line that says so. A hold by hand wins.
+        let held = self.held_by_hand(name).is_some();
+        let behind = match older_minor(&frame.version, own) || held {
+            true => None,
+            false => self.own_runtime(name, &frame).await?,
+        };
+        if name == "local" && behind.is_none() && !api::release::on_runtime_minor(&frame.runtime) {
+            tracing::info!(machine = name, version = %frame.version, platform = %frame.platform, held, "its Runtime {:?} is below this cozy's minor, and it isn't moved first", frame.runtime);
+        }
         // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
         // said the last release (cl-976). A dev home's rental moves to the RC's builds only from the follower, at idle; work waits
         // only for a move already sent, and one not sent yet yields to it (cl-1201). Nothing moves, nor is fetched, from a send or a
         // request (cl-1123).
-        if same_minor(&frame.version, own) || rc_version() {
+        if behind.is_none() && (same_minor(&frame.version, own) || rc_version()) {
             return Ok(self.rc_moving(name));
         }
-        if !older_minor(&frame.version, own) {
+        if behind.is_none() && !older_minor(&frame.version, own) {
             return Ok(None);
         }
         let row = self.named(name)?;
-        // Not this computer's to move: added from another, or a rental another client ordered.
-        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(row)));
-        if others || self.held_by_hand(name).is_some() {
+        // Not this computer's to move: another computer's, added here, or a rental another computer ordered, which may be held by
+        // hand there (cl-1224): work goes to it as it is.
+        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || !self.ordered_here(row));
+        if others || held {
             return Ok(None);
         }
         let id = row.as_ref().and_then(|row| row.rental_id.clone()).unwrap_or_else(|| name.to_owned());
@@ -115,7 +128,9 @@ impl Machines {
             tracing::warn!(machine = name, "work goes to it as it is, on cozy {}: {why}", frame.version);
             Ok(None)
         };
-        if let Some(row) = self.store().keyed(&key).map_err(internal)? {
+        // This boot's minor move answers only a machine still below the minor: one it left with a Runtime below this cozy's (it took
+        // none: PyPI unread, an RC build's) moves that Runtime below, never "done" for good (cl-1254).
+        if behind.is_none() && let Some(row) = self.store().keyed(&key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
             return match run.status {
                 Status::Completed => Ok(None),
@@ -126,9 +141,27 @@ impl Machines {
                 _ => Ok(Some(run)),
             };
         }
-        // An update would hold new runs behind the work it has going: they go as it is.
-        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 {
+        // One already going there that may move its Runtime (a project's `cozy run` asked it, or a hand) is waited for, not asked again.
+        if behind.is_some() && let Some(row) = self.store().update_going(name).map_err(internal)? {
+            return Ok(Some(self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?));
+        }
+        // An update would hold new runs behind the work it has going, this computer's or another's (cl-1224): they go as it is. This
+        // computer's doesn't keep one below this cozy's Runtime minor, where a project's run would be refused anyway: the update waits
+        // for that work, and what comes waits for the update (cl-1254).
+        let working = self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0;
+        if (behind.is_none() && working) || self.others_on(&frame) > 0 {
             return Ok(None);
+        }
+        if let Some(to) = behind {
+            match frame.runtime.is_empty() {
+                true => tracing::info!(machine = name, "it has no Runtime of its own: it takes {to} first"),
+                false => tracing::info!(machine = name, "its Runtime {} is below this cozy's minor: it moves to {to} first", frame.runtime),
+            }
+            let upgrade = crate::floor::Upgrade { machine: name.to_owned(), from: frame.runtime.clone(), to, release: format!("cozy {own}") };
+            return match self.upgrade(&upgrade).await {
+                Ok(run) => Ok(run),
+                Err(e) => as_is(e.message),
+            };
         }
         // What it takes to run this build: `local`, the cozy installed here; else this release, or a dev build's own binary.
         let m = self.show(name).await?;
@@ -144,7 +177,7 @@ impl Machines {
         // project's run then finds it on the minor, with no second update.
         let runtime = match self.held_by_hand(name) {
             Some(_) => None,
-            None => self.own_runtime(name, &frame).await.filter(|runtime| !api::prerelease::dev(runtime)),
+            None => self.own_runtime(name, &frame).await.ok().flatten().filter(|runtime| !api::prerelease::dev(runtime)),
         };
         let ask = MachineUpdate { tensord: Some(tensord), runtime: runtime.map(Component::Version), ..Default::default() };
         match self.update(&key, name, ask).await {
@@ -245,6 +278,10 @@ impl Machines {
                 self.set_hold(&m.name, None);
             }
             return Ok((Updating { machine: m, run: None, target: String::new() }, true));
+        }
+        // A dev build's Runtime named alone takes the open RC's TensorFS build beside it when the machine's doesn't meet its floor (xs-216).
+        if let Some(tensorfs) = self.rc_tensorfs_beside(&m, &asked).await {
+            asked.push(("tensorfs", "tensorfs", Component::Version(tensorfs)));
         }
         rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
@@ -387,6 +424,30 @@ impl Machines {
         Ok((updating, !submitted.replay))
     }
 
+    /// The open RC's TensorFS build `m` takes beside a Runtime `asked` names alone (xs-216): a dev build's wheel, held here, whose
+    /// `tensorfs` requirement the machine's TensorFS doesn't meet and the RC's build for its platform does. An RC Runtime floors on a
+    /// TensorFS build no index has, so TensorD, which keeps the machine's or pairs one from the index, would find none. None: nothing
+    /// to add.
+    async fn rc_tensorfs_beside(&self, m: &Machine, asked: &[(&str, &str, Component)]) -> Option<String> {
+        if asked.iter().any(|(member, _, _)| *member == "tensorfs") {
+            return None;
+        }
+        let build = asked.iter().find_map(|(member, _, component)| match component {
+            Component::File(build) if *member == "runtime" => Some(build),
+            _ => None,
+        })?;
+        let status = m.status.as_ref()?;
+        let path = crate::runs::files::held(&build.sha256)?;
+        let requires = tokio::task::spawn_blocking(move || crate::floor::requires_dist(std::fs::File::open(path).ok()?)).await.ok()??;
+        let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs")?;
+        let admits = |version: &str| version.parse::<pep440_rs::Version>().is_ok_and(|version| needs.contains(&version.without_local()));
+        if admits(&status.tensorfs) {
+            return None;
+        }
+        let (rc, _) = self.rc.now().await.ok()?.build("tensorfs", &status.platform)?;
+        admits(&rc.version).then_some(rc.version)
+    }
+
     /// The PyTorch `m` installs as its own base when `asked` (cl-1030): the version its Hub names (`named`, else read
     /// now), when it holds another; with none named (an older Hub, or none answering, as at a first run), the newest, when
     /// it holds none. Only a machine on this cozy's minor knows the member; a rental's is its worker image's.
@@ -475,7 +536,7 @@ impl Machines {
         {
             return outcome;
         }
-        let log = self.logs(name, wire::MachineLog::Tensord, 1000).await.unwrap_or_default();
+        let log = self.logs(name, wire::MachineLog::Tensord, 1000, None).await.unwrap_or_default();
         let log = String::from_utf8_lossy(&log);
         let line = m.unreachable.clone().or_else(|| log.lines().rfind(|l| l.contains(row.id.as_str())).map(str::to_owned));
         outcome.status = "failed".into();

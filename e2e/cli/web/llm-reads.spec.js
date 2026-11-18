@@ -1,9 +1,9 @@
 // llm-reads (xs-204). Paul, 11-16: "yeah; we shoul dhave a general purpose reference system where you can reference other nodes like
 // <Answer> or something. That's hwat we do with iamges". A mention reads a box's state the same way whatever it is: an LLM box's answer
 // goes into the prompt that mentions it as words, in place, as a Text box's words do, never as a file. On project/llm.py (local, CPU, it
-// answers with what it was asked): `answer` is an LLM box and `reply`'s prompt says "<answer> …". Render on reply makes the answer first,
-// as a render makes what it reads first; reply's run is sent the answer's words in place, with no reference; a new answer puts reply out
-// of date, as a new picture would; `<answer.1>` reads version 1 whatever comes after. The page's `<` offers LLM boxes in any prompt, as
+// answers with what it was asked): `answer` is an LLM box and `reply`'s prompt says "<answer> …". Render on answer, then on reply (a
+// render makes only what it names, cl-1192); reply's run is sent the answer's words in place, with no reference; a new answer moves what
+// reply reads and nothing says reply is out of date, as with a new picture; `<answer.1>` reads version 1 whatever comes after. The page's `<` offers LLM boxes in any prompt, as
 // words (SDXL's, which takes no picture), and reply's prompt shows its mention as a chip with no picture under it. The `<` list and
 // reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark.
 const { mkdirSync } = require('fs');
@@ -63,9 +63,10 @@ test('llm-reads', async ({ page, project, api }) => {
   };
 
   let first;
-  await test.step('Render on reply makes the answer first, and reply is sent its words in place', async () => {
+  await test.step('Render on answer, then on reply: reply is sent its words in place', async () => {
+    await render('answer');
+    await expect.poll(() => versions('answer'), { message: 'the answer', timeout: RUN_MS }).toBe(1);
     await render('reply');
-    await expect.poll(() => versions('answer'), { message: 'the answer it reads is made first', timeout: RUN_MS }).toBe(1);
     await expect.poll(() => versions('reply'), { message: 'then reply', timeout: RUN_MS }).toBe(1);
     first = (await project.asset('answer')).prefixes[0].main?.text ?? '';
     expect(first, 'the answer is words').toContain('ANSWER to: Say hello.');
@@ -77,17 +78,18 @@ test('llm-reads', async ({ page, project, api }) => {
     expect.soft(reply.standing, 'reply stands on it').toBe('current');
   });
 
-  await test.step('a new answer puts reply out of date, as a new picture would', async () => {
+  await test.step('a new answer moves what reply reads, and nothing says reply is out of date, as with a new picture', async () => {
     const was = (await project.asset('reply')).reads?.find((read) => read.name === 'answer');
     expect(was?.key, 'reply reads answer, keyed by what it sends').toBeTruthy();
     await render('answer');
     await expect.poll(() => versions('answer'), { message: 'a second answer', timeout: RUN_MS }).toBe(2);
     const answer = await project.asset('answer');
     expect.soft(answer.prefixes[1].main?.text, 'a new answer').not.toBe(first);
-    await expect.poll(async () => (await project.asset('reply'))?.standing, { message: 'reply goes out of date' }).toBe('out_of_date');
-    const now = (await project.asset('reply')).reads?.find((read) => read.name === 'answer');
-    expect.soft(now?.key, 'its read moved').not.toBe(was.key);
-    expect.soft((await project.state()).stale?.map((stale) => stale.name) ?? [], 'the project says so').toContain('reply');
+    await expect.poll(async () => (await project.asset('reply'))?.reads?.find((read) => read.name === 'answer')?.key, { message: 'its read moved' }).not.toBe(was.key);
+    const reply = await project.asset('reply');
+    expect.soft({ standing: reply.standing, version: reply.version, changed: reply.changed }, 'reply stands on its take, unmarked').toEqual({ standing: 'current', version: 1, changed: undefined });
+    expect.soft((await project.state()).stale, 'the project says nothing is out of date').toBeUndefined();
+    expect.soft(await versions('reply'), 'and nothing rendered reply').toBe(1);
   });
 
   await test.step('<answer.1> reads version 1 whatever comes after', async () => {

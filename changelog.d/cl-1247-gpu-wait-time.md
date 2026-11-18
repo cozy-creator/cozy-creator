@@ -1,0 +1,1 @@
+A run waiting for GPUs another run holds, when its machine can't say for how long, no longer shows a time that looks finished ("17s of 17s", "0s left") (cl-1247): its time left isn't known until it has them, so nothing counts down. A wait its machine can time still counts down as before (cl-1250).

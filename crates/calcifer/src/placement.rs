@@ -64,6 +64,9 @@ pub(crate) struct Offer {
     pub finish_at_ms: i64,
     pub prepare_ms: u64,
     pub queue_position: u32,
+    /// The runs its machine holds now, running or waiting, every client's (and those already sent to one on its way): of machines
+    /// that finish it together, the one holding fewest takes it (cl-1224).
+    pub load: u32,
     pub basis: Basis,
     /// Its time is its function's warm one there (cl-967).
     pub warm: bool,
@@ -355,6 +358,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
         .map(|job| v1::EstimateJob { after_ms: job.after_ms.max(ready), ..job.clone() })
         .collect();
     let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
+    let load = (picture.frame.queue.as_ref().map_or(0, Vec::len) + picture.ahead.len()) as u32;
     let at = |ms: u64| now + ms as i64;
     (quotes.into_iter().skip(picture.ahead.len()).take(jobs.len()))
         .map(|quote| Offer {
@@ -367,6 +371,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             finish_at_ms: at(quote.finish_ms),
             prepare_ms: quote.prepare_ms,
             queue_position: quote.queue_position,
+            load,
             basis: quote.basis,
             warm: quote.warm,
             fetch_bytes: quote.fetch_bytes,
@@ -475,13 +480,13 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
 /// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
-/// computer, then the sooner: never the first listed for being first (cl-1073).
+/// computer, the one holding fewest runs (every client's, cl-1224), then the sooner: never the first listed for being first (cl-1073).
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
     tied().min_by_key(rank)
 }
 
