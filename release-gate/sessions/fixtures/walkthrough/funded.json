@@ -1,0 +1,5 @@
+[
+  {"name": "photo", "kind": "import", "file": "release-gate/ref/seed.jpg"},
+  {"name": "klein-lora", "tool": "flux.3-klein/image", "fields": {"instructions": "a lighthouse on a basalt cliff at dusk, oil painting", "aspect_ratio": "16:9", "seed": 7, "models": {"model": {"ref": "{klein_model}", "lora": [{"ref": "{klein_lora}", "strength": 1.0}]}}}},
+  {"name": "klein-plain", "tool": "flux.3-klein/image", "fields": {"instructions": "a lighthouse on a basalt cliff at dusk, oil painting", "aspect_ratio": "16:9", "seed": 7}}
+]
