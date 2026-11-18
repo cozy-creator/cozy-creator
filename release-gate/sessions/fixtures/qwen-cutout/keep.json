@@ -1,0 +1,19 @@
+{
+  "seconds": 1200,
+  "judged": "cut-keep,cut-off,teapot-keep,teapot-off",
+  "cells": [
+    {"name": "portrait", "tree": "fx",
+     "fields": {"instructions": "A studio portrait photograph of a woman in her thirties with curly dark hair, wearing a blue and white striped button-up shirt, standing in front of a plain warm beige studio wall, soft even lighting, upper body, looking at the camera.",
+                "aspect_ratio": "4:5", "seed": 1571, "prompt_upsampling": false}},
+    {"name": "cut-keep", "tree": "fx", "input": "@portrait",
+     "fields": {"instructions": "Edit <p1>: remove the background.", "seed": 1572}},
+    {"name": "cut-off", "tree": "fx", "input": "@portrait",
+     "fields": {"instructions": "Edit <p1>: remove the background.", "seed": 1572, "keep_unchanged": false}},
+    {"name": "local-keep", "tree": "fx", "input": "@portrait",
+     "fields": {"instructions": "Edit <p1>: make her striped shirt red. Keep everything else exactly the same.", "seed": 1573}},
+    {"name": "teapot-keep", "tree": "fx", "input": "teapot",
+     "fields": {"instructions": "Edit <p1>: remove the background.", "megapixels": 1, "seed": 1574}},
+    {"name": "teapot-off", "tree": "fx", "input": "teapot",
+     "fields": {"instructions": "Edit <p1>: remove the background.", "megapixels": 1, "seed": 1574, "keep_unchanged": false}}
+  ]
+}
