@@ -145,8 +145,12 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
 }
 
 /// What a queued run waits on while the models it needs download, with what it has and needs (`Fetch::needs`); TensorD's log says
-/// how far each is (`waiting_on`), and the machine's activity its bytes (cl-1205).
+/// which components, as they change (`waiting_on`), and the machine's activity their bytes (cl-1205).
 pub(crate) const WAITING_FOR_MODELS: &str = "waiting for the models to download";
+
+/// The components a run waits on, each with whether its chunks are all on disk: what TensorD's log line of the wait is keyed on
+/// (`meter`).
+type Awaited = Vec<(String, bool)>;
 
 /// Bytes for people (`reclaim::size`).
 fn gib(bytes: u64) -> String {
@@ -570,6 +574,13 @@ impl Fetch {
         }
     }
 
+    /// The components its run waits on while their wants are unanswered (`Awaited`); none once nothing is waited on.
+    fn awaited(&self) -> Awaited {
+        let wants: Vec<(String, Vec<ObjectRef>)> = self.required.lock().unwrap().wants.iter()
+            .filter(|w| !w.settled).map(|w| (w.label.clone(), w.objects.clone())).collect();
+        wants.into_iter().map(|(label, objects)| (label, objects.iter().all(|o| self.store().holds(o)))).collect()
+    }
+
     /// What its run waits on while a required component's want is unanswered, for people: per
     /// component, its chunks still absent and where each one's download is (`Phase`), with its bytes
     /// so far and when it last moved; or that every chunk is on disk but its want has not been
@@ -883,8 +894,9 @@ fn counted(each: &[ModelTransfer]) -> Option<Weights> {
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
 /// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
-/// waiting reason says on what (`Fetch::waiting_on`), and TensorD's log says so each time where
-/// its chunks are changes. A run whose weights are here hears nothing.
+/// waiting reason says what it has and needs (`Fetch::needs`), and TensorD's log says on what
+/// (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`), never as
+/// their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
 pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
@@ -892,7 +904,7 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
     let began_ms = crate::machine::lifecycle::now_ms() as u64;
     let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
-        let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
+        let (mut last, mut said) = (None, Awaited::new());
         // A call's weights show on its root's progress too, the box a person watches (cl-921: H3's segment downloaded 2.5 min
         // with no bytes on its shot): over its own stage, until they're here.
         let root = engine.get(&id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && *root != id);
@@ -929,26 +941,19 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 tracing::warn!("run {id}: what it waits on: {error}");
                 return;
             }
-            let waiting = live.as_ref().and_then(|f| f.waiting_on());
-            if waiting != shown {
-                if let Some(on) = &waiting {
-                    // The log line's state is its phases and counts: bytes and times change it not.
-                    let state = phases(on);
-                    if state != said {
-                        tracing::info!("run {id}: {WAITING_FOR_MODELS}: {on}");
-                        said = state;
-                    }
-                    // Its own words say what it has and needs, which don't move; how far each is, the log and its downloads say.
-                    if let Some(needs) = live.as_ref().map(|f| f.needs()) {
-                        if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {needs}"))) {
-                            tracing::warn!("run {id}: what it waits on: {error}");
-                        }
+            let on = live.as_ref().map(|f| f.awaited()).unwrap_or_default();
+            if on != said {
+                if let Some((live, words)) = live.as_ref().and_then(|f| f.waiting_on().map(|words| (f, words))) {
+                    tracing::info!("run {id}: {WAITING_FOR_MODELS}: {words}");
+                    // Its own words say what it has and needs, which don't move; how far each is, its downloads say.
+                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {}", live.needs()))) {
+                        tracing::warn!("run {id}: what it waits on: {error}");
                     }
                 }
-                shown = waiting.clone();
+                said = on;
             }
             // What the run waited for lands in the transport log, as a pull's does.
-            if weights.is_none() && waiting.is_none() {
+            if weights.is_none() && said.is_empty() {
                 if let (Some(Weights { models, total, .. }), true) = (last, live.is_some()) {
                     let waited = format!("bytes={total} seconds={:.1} run={id}", began.elapsed().as_secs_f64());
                     storage::transport(&store, "arrived", &models, &waited);
@@ -973,22 +978,6 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if let Err(error) = started {
         tracing::warn!("its weights' progress: {error}");
     }
-}
-
-/// `waiting_on`'s text as a state: each component's label and the phases its chunks are in (not
-/// their counts, bytes or times), or that it is on disk but not bound. The log says each change.
-fn phases(waiting: &str) -> String {
-    waiting.split("; ").map(|part| {
-        let label = part.split(": ").next().unwrap_or(part);
-        if part.contains("not yet bound") {
-            return format!("{label}: on disk, not yet bound");
-        }
-        let inside = part.rsplit_once(" (").map_or("", |(_, t)| t.split(')').next().unwrap_or(""));
-        let mut names: Vec<&str> = inside.split(", ").map(|p| p.split_once(' ').map_or(p, |(_, name)| name)).collect();
-        names.sort_unstable();
-        names.dedup();
-        format!("{label}: {}", names.join(", "))
-    }).collect::<Vec<_>>().join("; ")
 }
 
 impl Drop for Fetch {

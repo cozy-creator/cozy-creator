@@ -363,15 +363,40 @@ impl Import {
 }
 
 /// What another run's work here that `run` (its caller's id) may be behind is, in words: the download or install going for other
-/// runs with the most left, `minimaxai/minimax-h3's download for run-1b589…, 40 GB left` (cl-1185). None: none goes.
-pub(crate) fn ahead_of(run: &str) -> Option<String> {
-    let operations = operations();
-    let busiest = (operations.values())
-        .filter(|operation| operation.ended.is_none() && !operation.runs.is_empty() && !operation.runs.contains_key(run))
-        .max_by_key(|operation| operation.total.saturating_sub(operation.done))?;
-    let runs: Vec<&str> = busiest.runs.keys().map(String::as_str).collect();
-    let left = busiest.total.saturating_sub(busiest.done);
-    Some(format!("{}'s {} for {} to finish, {} left", busiest.subject, busiest.kind.word(), runs.join(", "), crate::reclaim::size(left)))
+/// runs with the most left, `minimaxai/minimax-h3's download for run-1b589… to finish, 40GB left` (cl-1185). It names only the runs
+/// `reads` admits, those `run`'s own readers read; any other is "another project's run", and an install none of them waits on is
+/// "another project's install": a project's runs and packages are its own (cl-1217). A list's item is no run. None: none goes.
+pub(crate) fn ahead_of(run: &str, reads: impl Fn(&str) -> bool) -> Option<String> {
+    // Copied off the lock, which Status reads: `reads` asks the journal.
+    let (subject, kind, runs, left) = {
+        let operations = operations();
+        let busiest = (operations.values())
+            .filter(|operation| operation.ended.is_none() && !operation.runs.is_empty() && !operation.runs.contains_key(run))
+            .max_by_key(|operation| operation.total.saturating_sub(operation.done))?;
+        let runs: Vec<String> = busiest.runs.keys().cloned().collect();
+        (busiest.subject.clone(), busiest.kind, runs, busiest.total.saturating_sub(busiest.done))
+    };
+    let (own, others): (Vec<String>, Vec<String>) = runs.into_iter().partition(|id| reads(id));
+    let left = match left {
+        0 => String::new(),
+        left => format!(", {} left", crate::reclaim::size(left)),
+    };
+    // A download is the machine's, said to every reader (cl-1205); an install is its project's.
+    if kind == Kind::Install && own.is_empty() {
+        return Some(format!("another project's install to finish{left}"));
+    }
+    let mut whose: Vec<String> = own.into_iter().filter(|id| !crate::ahead::hidden(id)).collect();
+    match others.iter().filter(|id| !crate::ahead::hidden(id)).count() {
+        0 => {}
+        1 => whose.push("another project's run".to_owned()),
+        n => whose.push(format!("{n} other projects' runs")),
+    }
+    let whose = match whose.as_slice() {
+        [] => String::new(),
+        [one] => format!(" for {one}"),
+        [rest @ .., last] => format!(" for {} and {last}", rest.join(", ")),
+    };
+    Some(format!("{subject}'s {}{whose} to finish{left}", kind.word()))
 }
 
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
