@@ -47,7 +47,7 @@ function slowStore(rate) {
 /** Each box's run line on the canvas: its words, its count and whether its words lead to its download (presentation `leads`). */
 const faces = (page) => page.evaluate((names) => Object.fromEntries(names.map((name) => {
   const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
-  return [name, shown?.progress ? { words: shown.labels.progress?.fullText ?? null, count: shown.labels.count?.fullText ?? null, leads: Boolean(shown.progress.leads) } : null];
+  return [name, shown?.progress ? { words: shown.progress.state ?? null, count: shown.progress.count ?? null, leads: Boolean(shown.progress.leads) } : null];
 })), BOXES);
 
 test('shared-download', async ({ page, project, api, cli }) => {
@@ -178,8 +178,9 @@ test('shared-download', async ({ page, project, api, cli }) => {
     });
 
     await test.step('a second render, its weights here now: no download stage and no download listed (Paul: "those are just phases it\'s skipping")', async () => {
+      // The predicted box, never rendered: a new render, its weights here (a box rendered again as it was is answered from its take).
       const before = new Set((await runs()).map((run) => run.id));
-      const again = cli('--json', 'render', BOXES[0], '--on', MACHINE);
+      const again = cli('--json', 'render', AHEAD, '--on', MACHINE);
       const stages = new Set();
       let listed = 0, waited = 0, run;
       await expect.poll(async () => {
