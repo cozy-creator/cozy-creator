@@ -197,11 +197,14 @@ if [ -n "$IV_AFTER" ]; then
     'if .after_vs_whole.psnr_least != null and .after_vs_whole.psnr_least >= 40 and ($whole | length) > 0 and ($whole - $lanes | length) == 0
       and (.after_vs_before.segment_1.psnr_mean // 0) >= 45 then "PASS" else "FAIL" end' <<< "$pics" 2> /dev/null || echo FAIL)" \
     "$(jq -c '{after_vs_whole: (.after_vs_whole | del(.near)), segment_1: (.after_vs_before.segment_1 // {} | del(.near))}' <<< "$pics" 2> /dev/null) lanes: take $(jq -c '.after.lanes' <<< "$iv" 2> /dev/null), whole ${whole_lanes:-unread}"
-  # A seam steps or clicks no more than today's there (or 3x the median change, 1.5x the loudest step); a join of parts not at all.
+  # A seam steps or clicks no more than today's there (or 3x the median change, 1.5x the loudest step); a join of parts not at all, and
+  # every join of parts is looked at. Clicks are compared at the same frame: AFTER's list holds its joins too (44284366904 compared its
+  # seam 1 with today's seam 2).
   expect iv-seams "$(jq -r '.steps as $s | .sound as $a | if ($s.before | length) > 0 and ([range(0; $s.after | length)] | all(. as $i | $s.after[$i].ratio <= ([3, (($s.before[$i].ratio // 0) + 1)] | max)))
-    and all($s.after_joins[]; .ratio <= 3)
-    and ([range(0; $a.before.clicks | length)] | all(. as $i | ($a.after.clicks[$i].click // 0) <= ([1.5, (($a.before.clicks[$i].click // 0) + 0.5)] | max)))
-    and all($a.after.clicks[($a.before.clicks | length):][]; (.click // 0) <= 1.5) and ($a.after.drift_ms | fabs) <= 50 then "PASS" else "FAIL" end' <<< "$pics" 2> /dev/null || echo FAIL)" \
+    and ($s.after_joins | length) == ($s.after | length) and all($s.after_joins[]; .ratio <= 3)
+    and (($a.before.clicks | map({key: (.at | tostring), value: (.click // 0)}) | from_entries) as $today
+      | all($a.after.clicks[]; (.click // 0) <= (if $today[.at | tostring] == null then 1.5 else ([1.5, $today[.at | tostring] + 0.5] | max) end)))
+    and ($a.after.drift_ms | fabs) <= 50 then "PASS" else "FAIL" end' <<< "$pics" 2> /dev/null || echo FAIL)" \
     "$(jq -c '{steps, sound}' <<< "$pics" 2> /dev/null)"
 else
   expect iv-same-pictures FAIL "no after take to compare (before ${IV_BEFORE:-none})"
