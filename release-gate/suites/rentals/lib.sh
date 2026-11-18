@@ -3,6 +3,8 @@
 # "why is it listed as offline? why didn't it end itself from idle timer?"; "Either the rental is alive, or closed (or closing)";
 # "make sure we don't waste money like that again".
 RT=${RT:-$OUT/rentals}; mkdir -p "$RT"
+# The stop cell's throwaway SSH key: never under $OUT, whose files are uploaded (a public repo's artifacts are public).
+KEY=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rentals-ssh.XXXXXX")/pod-ssh
 # show <machine> <field>: `cozy machine show --json`'s state, idle deadline (unix ms), reason, offline or runtime.
 show() {
   "$CLI" --json machine show "$1" 2>/dev/null | jq -r --arg f "$2" '
@@ -83,7 +85,7 @@ rental_idle_through_updates() {
 # candidate TensorD ($TDF) goes on the pod first.
 rental_stop_closes() {
   local p=${1:-vast} m r t0 st seen=() offline= closed=
-  [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
+  [ -s "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$KEY"
   # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
   local sku cfg=$HOME/.cozy/config.toml had=
   # The provider is the point (vast stopped hougetsu), and `--provider` is dev-only (cl-844): this home says `dev = true` for
@@ -93,7 +95,7 @@ rental_stop_closes() {
   mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ -z "$had" ] || grep -v '^ *dev *=' <<< "$had" || true; } >"$cfg.new" && mv "$cfg.new" "$cfg"
   # An order that is not up in 7 minutes (waiting for capacity at the price it agreed, th-403) is ended, and the next asked.
   for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
-    timeout 420 "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
+    timeout 420 "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$KEY.pub" -y >"$RT/rent.out" 2>&1
     grep -q '"machine":{"name"' "$RT/rent.out" && break
     r=$(grep -m1 '"type":"rental.accepted"' "$RT/rent.out" | jq -r '.rental_id // empty' 2>/dev/null)
     [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
@@ -112,7 +114,7 @@ rental_stop_closes() {
     "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
     return
   fi
-  local agent SSH_AUTH_SOCK SSH_AGENT_PID; agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$RT/pod-ssh"
+  local agent SSH_AUTH_SOCK SSH_AGENT_PID; agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$KEY"
   local ask="mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && pkill -USR2 -P 1 -x tensord && echo asked"
   for _ in 1 2 3 4 5 6; do "$CLI" machine ssh "$m" -- "$ask" </dev/null >"$RT/stop.out" 2>&1 && grep -q asked "$RT/stop.out" && break; sleep 10; done
   ssh-agent -k >/dev/null 2>&1

@@ -6,6 +6,8 @@
 //                                    its head, or invalid UTF-8) and every SQLite file (.db, .sqlite, -wal, -shm, -journal),
 //                                    unless it matches a --keep glob (relative to its <dir>) and no rule matches its bytes. Each
 //                                    file left out is a line of <dir>/scrub-left-out.tsv.
+// A private key (`-----BEGIN … PRIVATE KEY-----`, OpenSSH's too) is never scrubbed in place: in a directory its file is left out,
+// whatever the mode (listed, or said); a stream prints the block's first line as [scrubbed] and none of the rest.
 const { closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { join, relative } = require('path');
 const { createInterface } = require('readline');
@@ -26,6 +28,8 @@ const RULES = [
   [/\b(email["']?\s*(?:[:=]\s*)?["']?)[\w.+-]+@[\w.-]+/gi, `$1${GONE}`],
 ];
 const BINARY_RULES = RULES.map(([rule]) => rule).map((rule) => (String(rule).includes('|cap|a)') ? /([#?&](?:code|media|token|cap)=)[^\s"'&<>]{8}/ : rule));
+const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
+const KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
 const scrubbed = (text) => RULES.reduce((said, [rule, instead]) => said.replace(rule, instead), text);
 
 const MOST = 64 << 20;
@@ -89,6 +93,12 @@ function file(path, rel) {
     // PNG did), where every other rule needs five or more.
     const hit = BINARY_RULES.find((rule) => text.search(rule) !== -1);
     if (hit) out(path, rel, stat.size, `kept as evidence, but its bytes match ${hit}`);
+    else if (PRIVATE_KEY.test(text)) out(path, rel, stat.size, 'holds a private key');
+    return;
+  }
+  if (PRIVATE_KEY.test(text)) {
+    out(path, rel, stat.size, 'holds a private key');
+    if (!textOnly) console.log(`scrub: ${path} holds a private key: left out of the upload`);
     return;
   }
   const clean = scrubbed(text);
@@ -132,5 +142,13 @@ if (dirs.length) {
   }
 } else {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {});
-  createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => process.stdout.write(`${scrubbed(line)}\n`));
+  let key = false;
+  createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
+    if (key || PRIVATE_KEY.test(line)) {
+      if (!key) process.stdout.write(`${line.slice(0, line.search(PRIVATE_KEY))}${GONE} private key\n`);
+      key = !KEY_END.test(line);
+      return;
+    }
+    process.stdout.write(`${scrubbed(line)}\n`);
+  });
 }
