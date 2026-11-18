@@ -217,8 +217,9 @@ lora_look() {
   for t in fibo krea; do
     say "lora: $t LoRAs listed: $(jq -rs --arg f "$t" '[.[] | select((.family // "") | test($f)) | .model] | join(" ")' "$W/lora-all.ndjson" 2> /dev/null | cut -c1-400)"
   done
-  jq -cn --arg w "$WORDS" --arg l "$LORA" '{instructions: $w, seed: 7, lora: [{ref: $l}]}' > "$W/out/kdrop.fields.json"
-  jq -cn --arg w "$WORDS" '{instructions: $w, seed: 7}' > "$W/out/kplain.fields.json"
+  # Seed 11, not the CLI pairs' 7: the same request as a CLI run's would be answered from memory, and these are to run.
+  jq -cn --arg w "$WORDS" --arg l "$LORA" '{instructions: $w, seed: 11, lora: [{ref: $l}]}' > "$W/out/kdrop.fields.json"
+  jq -cn --arg w "$WORDS" '{instructions: $w, seed: 11}' > "$W/out/kplain.fields.json"
   PAGE add "$P" kdrop --tool "$(tid flux.3-klein/image)" --fields "$(cat "$W/out/kdrop.fields.json")" > "$W/out/kdrop.add.json" 2>&1 || say "kdrop: add failed: $(tail -c 300 "$W/out/kdrop.add.json")"
   PAGE add "$P" kplain --tool "$(tid flux.3-klein/image)" --fields "$(cat "$W/out/kplain.fields.json")" > "$W/out/kplain.add.json" 2>&1 || say "kplain: add failed: $(tail -c 300 "$W/out/kplain.add.json")"
   PAGE asset "$P" kdrop kplain > "$W/out/lora-boxes.json" 2>&1
@@ -557,8 +558,9 @@ phase_lora() {
   lrun lora-turbo flux.3-klein/image "instructions=$w" seed=7 prompt_upsampling=false --lora "$LORA"
   lrun plain-turbo flux.3-klein/image "instructions=$w" seed=7 prompt_upsampling=false
   ldiff turbo lora-turbo plain-turbo
-  lrun lora-base flux.3-klein/image "instructions=$w" seed=7 turbo=false prompt_upsampling=false --lora "$LORA"
+  # Base the other way round, the plain one first: a LoRA that stayed on after the turbo pair's would show here as no difference.
   lrun plain-base flux.3-klein/image "instructions=$w" seed=7 turbo=false prompt_upsampling=false
+  lrun lora-base flux.3-klein/image "instructions=$w" seed=7 turbo=false prompt_upsampling=false --lora "$LORA"
   ldiff base lora-base plain-base
   # 2. The command as a person types it, every default (the upsampler rewrites the words): refused or not, and its twin.
   lrun lora-turbo-default flux.3-klein/image "instructions=$w" seed=7 --lora "$LORA"
