@@ -338,8 +338,8 @@ case $key in
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows, nothing: their cells list no Hub tool (th-412).
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='' ;;
   cli:env-cost) needs='packages birefnet' ;;
-  # estimate_plan plans the checkout's H3 and Qwen Image 2 as local code (cl-1286).
-  cli:estimate) needs='packages birefnet' ;;
+  # estimate_plan runs and plans local code alone: its fixtures, and the checkout's H3 and Qwen Image 2 (cl-1286).
+  cli:estimate) needs='' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
   # plan_queue's shot reads BiRefNet's weights (cl-1107).
