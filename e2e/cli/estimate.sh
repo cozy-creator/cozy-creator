@@ -23,7 +23,8 @@ run_show "$OUT" est-plain "$(cat "$OUT/est-plain.number")"
 J '.measurements.size == null' "$OUT/est-plain.json" || check "estimate: reverse's record has a size: $(jq -c .measurements.size "$OUT/est-plain.json")"
 
 step "estimate plan: a broken expression refused as cozy reads the package, in one line"
-"$RUN_CLI" run "$here/estimate/broken/broken" duration:=3 --on local > "$OUT/est-broken.out" 2> "$OUT/est-broken.err"; code=$?
+code=0
+"$RUN_CLI" run "$here/estimate/broken/broken" duration:=3 --on local > "$OUT/est-broken.out" 2> "$OUT/est-broken.err" || code=$?
 echo "estimate: broken exited $code: $(head -c 600 "$OUT/est-broken.err")"
 [ "$code" != 0 ] && grep -q 'request.durtion' "$OUT/est-broken.err" || check "estimate: broken wasn't refused for request.durtion"
 
