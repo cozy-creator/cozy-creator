@@ -61,22 +61,31 @@ pod "mkdir -p /root/cl1202 && echo $(base64 -w0 "$(dirname "$0")/tensord-threads
 # arm <label> <cozy binary> <seed> [fresh]: the pod on that TensorD (its executors end with the one before), with `fresh` the
 # models it holds uninstalled so the arm downloads them again; Calcifer started again and the box shown with a new seed; its render
 # asked the moment the pod lists its guess, and followed to its end.
+SHOWN=''
 arm() {
-  local label=$1 binary=$2 seed=$3 want t run model
+  local label=$1 binary=$2 seed=$3 want t run model left
   want=$("$binary" --version | awk '{print $2}')
+  # No page shows the project meanwhile, so no guess loads a model the uninstall below takes.
+  [ -z "$SHOWN" ] || { kill "$SHOWN" 2> /dev/null; cozy restart > "$OUT/restart-off-$label.txt" 2>&1; }
   if [ "$(cozy machine show "$NAME" --json | jq -r .status.version)" != "$want" ]; then
     step "tensord-$label" machine update "$NAME" --tensord "$binary" -y || fail "$label: the pod refused TensorD $want"
   fi
   [ "$(cozy machine show "$NAME" --json | jq -r .status.version)" = "$want" ] || fail "$label: the pod doesn't run TensorD $want"
   if [ -n "${4:-}" ]; then
-    for model in $(cozy machine show "$NAME" --json | jq -r '.status.models[]?.repository'); do
-      cozy model uninstall "$model" --on "$NAME" >> "$OUT/uninstall.txt" 2>&1 || say "$label: $model wasn't uninstalled: $(tail -c 200 "$OUT/uninstall.txt")"
+    for _ in $(seq 12); do
+      for model in $(cozy machine show "$NAME" --json | jq -r '.status.models[]?.repository'); do
+        cozy model uninstall "$model" --on "$NAME" >> "$OUT/uninstall.txt" 2>&1
+      done
+      left=$(cozy machine show "$NAME" --json | jq -r '.status.models | length')
+      [ "$left" = 0 ] && break
+      sleep 5
     done
-    say "$label: the pod's models uninstalled; $(cozy machine show "$NAME" --json | jq -r '.status.models | length') left"
+    [ "$left" = 0 ] || fail "$label: $left models stay on $NAME: $(tail -c 300 "$OUT/uninstall.txt")"
+    say "$label: the pod's models uninstalled"
   fi
   python3 "$RUN_PAGE" set "$RUN_PROJECT" pier --fields "$(qwen "$seed")" > "$OUT/set-$label.json" 2>&1 || fail "$label: the seed: $(tail -c 300 "$OUT/set-$label.json")"
   cozy restart > "$OUT/restart-$label.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart-$label.txt")"
-  python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown-$label.txt" 2>&1 & BG="$BG $!"
+  python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown-$label.txt" 2>&1 & SHOWN=$!; BG="$BG $SHOWN"
   for _ in $(seq 1 60); do grep -q '"held": \["' "$OUT/shown-$label.txt" && break; sleep 1; done
   grep -q '"held": \["' "$OUT/shown-$label.txt" || fail "$label: the project wasn't shown: $(tail -c 300 "$OUT/shown-$label.txt")"
   local a0; a0=$(date +%s%3N)
