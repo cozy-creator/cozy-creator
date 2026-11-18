@@ -516,8 +516,9 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
-        callees: callees(&project_dir)?.into_iter().chain(sibling_callees(&project_dir)).collect(),
+        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195): read from the
+        // package as sent, as `locked` bound them, for the copy it locked names them by path (xs-217).
+        callees: callees(&project_dir)?.into_iter().chain(sibling_callees(&copied(home, code)?)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -564,7 +565,8 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
 }
 
 /// The first-party siblings the package at `project` takes by path (`sibling_sources`), as the packages they are: `minimax-h3` →
-/// `_/minimax-h3`, as a checkout names them (xs-195).
+/// `_/minimax-h3`, as a checkout names them (xs-195). `project` is the package as sent (`copied`), whose `{ index = "tensorhub" }`
+/// sources name them: `api::code::siblings` follows no path source.
 fn sibling_callees(project: &Path) -> impl Iterator<Item = (String, String)> {
     shared::siblings(project).into_iter().filter_map(|(distribution, dir)| Some((distribution, format!("{}/{}", api::names::ROOT, crate::checkout::application(&dir)?))))
 }

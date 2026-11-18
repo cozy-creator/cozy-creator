@@ -1,0 +1,1 @@
+A package of a checkout that calls another package of its tree (Orbit calling MiniMax H3) names that callee as the first-party package it is (`_/minimax-h3`) again, not as local code (`local/minimax-h3`), now that the tree's siblings are staged by path.
