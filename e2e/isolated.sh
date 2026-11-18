@@ -446,7 +446,8 @@ if [ -n "$needs" ]; then
   esac
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944). Qwen Image 1, named apart from Qwen Image 2.1 (cl-1182).
-  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort ;; esac
+  # LTX-2.5, whose words are its `prompt`: a tool swap carries them (cl-1200).
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort && publish "$packages/ltx-2.5" cohort ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
