@@ -79,6 +79,8 @@ jobs:
             release-gate/ledger.py
             release-gate/ref
             release-gate/suites/bench/vram.py
+            release-gate/suites/bench/media.py
+            release-gate/frames.py
             release-gate/suites/bench/fixtures
             release-gate/suites/tensord
             release-gate/suites/progress
