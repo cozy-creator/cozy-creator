@@ -7,8 +7,9 @@
 //   warm   the same again: no install or download on any frame, and nothing flashes by;
 //   blink  three stages in a row that each last 200 ms (project/blink.py) never show, whatever the other two's phases took that day,
 //          and the 3 s of work after them does: a phase that lasts is still said.
-// An end shows at once. Each render judged must have made a run. The timelines, each run's events and a picture of each are kept:
-// $OUT/web/steady-face/.
+// An end shows at once. Each render judged must have made a run: a plain `cozy render`, which makes a new take of a box whose tool
+// takes a seed and that names none (weighted.py and blink.py both; cl-1192 took `--new` away). The timelines, each run's events and a
+// picture of each are kept: $OUT/web/steady-face/.
 const { copyFileSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, fixtureTool } = require('./fixtures');
@@ -87,7 +88,8 @@ test('steady-face', async ({ page, project, cli }) => {
     const pictured = expect.poll(() => page.evaluate((when) => when.includes(window.__faces.at(-1)?.phase), when), { timeout: 120_000, intervals: [50] })
       .toBe(true).then(() => page.screenshot({ path: join(shots, `${label}-${when.join('-')}.png`) }), () => null);
     const done = await said;
-    expect(done.code, `${label}: cozy render: ${done.stderr.slice(-400)}`).toBe(0);
+    // With --json a refusal is its envelope on stdout.
+    expect(done.code, `${label}: cozy render: ${(done.stderr || done.stdout).slice(-400)}`).toBe(0);
     await pictured;
     const faces = await stop(page);
     const run = done.stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).find((one) => one.type === 'take')?.take?.run;
@@ -108,7 +110,7 @@ test('steady-face', async ({ page, project, cli }) => {
   });
 
   await test.step('warm: straight to its own work, no install or download on any frame', async () => {
-    const faces = await render('warm', ['work'], ['--new']);
+    const faces = await render('warm', ['work']);
     expect.soft(faces.filter((one) => SKIPPABLE.includes(one.phase)), `the warm render's faces: ${JSON.stringify(faces)}`).toEqual([]);
     expect.soft(flashed(faces), `nothing flashed by: ${JSON.stringify(faces)}`).toEqual([]);
     expect.soft(faces.some((one) => one.phase === 'work'), 'and its own work shows').toBe(true);
@@ -120,7 +122,7 @@ test('steady-face', async ({ page, project, cli }) => {
     await fit(page);
     // Once, so its environment is here: the render judged is warm, its 200 ms stages the only short ones.
     await render('blink-first', ['work'], [], BLINK);
-    const faces = await render('blink', ['work'], ['--new'], BLINK);
+    const faces = await render('blink', ['work'], [], BLINK);
     expect.soft(faces.filter((one) => /blink/i.test(one.state ?? '')), `its blinks never show: ${JSON.stringify(faces)}`).toEqual([]);
     expect.soft(faces.some((one) => /drawing/i.test(one.state ?? '')), `its own work shows: ${JSON.stringify(faces)}`).toBe(true);
     expect.soft(flashed(faces), `nothing flashed by: ${JSON.stringify(faces)}`).toEqual([]);
