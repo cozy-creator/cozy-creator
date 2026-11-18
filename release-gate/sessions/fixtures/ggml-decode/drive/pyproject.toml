@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "ggml-logits"
 version = "0.1.0"
-description = "ggml-decode's logits check: one lane's next-token distributions against another's on the same text"
+description = "ggml-decode's drives: logits agreement between lanes, and a lane's timed decode with and without MTP drafting"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 
