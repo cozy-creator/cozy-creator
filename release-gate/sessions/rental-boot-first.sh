@@ -12,7 +12,7 @@
 #         `runtime_held`, naming the update, before any install; before the fix the install went and was refused
 #         `runtime_floor_unmet`.
 # Every send here names its rental: the account's rentals are one pool (cl-1224), so a run naming none may go to any session's.
-# A refusal no send foresaw (`Machines::refloored`) is reached only by a run naming no machine, so it is proven on stood-in
+# A refusal no send foresaw (`Machines::refloored`) is reached only by a run naming no machine, so its cell belongs on stood-in
 # rentals of a runner's own Hub (e2e/cli/rcmoves.sh), never here.
 # Params: floor (the code's `cozy-runtime` requirement; default the open RC's Runtime minor, `>=0.47.0.dev0`), runtime and
 # tensorfs (the release pair `held` puts back; default the 0.25.0 image's 0.46.0 and 0.25.1).
