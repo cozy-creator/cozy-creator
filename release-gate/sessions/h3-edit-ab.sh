@@ -149,8 +149,11 @@ FIRST=''
 cell() {
   local k=$1 t=${TREE[$1]} plate=kelly fields n v t0=$SECONDS
   case $k in warm) plate=kelly5 ;; cap11) plate=kelly11 ;; cap12) plate=kelly12 ;; esac
-  fields=$(jq -cn --arg p "<$plate>" --arg s "$SWAP" --arg b "$BEAT" \
-    '{plate: $p, edit: "character_swap", summary: $s, seed: 163163, beats: [{duration: 15, description: $b}]}')
+  # A repeat pass (a2 b2 c2) takes the next seed, the same for every build: the machine's call memo answers a request it has
+  # served (44305025740's c2 and b2 were memo hits) and no verb clears it, so the same seed would time nothing.
+  local seed=163163; [[ $k != [abc]2 ]] || seed=163164
+  fields=$(jq -cn --arg p "<$plate>" --arg s "$SWAP" --arg b "$BEAT" --argjson seed "$seed" \
+    '{plate: $p, edit: "character_swap", summary: $s, seed: $seed, beats: [{duration: 15, description: $b}]}')
   run_page add "$k" --tool "$PACKAGES/$t/minimax-h3/edit" --fields "$fields" > "$OUT/add-$k.txt" 2>&1 || fail "add $k: $(cat "$OUT/add-$k.txt")"
   say "render $k ($t, $plate)"
   if ! run_page render --on "$NAME" "$k" > "$OUT/render-$k.txt" 2>&1; then
@@ -182,8 +185,13 @@ cell() {
   echo "$row" >> "$OUT/ab.tsv"
   say "$k: run $n in $((SECONDS - t0)) s: $(tr '\t' ' ' <<< "$row")"
   say "$k: $(LC_ALL=C grep -a -o -m1 -E 'continuation window [^"]*' "$OUT/$k.log") $(LC_ALL=C grep -a -o -m1 -E 'h3 output geometry denoise_rows=[0-9]+' "$OUT/$k.log")"
-  # A cell that didn't complete is counted (two end the session); one that did must run on the first run's pair.
-  if [ "$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)" != completed ]; then
+  # A cell that didn't complete, or that the call memo answered (it timed nothing), is counted (max_failures end the
+  # session); one that ran must run on the first run's pair.
+  if jq -e '(.memo.memoized // false) or ([.calls[]?.memoized] | any)' "$OUT/$k.json" > /dev/null 2>&1; then
+    say "$k: answered from the call memo: not a render, not timed"
+  fi
+  if [ "$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)" != completed ] ||
+     jq -e '(.memo.memoized // false) or ([.calls[]?.memoized] | any)' "$OUT/$k.json" > /dev/null 2>&1; then
     RC=1; FAILS=$((FAILS + 1)); [ "$FAILS" -lt "$MOST" ] || fail "$FAILS cells failed"; return 0
   fi
   # Both arms on one pair: a run that fell back to another Runtime or TensorFS than the first's ends the session.
@@ -208,11 +216,7 @@ for r in "${RIDS[@]}"; do
 done
 column -t -s $'\t' "$OUT/ab.tsv" | tee -a "$R"
 [ ! -s "$OUT/restarts.tsv" ] || say "restarts (cell, seconds from the update's completion to an answer, refused probes): $(tr '\t\n' ' ;' < "$OUT/restarts.tsv")"
-md5() { ffmpeg -nostdin -v error -i "$OUT/$1.mp4" -map 0:v -f framemd5 - 2> /dev/null | grep -v '^#' | md5sum | cut -c1-16; }
-for p in "a1 a2" "b1 b2" "c1 c2"; do
-  set -- $p; [ -s "$OUT/$1.mp4" ] && [ -s "$OUT/$2.mp4" ] || continue
-  say "$1 vs $2 (one build, one seed): frames $(md5 "$1") / $(md5 "$2")"
-done
+# The passes differ in seed, so a1/a2, b1/b2 and c1/c2 aren't compared frame for frame; each pass compares the builds.
 # Each build's steady step, dense and sparse, against rc's: the A/B's answer (Paul 11-15: within 5% is a tie).
 jq -Rr -s --argjson g "$(cat "$OUT/guided.json")" '
   split("\n") | .[1:] | map(select(length > 0) | split("\t")) | map({cell: .[0], tree: .[1], status: .[2], steady: (.[8] | tonumber? ),
