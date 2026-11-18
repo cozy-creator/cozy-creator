@@ -28,7 +28,7 @@ clip=$OUT/clip-1s.mp4 clip2=$OUT/clip-1s-mirrored.mp4 REF2=$OUT/ref-mirrored.jpg
 # Fibo first: Paul's 46780, the run that sat silent for minutes.
 both fibo "$(pkg fibo-2 image)" instructions:="$(said "$SCENE")" seed:=$((R + 8))
 both sdxl "$(pkg sdxl image)" instructions="$SCENE, photo" seed:=$((R + 3))
-both klein "$(pkg flux-3-klein image)" instructions:="$(said "$CHAR")" seed:=$((R + 4))
+both klein "$(pkg flux.3-klein image)" instructions:="$(said "$CHAR")" seed:=$((R + 4))
 both qwen "$(pkg qwen-image-2 image)" instructions:="$(said "$OBJECT on a marble plinth")" megapixels:=1 seed:=$((R + 5))
 both anima "$(pkg anima image)" instructions="masterpiece, best quality, anime illustration of $CHAR" megapixels=1 seed:=$((R + 6))
 both birefnet "$(pkg birefnet remove_background)" --file image="$REF"
