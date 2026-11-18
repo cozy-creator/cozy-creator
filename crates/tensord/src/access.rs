@@ -893,10 +893,9 @@ fn counted(each: &[ModelTransfer]) -> Option<Weights> {
 
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
-/// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
-/// waiting reason says what it has and needs (`Fetch::needs`), and TensorD's log says on what
-/// (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`), never as
-/// their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
+/// or the fetch ends, its own stage shows again. While a required want is unanswered, TensorD's log
+/// says on what (`Fetch::waiting_on`) each time the components it waits on change (`Fetch::awaited`),
+/// never as their bytes do (cl-1217: a line every 250 ms per run). A run whose weights are here hears nothing.
 pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
@@ -942,13 +941,11 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 return;
             }
             let on = live.as_ref().map(|f| f.awaited()).unwrap_or_default();
+            // Its readers hear the downloads it waits on (`waiting_on`) and its record what it had and needed (`weights`), never
+            // has/needs words set here (cl-1230: they showed only once its downloads had landed, still saying what was to download).
             if on != said {
-                if let Some((live, words)) = live.as_ref().and_then(|f| f.waiting_on().map(|words| (f, words))) {
+                if let Some(words) = live.as_ref().and_then(|f| f.waiting_on()) {
                     tracing::info!("run {id}: {WAITING_FOR_MODELS}: {words}");
-                    // Its own words say what it has and needs, which don't move; how far each is, its downloads say.
-                    if let Err(error) = engine.waiting(&id, Some(format!("{WAITING_FOR_MODELS}: {}", live.needs()))) {
-                        tracing::warn!("run {id}: what it waits on: {error}");
-                    }
                 }
                 said = on;
             }

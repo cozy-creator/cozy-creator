@@ -227,6 +227,12 @@ pub(crate) async fn machine(ctx: &Context, text: &str) -> Result<Machine, Error>
     ctx.calcifer().await?.get(&route(text)?).await
 }
 
+/// How `machine show` and `ls` read machines: inside a project, as that project's own reader, which hears its runs waiting on a
+/// machine's downloads by name, not only counted (cl-1230).
+pub(crate) async fn reader(ctx: &Context) -> Vec<(&'static str, String)> {
+    crate::project::address(ctx).await.map(|project| vec![("project", project.id)]).unwrap_or_default()
+}
+
 async fn add(
     ctx: &Context,
     name: String,

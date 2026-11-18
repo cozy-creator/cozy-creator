@@ -395,6 +395,11 @@ impl Machines {
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
     pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
+        self.show_for(text, &[]).await
+    }
+
+    /// `show`, as a reader in `projects` sees it (`picture_for`).
+    pub(crate) async fn show_for(self: &Arc<Self>, text: &str, projects: &[String]) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
         }
@@ -428,7 +433,7 @@ impl Machines {
                 Err(e) => self.not_answered(&row.name, &e.to_string()),
             }
         }
-        self.picture(&row)
+        self.picture_for(&row, projects)
     }
 
     /// The name of the machine a run `on` goes to and the environments it holds now, its Status
@@ -1000,6 +1005,7 @@ impl Machines {
         if let Some(status) = &mut machine.status {
             let listed: HashSet<String> = held.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            let mut waiters = vec![];
             // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
             for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
                 // A locked project's (cl-1130): its state there, nothing of its project's.
@@ -1008,6 +1014,15 @@ impl Machines {
                     continue;
                 }
                 let Ok(run) = self.calcifer.record(&project_run) else { continue };
+                if let Some(progress) = run.progress.as_ref().filter(|progress| !progress.waiting_on.is_empty() && projects.contains(&project_run.owner)) {
+                    waiters.push(Waiter {
+                        id: project_run.id.as_str().to_owned(),
+                        project: project_run.owner.clone(),
+                        number: project_run.number,
+                        name: self.calcifer.run_name(&project_run),
+                        on: progress.waiting_on.clone(),
+                    });
+                }
                 status.runs.push(wire::LiveRun {
                     id: project_run.id.to_string(),
                     state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
@@ -1016,7 +1031,7 @@ impl Machines {
                     locked: false,
                 });
             }
-            status.activity = merged(activity).iter().filter_map(|operation| self.operation(operation, projects)).collect();
+            status.activity = merged(activity).iter().filter_map(|operation| self.operation(operation, projects, &waiters)).collect();
             // Every other client's runs there, as the machine says them (cl-1193): counted with this computer's.
             status.others = queue.iter().filter(|root| !self.sent_here(root)).map(client_run).collect();
             let going = status.others.iter().filter(|run| run.running).count() as u32;
@@ -1110,9 +1125,12 @@ impl Machines {
     /// the machine fetches or installs, its bytes, rate and time left, to any reader on the account. Which runs wait on it is scoped:
     /// maintenance runs and runs of `projects` by number and name, every other one (another project's, a locked one's, another client's)
     /// only counted (`unnamed`). An operation of a project's own is in its private scope (`resource_key`): only its views read it.
-    fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
+    /// `waiters`: the runs of `projects` that say they wait on downloads, which this computer's machine counts and names only in their
+    /// project's scope.
+    fn operation(&self,operation:&v1::Operation,projects:&[String],waiters:&[Waiter])->Option<wire::Operation> {
         let mut project=None;
         let (mut runs,mut names,mut unnamed)=(vec![],vec![],operation.unnamed);
+        let mut named=HashSet::new();
         for id in &operation.runs {
             // A box's guess, or a job fetched ahead (cl-1104): no run, said by its boxes, in its project's views as any install is.
             if crate::prefetch::listed(id) {
@@ -1137,9 +1155,18 @@ impl Machines {
                     project=Some(store.project_id().to_owned());
                     runs.push(row.number);
                     names.push(self.calcifer.run_name(&row));
+                    named.insert(id.to_owned());
                 }
                 _ => unnamed+=1,
             }
+        }
+        // A run of `projects` whose record says it waits on this, which the Status read only counted, is named (cl-1230: `cozy machine
+        // show` from a run's own project listed `"runs": []` while its `waiting_on` named this).
+        for waiter in waiters.iter().filter(|waiter| waiter.on.contains(&operation.id) && !named.contains(&waiter.id)) {
+            project=Some(waiter.project.clone());
+            runs.push(waiter.number);
+            names.push(waiter.name.clone());
+            unnamed=unnamed.saturating_sub(1);
         }
         Some(wire::Operation {
             id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),release:operation.release.clone(),
@@ -1939,6 +1966,8 @@ impl Machines {
 pub(crate) struct Refresh {
     #[serde(default)]
     refresh: bool,
+    /// The project its client is in (`readers`).
+    project: Option<String>,
 }
 
 pub(crate) async fn list(
@@ -1946,9 +1975,17 @@ pub(crate) async fn list(
     query: Result<Query<Refresh>, QueryRejection>,
 ) -> Result<Json<MachineList>, Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let projects = readers(&api, query.project.as_deref());
     Ok(Json(
-        api.machines.list(query.refresh).await.map_err(Refusal)?,
+        api.machines.list_for(query.refresh, &projects).await.map_err(Refusal)?,
     ))
+}
+
+/// The project a client in `project` reads as its own (cl-1230): its runs waiting on a machine's downloads are named to it, as to a
+/// page showing it. None for a project this computer doesn't know or can't open now (a locked one).
+fn readers(api: &Api, project: Option<&str>) -> Vec<String> {
+    let opens = |id: &&str| api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| crate::project::vault::require_path(&known.path).is_ok());
+    project.filter(opens).map(str::to_owned).into_iter().collect()
 }
 
 #[derive(Deserialize)]
@@ -1957,7 +1994,8 @@ pub(crate) struct Fresh {
     fresh: bool,
     /// The Hub whose client reads it.
     hub: Option<String>,
-    /// The project its client is in: what that project's own runs installed on this computer's machine is listed too.
+    /// The project its client is in: what that project's own runs installed on this computer's machine is listed too, and its runs
+    /// waiting on what it does named (`readers`).
     project: Option<String>,
 }
 
@@ -1973,9 +2011,10 @@ pub(crate) async fn show(
 /// The machine `GET /v1/machines/{name}` answers.
 async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryRejection>) -> Result<(Machine, Option<String>), Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let projects = readers(api, query.project.as_deref());
     let machine = match query.fresh {
-        true => fresh(&api.machines, name).await,
-        false => api.machines.show(name).await,
+        true => fresh(&api.machines, name, &projects).await,
+        false => api.machines.show_for(name, &projects).await,
     };
     Ok((machine.map_err(Refusal)?, query.hub))
 }
@@ -2045,8 +2084,8 @@ pub(crate) async fn remove_model(
 }
 
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
-/// one that cannot answer is `machine_unavailable`, never its last picture.
-pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
+/// one that cannot answer is `machine_unavailable`, never its last picture. As a reader in `projects` sees it (`picture_for`).
+pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str, projects: &[String]) -> Result<Machine, Error> {
     let row = machines.named_now(text).await?;
     let unavailable = |why: String| {
         let message = format!("{} can't answer right now: {why}.", row.name);
@@ -2072,7 +2111,7 @@ pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machin
         }
         Err(e) => return Err(unavailable(e.to_string())),
     }
-    machines.picture(&row)
+    machines.picture_for(&row, projects)
 }
 
 /// `POST /v1/rental-quotes`: the Hub's price for a `Rent`, exactly as `POST /v1/machines` would
@@ -2837,6 +2876,16 @@ pub(crate) fn internal(e: impl ToString) -> Error {
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A project's run on this computer's machine that says it waits on downloads (`Progress::waiting_on`): its id, project, number,
+/// name, and those downloads' ids.
+struct Waiter {
+    id: String,
+    project: String,
+    number: u64,
+    name: String,
+    on: Vec<String>,
 }
 
 /// A machine's operations as its own Status and each project's scope list them, each once by its id (cl-1205: a download is the

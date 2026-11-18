@@ -6,7 +6,7 @@ use api::{
     error::Error,
 };
 
-use super::{Notices, clock, machine, now_ms, usd};
+use super::{Notices, clock, now_ms, reader, usd};
 use crate::{Context, output, run, tui};
 
 const IDLE_RULE: &str = "Rentals end themselves after 15 minutes idle (no queued or running work).";
@@ -35,11 +35,9 @@ pub(crate) async fn list(ctx: &Context) -> Result<ExitCode, Error> {
         crate::tui::show(ctx, crate::tui::Screen::Machines(view)).await?;
         return Ok(ExitCode::SUCCESS);
     }
-    let list: MachineList = ctx
-        .calcifer()
-        .await?
-        .get("/v1/machines?refresh=true")
-        .await?;
+    let mut query = reader(ctx).await;
+    query.push(("refresh", "true".into()));
+    let list: MachineList = ctx.calcifer().await?.get_query("/v1/machines", &query).await?;
     let code = if list.unanswered.is_empty() {
         ExitCode::SUCCESS
     } else {
@@ -139,7 +137,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
 
 /// One machine: a live view on a terminal while it lives, else its record once (or JSON), with its GPUs' use now (cl-1191).
 pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
-    let m = machine(ctx, name).await?;
+    let m: Machine = ctx.calcifer().await?.get_query(&super::route(name)?, &reader(ctx).await).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
         let view = super::live::Shown::open(ctx, name).await?;
         tui::show(ctx, tui::Screen::Machine(Box::new(view))).await?;

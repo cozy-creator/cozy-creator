@@ -314,7 +314,7 @@ pub(super) struct Removal {
 /// anything is recorded.
 pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageRemove) -> Result<Planned, Refusal> {
     let machine = super::jobs::machine(on, "a removal")?;
-    let held = crate::machines::fresh(&api.machines, &machine).await.map_err(Refusal)?;
+    let held = crate::machines::fresh(&api.machines, &machine, &[]).await.map_err(Refusal)?;
     // A project's packages live in its own environments, which the machine's status never lists:
     // its remove runs answer for them, and a name none removed is refused after them.
     if crate::private_io::current().is_some() {

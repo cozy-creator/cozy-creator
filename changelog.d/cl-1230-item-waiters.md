@@ -1,0 +1,1 @@
+`cozy machine show` and `cozy machine ls`, run inside a project, name that project's runs waiting on a download on this computer ("for run KEY-14"), as its page does. Before, they only counted them ("for 1 job"), and their JSON listed the download with `"runs": []`. The page names them as soon as they wait, not once it has followed their project.
