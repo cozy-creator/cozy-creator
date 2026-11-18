@@ -18,7 +18,8 @@
 //!    configs and tokenizers the source lacks (recorded as `filled`).
 //! 5. Check the planned model against its family ([`verify`], [`crate::family`]).
 //! 6. Land the rest of every member (the downloads resume from the headers), convert row by row
-//!    into the [`Sink`], then delete the tmp area.
+//!    into the [`Sink`], then delete the tmp area. Each F32 tensor is stored at the model's compute width unless its
+//!    class's published rule keeps it ([`keep`]).
 //!
 //! A GGUF file is one component of its own (`gguf`).
 
@@ -27,6 +28,7 @@ pub mod base;
 pub(crate) mod carriers;
 pub(crate) mod engine;
 pub mod gguf;
+mod keep;
 pub(crate) mod lora;
 pub(crate) mod order;
 pub mod remote;
@@ -1084,6 +1086,12 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     }
     for note in &ignored {
         progress(note, 0, 0);
+    }
+    // Each F32 tensor at the model's compute width, unless its class's published rule keeps it (`keep`).
+    if !as_is {
+        for note in keep::narrow(&mut planned, &layout.components) {
+            progress(&note, 0, 0);
+        }
     }
     stopped(req)?;
     // Nothing refused: the bulk lands, each download resuming from its header.
