@@ -457,6 +457,18 @@ pub(crate) struct Bulk {
 }
 
 impl Bulk {
+    /// Lands many whole objects in one request (`PUT /v1/objects`, cl-1123): `body`, `length` bytes of `OBJECTS_TYPE`. Answers
+    /// what the machine holds of each, in their order.
+    pub(crate) async fn put_objects(&self, length: u64, body: impl Into<reqwest::Body>) -> Result<Vec<HeldObject>, Error> {
+        let request = self
+            .request(Method::PUT, path::OBJECTS, &[])
+            .header(header::CONTENT_LENGTH, length)
+            .header(header::CONTENT_TYPE, api::machine::OBJECTS_TYPE)
+            .body(body);
+        let answer: HeldAnswer = json(send(request).await?).await?;
+        Ok(answer.held)
+    }
+
     /// Lands `[first, first + length)` of the object (`sha256:<hex>`, `total` bytes) from `body`;
     /// answers the ranges held after it.
     pub(crate) async fn put(

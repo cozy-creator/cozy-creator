@@ -129,6 +129,8 @@ fn not_a_draft(asking: &Asking, i: usize) -> Option<&'static str> {
 
 /// Local code carried to a machine by a guess (`item`), by machine and its package's manifest: written there once, its source as staged.
 static CARRIED: LazyLock<Mutex<std::collections::HashMap<(String, String), v1::LocalSource>>> = LazyLock::new(Mutex::default);
+/// One carry of local code to a machine at a time, by machine and manifest: a round going beside it (`ROUNDS`) waits and takes it.
+static CARRYING: LazyLock<Mutex<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Mutex::default);
 /// The functions whose Hub reads are read ahead (`fit::read_ahead`): by Hub, package, release and function.
 static READ_AHEAD: LazyLock<Mutex<HashSet<(String, String, String, String)>>> = LazyLock::new(Mutex::default);
 
@@ -437,6 +439,8 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
             }
             let On::Machine(on) = machine else { return Ok(Err(Cow::Owned(format!("its local code would go to {machine}, no one machine")))) };
             let carried = (on.clone(), package.manifest.clone());
+            let turn = lock(&CARRYING).entry(carried.clone()).or_default().clone();
+            let _carrying = turn.lock().await;
             let mut held = lock(&CARRIED).get(&carried).cloned();
             // There already, a run of it having carried it: carried by its manifest alone.
             if held.is_none() && crate::stages::stage("held there", is_there(api, on, &package.manifest)).await {

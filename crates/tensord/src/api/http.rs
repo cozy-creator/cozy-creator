@@ -79,6 +79,7 @@ fn routes() -> Router<Machine> {
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::OBJECTS, put(put_objects))
         .route(path::UPCOMING, put(upcoming))
         .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
@@ -995,6 +996,72 @@ async fn put_object(
         return Err(error.into());
     }
     Ok((StatusCode::NO_CONTENT, [(v1::HELD, self::held(&held))]).into_response())
+}
+
+/// The largest object `PUT /v1/objects` takes: one larger goes by `PUT /v1/objects/{digest}`, in parts.
+const BATCHED_EACH: u64 = 64 << 20;
+/// The longest header line of an object in `PUT /v1/objects`.
+const HEADER_LINE: usize = 4096;
+
+/// `PUT /v1/objects` (`v1::OBJECTS_TYPE`): many whole objects in one body, each written as `PUT /v1/objects/{digest}` writes a whole
+/// one as it arrives, so a tree of small files (local code a guess carries, cl-1123) takes one round trip. Answers what is held of
+/// each, in their order. Uploads hold no admission; the bytes moving hold the idle clock.
+async fn put_objects(State(m): State<Machine>, headers: HeaderMap, body: Body) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    drop(m.admit()?);
+    let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
+    let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {
+        frame.map_err(|e| Error::validation("request_body_failed", e.to_string()))
+    })));
+    let truncated = || Error::validation("objects_truncated", "the body ended inside an object");
+    let (mut buffer, mut held, mut landed, began) = (Vec::<u8>::new(), vec![], 0_u64, std::time::Instant::now());
+    loop {
+        // Its header line, then its bytes.
+        let line = loop {
+            if let Some(at) = buffer.iter().position(|byte| *byte == b'\n') {
+                break Some(at);
+            }
+            if buffer.len() > HEADER_LINE {
+                return Err(Error::validation("invalid_request", "an object's header line is too long").into());
+            }
+            match frames.next().await {
+                Some(data) => {
+                    m.identity.lifecycle.transferred();
+                    buffer.extend_from_slice(&data?);
+                }
+                None => break None,
+            }
+        };
+        let Some(at) = line else {
+            match buffer.is_empty() {
+                true => break,
+                false => return Err(truncated().into()),
+            }
+        };
+        let header: v1::ObjectHeader = serde_json::from_slice(&buffer[..at])
+            .map_err(|e| Error::validation("invalid_request", format!("an object's header is not JSON: {e}")))?;
+        buffer.drain(..=at);
+        if header.length > BATCHED_EACH {
+            return Err(Error::validation("object_too_large", format!("{} is {} bytes: one this large goes by PUT /v1/objects/{{digest}}", header.digest, header.length)).into());
+        }
+        while (buffer.len() as u64) < header.length {
+            let data = frames.next().await.ok_or_else(truncated)??;
+            m.identity.lifecycle.transferred();
+            buffer.extend_from_slice(&data);
+        }
+        let data: Vec<u8> = buffer.drain(..header.length as usize).collect();
+        landed += header.length;
+        let (actor, digest) = (actor.clone(), header.digest.clone());
+        let ranges = blocking(&runs, move |runs| {
+            runs.objects.carried(&actor, &digest, &data)?;
+            runs.objects.held(&actor, &digest).map_err(Into::into)
+        })
+        .await?;
+        held.push(v1::HeldObject { digest: header.digest, ranges });
+    }
+    tracing::info!("objects: {} landed in one request, {landed} bytes in {} ms", held.len(), began.elapsed().as_millis());
+    Ok(json(StatusCode::OK, &v1::HeldAnswer { held }))
 }
 
 /// A PUT's `[start, end)` of an object of `length` bytes: its `Content-Range`, else the whole

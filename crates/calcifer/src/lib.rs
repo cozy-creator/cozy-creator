@@ -241,6 +241,21 @@ const RESAID: Duration = Duration::from_secs(5);
 /// The most of one input a run's admission carries, and of all it carries (cl-1172): a photo, not a video; under the machine's
 /// HTTP/2 stream window as base64, so it moves in the one round trip that admits the run.
 const CARRIED_EACH: u64 = 512 << 10;
+
+/// An object a machine lacks, as `Calcifer::lacking_to` sends it: its digest, length, the file it is, its name in what's said (a run's field,
+/// else its digest) and what the machine held of it.
+struct Lacking {
+    digest: Digest,
+    length: u64,
+    path: PathBuf,
+    name: String,
+    held: v1::Ranges,
+}
+
+/// Whether `held` is all `length` bytes: an empty object's ranges can't say so, so it is always sent (one empty PUT).
+fn whole(held: &v1::Ranges, length: u64) -> bool {
+    length > 0 && v1::held_bytes(held) >= length
+}
 const CARRIED_TOTAL: u64 = 640 << 10;
 /// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
 const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
@@ -2962,8 +2977,6 @@ impl Calcifer {
         }
         let digests: Vec<Digest> = inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
-        // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
-        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
         // The request's files the machine already holds are not sent again, and the run's log says
         // so: `run watch` and a follower that attaches late read it too.
         let reused: Vec<(&str, u64)> = (inputs.iter().zip(&held))
@@ -2983,52 +2996,18 @@ impl Calcifer {
             let events = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "inputs", &text))?;
             self.publish(&run.id, events);
         }
-        for ((digest, length), held) in inputs.iter().zip(held) {
-            if whole(&held, *length) {
-                continue;
-            }
-            let hex = hex::encode(digest.bytes());
-            let path = input_root.join(&hex);
-            let name = match names.get(digest.to_string().as_str()) {
-                Some(field) => field.to_string(),
-                None => format!("sha256:{}", &hex[..12]),
-            };
-            let key = (machine.to_owned(), *digest);
-            let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
-            let (mine, held) = match turn.0.try_lock() {
-                Ok(mine) => (mine, held),
-                Err(_) => {
-                    let holder = match *lock(&turn.1) {
-                        0 => "another run".to_owned(),
-                        n => format!("run {n}"),
-                    };
-                    self.waiting(&run.id, format!("waiting for {holder} to upload {name}"));
-                    let mine = turn.0.lock().await;
-                    let now = link.held_many(std::slice::from_ref(digest)).await?;
-                    (mine, now.into_iter().next().unwrap_or_default())
-                }
-            };
-            *lock(&turn.1) = run.number;
-            let written = link
-                .write(digest, *length, &path, held, |done, rate| {
-                    let mut reason = format!(
-                        "uploading {name}, {} of {}",
-                        bytes(done as f64),
-                        bytes(*length as f64)
-                    );
-                    if let Some(rate) = rate {
-                        reason = format!("{reason} at {}/s", bytes(rate));
-                    }
-                    self.waiting(&run.id, reason);
-                })
-                .await;
-            drop(mine);
-            let mut writing = lock(&self.writing);
-            if Arc::strong_count(&turn) <= 2 {
-                writing.remove(&key);
-            }
-            written?;
-        }
+        let lacking: Vec<Lacking> = (inputs.iter().zip(held))
+            .filter(|((_, length), held)| !whole(held, *length))
+            .map(|((digest, length), held)| {
+                let hex = hex::encode(digest.bytes());
+                let name = match names.get(digest.to_string().as_str()) {
+                    Some(field) => field.to_string(),
+                    None => format!("sha256:{}", &hex[..12]),
+                };
+                Lacking { digest: *digest, length: *length, path: input_root.join(&hex), name, held }
+            })
+            .collect();
+        self.lacking_to(link, machine, lacking, run.number, &|reason| self.waiting(&run.id, reason)).await?;
         Ok(carried)
     }
 
@@ -3039,27 +3018,69 @@ impl Calcifer {
         length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
-    /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
-    /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads
-    /// (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
+    /// `inputs` written to `machine`, each it doesn't hold whole (`lacking_to`, as a run's inputs are): local code carried to the machine a
+    /// box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads (cl-1123), so its machine has
+    /// them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
     pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
         let machines = self.machines().ok_or("no machines yet")?;
         let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
         let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
         let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
-        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
-        for (input, held) in inputs.iter().zip(held) {
-            if whole(&held, input.length) {
-                continue;
+        let lacking: Vec<Lacking> = (inputs.iter().zip(held))
+            .filter(|(input, held)| !whole(held, input.length))
+            .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held })
+            .collect();
+        self.lacking_to(&link, machine, lacking, 0, &|_| {}).await.map_err(|e| e.to_string())
+    }
+
+    /// What `machine` lacks of the objects a run reads or a guess carries, landed there: the one way objects go to a machine (cl-1123).
+    /// Every one up to `BATCHED_EACH` goes in one `PUT /v1/objects` to a machine that takes it (`objects_batch`): one at a time, an
+    /// Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797). One larger, or to an older machine,
+    /// goes alone, in parts side by side, one write of an object at a time (`writing`, run `number`'s while it writes). `waiting`
+    /// hears what it does.
+    async fn lacking_to(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
+        const BATCHED_EACH: u64 = 64 << 20;
+        let batches = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.objects_batch);
+        let (batched, alone): (Vec<Lacking>, Vec<Lacking>) = lacking.into_iter().partition(|object| batches && object.length > 0 && object.length <= BATCHED_EACH);
+        if !batched.is_empty() {
+            let size = bytes(batched.iter().map(|object| object.length).sum::<u64>() as f64);
+            waiting(match batched.as_slice() {
+                [one] => format!("uploading {}, {size}", one.name),
+                many => format!("uploading {} files, {size}", many.len()),
+            });
+            let (sent, began) = (batched.iter().map(|object| (object.digest, object.length, object.path.clone())).collect(), std::time::Instant::now());
+            let landed = link.write_many(sent).await?;
+            tracing::info!(machine, "{} objects ({size}) landed in one request in {} ms", batched.len(), began.elapsed().as_millis());
+            if let Some((object, _)) = batched.iter().zip(&landed).find(|(object, held)| !whole(held, object.length)) {
+                return Err(LinkError::Unanswered(format!("{} didn't land whole on {machine}", object.name)));
             }
-            let key = (machine.to_owned(), input.digest);
+        }
+        for Lacking { digest, length, path, name, held } in alone {
+            let key = (machine.to_owned(), digest);
             let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
-            let mine = turn.0.lock().await;
-            let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
-            let written = match whole(&now, input.length) {
-                true => Ok(()),
-                false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
+            let (mine, held) = match turn.0.try_lock() {
+                Ok(mine) => (mine, held),
+                Err(_) => {
+                    let holder = match *lock(&turn.1) {
+                        0 => "another run".to_owned(),
+                        n => format!("run {n}"),
+                    };
+                    waiting(format!("waiting for {holder} to upload {name}"));
+                    let mine = turn.0.lock().await;
+                    let now = link.held_many(std::slice::from_ref(&digest)).await?;
+                    (mine, now.into_iter().next().unwrap_or_default())
+                }
             };
+            *lock(&turn.1) = number;
+            let written = link
+                .write(&digest, length, &path, held, |done, rate| {
+                    let mut reason = format!("uploading {name}, {} of {}", bytes(done as f64), bytes(length as f64));
+                    if let Some(rate) = rate {
+                        reason = format!("{reason} at {}/s", bytes(rate));
+                    }
+                    waiting(reason);
+                })
+                .await;
             drop(mine);
             {
                 let mut writing = lock(&self.writing);
