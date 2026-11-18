@@ -160,7 +160,6 @@ class WorkingStats(TypedDict):
     reclaim_owner_caches_ns: int
     reclaim_peers_ns: int
     reclaim_high_weights_ns: int
-    reclaim_demote_working_ns: int
     event_queries: int
     event_records: int
     event_waits: int
@@ -176,12 +175,6 @@ class WorkingStats(TypedDict):
     cache_mapped_bytes: int
     cache_live_bytes: int
     cache_pending_bytes: int
-    #: live working bytes on host pages now (cr-305 rung 5), all moved, the moves, and the device's
-    #: host-native atomics as read at the first (0 unread, 1 no, 2 yes)
-    demoted_bytes: int
-    demoted_total: int
-    demotions: int
-    host_atomics: int
 
 
 class SplitContext(TypedDict):
