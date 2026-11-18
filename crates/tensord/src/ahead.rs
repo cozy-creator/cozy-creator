@@ -51,6 +51,11 @@ struct Handed {
     waiting: Vec<String>,
 }
 
+/// The listed items whose runs have what they read in the download line (`lined`): a dropped one that isn't holds nothing a
+/// replacement could share there yet, so it ends at once (cl-1281: a swapped LoRA's item, still fetching its LoRA while it planned,
+/// went on 16.5 s until its replacement's own LoRA had landed, and its 1.83 GB landed for nothing, 44394166400).
+static LINED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Mutex::default);
+
 /// The guesses downloading now, each with its run's stop (`downloading`).
 static DOWNLOADING: LazyLock<(Mutex<Vec<(u64, Stop)>>, Condvar)> = LazyLock::new(Default::default);
 
@@ -330,6 +335,18 @@ fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests:
             return;
         }
     };
+    // One not in line yet ends now; the rest wait for what replaced them (`settle`).
+    let (dropped, unlined): (Vec<String>, Vec<String>) = {
+        let mut lined = lock(&LINED);
+        lined.retain(|id| ids.contains(id) || dropped.contains(id));
+        dropped.into_iter().partition(|id| lined.contains(id))
+    };
+    for id in &unlined {
+        match runs.cancel(actor, id) {
+            Ok(_) => tracing::info!("list item {id} dropped before it was in line: its run ends, and what it was fetching stops"),
+            Err(error) => tracing::warn!("a list's dropped item {id} wasn't canceled: {}", error.message),
+        }
+    }
     // Noted before any is admitted: one in line at once is heard.
     static HANDOVERS: AtomicU64 = AtomicU64::new(0);
     let handover = HANDOVERS.fetch_add(1, Ordering::Relaxed);
@@ -398,6 +415,7 @@ pub(crate) fn planning(listed: &[String], states: &mut Vec<v1::RunState>) {
 /// The run its caller names `id` has what it reads in the download line, or ended: what a list dropped for it and its like ends now.
 pub(crate) fn lined(runs: &Runs, id: &str) {
     if hidden(id) {
+        lock(&LINED).insert(id.to_owned());
         settle(runs, |handed| handed.iter_mut().for_each(|handed| handed.waiting.retain(|waiting| waiting != id)));
     }
 }
