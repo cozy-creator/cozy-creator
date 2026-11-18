@@ -164,8 +164,8 @@ function ProjectSync({ id }: { id: string }) {
 /**
  * What the page asks before a render, not where it goes: Calcifer places it, as a `cozy run` naming no machine (cl-894). That is the
  * project's machines (`cozy machine use`, cl-873; Render here in the machines panel, cl-887), else every machine a run would go to
- * (`MachineList::render_set`): each rental of yours up or on its way, another computer's that's up, and this one, stopped or not, which
- * starts when used. With none, the page asks for one; with this computer alone, it asks first whether it would do the render poorly.
+ * (`MachineList::render_set`): each rental of the account up or on its way, another computer's that's up, and this one, stopped or not,
+ * which starts when used. With none, the page asks for one; with this computer alone, it asks first whether it would do the render poorly.
  */
 function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
@@ -175,10 +175,9 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   const alive = pinned.filter((name) => name === "local" || listed.some((machine) => machine.name === name && (machine.state === "ready" || machine.state === "booting")))
   // A test pod, a rental whose GPU memory is capped, runs only what names it.
   const capped = (machine: (typeof listed)[number]) => (machine.status?.gpus ?? []).some((gpu) => (gpu.memory_limit_bytes ?? 0) > 0)
-  const held = listed.filter((machine) => machine.ordered !== false)
   // One still booting takes what's sent to it, which waits for it there.
-  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting") && !capped(machine))
-  const up = held.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
+  const rented = listed.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting") && !capped(machine))
+  const up = listed.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
   const automatic = [...rented, ...up].map((machine) => machine.name).concat(status.local_usable ? ["local"] : [])
   const names = alive.length ? alive : automatic
   const key = names.join()

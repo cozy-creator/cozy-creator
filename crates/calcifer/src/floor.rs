@@ -153,11 +153,11 @@ impl Upgrade {
 impl Machines {
     /// The Runtimes `name` (on `frame`) can move to for a package release on this cozy's line: PyPI's that its TensorFS's protocol
     /// speaks, and on the RC (`rc`, or held off it) the RC's build for its platform; whether it moves (`api::release::Moves`): not
-    /// when held by hand, nor when another computer's (added here, or a rental another client ordered); and the newer cozy, the
+    /// when held by hand, nor when another computer's added here (any rental of the account moves, cl-1224); and the newer cozy, the
     /// Hub's, whose line runs Runtimes this one's doesn't (cl-978).
     pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves, Option<api::release::Newer>) {
         let moves = match self.named(name).ok().flatten() {
-            Some(row) if row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(&row)) => api::release::Moves::No,
+            Some(row) if row.kind == MachineKind::Added => api::release::Moves::No,
             _ if self.held_by_hand(name).is_some() => api::release::Moves::Held,
             _ => api::release::Moves::Yes,
         };

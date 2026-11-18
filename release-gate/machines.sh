@@ -19,8 +19,15 @@ listed() {
 }
 
 # own [cli]: what this computer's Calcifer ordered and has not ended, a line each: its rental id, else (an order its Hub
-# has not answered) its name. On a fresh runner that is what this job ordered: another client's rentals read `ordered: false`.
-own() { machines_json "${1:-cozy}" | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
+# has not answered) its name. On a fresh runner that is what this job ordered. The listing is the account's one pool (cl-1224)
+# and says nothing of who ordered a rental: an order here mints its key, ~/.cozy/keys/rental-<name>.pem, under the name it
+# asked, which stays the machine's name or, once its Hub names it, its alias.
+own() {
+  local names
+  names=$(find ~/.cozy/keys -maxdepth 1 -name 'rental-*.pem' -printf '%f\n' 2> /dev/null | sed 's/^rental-//; s/\.pem$//' | jq -R . | jq -sc .)
+  machines_json "${1:-cozy}" | jq -r --argjson n "${names:-[]}" \
+    '.machines[] | select(.kind == "rental" and .state != "ended" and ((.name | IN($n[])) or ((.alias // "") | IN($n[])))) | .rental_id // .name'
+}
 
 # going <machine> [cli]: the machine's runs (every project's) and its jobs (an install, a download, an update: cl-1028, no project's
 # runs, listed on the machine), as one `{runs}`; fails when neither answers.

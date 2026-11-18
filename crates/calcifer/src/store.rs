@@ -3061,7 +3061,6 @@ impl From<&MachineRow> for Machine {
             running: 0,
             queued: 0,
             jobs: vec![],
-            ordered: true,
             unverified: false,
             controller_key: None,
             reach: None,

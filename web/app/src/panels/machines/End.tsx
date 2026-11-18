@@ -45,21 +45,6 @@ export function End({ machine }: { machine: Machine }) {
       </>
     )
   }
-  if (machine.ordered === false) {
-    return (
-      <>
-        <Confirm
-          label="End"
-          disabled={ask.busy}
-          says={`End ${it}? Another computer rented it, and anything it's doing for that computer will stop.${hourly ? ` It costs ${hourly}/h until the Hub confirms it has ended.` : ""}`}
-          yes="End rental"
-          onYes={() => end(false)}
-        />
-        <Failure error={ask.error} lead="Couldn't end the rental" />
-      </>
-    )
-  }
-
   const order = !machine.rental_id
   return (
     <>
