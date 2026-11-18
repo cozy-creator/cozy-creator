@@ -201,9 +201,9 @@ for i in $(seq 60); do
 done
 echo "disk freeable: $name's room after ${i}s: $((${room:-0} >> 20)) MiB; $(jq -c '.status | {disk_free_bytes, disk_room_bytes, disk_needs_bytes}' "$OUT/$name-show.json" 2> /dev/null)"
 if run_cell "$OUT" free-big e2e-roomless/still instructions=freeable --on "$name"; then
-  said=$(run_get "$OUT" free-big '[.warnings[]?.message] | join(" ")')
+  said=$(grep '^{' "$OUT/free-big.ndjson" | jq -r 'select(.type == "run.log" and .level == "warning") | .text' 2> /dev/null | tr '\n' ' ')
   echo "free-big: run $(cat "$OUT/free-big.number") completed on $(run_get "$OUT" free-big .machine): ${said:0:400}"
-  grep -q 'e2e/disk-warm' <<< "$said" || check "disk freeable: the run's warning doesn't name e2e/disk-warm, evicted for it: ${said:0:400}"
+  grep -q 'removed e2e/disk-warm' <<< "$said" || check "disk freeable: the run's warnings don't name e2e/disk-warm, evicted for it: ${said:0:400}"
 else
   said=$(cat "$OUT/free-big.err" "$OUT/free-big.ndjson" 2> /dev/null | tr '\n' ' ')
   check "disk freeable: e2e-roomless/still on $name, whose idle executor's e2e/disk-warm covers what its disk lacks, didn't run: $(run_get "$OUT" free-big .reason.message | head -c 300) ${said:0:500}"
