@@ -519,6 +519,7 @@ WEB_2=(
   orbit
   tools-local
   swap-words
+  playback
 )
 WEB_3=(
   focus

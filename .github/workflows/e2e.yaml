@@ -827,26 +827,26 @@ jobs:
       # The project part's fixtures and probes (e2e/cli/project.sh) and llm_write's clip (xs-204); Calcifer, a service, fetches its own.
       - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'runs' || startsWith(matrix.shard, 'runs@')) || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
-      # The HMR fixtures: containment's, and web-access's dev mode through Calcifer (web/access.js). Their Vite serves the web of the
+      # The HMR fixtures: containment's, web-access's dev mode through Calcifer (web/access.js) and web-playback's. Their Vite serves the web of the
       # cozy under test (the candidate's own commit), never the harness's: a harness from another commit would test another page.
-      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
+      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@')) || (matrix.shard == 'web-playback' || startsWith(matrix.shard, 'web-playback@'))
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
           path: .web-src
           sparse-checkout: web
-      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
+      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@')) || (matrix.shard == 'web-playback' || startsWith(matrix.shard, 'web-playback@'))
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
+      - if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@')) || (matrix.shard == 'web-playback' || startsWith(matrix.shard, 'web-playback@'))
         uses: pnpm/setup@v1
         with:
           package-json-file: .web-src/web/app/package.json
           install: false
       - name: Install source dependencies for the actual HMR fixture
-        if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@'))
+        if: startsWith(matrix.shard, 'containment') || (matrix.shard == 'web-access' || startsWith(matrix.shard, 'web-access@')) || (matrix.shard == 'web-playback' || startsWith(matrix.shard, 'web-playback@'))
         working-directory: .web-src/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
@@ -921,7 +921,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'model') && '--model' || '' }}
-          COZY_WEB_SOURCE: ${{ (startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-access')) && format('{0}/.web-src', github.workspace) || '' }}
+          COZY_WEB_SOURCE: ${{ (startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-access') || startsWith(matrix.shard, 'web-playback')) && format('{0}/.web-src', github.workspace) || '' }}
         # Against its own isolated Hub, which e2e/isolated.sh seeds with what the shard reads from one. BiRefNet: a pin,
         # the change's packages, or packages master (the set's own).
         run: |

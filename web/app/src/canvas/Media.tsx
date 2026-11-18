@@ -462,13 +462,19 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     stopRef.current = stop
     if (playingHere.length >= 2) playingHere[0]()
     playingHere.push(stop)
-    holdMedia(waiting.signal)
+    // Another tab's newer play taking its slot: back to its poster, its Play there.
+    holdMedia(waiting.signal, () => stop())
       .then(async (held) => {
+        // Stopped while its slot came (a third player here): given back, never kept by a player that isn't (cl-1208).
+        if (waiting.signal.aborted) return held()
         release = held
         const el = element.current
         if (!el) return stop()
         playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, waiting.signal, failed)
-        if (waiting.signal.aborted) return playback.stop()
+        if (waiting.signal.aborted) {
+          playback.stop()
+          return held()
+        }
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
