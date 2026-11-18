@@ -1,0 +1,1 @@
+A video opens sooner and a file downloads faster: Calcifer reads a file out in pieces of up to 256 KiB, where it read 4 KiB at a time. A 127 MB video the page reads whole took 572 ms and now takes about 106 ms.
