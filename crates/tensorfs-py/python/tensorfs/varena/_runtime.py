@@ -41,12 +41,14 @@ def _managed_working() -> tuple[bool, bool]:
     memory, `machine.managed_working = true` under a top-level `dev = true` in its config.toml
     (`machine.managed_rebind = false` leaves blocks handed out again to the driver's faults). Read here
     because the executor's Start carries no such field: a product switch would arrive there, as `dev` does.
+    The machine's config is in its user's home: an executor's HOME is its own directory (TensorD serve.rs).
     """
     import os
+    import pwd
     import tomllib
 
     try:
-        with open(os.path.join(os.path.expanduser("~"), ".cozy", "config.toml"), "rb") as file:
+        with open(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".cozy", "config.toml"), "rb") as file:
             config = tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError):
         return False, False
