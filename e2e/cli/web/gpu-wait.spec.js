@@ -1,4 +1,5 @@
-// gpu-wait (cl-1197): a run waiting for a GPU says so on its box's face, on its machine's tab and in its machine's queue. Paul read
+// gpu-wait (cl-1197, cl-1247): a run waiting for a GPU says so on its box's face, on its machine's tab and in its machine's queue,
+// and while its machine can't time the wait, nothing counts down to an end ("17s of 17s" on the box, "0s left" on the tab). Paul read
 // PRO6-61's 96 s wait for 2 GPUs as stuck: its face and machine tab said its stage, "Preparing, time left unknown". Its box's line says
 // what it waits for, whole and uncut (`Waiting for a GPU`: a box has room for no more); its tab's row and its queue's row say all of it,
 // as its drawer does (`Waiting for a GPU, held by run KEY-1, about 2 min`). How long moves as it waits, so each place is read against
@@ -53,6 +54,11 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   const face = async () => (await canvasCard(page, box))?.rendered?.progress?.state ?? null;
   /** Its line as the board drew it, cut to its box's room. */
   const drawn = async () => (await canvasCard(page, box))?.rendered?.labels?.progress?.text ?? null;
+  /** Its time as its face says it, `17s of 40s`, or none. */
+  const timed = async () => (await canvasCard(page, box))?.rendered?.progress?.time ?? '';
+  /** A wait its machine can't time (cl-1247): the run's time left isn't known, so nothing counts down to an end ("17s of 17s", "0s
+   *  left" read as stuck at its end). */
+  const untimed = Boolean(said && /isn't known/.test(said));
 
   await test.step(`${which}: its box's face`, async () => {
     await away(url);
@@ -64,8 +70,10 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
       await agrees(`${box}'s face says what it waits for`, face, short);
       await agrees(`${box}'s line is drawn whole, nothing cut off`, drawn, short);
     }
+    if (untimed) await expect.configure({ soft: true }).poll(timed, { message: `${box} counts no time down while its wait isn't timed`, timeout: 30_000 }).not.toMatch(/ of /);
     seen.face = await face();
     seen.drawn = await drawn();
+    seen.time = await timed();
   });
 
   await test.step(`${which}: its machine's tab`, async () => {
@@ -75,6 +83,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     const row = doing.locator(`li.doing[data-run="${run}"] .said`);
     if (said) await agrees('the tab says its wait', async () => ((await row.count()) ? row.textContent() : null), line);
     seen.tab = (await row.count()) ? await row.textContent() : null;
+    if (untimed) expect.soft(seen.tab ?? '', 'the tab counts no time down while its wait isn\'t timed').not.toMatch(/\bleft\b/);
     await page.keyboard.press('Escape');
   });
 
