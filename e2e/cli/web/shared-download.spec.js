@@ -6,7 +6,8 @@
 // and says it waits, with no bytes or share of its own; the machine's tab and its drawer list the download once and each run as waiting
 // on it, a link to it; each box says "Waiting for <model> to download" with no count, and leads there. A fourth box, never rendered, is
 // predicted on the same machine (the project prefers it, cl-1123): its fetch ahead is the same download, and its readiness counts that
-// download's bytes. Each run's record still says what the machine had and needed (`measurements.weights`, cl-1102). Screenshots of the
+// download's bytes. Each run's record still says what the machine had and needed (`measurements.weights`, cl-1102). A second render,
+// the weights here now, has no download stage and lists no download (Paul: "those are just phases it's skipping"). Screenshots of the
 // canvas, the tab's list and the drawer at 1440×900, paper and dark, are taken as soon as the download goes, before anything is judged,
 // so a red run keeps them too.
 // On the CPU e2e: weighted.py's still on this computer, reading BiRefNet's raw weights from the isolated Hub over a link slowed to 10 MB/s
@@ -168,6 +169,26 @@ test('shared-download', async ({ page, project, api, cli }) => {
         test.info().annotations.push({ type: `weights ${run.name}`, description: JSON.stringify(weights ?? null) });
         softly(weights && ['has', 'needs', 'extras'].every((key) => typeof weights[key] === 'number'), `${run.name}'s record says has, needs and extras`).toBe(true);
       }
+    });
+
+    await test.step('a second render, its weights here now: no download stage and no download listed (Paul: "those are just phases it\'s skipping")', async () => {
+      const before = new Set((await runs()).map((run) => run.id));
+      const again = cli('--json', 'render', BOXES[0], '--on', MACHINE);
+      const stages = new Set();
+      let listed = 0, waited = 0, run;
+      await expect.poll(async () => {
+        run = (await runs()).find((one) => !before.has(one.id));
+        if (run?.progress?.stage) stages.add(run.progress.stage);
+        if (run?.progress?.waiting_on?.length) waited += 1;
+        listed += (await downloads()).length;
+        return run?.status ?? 'not yet';
+      }, { message: 'the second render', timeout: 600_000, intervals: [250] }).toBe('completed');
+      const said = await again;
+      softly(said.code, `cozy render again: ${said.stderr.slice(-400)}`).toBe(0);
+      test.info().annotations.push({ type: `second render ${run?.name}`, description: JSON.stringify({ stages: [...stages], listed, waited, weights: (await cli.json('--full', 'run', 'watch', run.name, '--once')).measurements?.weights ?? null }) });
+      softly([...stages].filter((stage) => /download/i.test(stage)), 'no download stage').toEqual([]);
+      softly(listed, `no ${MODEL} download listed on ${MACHINE}`).toBe(0);
+      softly(waited, 'it waited on no download').toBe(0);
     });
   } finally {
     restore();

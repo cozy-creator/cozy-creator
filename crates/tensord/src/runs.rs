@@ -991,10 +991,11 @@ impl Runs {
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
-            // The machine's download of it, which its run waits on and says so, never its bytes (cl-1205).
+            // The machine's download of it, which its run waits on and says so, never its bytes (cl-1205), opened once bytes of it are
+            // absent: one all here is no download (Paul, 11-17: "when the weights are already resident, it'll do something like
+            // 'downloading weights... installing...' but those are just phases it's skipping").
             let engine = &self.service.engine;
-            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &engine.caller_id(id));
-            let waits = std::collections::BTreeMap::from([(choice.model.clone(), wait)]);
+            let waits: std::sync::Mutex<std::collections::BTreeMap<String, crate::activity::Waiting>> = std::sync::Mutex::default();
             let room = |absent| self.service.room_for(id, absent);
             let source = hub_access()?;
             // The Hub's grant of the run's reads, waited for as it shows: each attempt it doesn't answer (cl-1189).
@@ -1005,6 +1006,13 @@ impl Runs {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
+                let mut waits = waits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if waits.is_empty() && done < total {
+                    waits.insert(choice.model.clone(), crate::activity::wait(crate::activity::Kind::Download, &choice.model, &engine.caller_id(id)));
+                }
+                if waits.is_empty() {
+                    return;
+                }
                 waits.values().for_each(|wait| wait.moved(now, done, total));
                 if let Err(error) = engine.observe_waits(id, crate::access::waits_of(&waits, total.saturating_sub(done))) {
                     tracing::warn!("run {id}: what it waits on: {error}");

@@ -83,9 +83,11 @@ while kill -0 "$node" 2> /dev/null; do
   if [ -n "$p" ]; then
     for run in $( (cd "$p" && cozy --json run ls 2> /dev/null) | jq -r '.runs[]? | select(.kind == "call") | .name'); do
       [[ " $followed " != *" $run "* ]] || continue
+      # The three renders are cold; the one after them, its weights here, warm.
+      kind=cold; [ "$(wc -w <<<"$followed")" -lt 3 ] || kind=warm
       followed="$followed $run"
-      (cd "$p" && cozy --json run watch "$run" > "$G/$run-cold.ndjson" 2>&1) &
-      printf '%s\t%s\t%s\n' "$run-cold" "$TOOL" "$run" >> "$G/cells.tsv"
+      (cd "$p" && cozy --json run watch "$run" > "$G/$run-$kind.ndjson" 2>&1) &
+      printf '%s\t%s\t%s\n' "$run-$kind" "$TOOL" "$run" >> "$G/cells.tsv"
     done
   fi
   sleep 2
@@ -99,6 +101,11 @@ python3 -I "$ROOT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/pro
 python3 -I "$RCT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress-rc.txt" 2>&1
 say "progress check on these runs, this branch's: $(tail -1 "$OUT/progress.txt"); the RC's: $(tail -1 "$OUT/progress-rc.txt")"
 grep -E '^(FAIL|note)' "$OUT/progress.txt" | sed 's/^/  /' | tee -a "$R"
+# A render whose weights are here says no download (Paul: "those are just phases it's skipping").
+for cell in $(cut -f1 "$G/cells.tsv" | grep -- '-warm$'); do
+  said=$(grep '^{' "$G/$cell.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage // empty' | grep -i download | sort -u | head -3 | paste -sd';' -)
+  [ -z "$said" ] && say "$cell: no download stage" || { RC=1; say "FAIL $cell: its weights here, it said $said"; }
+done
 [ "$green" = 0 ] || RC=1
 say "shared-download: $([ "$RC" = 0 ] && echo PASS || echo FAIL)"
 exit "$RC"
