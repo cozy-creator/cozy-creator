@@ -162,6 +162,57 @@ sudo rm -f "$mnt/cl-1076-filler"
 timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
 }
 
+# cl-1235 (11-18, the #3810 review): Status counted a model as one a download may take only when no process held it, while the machine
+# itself (room_for) also takes one only idle executors hold, ending them. So a call that fits once a warm model goes was refused
+# `machine_disk_full` by its quote and never sent: a rental with Qwen-Image warm waited "Needs N more" for H3 until it released idle.
+# Here a stand-in machine (another user's cozy on this runner) has its store on an 8 GiB disk, 1 GiB of it the reserve, and a file
+# leaves 1900 MiB past the reserve once e2e/disk-warm (2.5 GiB) lands. disk.py runs e2e/disk-warm there; its executor goes idle,
+# holding it. Status's room then counts it, and `cozy run` of e2e-roomless/still (published, so quoted), whose e2e/disk-big is 2 GiB,
+# goes there and completes, e2e/disk-warm evicted for it and named in its warning. Before, it was refused `machine_disk_full`.
+disk_freeable() {
+[ "$RUNNER_OS" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "disk freeable: its stand-in is another user of a fresh GitHub runner"; return 0; }
+local name=stand-f script=$here/script/disk.py img=$RUNNER_TEMP/tfs-free.img mnt=/mnt/tfs-free size avail reserve filler room=0 i said
+step "cl-1235: a call that fits once an idle executor's model goes is sent there, that model evicted for it"
+id "cozy-$name" > /dev/null 2>&1 || sudo useradd -m "cozy-$name" || { check "disk freeable: $name: no user"; return 0; }
+truncate -s 8192M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
+  && sudo chown "cozy-$name:" "$mnt" || { check "disk freeable: $name's 8 GiB disk was not made"; return 0; }
+sudo -u "cozy-$name" -H bash -c 'mkdir -p ~/.cozy && printf "[machine]\nstore = \"%s\"\n" "$1" > ~/.cozy/config.toml' _ "$mnt" \
+  || { check "disk freeable: $name's store was not set"; return 0; }
+cozy --json machine show local > "$OUT/set-local.json" || { check "disk freeable: machine show local: $(head -c 300 "$OUT/set-local.json")"; return 0; }
+stand_in "$name" || return 0
+read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
+reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
+# Once e2e/disk-warm landed, 148 MiB short of e2e/disk-big's 2 GiB. e2e/disk-warm's 2.5 GiB covers that twice over: the room check
+# at its install's end counts the bytes the early fetch has in flight again (a separate bug: 44284650344, 44291227672).
+filler=$((avail - reserve - ((1900 + 2560) << 20)))
+sudo fallocate -l "$filler" "$mnt/cl-1235-filler" || { check "disk freeable: $name's filler was not made"; return 0; }
+if ! run_cell "$OUT" free-warm "$script" --model "weights=e2e/disk-warm@0.1.0" text=warm --on "$name"; then
+  check "disk freeable: e2e/disk-warm on $name: $(run_get "$OUT" free-warm .reason.message | head -c 300) $(tail -c 300 "$OUT/free-warm.err" 2> /dev/null)"
+  timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
+  return 0
+fi
+df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/free-warm: run $(cat "$OUT/free-warm.number") completed; $name's disk used, free: /"
+# Its executor idle, Status's room counts e2e/disk-warm: measured again when the idle executors change, not at the next sweep.
+for i in $(seq 60); do
+  cozy --json machine show "$name" > "$OUT/$name-show.json" 2> /dev/null || true
+  room=$(jq -r '.status.disk_room_bytes // 0' "$OUT/$name-show.json" 2> /dev/null || echo 0)
+  [ "${room:-0}" -le $((2048 << 20)) ] || break
+  sleep 1
+done
+echo "disk freeable: $name's room after ${i}s: $((${room:-0} >> 20)) MiB; $(jq -c '.status | {disk_free_bytes, disk_room_bytes, disk_needs_bytes}' "$OUT/$name-show.json" 2> /dev/null)"
+if run_cell "$OUT" free-big e2e-roomless/still instructions=freeable --on "$name"; then
+  said=$(grep '^{' "$OUT/free-big.ndjson" | jq -r 'select(.type == "run.log" and .level == "warning") | .text' 2> /dev/null | tr '\n' ' ')
+  echo "free-big: run $(cat "$OUT/free-big.number") completed on $(run_get "$OUT" free-big .machine): ${said:0:400}"
+  grep -q 'removed e2e/disk-warm' <<< "$said" || check "disk freeable: the run's warnings don't name e2e/disk-warm, evicted for it: ${said:0:400}"
+else
+  said=$(cat "$OUT/free-big.err" "$OUT/free-big.ndjson" 2> /dev/null | tr '\n' ' ')
+  check "disk freeable: e2e-roomless/still on $name, whose idle executor's e2e/disk-warm covers what its disk lacks, didn't run: $(run_get "$OUT" free-big .reason.message | head -c 300) ${said:0:500}"
+fi
+cozy machine logs "$name" --lines 0 --since 15m 2>&1 | grep -E "ended the idle|evicted|doesn't have room|short for" | cut -c1-400 | tail -8 || true
+sudo rm -f "$mnt/cl-1235-filler"
+timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
+}
+
 # cl-1175 (11-17), Paul: "if the user's disc space available is really small, we should probably warn them and stop them from trying to
 # download models they cannot fit, instead telling them to free up disc-space or run on another machine + rent another machine".
 # This computer's store is a 2.5 GiB disk, 1 GiB of it TensorFS's reserve, and e2e-roomless/still reads e2e/disk-big, 2 GiB, which has
