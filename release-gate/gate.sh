@@ -127,6 +127,16 @@ for c in "cozy_runtime:$RWF" "tensorfs:$TWF"; do
   v=${c#*:}; [ -n "$v" ] && [ ! -f "$v" ] || continue
   why=$(tag_built "${c%%:*}" "$v") || { log "$why"; exit 1; }
 done
+# The candidate set resolves before any rental (resolve.py; 44195951427 rented a 4090 for 10 min to learn that its
+# Runtime refused its TensorFS): the Runtime takes the TensorFS, and every package of the checkout and the suites the
+# Runtime. A conflict ends the gate here, at $0.
+RESOLVE=("${GATE_PKGS[@]}")
+[ -z "$PKGS" ] || for d in "$PKGS"/*/; do grep -qs cozy.application "$d/pyproject.toml" && RESOLVE+=("${d%/}"); done
+if ! said=$(uv run -q --no-project --with packaging python -I "$HERE/resolve.py" "${RWF:-}" "${TWF:-}" "${RESOLVE[@]}" 2>&1); then
+  log "the candidate set does not resolve: $(paste -sd';' <<< "$said")"
+  printf 'FAIL candidate set: %s\nVERDICT FAIL (candidate set does not resolve)\n' "$(paste -sd';' <<< "$said")" | tee verdict.txt
+  exit 1
+fi
 if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
@@ -474,12 +484,13 @@ if [ -z "$ON" ]; then
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
   # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), suite graphs makes the pod a dev machine there (`dev = true`: its replays are audited), and an A/B hook
+  # (cl-913), suites graphs and varena's differential make the pod a dev machine there (`dev = true`: replays audited,
+  # the differential arms on), and an A/B hook
   # (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
   # key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
-     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* || $ONLY == *,differential,* || $ONLY == *,diff-* ]]; }; } ||
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* || ,$SUITES, == *,graphs,* ]] ||
      [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519

@@ -1,0 +1,1 @@
+The release gate resolves its candidate set before it rents (`release-gate/resolve.py`): the Runtime wheel must take the TensorFS wheel, and every package of the `--packages` checkout and the suites must take the Runtime. A conflict ends the gate at $0 instead of failing "candidate not installed" on a paid pod (44195951427: 10 minutes of an RTX 4090).

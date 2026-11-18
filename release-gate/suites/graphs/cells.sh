@@ -17,9 +17,8 @@
 #   graphs-audit        replays were audited against their calls as written, and no P-H3-Image or Anima record differed
 G=$OUT/graphs
 mkdir -p "$G"
-said=$(timeout 120 "$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && head -1 ~/.cozy/config.toml" < /dev/null 2>/dev/null)
-grep -qx 'dev = true' <<< "$said" && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
-  expect graphs-dev FAIL "the pod's config.toml says no dev = true: $said"
+pod_dev "$CLI" "$M" > /dev/null && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
+  expect graphs-dev FAIL "the pod's config.toml says no dev = true"
 # gcap <off|NGiB>: the machine restarts (its service reads config.toml again) with that memory limit.
 gcap() {
   "$CLI" machine update "$M" --gpu-memory-limit "$1" -y > "graphs-cap-$1.log" 2>&1
@@ -109,9 +108,9 @@ elif gcopy anima; then
 else
   expect graphs-anima FAIL "no copy of anima"
 fi
-[ -n "$ONLY" ] || cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
+cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
   prompt="a vintage tin robot playing a saxophone on a small stage in a smoky jazz club"
-log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, refused: .value.decode.refused}]' graphs-klein-283.json 2>/dev/null)"
+log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, replays: .value.decode.replays, refused: .value.decode.refused, partial: .value.decode.partial_restore}]' graphs-klein-283.json 2>/dev/null)"
 if gwant graphs-h3; then
   gplate=$(box graphs_plate "$(plate 5)" "A test pattern with a tone")
   for i in 1 2 3; do
