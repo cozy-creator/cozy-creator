@@ -65,12 +65,13 @@ CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gi
 FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
 VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
 JUDGE=$(cd "$(dirname "$0")" && pwd)/fixtures/qwen-cutout/judge.py
+JPY=${RUNNER_TEMP:-$OUT/..}/judge-py  # outside the artifact
 # se-154 (this proof branch only): the alpha judge's Python, proven on a fixture before anything is rented.
 ALPHA=$(param alpha '[]')
 if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
-  uv venv -q --python 3.12 "$OUT/judge-py" > "$OUT/judge-py.log" 2>&1 &&
-    uv pip install -q --python "$OUT/judge-py/bin/python" numpy pillow >> "$OUT/judge-py.log" 2>&1 || fail "the judge's Python: $(tail -c 300 "$OUT/judge-py.log")"
-  "$OUT/judge-py/bin/python" -I "$JUDGE" --self-check "$(dirname "$JUDGE")/../ltx-images/teapot.jpg" > "$OUT/judge-check.txt" 2>&1 ||
+  uv venv -q --python 3.12 "$JPY" > "$OUT/judge-py.log" 2>&1 &&
+    uv pip install -q --python "$JPY/bin/python" numpy pillow >> "$OUT/judge-py.log" 2>&1 || fail "the judge's Python: $(tail -c 300 "$OUT/judge-py.log")"
+  "$JPY/bin/python" -I "$JUDGE" --self-check "$(dirname "$JUDGE")/../ltx-images/teapot.jpg" > "$OUT/judge-check.txt" 2>&1 ||
     fail "judge.py: $(tail -c 400 "$OUT/judge-check.txt")"
   say "judge: $(paste -sd';' "$OUT/judge-check.txt")"
 fi
@@ -434,7 +435,7 @@ done
 # cleared, a painted checkerboard, edges, the rewrite and whether it took the model card's template, the enhancer's
 # seconds. It measures; it never fails the session.
 if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
-  if [ -x "$OUT/judge-py/bin/python" ]; then
+  if [ -x "$JPY/bin/python" ]; then
     # The enhancers' system prompts and chat templates as the pod holds them, by sha256, if they sit there as files.
     timeout 120 cozy machine ssh "$NAME" 'find / -xdev \( -name system_prompt.txt -o -name chat_template.jinja \) 2>/dev/null | head -20 | xargs -r sha256sum' \
       > "$OUT/pod-prompts.txt" 2>&1; say "pod prompts: $(grep -v 'Permanently added' "$OUT/pod-prompts.txt" | paste -sd';' | cut -c1-900)"
@@ -445,7 +446,7 @@ if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
       while [[ $src =~ \{out:([A-Za-z0-9_-]+)\} ]]; do src=${src//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]:-}"}; done
       printf '%s\t%s\t%s\t%s\n' "$k" "$src" "${MADE[$k]:-}" "$OUT/$k.json" >> "$OUT/alpha-cells.tsv"
     done
-    "$OUT/judge-py/bin/python" -I "$JUDGE" "$OUT/alpha-cells.tsv" --sheets "$OUT/sheets" \
+    "$JPY/bin/python" -I "$JUDGE" "$OUT/alpha-cells.tsv" --sheets "$OUT/sheets" \
       --out "$OUT/alpha.tsv" > "$OUT/alpha.txt" 2>&1 || say "judge: exit $?"
     sed 's/^/  /' "$OUT/alpha.txt" | tee -a "$R"
   else
