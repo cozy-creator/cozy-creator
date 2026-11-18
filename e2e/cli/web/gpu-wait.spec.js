@@ -8,6 +8,7 @@
 // waiting run's number), WAIT_MACHINE, WAIT_SAID (the run's `waiting` as the session first read it; none on a machine with no GPU, its
 // $0 pre-flight, where nothing waits and the page is only read) and WAIT_PAGE (which page this is, for its pictures). The face, the tab
 // and the queue in paper and dark: $OUT/web/gpu-wait/<page>-*.png.
+const { spawn } = require('child_process');
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasCard, canvasVisible, themed } = require('./fixtures');
@@ -20,10 +21,18 @@ const line = (said) => {
 };
 /** What it waits for alone, a box's line, as words.ts `waitFor` says it: `line` up to its first comma. */
 const short = (said) => line(said).split(', ')[0];
+/** `1st`, `2nd`, `11th`, as format.ts `ordinal` says it. */
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+/** What a row says of a waiting run, as words.ts does: in its machine's line its place, then its reason (`lineWords`); else its reason
+ *  (`waitWords`); nothing while it waits for nothing. */
+const rowWords = (one) =>
+  one.queue_position != null ? `Queued, ${ordinal(one.queue_position)} in line${one.waiting ? `. ${line(one.waiting)}` : ''}` : one.waiting ? line(one.waiting) : null;
 
 test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab and its queue', { tag: '@gpu' }, async ({ page, api }) => {
-  const { WAIT_URL: url, WAIT_BOX: box, WAIT_RUN: run, WAIT_MACHINE: machine, WAIT_SAID: said, WAIT_PAGE: which = 'own' } = process.env;
-  test.skip(!url || !box || !run || !machine, 'release-gate/sessions/gpu-wait.sh sets WAIT_URL, WAIT_BOX, WAIT_RUN and WAIT_MACHINE');
+  const { WAIT_URL: url, WAIT_BOX: box, WAIT_MACHINE: machine, WAIT_SAID: said, WAIT_PAGE: which = 'own', WAIT_RENDER: rendered, WAIT_DIR: dir } = process.env;
+  /** The run read: the session's (WAIT_RUN), or the one this cell's own render of WAIT_RENDER makes once its page has loaded (cl-1263). */
+  let run = process.env.WAIT_RUN;
+  test.skip(!url || !box || !(run || (rendered && dir)) || !machine, 'release-gate/sessions/gpu-wait.sh sets WAIT_URL, WAIT_BOX, WAIT_MACHINE and WAIT_RUN or WAIT_RENDER');
   test.setTimeout(600_000);
   const shots = join(process.env.OUT, 'web', 'gpu-wait');
   mkdirSync(shots, { recursive: true });
@@ -32,8 +41,10 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   const code = new URL(url).pathname.split('/')[2];
   const id = (await api.get('/v1/projects?limit=1000')).projects.find((one) => one.code === code)?.id;
   expect(id, `the session's project, ${code}, listed`).toBeTruthy();
+  /** The project's runs as Calcifer says them now. */
+  const runs = async () => (await api.get(`/v1/projects/${encodeURIComponent(id)}/runs?limit=100`)).runs;
   /** The run's `waiting` as Calcifer says it now. */
-  const waiting = async () => (await api.get(`/v1/projects/${encodeURIComponent(id)}/runs?limit=100`)).runs.find((one) => String(one.number) === run)?.waiting ?? null;
+  const waiting = async () => (await runs()).find((one) => String(one.number) === run)?.waiting ?? null;
   /** `read` says `words` of the run's wait as it is then, within 30 s: its time left moves ("about 2 min", then "under a minute"). */
   const agrees = (message, read, words) => expect.configure({ soft: true }).poll(async () => {
     const [now, shown] = [await waiting(), await read()];
@@ -83,6 +94,13 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     const [boxSays, rowSays] = [await boxed(), await read()];
     return boxSays && rowSays?.startsWith(boxSays) ? 'begins' : `box ${JSON.stringify(boxSays)}; row ${JSON.stringify(rowSays)}`;
   }, { message, timeout: 30_000 }).toBe('begins');
+  /** A row says what Calcifer says of the run now, as words.ts words it, within 30 s as it changes (cl-1263): a row read from the
+   *  machine list's copy of a run stands still between machine changes while its box moves on. */
+  const follows = (message, read) => expect.configure({ soft: true }).poll(async () => {
+    const now = (await runs()).find((one) => String(one.number) === run);
+    const [want, rowSays] = [now ? rowWords(now) : null, await read()];
+    return !want || rowSays === want ? 'follows' : `row ${JSON.stringify(rowSays)}; the run ${JSON.stringify(want)}`;
+  }, { message, timeout: 30_000 }).toBe('follows');
   /** A wait its machine can't time (cl-1247): the run's time left isn't known, so nothing counts down to an end ("17s of 17s", "0s
    *  left" read as stuck at its end). */
   const untimed = Boolean(said && /isn't known/.test(said));
@@ -91,6 +109,18 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     await away(url);
     await expect(page.locator('.stage')).toBeVisible();
     await expect.poll(() => canvasVisible(page, box), { timeout: 60_000 }).toBe(true);
+    if (rendered) {
+      // Its render, once the page has loaded, as a person runs it from the project's folder: what it waits for reaches the page after it
+      // opened (cl-1263). Its follower runs on and never cancels it.
+      const before = new Set((await runs()).map((one) => one.number));
+      const render = spawn(process.env.COZY || 'cozy', ['--json', 'render', rendered, '--on', machine, '--new', '-y'], { cwd: dir, stdio: 'ignore', detached: true });
+      render.unref();
+      await expect.poll(async () => {
+        run = (await runs()).filter((one) => !before.has(one.number)).map((one) => String(one.number))[0];
+        return run ?? null;
+      }, { message: `${rendered}'s render made a run`, timeout: 120_000 }).not.toBeNull();
+      test.info().annotations.push({ type: 'rendered', description: JSON.stringify({ box: rendered, run }) });
+    }
     await fit(page);
     await expect.poll(face, { message: `${box}'s face drawn`, timeout: 60_000 }).not.toBeNull();
     if (said) {
@@ -109,6 +139,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     const row = doing.locator(`li.doing[data-run="${run}"] .said`);
     if (said) await agrees('the tab says its wait', async () => ((await row.count()) ? row.textContent() : null), line);
     await begins('the tab begins with what its box says', async () => ((await row.count()) ? row.textContent() : null));
+    await follows("the tab says what the run says now", async () => ((await row.count()) ? row.textContent() : null));
     seen.tab = (await row.count()) ? await row.textContent() : null;
     if (untimed) expect.soft(seen.tab ?? '', 'the tab counts no time down while its wait isn\'t timed').not.toMatch(/\bleft\b/);
     await page.keyboard.press('Escape');
@@ -120,6 +151,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     await expect(row).toBeVisible({ timeout: 60_000 });
     if (said) await agrees('the queue says its wait', () => row.textContent(), line);
     await begins('the queue begins with what its box says', () => row.textContent());
+    await follows("the queue says what the run says now", () => row.textContent());
     seen.queue = await row.textContent();
     seen.box = await boxed();
   });
