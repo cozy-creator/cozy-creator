@@ -1217,7 +1217,8 @@ impl Runs {
             true => vec![],
             false => spec.models.iter().filter(|c| own_choice(c, &spec.entrypoint)).cloned().collect(),
         };
-        let (installation, plan, precision) = self.resolve(
+        // Its plan's models are held from their resolution (`Prepared::held`) until its call's fetch holds them (tfs-302).
+        let crate::published::Prepared { installation, plan, warnings: precision, held: resolved } = self.resolve(
             actor,
             id,
             held,
@@ -1296,6 +1297,7 @@ impl Runs {
                 if before.is_some() {
                     fetch.replaces(before);
                 }
+                fetch.hold(resolved);
                 fetch
             });
             // An orchestrator's functions' weights come while it starts and imports (cl-905), if not already. Another package's it
@@ -1805,6 +1807,8 @@ impl Runs {
     ) -> Result<Option<ResultRecord>, Refused> {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let (mut members, mut kept, mut rows) = (vec![], vec![], vec![]);
+        // Every member's models, held from their resolution until the set's own fetches hold them (tfs-302).
+        let mut resolving = vec![];
         for item in items {
             let (held, release) = match &item.source {
                 Source::Installation(alias) => {
@@ -1821,7 +1825,7 @@ impl Runs {
                 _ => (item.entrypoint.as_str(), &item.models[..]),
             };
             let report = observe.clone();
-            let (installation, plan, _) = self.resolve(
+            let crate::published::Prepared { installation, plan, held: resolved, .. } = self.resolve(
                 actor,
                 id,
                 held,
@@ -1840,6 +1844,7 @@ impl Runs {
                     format!("{} has no function called {:?}.", installation.package, item.entrypoint),
                 ));
             }
+            resolving.extend(resolved);
             // A request prepares a function's own GPU model; one with none warms what it calls, as ever.
             let unbound = item.payload.is_some() && plan.is_none();
             if unbound {
@@ -1855,7 +1860,7 @@ impl Runs {
                 for callee in internal_models(&installation, &[], &item.entrypoint, &BTreeSet::new())? {
                     let own: Vec<_> = item.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
                     let report = observe.clone();
-                    let (_, plan, _) = self.resolve(
+                    let crate::published::Prepared { plan, held: more, .. } = self.resolve(
                         actor,
                         id,
                         Some(installation.clone()),
@@ -1869,6 +1874,7 @@ impl Runs {
                         Some(&stoppable.stop),
                     )?;
                     plans.push(plan);
+                    resolving.extend(more);
                 }
             }
             rows.push((json!({"package": installation.package, "release": installation.release,
@@ -2005,15 +2011,11 @@ impl Runs {
         lane: &str,
         observe: Option<crate::published::Observer>,
         stop: Option<&Stop>,
-    ) -> Result<(Installation, Option<crate::gpu_service::Plan>, Vec<String>), Refused> {
+    ) -> Result<crate::published::Prepared, Refused> {
         let card = release.as_ref().map(|(_, _, _, card)| card.clone()).unwrap_or_default();
         let mut request = self.request(id, held, release, hub, asker, entrypoint, choices, lane);
         request.card = self.sent_card(actor, &card)?;
-        let prepared = self
-            .publisher
-            .prepare_now(&self.service, actor, &request, observe, stop)
-            .map_err(|(code, message)| refused(code, message))?;
-        Ok((prepared.installation, prepared.plan, prepared.warnings))
+        self.publisher.prepare_now(&self.service, actor, &request, observe, stop).map_err(|(code, message)| refused(code, message))
     }
 
     /// The install card `digest` names, as `actor` wrote it here (cl-1127); empty: none.
@@ -2236,7 +2238,7 @@ impl Runs {
                     runs.resolve(&actor, "", held, None, hub, &runs.asker("", &spec), &spec.entrypoint, &models, &spec.lane, None, None)
                 })();
             match prepared {
-                Ok((installation, Some(plan), _)) if plan.degree > 0 && !plan.slots.is_empty() => {
+                Ok(crate::published::Prepared { installation, plan: Some(plan), held: resolved, .. }) if plan.degree > 0 && !plan.slots.is_empty() => {
                     // A called function's own rules read its own request, which only its call brings: none answers here.
                     let interface: Value = serde_json::from_slice(&installation.interface).unwrap_or_default();
                     let wants = needs::wants(&interface, &[], &entrypoint, &needs::Answers::default());
@@ -2247,6 +2249,7 @@ impl Runs {
                             let hub = spec.hub.clone().or_else(|| runs.own_hub.clone());
                             let order = if family.is_some() { crate::origin::priority::STARTED } else { root };
                             let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, order);
+                            fetch.hold(resolved);
                             // What the call it names needs comes now, at its run's place in the download line (cl-1102): its run
                             // said it will call it (H3's `prefetch(ref2va_segment)` while a text-only segment renders), and nothing
                             // was wanted for it until its call came. No one waits on it yet.
@@ -2276,8 +2279,9 @@ impl Runs {
 
     /// Run `id`'s function reads checkpoint `manifest`'s `components` (all, when none) now: what of them isn't here comes at
     /// once, before every other download (`priority::EMERGENCY`, cl-966), and this returns once it has landed, so its executor
-    /// reads it from disk. Nothing to fetch when it's all here or never came from a Hub.
-    pub(crate) fn need(&self, id: &str, manifest: &str, components: &[String]) -> Result<(), Refused> {
+    /// reads it from disk. Nothing to fetch when it's all here or never came from a Hub. Answers it open, for its call to hold
+    /// until its executor has it (tfs-302).
+    pub(crate) fn need(&self, id: &str, manifest: &str, components: &[String]) -> Result<tensorfs::store::Checkpoint, Refused> {
         // Its rule said this request doesn't read it (cl-1103), so nothing of it came ahead: that rule's miss.
         let missed = self.contexts.lock().unwrap().get(id).and_then(|context| {
             context.unneeded.iter().find(|(held, read, _)| held == manifest && read.as_slice() == components).map(|(_, _, parameter)| parameter.clone())
@@ -2289,9 +2293,9 @@ impl Runs {
         let checkpoint = crate::storage::checkpoint(store, manifest)?;
         crate::ahead::brought(store, &[(manifest.to_owned(), vec![])], false);
         let absent: Vec<ObjectRef> = crate::storage::chunks(&checkpoint, components).into_iter().filter(|object| !store.holds(object)).collect();
-        let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
+        let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(checkpoint) };
         let machine = self.publisher.machine();
-        let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
+        let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(checkpoint) };
         let model = crate::access::hub_pull(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
         let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
         crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
@@ -2333,7 +2337,7 @@ impl Runs {
         fetched.map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
         let seconds = began.elapsed().as_secs_f64();
         crate::private_io::info(engine, id, format_args!("emergency: {model} is here: {bytes} bytes in {seconds:.1} s"));
-        Ok(())
+        Ok(checkpoint)
     }
 
     /// Observe required-input readiness without consuming the existing fetch owner.
