@@ -352,6 +352,31 @@ print(" ".join(sorted(folders.get(name, name) for name in named)))
 PY
 }
 
+# trust_hub: Calcifer's uv (its locks) trusts this Hub's own CA as it trusts tensorhub.com's: from the system's bundle, which systemd's
+# user manager hands Calcifer once restarted. Once.
+TRUSTED=''
+trust_hub() {
+  [ -z "$TRUSTED" ] || return 0
+  sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+  systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+  systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+  TRUSTED=1
+}
+
+# seed_packages <package folder>...: each of the checkout's packages published at the root, cohort-pinned, once; the first-party packages it
+# takes from the Hub first, as its lock reads them there (qwen-image-2's birefnet), under the Hub's own CA.
+SEEDED=' '
+seed_packages() {
+  local p deps
+  for p in "$@"; do
+    [[ $SEEDED != *" $p "* ]] || continue
+    SEEDED+="$p "
+    deps=$(for d in $(hub_dependencies "$p"); do [ ! -d "$packages/$d" ] || echo "$d"; done)
+    if [ -n "$deps" ]; then seed_packages $deps || return 1; trust_hub; fi
+    publish "$packages/$p" cohort || return 1
+  done
+}
+
 # CPU's cells run through the installed candidate, signed in as this Hub's admin: each package's tiny models are mirrored
 # here under its default refs and its functions run on the local machine (cpu/real.py).
 if [ "$suite" = cpu ]; then
@@ -439,7 +464,7 @@ if [ -n "$needs" ]; then
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
   # run_overhead (cl-1172) runs only echo and the LLM Write tool.
-  [ "$key" = cli:overhead ] || for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  [ "$key" = cli:overhead ] || seed_packages qwen-image-2 minimax-h3 sdxl birefnet || exit 1
   # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
   case $key in
     cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
@@ -451,13 +476,11 @@ if [ -n "$needs" ]; then
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
-    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
-    systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-    systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+    trust_hub
     for dir in "$packages"/*/; do
-      dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
+      dir=${dir%/}
       grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
-      publish "$dir" cohort || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
+      seed_packages "${dir##*/}" || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
     done
   fi
   case $shard in
