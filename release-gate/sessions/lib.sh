@@ -205,7 +205,7 @@ step() {
   # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
   local kinds=''
   if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
-  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow=''
+  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow='' left='' was=''
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1))
     if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
@@ -218,8 +218,15 @@ step() {
     fi
     [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")
-    if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
-    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
+    if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; was=''; fi
+    # Quiet is not stuck (a run fails only on evidence of a hang): `model install` prints nothing while it saves
+    # (44272502858 killed a 105 GiB pull at 72 GiB), so bytes moving on the pod decide: what is left to download, or its
+    # free disk, against a look 7.5 min into the quiet, then each 15 min.
+    if [ -n "$NAME" ] && { [ "$still" -ge 900 ] || { [ "$still" = 450 ] && [ -z "$was" ]; }; }; then
+      left=$(cozy machine show "$NAME" 2> /dev/null | grep -oE '[0-9.]+ [KMGT]?i?B of [^ ]+ to download|^disk free .*' | paste -sd' ')
+      if [ "$still" = 450 ]; then was=$left; elif [ -n "$left" ] && [ "$left" != "$was" ]; then still=0; was=$left; fi
+    fi
+    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min${was:+, the pod still at $was}"; return 124; }
   done
   [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
   wait "$p"; local c=$?
