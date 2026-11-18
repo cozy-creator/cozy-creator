@@ -254,7 +254,7 @@
   "t2i-cat-f"
  ],
  "order": "one-way",
- "need_s": 3600,
+ "need_s": 4500,
  "max_failures": 3,
  "install": [
   "a"
