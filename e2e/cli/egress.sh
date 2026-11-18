@@ -208,6 +208,14 @@ if cell private-default "$dir/held.py"; then
   J '.result.vae.part == "vae-private" and .result.transformer.part == "dit"' "$OUT/private-default.json" \
     || check "private default: its owner's run read another VAE than $model@0.1.0's: $(jq -c .result "$OUT/private-default.json")"
 fi
+# The same default behind a needs rule this request meets (krea-2's edit and control LoRA slots are so): the capability names what
+# the request's plan picks.
+sed 's|"vae": ("vae",)})|"vae": ("vae",)}, needs={"vae": "request.label == \\"\\""})|' "$dir/held.py" > "$dir/ruled.py"
+grep -q 'needs={"vae"' "$dir/ruled.py" || { check "private default: parts.py's decorator moved: ruled.py has no needs rule"; return; }
+if cell private-default-ruled "$dir/ruled.py"; then
+  J '.result.vae.part == "vae-private"' "$OUT/private-default-ruled.json" \
+    || check "private default: behind a needs rule its request meets, its owner's run read another VAE: $(jq -c .result "$OUT/private-default-ruled.json")"
+fi
 }
 
 # private_default_signed_out <dir>: the same run signed out fails in one line that is true of a signed-in sender too.

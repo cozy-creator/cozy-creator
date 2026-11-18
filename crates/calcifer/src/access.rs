@@ -167,9 +167,9 @@ impl Needs {
         }
     }
 
-    /// The releases `spec`'s function loads by default: each of `slots` (its own and its calls') the request chose no model
-    /// for, named as TensorD binds it (`default_choice`: a model with no org is the root's), where `reads` says the account
-    /// may hold the model's private releases.
+    /// The releases a call of `spec` loads by default: each of `slots` (those its request's plan picks, `Machines::slots`) the
+    /// request chose no model for, named as TensorD binds it (`default_choice`: a model with no org is the root's), where
+    /// `reads` says the account may hold the model's private releases.
     fn add_defaults(&mut self, slots: &[Slot], spec: &v1::RunSpec, reads: impl Fn(&str) -> bool) {
         for slot in slots {
             let chosen = spec.models.iter().any(|choice| {
@@ -472,23 +472,41 @@ impl Machines {
             .flatten()
     }
 
-    /// The model slots of `spec`'s function, its own and its calls', as its package's static interface declares them (th-412):
-    /// a release's kept card at `hub`, or local code's kept interface, `local` naming its package and where its run's outputs
-    /// land. Read from this computer's disk: nothing is installed and no package code runs. None kept: none.
+    /// The model slots a call of `spec` may read, as its package's static interface says of its request (th-412): those its function's
+    /// needs rules pick for it (`needs::wants`, the walk a quote and its machine make: what it waits for, either of, and may fetch
+    /// besides; a slot whose rule doesn't hold is left out), over its package's functions, and every slot of the functions of other
+    /// packages it calls, which only their machine walks. From a release's kept card at `hub`, or local code's kept interface
+    /// (`local`: its package, and where its run's outputs land): nothing is installed, no package code runs and no Hub is asked.
+    /// None kept: none.
     fn slots(&self, hub: &str, local: Option<(&str, &std::path::Path)>, spec: &v1::RunSpec) -> Vec<Slot> {
-        let interface = match (&spec.source, local) {
+        let document = match (&spec.source, local) {
             (Some(v1::Source::Release(release)), _) if !release.release.is_empty() => {
-                ::api::hub::cards::kept(self.home.root(), hub, &release.package, &release.release).map(|card| card.interface)
+                ::api::hub::cards::kept(self.home.root(), hub, &release.package, &release.release).map(|card| card.interface_document().clone())
             }
             (Some(v1::Source::Local(source)), Some((package, out_dir))) => crate::private_io::of_output(out_dir)
                 .ok()
-                .and_then(|scope| crate::local_code::kept_for(&self.home, scope.as_ref(), package, &source.manifest))
-                .and_then(|document| Interface::parse(&document).ok()),
+                .and_then(|scope| crate::local_code::kept_for(&self.home, scope.as_ref(), package, &source.manifest)),
             _ => None,
         };
-        let Some(interface) = interface else { return vec![] };
+        let Some(document) = document else { return vec![] };
+        let Ok(interface) = Interface::parse(&document) else { return vec![] };
         let Some(callable) = interface.callables.iter().find(|callable| callable.name == spec.entrypoint) else { return vec![] };
-        callable.models.iter().chain(interface.call_slots(callable)).cloned().collect()
+        let request = spec.payload.as_ref().and_then(|payload| serde_json::from_str::<serde_json::Value>(payload.get()).ok());
+        let answers = match (api::interface::entrypoint(&document, &spec.entrypoint), &request) {
+            (Some(entry), Some(request)) => ::needs::answers(entry, request),
+            _ => ::needs::Answers::default(),
+        };
+        let wants = ::needs::wants(&document, &[], &spec.entrypoint, &answers);
+        let planned: BTreeSet<&str> = (wants.needed.iter())
+            .chain(wants.either.iter().flatten())
+            .chain(wants.extras.iter().flat_map(|(_, slots)| slots))
+            .map(String::as_str)
+            .collect();
+        let own = (interface.callables.iter()).flat_map(|callable| &callable.models).filter(|slot| planned.contains(slot.path.as_str()));
+        let theirs = (callable.calls.iter())
+            .filter(|call| !interface.callables.iter().any(|callable| callable.name == call.function))
+            .flat_map(|call| &call.models);
+        own.chain(theirs).cloned().collect()
     }
 
     /// `slots` of a recorded run: local code's package is its target's (`local/<dist>/<function>`).
