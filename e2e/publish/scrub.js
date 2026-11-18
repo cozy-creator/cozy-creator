@@ -28,8 +28,8 @@ const RULES = [
   [/\b(email["']?\s*(?:[:=]\s*)?["']?)[\w.+-]+@[\w.-]+/gi, `$1${GONE}`],
 ];
 const BINARY_RULES = RULES.map(([rule]) => rule).map((rule) => (String(rule).includes('|cap|a)') ? /([#?&](?:code|media|token|cap)=)[^\s"'&<>]{8}/ : rule));
-const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
-const KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
+const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/;
+const KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/;
 const scrubbed = (text) => RULES.reduce((said, [rule, instead]) => said.replace(rule, instead), text);
 
 const MOST = 64 << 20;
@@ -85,6 +85,12 @@ function file(path, rel) {
     throw error;
   }
   const text = bytes.toString('latin1');
+  // A private key never goes up, whatever the mode or the file: a binary that holds one is left out too.
+  if (PRIVATE_KEY.test(text)) {
+    out(path, rel, stat.size, 'holds a private key');
+    if (!textOnly) console.log(`scrub: ${path} holds a private key: left out of the upload`);
+    return;
+  }
   if (binary(bytes.subarray(0, 8192)) || (textOnly && !utf8(bytes))) {
     if (!textOnly) return;
     if (!kept) return out(path, rel, stat.size, 'not text');
@@ -93,12 +99,6 @@ function file(path, rel) {
     // PNG did), where every other rule needs five or more.
     const hit = BINARY_RULES.find((rule) => text.search(rule) !== -1);
     if (hit) out(path, rel, stat.size, `kept as evidence, but its bytes match ${hit}`);
-    else if (PRIVATE_KEY.test(text)) out(path, rel, stat.size, 'holds a private key');
-    return;
-  }
-  if (PRIVATE_KEY.test(text)) {
-    out(path, rel, stat.size, 'holds a private key');
-    if (!textOnly) console.log(`scrub: ${path} holds a private key: left out of the upload`);
     return;
   }
   const clean = scrubbed(text);
