@@ -106,6 +106,18 @@ one() {
     echo "PASS $p - lock $((SECONDS - t))s: $pinned"
   fi
   t=$SECONDS
+  # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
+  # those sources are its sibling folders, and it is locked so. One whose committed lock leaves such a sibling out, unpublished
+  # (stage.py's unpublished.txt), is installed so too, as Calcifer installs it (cl-1211): that lock holds neither the sibling
+  # nor what it brings in (qwen-image-2 imports birefnet's model, xs-217).
+  local read=$PACKAGES/$p staged staging='' envpkg=$pkg
+  if ! staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME" "$TENSORFS"); then
+    staging="staging it from the checkout failed"
+  elif [ -n "$staged" ]; then
+    if nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1; then read=$staged
+    else staging="its checkout-staged lock failed: $(tail -n1 "$out/staged-lock.log" | cut -c1-300)"; fi
+  fi
+  [ "$LOCK" = fresh ] || [ "$read" = "$PACKAGES/$p" ] || [ ! -s "$out/staged/unpublished.txt" ] || envpkg=$read
   local helpers=() h
   for h in ${HELPERS//,/ }; do grep -q "^name = \"$h\"$" "$PACKAGES/$p/uv.lock" && helpers+=("$PACKAGES/$h"); done
   # The same checkout helpers as the former unauthenticated-index fallback, bound before the first uv sync.
@@ -114,7 +126,7 @@ one() {
     [[ " ${helpers[*]} " == *" $PACKAGES/$h "* ]] || helpers+=("$PACKAGES/$h")
   done
   local made=1
-  "$HERE/env.sh" "$pkg" "$env" "$runtime" "$tensorfs" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
+  "$HERE/env.sh" "$envpkg" "$env" "$runtime" "$tensorfs" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
   if [ -z "$made" ]; then
     echo "FAIL $p - environment $((SECONDS - t))s: $(grep -m1 -iE 'error|failed' "$out/env.log" || tail -n1 "$out/env.log")"
     return 1
@@ -138,16 +150,7 @@ one() {
     else echo "FAIL $p - typecheck ${s}s: $(grep -m1 'error:' "$out/mypy.txt" || tail -n1 "$out/mypy.txt")"; fi
   }
   t=$SECONDS
-  # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
-  # those sources are its sibling folders, and it is locked so.
-  local read=$PACKAGES/$p staged
-  staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME" "$TENSORFS") \
-    || { echo "FAIL $p - describe $((SECONDS - t))s: staging it from the checkout failed"; typed; return 1; }
-  if [ -n "$staged" ]; then
-    nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1 \
-      || { echo "FAIL $p - describe $((SECONDS - t))s: its checkout-staged lock failed: $(tail -n1 "$out/staged-lock.log" | cut -c1-300)"; typed; return 1; }
-    read=$staged
-  fi
+  [ -z "$staging" ] || { echo "FAIL $p - describe 0s: $staging"; typed; return 1; }
   # The static reader's interface: since Runtime 0.44 (cr-269) the only describer, so no import to compare.
   if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$read" \
       > "$out/interface.json" 2> "$out/describe.err"; then
