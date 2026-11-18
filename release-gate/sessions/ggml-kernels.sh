@@ -105,7 +105,15 @@ fi
 # Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
 there "mkdir -p /w/out" < /dev/null || fail "ssh"
 there "cat > /w/pod.sh" < "$FIX/pod.sh" && there "cat > /w/shapes.py" < "$FIX/shapes.py" || fail "copy the fixtures to the pod"
-there "bash /w/pod.sh $LLAMA $LLAMA_SUM > /w/out/pod.out 2>&1" 5400 < /dev/null; code=$?
+# Detached on the pod and polled, each poll its own short ssh: a dropped connection costs one poll, never the step
+# (44407508649, 44408751569: their one long ssh dropped in a Hub outage and each waited out its 5400 s).
+there "rm -f /w/out/pod.rc; setsid nohup bash -c 'bash /w/pod.sh $LLAMA $LLAMA_SUM > /w/out/pod.out 2>&1; echo \$? > /w/out/pod.rc' \
+  > /dev/null 2>&1 < /dev/null &" 60 < /dev/null || fail "start llama.cpp's side on the pod"
+until=$(($(date +%s) + 5400)) code=''
+while [ -z "$code" ] && [ "$(date +%s)" -lt "$until" ]; do
+  sleep 30; code=$(there "cat /w/out/pod.rc 2> /dev/null" 60 < /dev/null) || code=''
+done
+[ -n "$code" ] || code="no exit after 5400 s"
 there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
 [ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 3000 /w/out/build.log" < /dev/null | tee -a "$R"; fail "llama.cpp's side: exit $code"; }
 there "cat /w/out/llama-perf.txt" < /dev/null > "$OUT/llama-perf.txt"
