@@ -25,8 +25,6 @@ from cell import NARROW, STEERS, Cell, Json, module, packages, qwen_tokenizer, s
 from tiny import _shared
 
 MOSS = "openmoss-team/moss-image@0.1.1"
-#: moss-image's `text_encoder` slot default (se-160): the same tiny checkpoint, whose encoder it reads.
-TEXT_ENCODER = "pottokao/moss-image-text-encoder-heretic@0.1.0"
 EDIT, POSE = "chinoll/moss-image-edit@0.1.0", "thedeoxen/moss-image-pose-controlnet@0.1.0"
 TEXT_WIDTH, WIDTH, FFN, HEADS, FREQ, LATENT, LAYERS = 32, 32, 64, 2, 32, 16, 23
 #: Each block's linears an adapter adapts, (in, out).
@@ -85,7 +83,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "_class_name": "MOSSImagePipeline", "scheduler": ["moss_image", "MOSSImageScheduler"],
         "text_encoder": ["transformers", "Qwen3_5Model"], "tokenizer": ["transformers", "Qwen2TokenizerFast"],
         "transformer": ["moss_image", "MOSSImageTransformer"], "vae": ["diffusers", "AutoencoderKLFlux2"]}))
-    return {MOSS: out, TEXT_ENCODER: out, EDIT: _lora(store, 1, 4), POSE: _lora(store, 2, 4)}
+    return {MOSS: out, EDIT: _lora(store, 1, 4), POSE: _lora(store, 2, 4)}
 
 
 #: 512², MOSS-Image's smallest canvas (0.25 MP).
