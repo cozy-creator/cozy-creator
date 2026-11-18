@@ -108,8 +108,8 @@ ours() {
 }
 # kept <what>: $NAME still runs the session's TensorD; one moved off it is put back.
 kept() {
-  local runs
-  runs=$(version)
+  local runs=''
+  for _ in $(seq 20); do runs=$(version); [ -z "$runs" ] || break; sleep 1; done
   [ "$runs" != "$V" ] || return 0
   say "$1: $NAME runs ${runs:-nothing it says}, not the session's $V: updated again"
   step "tensord-$1" machine update "$NAME" --tensord "$(command -v cozy)" -y || return 1
@@ -151,19 +151,26 @@ for line in open(log, errors="replace"):
             print(at)
 PY
 }
-# objects <from ms> [to ms]: what TensorD's log says landed on $NAME in that time (Unix ms, the pod's clock): each `objects:` line.
-objects() {
-  python3 -I - "$OUT/tensord-$NAME.log" "$1" "${2:-99999999999999}" <<'PY'
+# between <log> <from ms> <to ms> <text> [whole]: the log's lines of that time (Unix ms, its writer's clock) that hold <text>, each
+# from <text> on, or whole.
+between() {
+  python3 -I - "$@" <<'PY'
 import datetime, sys
-log, since, until = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+log, since, until, text = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 for line in open(log, errors="replace"):
     stamp = line.split(" ", 1)[0]
-    if stamp[:4].isdigit() and " objects: " in line and " landed " in line:
+    if not stamp[:4].isdigit() or text not in line:
+        continue
+    try:
         at = int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
-        if since <= at <= until:
-            print(stamp[11:23], line.split(" objects: ", 1)[1].strip()[:160])
+    except ValueError:
+        continue
+    if since <= at <= until:
+        print(stamp[11:23], (line.split(" ", 1)[1] if len(sys.argv) > 5 else line[line.index(text):]).strip()[:220])
 PY
 }
+# objects <from ms> [to ms]: what TensorD's log says landed on $NAME in that time: each `objects:` line.
+objects() { between "$OUT/tensord-$NAME.log" "$1" "${2:-99999999999999}" "objects: "; }
 # sample: $NAME's Status as Calcifer relays it, each second: each predicted request's stage (status.ndjson).
 sample() {
   ( while :; do
@@ -251,7 +258,7 @@ rendered() {
 # own_ahead: step 1. A page shows the project, and the box of its own code is guessed onto $NAME: its code carried there at the guess,
 # its item ready, and its render adopting the item. What doesn't match is said at the end; the session goes on.
 own_ahead() {
-  local at now got='' began ended took landed_n
+  local at now got='' began ended took landed_n line from='' to=''
   at=$(date +%s%3N)
   page
   for _ in $(seq 150); do
@@ -264,11 +271,19 @@ own_ahead() {
     MISMATCH+=("own wasn't guessed on $NAME: $(grep -E "own('s| isn't| guessed)" "$OUT/calcifer.log" | tail -2 | cut -c1-300)")
     return 0
   fi
-  say "own: $(grep -o "own guessed on $NAME in [0-9]* ms.*" "$OUT/calcifer.log" | head -1 | cut -c1-260)"
-  grep -o "[0-9]* objects ([^)]*) landed in one request in [0-9]* ms" "$OUT/calcifer.log" | tail -1 | sed 's/^/  Calcifer: /' | tee -a "$R"
-  objects $((at - 2000)) "$now" > "$OUT/own-objects.txt"
+  line=$(grep "own guessed on $NAME in [0-9]* ms" "$OUT/calcifer.log" | head -1)
+  say "own: $(grep -o "own guessed on .*" <<< "$line" | cut -c1-260)"
+  # Its code went within that guess: from Calcifer's line less how long it says the guess took, 2 s either side for the two clocks.
+  read -r from to < <(python3 -I -c '
+import datetime, re, sys
+line = sys.argv[1]
+at = int(datetime.datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+print(at - int(re.search(r"guessed on \S+ in (\d+) ms", line).group(1)) - 2000, at + 2000)' "$line" 2> /dev/null)
+  [ -n "$from" ] && [ -n "$to" ] || { from=$((at - 2000)); to=$now; }
+  between "$OUT/calcifer.log" "$from" "$to" "landed in one request" whole | sed 's/^/  Calcifer: /' | tee -a "$R"
+  objects "$from" "$to" > "$OUT/own-objects.txt"
   landed_n=$(wc -l < "$OUT/own-objects.txt")
-  sed "s/^/  $NAME: objects: /" "$OUT/own-objects.txt" | tee -a "$R"
+  sed "s/^/  $NAME: /" "$OUT/own-objects.txt" | tee -a "$R"
   [ "$landed_n" -ge 1 ] || MISMATCH+=("$NAME's log lands nothing of own's code at its guess")
   if jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${got:-null}" > /dev/null 2>&1; then
     say "own ready on $NAME $((now - at)) ms after the page showed it: $got"
