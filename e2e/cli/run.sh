@@ -655,6 +655,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    lora_metadata
     lora_slot
     ltx_lora
     ltx_msr
@@ -788,6 +789,8 @@ case $SHARD in
   slow-link) parts="slow_link logs" ;;
   # A LoRA naming no slot on the slot that takes LoRAs (cl-1241), by dispatch.
   lora-slot) parts="lora_slot logs" ;;
+  # A LoRA upload's trigger and strength, from its source, its uploader or else none and 1.0 (cl-1287), by dispatch.
+  lora-metadata) parts="lora_metadata logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # What a request with two prompt enhancers fetches, and when (cl-1101): the one its function's rule names (cl-1103).
@@ -840,6 +843,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    lora_metadata
     lora_slot
     ltx_lora
     ltx_msr

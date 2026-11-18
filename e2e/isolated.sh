@@ -329,6 +329,8 @@ case $key in
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp | cli:slow-link) needs='packages spare' ;;
   cli:lora-slot) needs='packages lorabase' ;;
+  # lora_metadata uploads its own LoRAs (cl-1287).
+  cli:lora-metadata) needs='' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
   # A tool whose model a small disk has no room for (cl-1175).
