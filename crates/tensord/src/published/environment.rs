@@ -7,6 +7,7 @@
 //! once it is installed. uv runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::{pypi, update}, process::Supervised};
+use api::release::{series, Bound};
 use pep440_rs::{Version, VersionSpecifiers};
 use serde_json::{json, Value};
 use std::{
@@ -77,8 +78,8 @@ impl Floor {
     /// `name[extras]==version`, as uv installs it.
     fn pinned(&self, version: &str) -> String {
         match self.extras.is_empty() {
-            true => format!("{}=={version}", self.name),
-            false => format!("{}[{}]=={version}", self.name, self.extras),
+            true => api::release::requirement(&self.name, Bound::Exactly, version),
+            false => api::release::requirement(&format!("{}[{}]", self.name, self.extras), Bound::Exactly, version),
         }
     }
 }
@@ -298,7 +299,7 @@ impl Publisher {
                 // The lock's own series at its newest released patch: a patch is fixes, never a
                 // change in what a package calls. One that doesn't install here leaves the lock's.
                 let newest: Vec<String> = SDK.iter()
-                    .filter_map(|name| Some(newest_patch(name, locked.packages.get(*name)?))).collect();
+                    .filter_map(|name| Some(api::release::requirement(name, Bound::NewestPatch, locked.packages.get(*name)?))).collect();
                 match self.pair(env, &py, &newest, job) {
                     Ok(Ok(found)) => fallback.extend(checked(&found)),
                     Ok(Err(why)) | Err((super::UNREACHABLE, why)) => {
@@ -869,13 +870,6 @@ fn torch_miss(line: &str, layer: &Layer) -> Option<String> {
     (layer.holds(&required) || layer.holds(&requirer)).then(|| requirement.to_string())
 }
 
-/// A release's series: its major, or before 1.0 its minor, within which a release only fixes.
-fn series(version: &Version) -> Vec<u64> {
-    let release = version.release();
-    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
-    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
-}
-
 /// Whether release `ours` is `locked` or a later patch of it: the same series and not older.
 fn patch_of(ours: &str, locked: &str) -> bool {
     let (Ok(ours), Ok(locked)) = (Version::from_str(ours), Version::from_str(locked)) else {
@@ -935,17 +929,6 @@ fn relock(project: &Project, ranged: bool) -> String {
 /// machine's protocol in its place (`Publisher::onward`).
 pub(crate) fn newest_hint(package: &str) -> String {
     format!("try its newest release: `cozy package install {package}`")
-}
-
-/// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
-fn newest_patch(name: &str, locked: &str) -> String {
-    match Version::from_str(locked) {
-        Ok(version) => {
-            let series: Vec<String> = series(&version).iter().map(u64::to_string).collect();
-            format!("{name}>={locked},=={}.*", series.join("."))
-        }
-        Err(_) => format!("{name}=={locked}"),
-    }
 }
 
 /// The Runtime and TensorFS of `versions`, by name.

@@ -1,0 +1,1 @@
+Local code whose lock takes the open RC's Runtime build no longer warns `Failed to parse: cozy-runtime>=0.48.0.dev2316+ge1ab5640,==0.48.*` on every install and run on a machine with no Runtime of its own. Its install asks for that build's series at or after its public version (`>=0.48.0.dev2316,==0.48.*`), so a later release of the series replaces the build once there is one.

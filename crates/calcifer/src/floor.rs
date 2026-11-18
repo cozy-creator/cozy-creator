@@ -15,6 +15,7 @@ use api::{
     calcifer::{Component, MachineKind, MachineUpdate, Note, NoteLevel, Run, Status},
     error::{Error, Kind},
     prerelease,
+    release::{series, Bound},
 };
 use api::hub::types::Software;
 use pep440_rs::{Version, VersionSpecifiers};
@@ -507,13 +508,6 @@ fn rc_locked(lock: &str) -> Option<Wheel> {
     this_series(pinned.as_ref()).then_some(wheel)
 }
 
-/// A release's series, as TensorD speaks it: its major from 1.0, its minor before.
-fn series(version: &Version) -> Vec<u64> {
-    let release = version.release();
-    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
-    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
-}
-
 /// Whether a `tensorfs` requirement admits a TensorFS of this cozy's series, whose protocol a machine with no pair of its own
 /// speaks (TensorD's `speaks`). None admits any.
 fn this_series(requirement: Option<&VersionSpecifiers>) -> bool {
@@ -671,12 +665,12 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
     };
     let error = refuse("runtime_floor_lacks", format!("{label} imports {}{more}, which {floor_said} lacks", named.join(", ")));
     Err(match has {
-        Some((version, _)) if !api::prerelease::dev(&version) => error.remedy(format!("raise its floor: cozy-runtime>={version}")),
+        Some((version, _)) if !api::prerelease::dev(&version) => error.remedy(format!("raise its floor: {}", api::release::requirement("cozy-runtime", Bound::AtLeast, &version))),
         // The RC's minor, never its build or wheel: each Runtime merge replaces those.
         Some((version, _)) => {
             let release = Version::from_str(&version).map(|v| v.release().to_vec()).unwrap_or_default();
             let (major, minor) = (release.first().copied().unwrap_or(0), release.get(1).copied().unwrap_or(0));
-            error.remedy(format!("raise its floor to the open RC's: cozy-runtime>={major}.{minor}.0.dev0"))
+            error.remedy(format!("raise its floor to the open RC's: {}", api::release::requirement("cozy-runtime", Bound::AtLeast, &format!("{major}.{minor}.0.dev0"))))
         }
         None => error.remedy(format!("import only what cozy-runtime {} has, or raise its floor to a Runtime that has them", floor.version)),
     })
