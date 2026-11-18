@@ -583,7 +583,6 @@ WEB_SOLO=(
   locked-reveals
   p-code-only
   stop
-  focus-fade
 )
 # The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
 # path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
