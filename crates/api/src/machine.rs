@@ -1234,7 +1234,8 @@ pub struct Quote {
     pub key: String,
     /// It can run here at all; one that can't has no times.
     pub fits: bool,
-    /// Why it can't: `gpu_lost`, `no_gpu` (none, and nothing measured says it runs without one), `machine_disk_full` (its weights, the disk).
+    /// Why it can't: `gpu_lost`, `no_gpu` (none, and nothing measured says it runs without one), `machine_disk_full` (its weights,
+    /// the disk).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
     /// With `machine_disk_full`, the bytes its disk lacks for them, after all the store could free (cl-1175).
