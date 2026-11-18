@@ -1,0 +1,1 @@
+An encrypted project's job waiting on one machine is no longer prepared on an idle computer added by address (cl-1123). Before, that computer got a copy of the job's request, prompt included, though another machine was running it. Now the request goes only to the machine that runs it. Rentals, this computer and plain projects are unchanged.
