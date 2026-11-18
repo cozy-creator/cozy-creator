@@ -36,9 +36,23 @@ rm_quit
 }
 
 rm_setup() {
-local v runtime tensorfs released name
+local v
 v=$(cozy --version | awk '{print $2}')
 [[ $v == *-dev+g* ]] || { check "rc moves: cozy $v is no RC build, with no RC to follow"; return 1; }
+rm_rentals stand-a stand-b || return 1
+{ echo 'dev = true'; grep -v '^dev *=' "$RM_SAVED"; } > "$RM_CFG"
+RM_GH=$(rm_listen "$RM_DIR/github" connect "$RM_GITHUB" github.com githubusercontent.com) || { check "rc moves: the slow GitHub didn't start"; return 1; }
+mkdir -p "${RM_DROPIN%/*}" && printf '[Service]\nEnvironment=HTTPS_PROXY=%s\nEnvironment=https_proxy=%s\nEnvironment=NO_PROXY=%s\nEnvironment=no_proxy=%s\n' \
+  "http://127.0.0.1:$RM_GH" "http://127.0.0.1:$RM_GH" 127.0.0.1,localhost,::1 127.0.0.1,localhost,::1 > "$RM_DROPIN" \
+  && systemctl --user daemon-reload || { check "rc moves: Calcifer's slow GitHub wasn't set"; return 1; }
+rm_start
+}
+
+# rm_rentals <name>...: the newest release's image, and each stood-in rental of it, recorded as a rental this computer ordered, down.
+# Calcifer is left stopped (rm_start).
+rm_rentals() {
+local v runtime tensorfs released name
+v=$(cozy --version | awk '{print $2}')
 runtime=$(curl -fsSL --retry 3 https://pypi.org/pypi/cozy-runtime/json | jq -r '.info.version // empty')
 tensorfs=$(curl -fsSL --retry 3 https://pypi.org/pypi/tensorfs/json | jq -r '.info.version // empty')
 released=$(curl -fsSL --retry 3 https://github.com/cozy-creator/cozy-creator/releases/latest/download/dist-manifest.json \
@@ -52,18 +66,12 @@ rm_image "$released" cozy-runtime "$runtime" tensorfs "$tensorfs" || return 1
 echo "rc moves: each rental's image: cozy $released, Runtime $runtime, TensorFS $tensorfs; this computer's cozy $v"
 
 # Added once each for its address (its relay) and fingerprint, then recorded as a rental this computer ordered, with it down.
-for name in stand-a stand-b; do rm_rental "$name" || return 1; done
+for name in "$@"; do rm_rental "$name" || return 1; done
 systemctl --user stop cozy-calcifer || { check "rc moves: Calcifer didn't stop"; return 1; }
-for name in stand-a stand-b; do
+for name in "$@"; do
   rm_store "UPDATE machines SET kind = 'rental', rental_id = 'rental-$name', hub = 'http://127.0.0.1:1' WHERE name = '$name'" \
     || { check "rc moves: $name wasn't recorded as a rental"; return 1; }
 done
-{ echo 'dev = true'; grep -v '^dev *=' "$RM_SAVED"; } > "$RM_CFG"
-RM_GH=$(rm_listen "$RM_DIR/github" connect "$RM_GITHUB" github.com githubusercontent.com) || { check "rc moves: the slow GitHub didn't start"; return 1; }
-mkdir -p "${RM_DROPIN%/*}" && printf '[Service]\nEnvironment=HTTPS_PROXY=%s\nEnvironment=https_proxy=%s\nEnvironment=NO_PROXY=%s\nEnvironment=no_proxy=%s\n' \
-  "http://127.0.0.1:$RM_GH" "http://127.0.0.1:$RM_GH" 127.0.0.1,localhost,::1 127.0.0.1,localhost,::1 > "$RM_DROPIN" \
-  && systemctl --user daemon-reload || { check "rc moves: Calcifer's slow GitHub wasn't set"; return 1; }
-rm_start
 }
 
 # rc_request (cl-1201, the release coordinator: "A first runs/submit to a rental not yet on the RC downloads the RC's cozy inside
@@ -274,7 +282,7 @@ rm_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1",
 
 rm_quit() {
   local name pid
-  for name in stand-a stand-b stand-c; do
+  for name in stand-a stand-b stand-c stand-d; do
     rm_down "$name"
     for pid in "$RM_DIR/$name/standin.pid" "$RM_DIR/$name/relay.pid"; do
       [ -s "$pid" ] && { kill "$(cat "$pid")" 2> /dev/null || true; }

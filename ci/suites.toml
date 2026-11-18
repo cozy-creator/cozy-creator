@@ -191,6 +191,9 @@ hold-wins = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crat
   "crates/tensord/src/machine/update.rs", "crates/tensord/src/api/machine_update.rs", "e2e/cli/holdwins.sh", "e2e/cli/uplink.py", "e2e/cli/rentalself/**"]
 rc-moves = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/lib.rs", "crates/calcifer/src/store.rs",
   "crates/calcifer/src/floor.rs", "crates/tensord/src/machine/lifecycle.rs", "e2e/cli/rcmoves.sh", "e2e/cli/rcmoves/**", "e2e/cli/rentalself/**"]
+any-places = ["crates/calcifer/src/machines.rs", "crates/calcifer/src/placement.rs", "crates/calcifer/src/project/mod.rs",
+  "crates/calcifer/src/local_code*", "crates/calcifer/src/hub/jobs.rs", "crates/calcifer/src/hub/packages.rs",
+  "crates/calcifer/src/hub/weights.rs", "e2e/cli/anyplaces.sh", "e2e/cli/rcmoves.sh", "e2e/cli/rentalself/**"]
 projectvault-nofuse = ["crates/project-mount/**", "crates/project-vault/**", "e2e/cli/projectvault.sh"]
 projectvault-static = ["crates/project-mount/**", "e2e/cli/projectvault.sh", "e2e/cli/install-vault-driver.sh", "e2e/vault-provider/**"]
 web-1 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",

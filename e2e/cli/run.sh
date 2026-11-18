@@ -50,6 +50,7 @@ parse "$@"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/holdwins.sh"
 . "$(dirname "$0")/rcmoves.sh"
+. "$(dirname "$0")/anyplaces.sh"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
@@ -910,6 +911,8 @@ case $SHARD in
   rc-moves) parts="rc_moves logs" ;;
   # A render held behind a rental's update keeps it past its idle deadline (cl-1236): by dispatch.
   rc-held) parts="rc_held_alone logs" ;;
+  # What calls no function, sent `any`, is placed and runs: a package's install, a model's, a run's sync (cl-1244).
+  any-places) parts="any_places logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
