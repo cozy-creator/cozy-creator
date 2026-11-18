@@ -1702,6 +1702,28 @@ impl Journal {
         Ok((held, record.invocation.parent))
     }
 
+    /// A starting machine forgets its list items' runs (`ahead`: an upcoming job's, a guess's), every row of theirs, the WAL emptied
+    /// (cl-1123): their callers send their lists again, and an earlier build kept each one's request whole, an encrypted project's
+    /// draft too, outside its vault.
+    pub(crate) fn forget_lists(&mut self) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let ids: Vec<i64> = {
+            let mut statement = tx.prepare("SELECT id FROM executions WHERE substr(request_id,1,length(?1))=?1 OR substr(request_id,1,length(?2))=?2").map_err(db_error)?;
+            let rows = statement.query_map(params![crate::ahead::PREPARE, crate::ahead::UPCOMING], |row| row.get(0)).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in &ids {
+            delete_execution(&tx, *id)?;
+        }
+        tx.commit().map_err(db_error)?;
+        self.truncate_wal();
+        tracing::info!("{} list items' runs forgotten: their lists come again", ids.len());
+        Ok(())
+    }
+
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
     /// again, or waits for its access (`interrupted`). A child keeps none: its parent ended with
     /// this restart, and it ends FAILED with its parent.

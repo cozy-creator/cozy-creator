@@ -241,6 +241,7 @@ impl Engine {
         }
         platform::durable::sync_dir(root)?;
         let mut journal = Journal::open(root)?;
+        journal.forget_lists()?;
         journal.interrupt_preparations()?;
         let reader = Journal::open_reader(root)?;
         Ok(Arc::new(Self {

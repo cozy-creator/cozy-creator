@@ -37,6 +37,17 @@ use crate::{machines::Machines, project::Project};
 /// What Calcifer's log says of its predictions (cl-1123): each guess round, each box's guess, each list sent and how long each took.
 pub(crate) const TARGET: &str = "cozy.prefetch";
 
+/// A prediction's line about the project in `folder` (its readable folder): Calcifer's log names an unencrypted project's folder and
+/// boxes, and nothing of an encrypted one, whose line goes to its own log in its vault, kept only for a test's diagnostics
+/// (`private_io::diagnose`): a locked project leaves nothing of itself in Calcifer's (cl-1123).
+pub(crate) fn say(folder: &str, line: impl FnOnce() -> String) {
+    let dir = std::path::Path::new(folder);
+    match !crate::project::vault::ordinary_storage(dir) || crate::project::vault::encrypted_within(dir) {
+        true => crate::private_io::diagnose(dir, line),
+        false => tracing::info!(target: TARGET, "{}", line()),
+    }
+}
+
 /// How long a prepare item a render named stays listed for it at most, should its machine never answer the render.
 const PINNED: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -147,6 +158,8 @@ pub(crate) struct Lists {
 struct Pinned {
     hub: String,
     item: v1::Predicted,
+    /// Its project's folder, and its box.
+    project: String,
     asset: String,
     since: std::time::Instant,
 }
@@ -260,9 +273,9 @@ impl Lists {
     pub(crate) fn taking(&self, project: &str, asset: &str) {
         let Some(guess) = lock(&self.guessed).get(project).and_then(|guesses| guesses.iter().find(|guess| guess.asset == asset).cloned()) else { return };
         let Some(key) = lock(&self.keys).get(&(guess.machine.clone(), identity(&guess.item))).cloned() else { return };
-        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: project.to_owned(), asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((guess.machine.clone(), key.clone()), pinned);
-        tracing::info!(target: TARGET, "{asset}'s render takes its draft's seed: {key} on {} stays listed until the machine answers", guess.machine);
+        say(project, || format!("{asset}'s render takes its draft's seed: {key} on {} stays listed until the machine answers", guess.machine));
     }
 
     /// The key of the item `machine`'s lists predict job `job` (box `asset`) of `project` by (cl-1123): its upcoming job's, else the item
@@ -277,18 +290,18 @@ impl Lists {
         let sent = identity(&v1::Predicted { key: String::new(), spec: v1::RunSpec { predicted: None, ..spec.clone() }, interface: None });
         let held = lock(&self.pinned).iter().find(|((on, _), pinned)| on == machine && pinned.asset == asset && identity(&pinned.item) == sent).map(|((_, key), _)| key.clone());
         if let Some(key) = held {
-            tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, the request it made ready");
+            say(project, || format!("{asset}'s render names {key} on {machine}, the request it made ready"));
             return Some(key);
         }
         let guess = lock(&self.guessed).get(project)?.iter().find(|guess| guess.asset == asset && guess.machine == machine)?.clone();
         let key = lock(&self.keys).get(&(machine.to_owned(), identity(&guess.item))).cloned()?;
         let same = identity(&guess.item) == sent;
-        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, asset: asset.to_owned(), since: std::time::Instant::now() };
+        let pinned = Pinned { hub: guess.hub, item: v1::Predicted { key: key.clone(), ..guess.item }, project: project.to_owned(), asset: asset.to_owned(), since: std::time::Instant::now() };
         lock(&self.pinned).insert((machine.to_owned(), key.clone()), pinned);
-        match same {
-            true => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}: it stays listed until the machine answers"),
-            false => tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, its guess, though it isn't the request that guess made ready"),
-        }
+        say(project, || match same {
+            true => format!("{asset}'s render names {key} on {machine}: it stays listed until the machine answers"),
+            false => format!("{asset}'s render names {key} on {machine}, its guess, though it isn't the request that guess made ready"),
+        });
         Some(key)
     }
 
@@ -296,7 +309,7 @@ impl Lists {
     /// (`Project::take_draft_seed`), so that box's next draft is already predicted with a fresh one.
     pub(crate) fn answered(&self, machines: &Arc<Machines>, machine: &str, key: &str) {
         let Some(pinned) = lock(&self.pinned).remove(&(machine.to_owned(), key.to_owned())) else { return };
-        tracing::info!(target: TARGET, "{machine} answered {}'s render, which named {key}", pinned.asset);
+        say(&pinned.project, || format!("{machine} answered {}'s render, which named {key}", pinned.asset));
         self.send(machines);
     }
 

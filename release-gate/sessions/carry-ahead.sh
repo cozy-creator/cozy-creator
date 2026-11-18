@@ -33,8 +33,14 @@
 fail() {
   [ -z "${DEV:-}" ] || sudo tc qdisc del dev "$DEV" root 2> /dev/null || true
   [ -z "${NAME:-}" ] || cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1
-  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
+  calcifer_log
   say "FAIL: $*"; RC=1; exit 1
+}
+# calcifer_log: Calcifer's log, then what it said of the encrypted project, which only the project's own log in its vault holds
+# (diagnostics = true): Calcifer's names nothing of an encrypted project (cl-1123).
+calcifer_log() {
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
+  [ -z "${VIEW:-}" ] || cat "$VIEW/.vault-calcifer/diagnostics/walk.log" >> "$OUT/calcifer.log" 2> /dev/null
 }
 TREE=$(param tree '') MBIT=$(param mbit 16) YIELD=$(param yield true) OTHER=$(param other sdxl/generate)
 I2I=darrellbest/qwen-image-2.1-pe-i2i-abliterated
@@ -171,7 +177,7 @@ page() {
 }
 logs() {
   cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
-  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+  calcifer_log || true
 }
 # landed <digest> [from ms] [to ms]: the times (Unix ms, the pod's clock) TensorD's log says <digest> landed whole in parts.
 landed() {
@@ -419,7 +425,7 @@ page
 STAYS="own isn't guessed: its code is this encrypted project's own, which stays in its vault on this computer"
 UNSERVED="own's guess wasn't made (no machine that serves now runs it)"
 for _ in $(seq $((SAID_S / 2))); do
-  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+  calcifer_log || true
   grep -qF "$STAYS" "$OUT/calcifer.log" && break
   sleep 2
 done

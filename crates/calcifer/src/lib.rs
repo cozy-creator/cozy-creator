@@ -3339,7 +3339,12 @@ impl Calcifer {
             let of: Vec<&AheadFile> = files.iter().filter(|file| file.project == project).collect();
             let inputs: Vec<&StagedInput> = of.iter().copied().map(|file| &file.input).collect();
             let began = Instant::now();
-            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await?;
+            // What failed is said in Calcifer's log, which names nothing of an encrypted project (`prefetch::say`).
+            let encrypted = of.iter().any(|file| file.encrypted);
+            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await.map_err(|why| match encrypted {
+                true => "an encrypted project's files didn't go".to_owned(),
+                false => why,
+            })?;
             let lacking: Vec<&AheadFile> = of.into_iter().filter(|file| sent.iter().any(|(input, _)| input.digest == file.input.digest)).collect();
             let mut boxes: Vec<(&str, &str, bool)> = vec![];
             for file in &lacking {
@@ -3355,7 +3360,7 @@ impl Calcifer {
                 let there: u64 = (sent.iter().filter(|(input, _)| theirs.iter().any(|file| file.input.digest == input.digest))).map(|(_, held)| *held).sum();
                 let on = if there > 0 { format!(", going on from {} there", bytes(there as f64)) } else { String::new() };
                 let whose = if encrypted { ", an encrypted project's" } else { "" };
-                tracing::info!(target: prefetch::TARGET, "{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{on}{whose}", theirs.len(), began.elapsed().as_millis());
+                prefetch::say(folder, || format!("{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{on}{whose}", theirs.len(), began.elapsed().as_millis()));
             }
         }
         Ok(())
