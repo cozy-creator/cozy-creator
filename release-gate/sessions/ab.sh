@@ -43,7 +43,8 @@
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
-#              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
+#              the runner, for a video tool's input), `{long}` its seed.jpg eight times across, 8192x1024 (cap-sweep's) and
+#              `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
@@ -73,6 +74,10 @@ CLIP=$OUT/clip.mp4
 if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
+fi
+LONG=$OUT/long.jpg
+if jq -e 'any(.[].args[]?; contains("{long}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1024:1024,tile=8x1" -frames:v 1 -q:v 2 "$LONG" || fail "the long picture"
 fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
@@ -254,7 +259,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{long\}/$LONG}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
