@@ -243,6 +243,47 @@ J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum'
 echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
 }
 
+# cl-1241 (the coordinator, 11-18, from a review of packages #982): FLUX.3 Klein's, Fibo's and Krea 2's `image` boxes gained a
+# `text_encoder` slot, the one slot each of their requests loads, and a LoRA naming no slot (`cozy run --lora <lora>`, a LoRA
+# dropped on the box) went there and was refused. It goes on the slots whose class takes LoRAs (the interface's `loras`): those
+# every request loads; else, each on demand, all of them, whichever the request loads taking it (the coordinator's ruling: "the
+# drop WORKS"). Two models at once is `lora_slot_ambiguous` (cl-680), none `lora_slot_absent`. script/lora_slots.py has each
+# shape on e2e/lora-base and e2e/lora-base-b, e2e/lora-proj adapting their transformers' `proj`. Before (rc/0.27.0): `encoded`'s,
+# `chosen`'s and `plain`'s LoRA went on `text_encoder` and was refused, and `pair`'s on `model` alone; `edited`'s is unchanged.
+lora_slot() {
+step "a LoRA naming no slot goes on the slots that take LoRAs, not the first one built (cl-1241)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora_slots.py lora=e2e/lora-proj turbo slot
+lora_on() { jq -c '[.measurements.models[]? | select((.adapters // []) | length > 0) | .slot] | sort' "$OUT/$1.json" 2> /dev/null || echo none; }
+# Klein's `generate`: its text encoder is built first; its transformer, `model`, takes the LoRA.
+if cell lora-slot "$script/encoded" --lora "$lora" && cell lora-slot-plain "$script/encoded"; then
+  [ "$(lora_on lora-slot)" = '["model"]' ] || check "lora slot: encoded's LoRA is not on model alone: $(lora_on lora-slot)"
+  J --slurpfile plain "$OUT/lora-slot-plain.json" '.result.sum != $plain[0].result.sum and .result.encoded == $plain[0].result.encoded' "$OUT/lora-slot.json" \
+    || check "lora slot: encoded's LoRA did not change the transformer alone: $(jq -c .result "$OUT/lora-slot.json"), without it $(jq -c .result "$OUT/lora-slot-plain.json")"
+fi
+# Klein's box: `model` with turbo, else `full`, two models; the one the request loads takes it.
+for turbo in true false; do
+  slot=model; [ "$turbo" = true ] || slot=full
+  cell "lora-slot-$slot" "$script/chosen" "turbo:=$turbo" --lora "$lora" && cell "lora-slot-$slot-plain" "$script/chosen" "turbo:=$turbo" || continue
+  J --arg s "$slot" '[.measurements.models[]? | select(.slot == $s) | .adapters | length] == [1]' "$OUT/lora-slot-$slot.json" \
+    || check "lora slot: chosen with turbo $turbo: its LoRA is not on $slot: $(lora_on "lora-slot-$slot")"
+  J --slurpfile plain "$OUT/lora-slot-$slot-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-slot-$slot.json" \
+    || check "lora slot: chosen with turbo $turbo: the LoRA changed nothing: $(jq -c .result "$OUT/lora-slot-$slot.json") as without it"
+done
+# qwen-image's: `model`, which every request loads, not the edit model it loads on demand (as on rc/0.27.0).
+cell lora-slot-edited "$script/edited" --lora "$lora" \
+  && { [ "$(lora_on lora-slot-edited)" = '["model"]' ] || check "lora slot: edited's LoRA is not on model alone: $(lora_on lora-slot-edited)"; }
+# Two models every request loads: refused, naming each slot and what to type.
+rm -f "$OUT/lora-slot-pair.refused" "$OUT/lora-slot-none.refused"
+ALLOW=lora_slot_ambiguous cell lora-slot-pair "$script/pair" --lora "$lora" || true
+{ [ -f "$OUT/lora-slot-pair.refused" ] && grep -q -- "--lora other=$lora" "$OUT/lora-slot-pair.ndjson" "$OUT/lora-slot-pair.err" 2> /dev/null; } \
+  || check "lora slot: pair's LoRA was not refused as lora_slot_ambiguous naming --lora other=$lora"
+# A function no slot of which takes LoRAs.
+ALLOW=lora_slot_absent cell lora-slot-none "$script/plain" --lora "$lora" || true
+[ -f "$OUT/lora-slot-none.refused" ] || check "lora slot: plain's LoRA was not refused as lora_slot_absent"
+echo "lora slot: encoded on $(lora_on lora-slot), chosen on $(lora_on lora-slot-model) with turbo and $(lora_on lora-slot-full) without, edited on $(lora_on lora-slot-edited); pair $(cat "$OUT/lora-slot-pair.refused" 2> /dev/null || echo ran), plain $(cat "$OUT/lora-slot-none.refused" 2> /dev/null || echo ran)"
+}
+
 # ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
 # take an LTX-2.5 LoRA (including IC-LoRAs such as Lightricks' Ingredients) and store it as a LoRA whose component is
 # `transformer`, with Diffusers' `LTX2VideoTransformer3DModel` module names and a PEFT adapter config"; Paul 11-16: "convert
