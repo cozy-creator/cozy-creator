@@ -320,6 +320,14 @@ fn ahead_keys(files: &[AheadFile]) -> HashSet<(&str, Digest)> {
     files.iter().map(|file| (file.project.as_str(), file.input.digest)).collect()
 }
 
+/// Why nothing of an encrypted project goes to `row`'s machine ahead of its render, if nothing does (Paul, 11-18: "What really matters
+/// is that we can trust the remote machine as safe"): it is another computer's, added by address (`Machines::add`), its owner's. This
+/// computer's and the ones it rented are this account's own.
+fn untrusted(row: &MachineRow) -> Option<String> {
+    (!matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental))
+        .then(|| format!("{} is another computer's, which this account doesn't own", row.name))
+}
+
 /// Whether `held` is all `length` bytes: an empty object's ranges can't say so, so it is always sent (one empty PUT).
 fn whole(held: &v1::Ranges, length: u64) -> bool {
     length > 0 && v1::held_bytes(held) >= length
@@ -2158,15 +2166,16 @@ impl Calcifer {
     /// A run held for its machine's update (`update`: its id, and whether the machine runs it) is its user's command (Paul: idle is no
     /// user command for 15 minutes). The machine's keepalive restarts its idle clock as the run is held, and again once the machine
     /// runs the update, which then restarts it at its end (TensorD's `update_ended`): the run goes there once it is updated, never
-    /// to a new rental (cl-1236). Once for each, as `kept` remembers.
+    /// to a new rental (cl-1236). Once for each, as `kept` remembers; taken is the machine running it, not queuing it (cl-1267).
     async fn keep_for(&self, machines: &machines::Machines, name: &str, id: &RunId, update: (RunId, bool), kept: &mut Option<(RunId, bool)>) {
         if kept.as_ref() == Some(&update) {
             return;
         }
-        if let Err(e) = Box::pin(machines.keepalive(name)).await {
-            warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message);
+        // One that fails (the machine unreachable a moment) is asked again at the run's next wake, not taken as said (cl-1267).
+        match Box::pin(machines.keepalive(name)).await {
+            Ok(_) => *kept = Some(update),
+            Err(e) => warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message),
         }
-        *kept = Some(update);
     }
 
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
@@ -2249,7 +2258,8 @@ impl Calcifer {
                         continue;
                     }
                     if let (Some(machines), Ok(Some(update))) = (self.machines(), self.store.update_going(&name)) {
-                        let taken = update.state == State::Accepted;
+                        // Taken once the machine runs it, not while it only queues it behind another (cl-1267).
+                        let taken = update.state == State::Accepted && update.machine_state.as_deref() != Some("queued");
                         self.keep_for(&machines, &name, id, (update.id, taken), &mut kept_for).await;
                     }
                     self.waiting(id, format!("waiting for {name} to finish updating"));
@@ -2366,12 +2376,21 @@ impl Calcifer {
                 match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        let taken = update.status == RunStatus::InProgress;
+                        let taken = update.status == RunStatus::InProgress && update.machine_state.as_deref() != Some("queued");
                         self.keep_for(&machines, &name, id, (update.id.clone(), taken), &mut kept_for).await;
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}
                             _ = wake.notified() => {}
+                        }
+                        continue;
+                    }
+                    // Nothing published it may move to (cl-1254): refused once, in that line, with nothing to type.
+                    Err(e) if crate::machines::Machines::unpublished(&e) => {
+                        let reason = Reason { code: e.code, message: e.message, ..Default::default() };
+                        match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
                         }
                         continue;
                     }
@@ -3284,17 +3303,27 @@ impl Calcifer {
     /// The link a guess carries to `machine` by, where it may: the one its runs go by (`machine`), pinned to the leaf its Hub recorded
     /// at rent (`rentals::endpoint`) and signing every request with this computer's key (`Link::new`); none to one ending. A plain
     /// project's files and code go to any machine its runs go to, as before cl-1123 carried an encrypted project's (#3857). An
-    /// `encrypted` project's go only to one of this account's own (Paul, 11-18: "What really matters is that we can trust the remote
-    /// machine as safe"): this computer's, or one it rented; another computer's, added by address (`Machines::add`), is its owner's.
+    /// `encrypted` project's go only to one of this account's own (`untrusted`).
     fn ahead_link(&self, machine: &str, encrypted: bool) -> Result<Link, String> {
         let (row, link, ..) = self.machine(machine)?;
-        if encrypted && !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
-            return Err(format!("{machine} is another computer's, which this account doesn't own"));
+        if let Some(why) = untrusted(&row).filter(|_| encrypted) {
+            return Err(why);
         }
         if row.state == ::api::calcifer::MachineState::Ended || self.closing(machine).is_some() {
             return Err(format!("{machine} is ending"));
         }
         link.ok_or_else(|| format!("{machine} has no address yet"))
+    }
+
+    /// Why nothing of an encrypted project goes to `machine` ahead of its render, if nothing does (`untrusted`): only whose it is, never
+    /// whether it serves yet, so a guess of one lists no item there (`project::guess::staged`) and one booting or ending is guessed as
+    /// a plain project's is.
+    pub(crate) fn sealed_from(&self, machine: &str) -> Option<String> {
+        match self.store.machine(machine) {
+            Ok(Some(row)) => untrusted(&row),
+            Ok(None) => Some(format!("there's no machine named {machine}")),
+            Err(e) => Some(e.to_string()),
+        }
     }
 
     /// `carry`, a guess's, behind every run's carry, which shares this computer's uplink with it (Paul, 11-18): it starts once none

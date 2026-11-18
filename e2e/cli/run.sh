@@ -98,7 +98,7 @@ step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is no
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on, and so does a failed web cell (fixtures.js `leftovers`):
 # without them a web lane's artifact held nothing of what Calcifer planned or installed (account-rent, e2e 44011938933).
-case $SHARD in projectvault | projectvault-static | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs | disk-room) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | prefetch | projectvault-unstarted | projectvault-lock-hung | plan | plan-resent | stuck | coming | thumbs | disk-room) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* && " $(echo $parts) " != *" web_lane "* && " $(echo $parts) " != *" web_alone "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -818,8 +818,9 @@ case $SHARD in
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's; local code is carried to a fresh
-  # machine, which its box then says is ready; a failed guess is tried again or says why it stays failed.
-  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry logs" ;;
+  # machine, which its box then says is ready; a failed guess is tried again or says why it stays failed; an encrypted project's
+  # draft doesn't go ahead to a computer added by address, a plain one's does (cl-1123).
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry prefetch_sealed logs" ;;
   # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
   prefetch-retry) parts="prefetch_retry logs" ;;
   entrypoints) parts="entrypoints open_outside hint_commands" ;;

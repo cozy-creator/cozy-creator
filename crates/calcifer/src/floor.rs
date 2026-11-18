@@ -43,6 +43,9 @@ pub(crate) struct Released {
 
 static RELEASED: Mutex<Option<(Instant, Arc<Vec<Released>>)>> = Mutex::new(None);
 
+/// When `own_runtime` last found PyPI unreachable.
+static UNREACHED: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// What each Runtime release requires of TensorFS, as PyPI said it once: a release never changes.
 static TENSORFS: Mutex<BTreeMap<String, Option<VersionSpecifiers>>> = Mutex::new(BTreeMap::new());
 
@@ -191,7 +194,7 @@ impl Machines {
         // `local` below this cozy's Runtime minor can always move to this cozy's own Runtime (cl-1055), for any run there, a project's
         // or not: a plain run whose package needs a newer Runtime moves it to the minor, not to an older minor's release. On the
         // minor, and on every other machine, nothing changes.
-        runtimes.extend(self.own_runtime(name, frame).await);
+        runtimes.extend(self.own_runtime(name, frame).await.ok().flatten());
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
@@ -220,19 +223,56 @@ impl Machines {
         (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
     }
 
-    /// The Runtime `name` (on `frame`) can move to, for any run, when it is `local` below this cozy's Runtime minor (cl-1055): this
-    /// cozy's own, the RC's newest build for an RC or dev build of cozy, else its Hub's pin for this release. None on the minor,
-    /// for any other machine, or when it can't be had now (offline; the Hub names none of the minor).
-    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Option<String> {
+    /// The Runtime `name` (on `frame`) moves to first, for any run, when it is `local` below this cozy's Runtime minor or with no
+    /// pair of its own (cl-1055, cl-1254): the RC's newest build for an RC or dev build of cozy; else its Hub's pin when that is of
+    /// this minor, which always wins (a pin is how a release is rolled back or fixed forward); else PyPI's newest final of the minor,
+    /// for the while a new cozy is out and its Hub's pin, which moves last at promotion, still names the last release's pair, or
+    /// while its Hub was never read. None on the minor, for any other machine, or with no RC build to read. Refused, in a line that
+    /// says so, when nothing of the minor is published or PyPI can't be read.
+    pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Result<Option<String>, Error> {
         let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
         if !local || api::release::on_runtime_minor(&frame.runtime) {
-            return None;
+            return Ok(None);
         }
-        let own = match crate::update::dev_build() || crate::update::rc_version() {
-            true => self.rc.now().await.ok().and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)),
-            false => self.software().await.map(|software| software.runtime.clone()),
+        if crate::update::dev_build() || crate::update::rc_version() {
+            let sums = self.rc.now().await.ok();
+            return Ok(sums.and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)).filter(|runtime| api::release::of_runtime_minor(runtime)));
+        }
+        // Its Hub's pin of the minor wins. One never read (a computer that hasn't reached its Hub) is no pin: PyPI's, as below (cl-1273).
+        if let Some(software) = self.software().await
+            && api::release::of_runtime_minor(&software.runtime)
+        {
+            return Ok(Some(software.runtime.clone()));
+        }
+        let minor = api::release::RUNTIME_MINOR.trim_start_matches(">=").splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
+        // One read of PyPI for a while (`released`, FRESH); one that failed isn't asked again for a minute, so no run asks it.
+        let unreached = || Error::new(Kind::Unavailable, "release_unreachable", format!("This version of Cozy Creator needs Runtime {minor}, and Cozy couldn't reach PyPI to find it; try again shortly."));
+        if UNREACHED.lock().expect("unreached lock").is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            return Err(unreached());
+        }
+        let released = match released().await {
+            Ok(released) => released,
+            Err(e) => {
+                tracing::warn!("cozy-runtime's releases on PyPI: {}", e.message);
+                *UNREACHED.lock().expect("unreached lock") = Some(Instant::now());
+                return Err(unreached());
+            }
         };
-        own.filter(|runtime| api::release::of_runtime_minor(runtime))
+        // Finals only (`released`): a prerelease is never taken. TensorD pairs its TensorFS by the Runtime's own requirement, as an
+        // install resolves it.
+        let newest = (released.iter())
+            .filter(|release| api::release::of_runtime_minor(&release.version))
+            .filter_map(|release| Some((Version::from_str(&release.version).ok()?, release.version.clone())))
+            .max_by(|a, b| a.0.cmp(&b.0));
+        match newest {
+            Some((_, version)) => Ok(Some(version)),
+            None => Err(Error::new(Kind::Unavailable, "runtime_floor_unreleased", format!("This version of Cozy Creator needs Runtime {minor}, which isn't published yet; try again shortly."))),
+        }
+    }
+
+    /// Whether `e`, from [`Machines::own_runtime`], refuses the run: nothing it may move to is published, or PyPI can't be read.
+    pub(crate) fn unpublished(e: &Error) -> bool {
+        matches!(e.code.as_str(), "runtime_floor_unreleased" | "release_unreachable")
     }
 
     /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read, kept across restarts (`hub::held`), when
@@ -268,18 +308,25 @@ impl Machines {
 
     /// Moves `upgrade.machine` to Runtime `upgrade.to` before the run that needs it, which waits behind it: a release alone
     /// (TensorD keeps or pairs its TensorFS), the RC's build with the RC's other builds it's behind. One update per boot and
-    /// Runtime: its run, none once it finished; one that failed is refused with what happened.
+    /// Runtime: its run, none once it finished; one that failed is refused with what happened. One that ended with an update of the
+    /// machine since (a hand moved it back) is spent: `local`'s boot is its whole life (cl-1254).
     pub(crate) async fn upgrade(self: &Arc<Self>, upgrade: &Upgrade) -> Result<Option<Run>, Error> {
         let name = upgrade.machine.as_str();
         let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't reported what it runs yet.")))?;
         let id = self.named(name).ok().flatten().and_then(|row| row.rental_id).unwrap_or_else(|| name.to_owned());
-        let key = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
+        let base = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
         let refused = |why: String| {
             Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("Couldn't update {name}'s Runtime from {} to {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
                 .next(format!("cozy machine update {name} --runtime {}", upgrade.to))
         };
-        if let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
+        let mut key = base.clone();
+        while let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
+            let ended = matches!(run.status, Status::Completed | Status::Failed | Status::Canceled);
+            if ended && self.store().updated_since(name, row.number).map_err(crate::machines::internal)? {
+                key = format!("{base}-{}", row.number);
+                continue;
+            }
             return match run.status {
                 Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "the update didn't finish".to_owned(), |reason| reason.message))),
                 // What it says it runs may be from before its restart: TensorD holds the release to its floor as ever.
