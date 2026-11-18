@@ -1059,9 +1059,11 @@ async fn fetch_file(
         fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved, gate).await?;
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
-            // What was in place before (an earlier attempt's, the revision this one extends) was
-            // not this revision's: read whole once more.
-            Err(Failure::Wrong(_)) if in_place > 0 => {
+            // What was in place before (an earlier attempt's, the bytes kept from the revision
+            // before, `appended_from`) was not this revision's: read whole once more, and say so.
+            Err(Failure::Wrong(why)) if in_place > 0 => {
+                if !private_path(dest) { warn!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
+                    kept = in_place, appended_from = from, %why, "output bytes in place were not this revision's; reading it whole"); }
                 remove(&journal);
                 from = 0;
             }
