@@ -1035,6 +1035,14 @@ impl Machines {
         Ok(machine)
     }
 
+    /// Whether this computer ordered `row` (its key was minted here; another client's rental is reached with the device key). Only
+    /// Cozy's own moves ask (the RC follower, a package's floor, this cozy's minor): a hold by hand lives in the store of the computer
+    /// that made it, so another computer's rental may be held on a candidate build this one can't see; it moves only by hand. Until
+    /// the machine carries its hold (cl-1260, 0.28), this is the one place a rental's orderer counts (cl-1224).
+    pub(crate) fn ordered_here(&self, row: &MachineRow) -> bool {
+        row.kind != MachineKind::Rental || config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
+    }
+
     /// The runs other clients of the account have on the machine, running or queued, as `frame`'s queue says them (cl-1224): one with
     /// any is never moved (to a minor, a package's floor, the RC) for this computer's sake, which would drain or hold up their work.
     pub(crate) fn others_on(&self, frame: &v1::StatusFrame) -> usize {
@@ -1834,7 +1842,8 @@ impl Machines {
 
     /// The least busy rental of the account that fits a run of `gpus` GPUs (0: any), a
     /// ready one before a booting one: runs wait for a rental on its way, never buy around it.
-    /// Busy counts every client's runs there, as its Status queue says them, as `picture` does.
+    /// Busy counts every client's runs there, as its Status queue says them, as `picture` does. Never a test pod, one whose GPU
+    /// memory is capped: as in the render set, it runs only what names it (cl-920).
     fn fitting(&self, gpus: u32) -> Result<Option<String>, Error> {
         let store = self.store();
         let load = self.calcifer.machine_load().map_err(internal)?;
@@ -1863,6 +1872,7 @@ impl Machines {
             .filter(|row| self.closing_in(row, &seen).is_none())
             .filter(|row| seen.get(&row.name).and_then(|seen| broken_in(&row.name, seen)).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
+            .filter(|row| !seen.get(&row.name).and_then(|s| s.frame.as_ref()).is_some_and(|f| f.gpus.iter().any(|g| g.memory_limit_bytes > 0)))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
                 (row.endpoint.is_none(), running + queued + others.get(&row.name).copied().unwrap_or_default(), row.name.clone())

@@ -12,7 +12,8 @@
 #   - the heavy one, the rental still busy: it waits for the rental;
 #   - this computer's fit for heavy, which it ran slowly before the rental (`seconds`), says how long it takes here against the rental's
 #     card (cl-897).
-# One rental of $SKU (any GPU). This computer runs the still too: dispatched with `runtime_ref` (RUNTIME_WHEEL), its machine takes that Runtime
+# One rental of $SKU (any GPU); each render at Automatically waits until every other rental of the account that's up is busy (lib.sh
+# `others_busy`, cl-1224). This computer runs the still too: dispatched with `runtime_ref` (RUNTIME_WHEEL), its machine takes that Runtime
 # first, as e2e's candidates go on, since a cozy built from an RC may speak a protocol no released Runtime does.
 . "$(dirname "$0")/lib.sh"
 WEB=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
@@ -32,6 +33,7 @@ jq -n --arg web "$WEB" '[
 machine_of() { (cd "$RUN_PROJECT" && cozy --json run ls --limit 0) | jq -r --arg f "$1" '[.runs[] | select((.target // "") | test("^\\S+/" + $f + "$"))][0].machine // empty'; }
 # rendered <step> <asset>: rendered as the page asks it at Automatically, to its end; fails on a warning that this computer would do it poorly.
 rendered() {
+  others_busy "$NAME"
   say "step $1: render $2 on what the page sends for Automatically"
   run_page render --on auto "$2" > "$OUT/$1.txt" 2>&1 || fail "$1: render $2: $(tail -c 500 "$OUT/$1.txt")"
   ! grep -qE 'This computer has no GPU|has no supported GPU' "$OUT/$1.txt" || fail "$1: with a rental held, this computer was warned of: $(grep -oE '[^"]*no (supported )?GPU[^"]*' "$OUT/$1.txt" | head -1)"
@@ -57,7 +59,8 @@ placed_among() {
   local among; among=$(run_page board | jq -c '.on // []'); say "$1: Calcifer placed it among $among"
   # What Calcifer said as it placed it (a machine that didn't quote says why), for a step that fails.
   cozy machine logs local calcifer --lines 4000 > "$OUT/calcifer-$1.log" 2>&1 || true
-  J --arg m "$NAME" '. == [$m, "local"]' <<< "$among" || fail "$1: with no machine chosen, Calcifer placed it among $among, not the rental, then this computer"
+  # The account's other rentals, busy (`others_busy`), may be among them too (cl-1224).
+  J --arg m "$NAME" 'index($m) != null and .[-1] == "local"' <<< "$among" || fail "$1: with no machine chosen, Calcifer placed it among $among, not the rental, then this computer"
 }
 
 say "step here: heavy_here rendered on this computer alone, held 150 s"
