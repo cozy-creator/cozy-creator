@@ -61,7 +61,7 @@ def judge(im: Image.Image) -> Judged:
     lap = np.zeros_like(lum)
     lap[1:-1, 1:-1] = np.abs(4 * lum[1:-1, 1:-1] - lum[:-2, 1:-1] - lum[2:, 1:-1] - lum[1:-1, :-2] - lum[1:-1, 2:])
     sat = over.max(axis=-1) - over.min(axis=-1)
-    grey = float(((tiles(sat) < 24) & (tiles(lap) > 12)).mean())
+    grey = float(((tiles(sat.astype(np.float32)) < 24) & (tiles(lap.astype(np.float32)) > 12)).mean())
     return Judged(im.mode, {"clear": clear, "solid": solid, "partial": 1 - clear - solid, "edge": edge, "grey_noise": grey})
 
 
