@@ -184,6 +184,13 @@ pub(crate) struct Measured {
     pub duration_ms: u64,
 }
 
+/// What landing an output moved (cl-1210): bytes read from its machine, and bytes kept of the revision this computer held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Moved {
+    pub read: u64,
+    pub reused: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StoreError {
     #[error("Calcifer's store: {0}")]
@@ -749,6 +756,7 @@ fn forget_jobs(tx: &Transaction<'_>, which: &str, values: impl rusqlite::Params)
     };
     for (id, key) in &jobs {
         for sql in ["DELETE FROM run_logs WHERE run = ?1", "DELETE FROM outputs WHERE run = ?1", "DELETE FROM run_placements WHERE run = ?1", "DELETE FROM run_retries WHERE run = ?1",
+                    "DELETE FROM run_transfers WHERE run = ?1",
                     "UPDATE asks SET run = NULL WHERE run = ?1", "DELETE FROM ended_jobs WHERE run = ?1"] {
             tx.execute(sql, [id])?;
         }
@@ -1286,6 +1294,24 @@ macro_rules! journal_methods {
                 .as_ref()
                 .and_then(|outcome| outcome.measurements.as_ref())
                 .and_then(|measurements| serde_json::from_str(measurements.get()).ok());
+            // What this computer read of each landed output and what it kept of the revision before (`transfer`, cl-1210), beside
+            // the machine's `weights`: a store or project.db not yet given the table has none.
+            let moved: serde_json::Map<String, serde_json::Value> = conn
+                .prepare("SELECT name, idx, read_bytes, reused_bytes FROM run_transfers WHERE run = ?1 ORDER BY name, idx")
+                .and_then(|mut statement| {
+                    let rows = statement.query_map([row.id.as_str()], |r| {
+                        let (name, index): (String, u32) = (r.get(0)?, r.get(1)?);
+                        let output = if index == 0 { name } else { format!("{name}/{index}") };
+                        Ok((output, serde_json::json!({"read": r.get::<_, i64>(2)?, "reused": r.get::<_, i64>(3)?})))
+                    })?;
+                    rows.collect()
+                })
+                .unwrap_or_default();
+            if !moved.is_empty()
+                && let Some(measurements) = run.measurements.get_or_insert_with(|| serde_json::json!({})).as_object_mut()
+            {
+                measurements.insert("transfer".to_owned(), serde_json::Value::Object(moved));
+            }
             let mut statement = conn.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call' ORDER BY seq")?;
             let calls = statement.query_map([row.id.as_str()], |r| {
                 sql_text(r, 1, &log_context(row.id.as_str(), r.get::<_, i64>(0)? as u64))
@@ -1797,8 +1823,13 @@ macro_rules! journal_methods {
 
     /// Records the output's file at `path` as holding revision `rev`, and what was measured of it; while that is its current
     /// revision, the run's next event says it landed.
-    pub(crate) fn exported(&self, run: &str, name: &str, index: u32, rev: u64, path: &Path, measured: Measured) -> Result<Vec<Event>> {
+    pub(crate) fn exported(&self, run: &str, name: &str, index: u32, rev: u64, path: &Path, measured: Measured, moved: Moved) -> Result<Vec<Event>> {
         self.write(|tx| {
+            tx.execute(
+                "INSERT INTO run_transfers (run, name, idx, read_bytes, reused_bytes) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (run, name, idx) DO UPDATE SET read_bytes = read_bytes + excluded.read_bytes, reused_bytes = reused_bytes + excluded.reused_bytes",
+                params![run, name, index, moved.read as i64, moved.reused as i64],
+            )?;
             tx.execute(
                 "UPDATE outputs SET exported_rev = ?4, path = ?5, width = ?6, height = ?7, measured_ms = ?8 WHERE run = ?1 AND name = ?2 AND idx = ?3",
                 params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &stored_output_path(tx,path)?)?, measured.width, measured.height, measured.duration_ms as i64],
@@ -2022,6 +2053,7 @@ impl Store {
         writer.execute_batch(MACHINE_NAMES)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::project::journal::RETRIES)?;
+        writer.execute_batch(crate::project::journal::TRANSFERS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
