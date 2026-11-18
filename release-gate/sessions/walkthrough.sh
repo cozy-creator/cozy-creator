@@ -122,7 +122,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel; then
+if has tools || has idle || has cancel || has seeds; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -202,6 +202,26 @@ if has cancel; then
     (cd "$P" && cozy --json run show "$r" --full) > "$W/out/run-$r.json" 2>&1 < /dev/null
     say "run $r: $(jq -c '{status: (.status // .run.status), reason: ((.reason // .run.reason) | tostring | .[0:160]), created: (.created_at_ms // .run.created_at_ms), started: (.started_at_ms // .run.started_at_ms), settled: (.settled_at_ms // .run.settled_at_ms)}' "$W/out/run-$r.json" 2> /dev/null)"
   done
+fi
+# Seeds (cozy-creator #3772, Paul: "you can only memoize when you have a fixed seed"): a box with no seed rendered three times, three
+# seeds and three pictures, none from memory; `cozy render <box> -n 3`, three seeds; a box at seed 42 twice, the second from memory.
+if has seeds; then
+  P=$W/garden
+  PAGE add "$P" free --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo"}' > "$W/out/free.add.json" 2>&1
+  for i in 1 2 3; do
+    t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" free > "$W/out/free-$i.render.json" 2> "$W/out/free-$i.render.err"
+    say "free render $i: exit $? in $((SECONDS - t1)) s; $(media free-$i)"
+  done
+  DIR=$P TO=1800 c render-n3 render free -n 3 --on "$NAME"; say "cozy render free -n 3: exit $?: $(tail -4 "$W/cli/render-n3.txt" | tr '\n' ' ' | cut -c1-300)"
+  DIR=$P c render-help render --help
+  PAGE add "$P" fixed --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo", "seed": 42}' > "$W/out/fixed.add.json" 2>&1
+  for i in 1 2; do
+    t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" fixed > "$W/out/fixed-$i.render.json" 2> "$W/out/fixed-$i.render.err"
+    say "fixed (seed 42) render $i: exit $? in $((SECONDS - t1)) s; $(jq -r '.asset.failure // empty | tostring' "$W/out/fixed-$i.render.json" 2> /dev/null | cut -c1-300) $(tail -c 300 "$W/out/fixed-$i.render.err" | tr '\n' ' ')"
+  done
+  PAGE asset "$P" free fixed > "$W/out/seeds-assets.json" 2>&1
+  (cd "$P" && cozy --json run ls --full) > "$W/out/seeds-runs.json" 2>&1 < /dev/null
+  say "seeds: $(jq -c '{name: .asset.name, versions: [.versions[]? | {v: (.version // .number // .id), seed: (.seed // .fields.seed // .request.seed // .call.seed // null), memo: (.memoized // .memo // null)}]}' "$W/out/seeds-assets.json" 2> /dev/null | tr '\n' ' ' | cut -c1-900)"
 fi
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
 if has idle; then
