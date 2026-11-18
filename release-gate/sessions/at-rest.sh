@@ -133,6 +133,14 @@ MISMATCH=()
 
 found made
 (cd "$SEALED" && cozy --json machine use local) > "$OUT/use-sealed.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use-sealed.json")"
+# This computer's machine brought up by an install of e2e-boxed on it, as a person's first `cozy package install` does.
+began=$SECONDS
+if ! (cd "$PLAIN_PROJECT" && timeout 900 cozy --json package install "$SOURCE/e2e-boxed" --on local) > "$OUT/install-local.json" 2>&1; then
+  cozy --json machine show local > "$OUT/local-show.json" 2>&1
+  find "$HOME/.cozy" -path '*logs*' -type f -name '*.log*' -newer "$OUT/sealed.json" -exec sh -c 'tail -n 200 "$1" > "$2/machine-$(basename "$1").tail"' _ {} "$OUT" \; 2> /dev/null
+  fail "e2e-boxed didn't install on local in $((SECONDS - began)) s: $(tail -c 300 "$OUT/install-local.json"); local: $(jq -c '.status.booting // .state // .' "$OUT/local-show.json" 2> /dev/null | cut -c1-300)"
+fi
+say "local up, e2e-boxed installed on it, in $((SECONDS - began)) s"
 say "step 1: $BASE rendered on local, no page showing the project"
 run_page add "$BASE" --tool e2e-boxed/plain --fields "$(jq -nc --arg w "$RENDERED" '{instructions: $w}')" > "$OUT/base-box.json" 2>&1 ||
   fail "$BASE's box: $(tail -c 300 "$OUT/base-box.json")"
