@@ -1,0 +1,28 @@
+{
+ "cells": [
+  {
+   "name": "man-plain-t",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  }
+ ],
+ "alpha": [
+  "man-plain-t"
+ ],
+ "order": "one-way",
+ "need_s": 1200,
+ "max_failures": 1,
+ "install": [
+  "m"
+ ],
+ "relock": [
+  "m"
+ ]
+}
