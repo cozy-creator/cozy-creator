@@ -3179,21 +3179,33 @@ impl Calcifer {
     }
 
     /// Local code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), so a fresh rental installs it too:
-    /// each file `machine` doesn't hold whole (`lacking_to`), behind every run's carry (`behind_runs`), only to a machine a guess may
-    /// carry to (`trusted`). The bytes moving hold its idle clock as any upload's do.
-    pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
-        let link = self.trusted(machine)?;
+    /// what `machine` lacks of it, landed as a guess's files are (`ahead_to`), behind every run's carry (`behind_runs`). `project`: the
+    /// encrypted project whose own code it is, which goes through that project's check as its files do (Paul, 11-18). The bytes moving
+    /// hold its idle clock as any upload's do.
+    pub(crate) async fn ship(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[StagedInput]) -> Result<(), String> {
+        let inputs: Vec<&StagedInput> = inputs.iter().collect();
+        let inputs = &inputs;
+        self.behind_runs(machine, move || async move { self.ahead_to(machine, project, inputs).await.map(drop) }).await
+    }
+
+    /// What `machine` lacks of `inputs`, landed there ahead of the run that reads them: the one way anything goes ahead (cl-1123), a
+    /// guess's files (`carried_ahead`) and its local code (`ship`) alike. By the link a run goes by, only to a machine a guess may
+    /// carry to (`trusted`); a `project`'s own goes through the check its run passes there (`private_io::execution_link`, as `step`
+    /// calls it), into that project's execution scope, the store its run's inputs land in (`write_inputs`). Answers the ones it sent.
+    async fn ahead_to<'a>(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[&'a StagedInput]) -> Result<Vec<&'a StagedInput>, String> {
+        let base = self.trusted(machine)?;
+        let link = match project {
+            Some((id, root)) => private_io::execution_link(id, root, machine, &base).await.map_err(|e| e.message)?,
+            None => base,
+        };
         let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
-        let (link, digests) = (&link, &digests);
-        self.behind_runs(machine, move || async move {
-            let held = link.held_many(digests).await.map_err(|e| e.to_string())?;
-            let lacking: Vec<Lacking> = (inputs.iter().zip(held))
-                .filter(|(input, held)| !whole(held, input.length))
-                .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held })
-                .collect();
-            self.lacking_to(link, machine, lacking, 0, AHEAD_BATCHED_EACH, &|_| {}).await.map_err(|e| e.to_string())
-        })
-        .await
+        let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
+        let lacking: Vec<(&'a StagedInput, v1::Ranges)> = (inputs.iter().copied().zip(held)).filter(|(input, held)| !whole(held, input.length)).collect();
+        let sent: Vec<Lacking> = (lacking.iter())
+            .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held: held.clone() })
+            .collect();
+        self.lacking_to(&link, machine, sent, 0, AHEAD_BATCHED_EACH, &|_| {}).await.map_err(|e| e.to_string())?;
+        Ok(lacking.into_iter().map(|(input, _)| input).collect())
     }
 
     /// The link a guess carries to `machine` by, where it may (cl-1123; Paul, 11-18: "What really matters is that we can trust the
@@ -3301,12 +3313,9 @@ impl Calcifer {
         }
     }
 
-    /// `files` landed on `machine`, each what it lacks of them, by the link a run goes by (`trusted`), through the check a run's
-    /// project passes there (`private_io::execution_link`, as `step` calls it): in that project's execution scope, the store its run's
-    /// inputs land in (`write_inputs`), so its render finds them held and sends nothing more. Said once for each box whose files
-    /// landed, an encrypted project's said so.
+    /// `files` landed on `machine`, each what it lacks of them, each project's through its own check (`ahead_to`), so its render
+    /// finds them held and sends nothing more. Said once for each box whose files landed, an encrypted project's said so.
     async fn carried_ahead(&self, machine: &str, files: &[AheadFile]) -> Result<(), String> {
-        let base = self.trusted(machine)?;
         let mut projects: Vec<(&str, &Path)> = vec![];
         for file in files {
             if !projects.iter().any(|(id, _)| *id == file.project) {
@@ -3314,27 +3323,13 @@ impl Calcifer {
             }
         }
         for (project, root) in projects {
-            let link = private_io::execution_link(project, root, machine, &base).await.map_err(|e| e.message)?;
             let of: Vec<&AheadFile> = files.iter().filter(|file| file.project == project).collect();
-            let digests: Vec<Digest> = of.iter().map(|file| file.input.digest).collect();
-            let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
-            let lacking: Vec<(&AheadFile, v1::Ranges)> = (of.into_iter().zip(held)).filter(|(file, held)| !whole(held, file.input.length)).collect();
-            if lacking.is_empty() {
-                continue;
-            }
+            let inputs: Vec<&StagedInput> = of.iter().copied().map(|file| &file.input).collect();
             let began = Instant::now();
-            let sent = (lacking.iter())
-                .map(|(file, held)| Lacking {
-                    digest: file.input.digest,
-                    length: file.input.length,
-                    path: file.input.path.clone(),
-                    name: file.input.digest.to_string(),
-                    held: held.clone(),
-                })
-                .collect();
-            self.lacking_to(&link, machine, sent, 0, AHEAD_BATCHED_EACH, &|_| {}).await.map_err(|e| e.to_string())?;
+            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await?;
+            let lacking: Vec<&AheadFile> = of.into_iter().filter(|file| sent.iter().any(|input| input.digest == file.input.digest)).collect();
             let mut boxes: Vec<(&str, &str, bool)> = vec![];
-            for (file, _) in &lacking {
+            for file in &lacking {
                 for name in &file.boxes {
                     if !boxes.iter().any(|(held, ..)| held == name) {
                         boxes.push((name.as_str(), file.folder.as_str(), file.encrypted));
@@ -3342,8 +3337,8 @@ impl Calcifer {
                 }
             }
             for (name, folder, encrypted) in boxes {
-                let theirs: Vec<&(&AheadFile, v1::Ranges)> = lacking.iter().filter(|(file, _)| file.boxes.iter().any(|held| held == name)).collect();
-                let size = bytes(theirs.iter().map(|(file, _)| file.input.length).sum::<u64>() as f64);
+                let theirs: Vec<&&AheadFile> = lacking.iter().filter(|file| file.boxes.iter().any(|held| held == name)).collect();
+                let size = bytes(theirs.iter().map(|file| file.input.length).sum::<u64>() as f64);
                 let whose = if encrypted { ", an encrypted project's" } else { "" };
                 tracing::info!(target: prefetch::TARGET, "{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{whose}", theirs.len(), began.elapsed().as_millis());
             }

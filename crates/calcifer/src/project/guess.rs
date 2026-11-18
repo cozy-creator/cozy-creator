@@ -340,8 +340,8 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     all
 }
 
-/// What a box's guess came to: made; nothing, and why (its package makes nothing of its kind, it is an encrypted project's local
-/// code); or not known this time, and why.
+/// What a box's guess came to: made; nothing, and why (its package makes nothing of its kind, it is an encrypted project's own
+/// code on this computer); or not known this time, and why.
 enum Guessed {
     /// With the key of the request it was made of (`request_key`).
     Made(Box<Guess>, u64),
@@ -423,8 +423,8 @@ fn draft(with: &str, made: &Map<String, Value>) -> u64 {
 /// first of its package that makes this kind, as the request a render of the box would send it (`super::predicted`, cl-1123: its
 /// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
 /// it (`Host::foreseen`); and the files its request reads, which go to its machine ahead of its render (`Calcifer::carry_ahead`).
-/// Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local code, which goes with the
-/// run that calls it.
+/// Err(why) inside: none, as its package makes nothing of the kind, its local code couldn't be carried to its machine, or it is an
+/// encrypted project's own code on this computer, which stays in its vault.
 #[allow(clippy::too_many_arguments)]
 async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking, read: Option<Package>) -> Result<Result<(v1::Predicted, String, u64, Vec<crate::AheadFile>), Cow<'static, str>>, Error> {
     let dir = &project.folder.dir;
@@ -437,14 +437,16 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
         // Carried to its machine as a run of it carries it (#3646), its files and manifest written there before the item, so a fresh
         // rental installs it too (frozen-RC 44000183889: H3 from a checkout never got ready on one); once a machine has them, by its
-        // manifest alone. An encrypted project's own code goes only with the run that calls it; code beside the project (a dev
-        // home's checkout, `~/…`) isn't the project's.
+        // manifest alone. An encrypted project's own code goes ahead as its files do, by the same carry and through its project's
+        // check (`Calcifer::ship`; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What really matters is
+        // that we can trust the remote machine as safe"). On this computer it stays in its vault, where its run reads it. Code beside
+        // the project (a dev home's checkout, `~/…`) isn't the project's.
         Some(path) => {
-            let private = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
-            if private && path.starts_with(dir) {
-                return Ok(Err(Cow::Borrowed("its code is this encrypted project's own, which goes only with the run that calls it")));
-            }
             let On::Machine(on) = machine else { return Ok(Err(Cow::Owned(format!("its local code would go to {machine}, no one machine")))) };
+            let own = path.starts_with(dir) && crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
+            if own && on == "local" {
+                return Ok(Err(Cow::Borrowed("its code is this encrypted project's own, which stays in its vault on this computer")));
+            }
             let carried = (on.clone(), package.manifest.clone());
             let turn = lock(&CARRYING).entry(carried.clone()).or_default().clone();
             let _carrying = turn.lock().await;
@@ -461,7 +463,8 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
                     let hubs = &api.machines.hubs;
                     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
                     let staged = crate::stages::stage("source", crate::local_code::source(hubs.home(), &crate::local_code::own(api, path)?, hubs, &origin)).await?;
-                    if let Err(why) = crate::stages::stage("carried", api.calcifer.ship(on, &staged.inputs)).await {
+                    let theirs = own.then(|| (project.id(), project.folder_root()));
+                    if let Err(why) = crate::stages::stage("carried", api.calcifer.ship(on, theirs, &staged.inputs)).await {
                         return Ok(Err(Cow::Owned(format!("its local code wasn't carried to {on}: {why}"))));
                     }
                     lock(&CARRIED).insert(carried, staged.source.clone());
