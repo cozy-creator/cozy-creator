@@ -426,6 +426,22 @@ impl Fetch {
         self.hinted.lock().unwrap().clear();
     }
 
+    /// The bytes of `lined`'s needed objects absent here whose download is under way, each once: the store took each one's whole
+    /// length as it began (`Store::partial`), so the disk's free bytes have them already.
+    pub(crate) fn under_way(&self, lined: &Lined) -> u64 {
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        for (_, part) in &lined.wants {
+            for (object, state) in part.absent.iter().zip(self.machine.fetching(&part.remote, &part.absent)) {
+                let taken = state.is_some_and(|state| !matches!(state.phase, tensorfs::fetch::Phase::Queued | tensorfs::fetch::Phase::Starting));
+                if taken && seen.insert(object.sha256.clone()) {
+                    bytes += object.length;
+                }
+            }
+        }
+        bytes
+    }
+
     /// Want what a call `needs` (cl-1102), before its executor reads it. What of `needed` isn't here (Y) comes next, in Runtime's
     /// Start-pass order, the smallest component first, held until the call ends: its run waits on that and nothing else. `room` is
     /// asked for Y's bytes before any is wanted: it frees them on the disk or refuses, and a refusal fails the call before it
@@ -454,9 +470,10 @@ impl Fetch {
         if let Some(unsourced) = lined.unsourced.take() {
             return Err(refuse(unsourced));
         }
-        // Its checkpoints are held from `lined` on: making room never evicts its own.
+        // Its checkpoints are held from `lined` on: making room never evicts its own. What of it a download under way has taken its
+        // room for (its early fetch's, cl-966) isn't asked for again (cl-1256: counted twice, a call that fit failed mid-download).
         let account = lined.account;
-        room(account.needs).map_err(|why| refuse(why))?;
+        room(account.needs.saturating_sub(self.under_way(&lined))).map_err(|why| refuse(why))?;
         let wanted: Vec<(u64, Lining)> = std::mem::take(&mut lined.wants).into_iter().filter(|(_, part)| !part.absent.is_empty()).collect();
         {
             let mut state = self.required.lock().unwrap();

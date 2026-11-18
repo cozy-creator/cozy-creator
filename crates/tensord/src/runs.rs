@@ -1694,7 +1694,8 @@ impl Runs {
         }
         let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
         let lined = fetch.lined(reads, &|rank| self.place(id, ahead, rank), &|rank| self.order_guess(id, rank), free)?;
-        let needed = lined.account.needs;
+        // What another download under way has taken its room for already isn't asked again (cl-1256).
+        let needed = lined.account.needs.saturating_sub(fetch.under_way(&lined));
         match ahead {
             false => self.service.room_for(id, needed).map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")))?,
             true if needed > free => {
