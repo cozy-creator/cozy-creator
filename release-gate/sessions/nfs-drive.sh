@@ -14,6 +14,7 @@
 # The $0 pre-flight also says what each of `candidates` costs on RunPod. params:
 #   tool, fields   the box (default sdxl/generate, a prompt); model, its repository (default stabilityai/sdxl)
 #   candidates     SKUs priced in the pre-flight, space-separated
+#   datacenter     the datacenter the quote must name, or nothing is ordered (default: any)
 #   need_s         the seconds the cap must buy (default 1800)
 . "$(dirname "$0")/lib.sh"
 TOOL=$(param tool sdxl/generate) MODEL=$(param model stabilityai/sdxl)
@@ -29,7 +30,14 @@ for s in $(param candidates ''); do
   cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/candidate-$s.json" 2> "$OUT/candidate-$s.err" || true
   say "candidate $s on RunPod: $(jq -R -c 'fromjson? | select(.quote) | .quote' "$OUT/candidate-$s.json" | head -1 | cut -c1-400) $(grep -v quote_unagreed "$OUT/candidate-$s.err" | head -c 200)"
 done
+# quote, with the pre-flight ending after the check below: the quote must name `datacenter`, when one is asked.
+WANT_DC=$(param datacenter '')
+ASKED=$RENT; RENT=true
 quote "$(param need_s 1800)"
+RENT=$ASKED
+QUOTED_DC=$(jq -r '.quote.datacenter // empty' "$OUT/quote.json")
+[ -z "$WANT_DC" ] || [ "$QUOTED_DC" = "$WANT_DC" ] || fail "the quote is in ${QUOTED_DC:-no datacenter it says}, not $WANT_DC: nothing ordered"
+[ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 rent
 jq -e '.rental.nfs_drive == true' "$OUT/show.json" > /dev/null ||
   fail "$NAME mounted no NFS drive: $(jq -c '{provider: .rental.provider, datacenter: .rental.datacenter}' "$OUT/show.json")"
