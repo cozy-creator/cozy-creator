@@ -259,15 +259,25 @@ kept_restore "$gate" "$config" "$OUT/kept/config.toml"
 }
 
 # Two downloads on one machine, the second's weights behind the first's: it says whose download it waits for and how much is
-# ahead, and doesn't read stalled while that one moves (cl-849). The first is 1.6 GiB, the second 115 MiB, used nowhere else.
+# ahead, and doesn't read stalled while that one moves (cl-849). The first is 1.6 GiB, the second 115 MiB, used nowhere else. The
+# isolated Hub's store is slowed to 30 MB/s (slow_store), so the link is what they wait on, as on a pod: unslowed, the machine has
+# every one of the first's objects in flight within 2.5 s and starts the second's beside them, whose bytes then move themselves
+# and are behind nothing (e2e 44294017297: fontbox fetched from +2.5 s to +9.1 s alongside Qwen).
 queued_download() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a download queued behind another run's says whose, and how much is ahead (cl-849)"
-local first second id1='' id2='' t1='' said='' behind
+local first second id1='' id2='' t1='' said='' behind moved=''
+slow_store queued || return 0
 cozy --json model install qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
 first=$!
-# The second goes once the first's bytes move: its objects queue behind all of the first's.
-for _ in $(seq 240); do grep -qE '"bytes_done": *[1-9]' "$OUT/queued-first.ndjson" && break; sleep 0.25; done
+# The second goes once the first's bytes move: its objects queue behind all of the first's. The bytes are the machine's download
+# item's, which the run names in `waiting_on` and says none of its own (cl-1205, #3842).
+for _ in $(seq 240); do
+  cozy --json machine show local > "$OUT/queued-item.json" 2> /dev/null || true
+  J '[.status.activity[]? | select(.kind == "download" and .subject == "qwen/qwen3.5-0.8b" and .bytes_done > 0)] | length > 0' "$OUT/queued-item.json" 2> /dev/null && { moved=1; break; }
+  sleep 0.25
+done
+[ -n "$moved" ] || check "queued: qwen/qwen3.5-0.8b's download never moved on local: $(jq -c '[.status.activity[]? | {kind, subject, bytes_done, bytes_total, runs}]' "$OUT/queued-item.json" 2> /dev/null)"
 cozy --json model install lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
 second=$!
 # A download is a job of the machine's, no project's run (cl-1028): it has no name, its id names it, and a run says it by what it does.
@@ -311,4 +321,5 @@ J '.running + .queued == 1' <<< "$ls" || check "busy: machine ls counts $ls besi
 wait "$call" || check "busy: the function's run failed: $(tail -c 300 "$OUT/busy-call.ndjson")"
 wait "$first" || check "queued: the first download failed: $(tail -c 300 "$OUT/queued-first.ndjson")"
 wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT/queued-second.ndjson")"
+sudo tc qdisc del dev lo root || check "queued: the store's link wasn't restored"
 }
