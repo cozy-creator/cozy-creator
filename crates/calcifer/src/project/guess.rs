@@ -8,8 +8,8 @@
 //! A box's machine is the one placement would send its render to (`placement::soonest`, by what each machine has of it), of the
 //! machines that serve now: nothing is started, rented or waited for to hold a guess. It stays where it is guessed unless another
 //! would finish it clearly sooner (`plan::clearly_sooner`), and its render stays there by the same rule (`Walk::plan`), so the
-//! machine made ready is the one Render picks (`well_placed`). A machine its render wouldn't simply run on (`not_simply`: on its CPU,
-//! or this computer slowly) gets nothing ahead.
+//! machine made ready is the one Render picks (`well_placed`). A machine its render would run on its CPU (`not_simply`) gets nothing
+//! ahead.
 //!
 //! What a guess fetches (`item`) is decided here, with nothing installed and no package code run (`Host::foreseen`, cl-1103; Paul,
 //! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): the
@@ -392,7 +392,7 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
     // `super::not_simply`; cl-1123: a runner with no GPU took 20 GiB for a dragged Qwen box its render would run on its CPU).
     let function = package.maker().ok().flatten().map(|renderer| renderer.function).unwrap_or_default();
     let chosen = &super::well_placed(api, &up, chosen, hub, Some(&package), &function, &made, now);
-    if let Some(why) = super::not_simply(api, chosen, job.gpu, hub, Some(&package), &function, &made) {
+    if let Some(why) = super::not_simply(api, chosen, job.gpu) {
         return Guessed::Nothing(Cow::Owned(format!("{why}, so nothing goes there ahead of it")));
     }
     let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing(Cow::Owned(format!("it would go to {}, no one machine", chosen.machine))) };
