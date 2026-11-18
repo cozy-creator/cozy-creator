@@ -713,7 +713,15 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     // never for a new RC build alone (cl-1199).
     let held: Vec<&str> = made.as_deref().into_iter().chain(kept.as_ref().map(|kept| kept.lock.as_str())).chain(own.as_deref()).collect();
     let rc = crate::floor::rc_runtime(&sent, &held).await?;
-    let takes = |lock: &str| rc.as_ref().is_none_or(|rc| lock.contains(&rc.url));
+    // Beside it, the RC's TensorFS build for a rental's platform (xs-216): a lock made for one without it is made again.
+    let rc_tensorfs = match &rc {
+        Some(rc) => crate::floor::rc_tensorfs_wheel(&sent, rc, &held).await,
+        None => None,
+    };
+    let takes = |lock: &str| {
+        rc.as_ref().is_none_or(|rc| lock.contains(&rc.url))
+            && rc_tensorfs.as_ref().is_none_or(|tensorfs| lock.contains(&tensorfs.url) || !crate::floor::locks_rental(lock))
+    };
     if rc.is_some() && done.is_dir() && !made.as_deref().or(own.as_deref()).is_some_and(takes) {
         let _ = fs::remove_dir_all(&done);
         shared = shared_lock(home, &within, &sent, hub)?;
@@ -1404,7 +1412,15 @@ fn locked_requirement(root: &Path, name: &str) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    let locked = lock.package.into_iter().find(|p| p.name == name)?;
+    // A lock for several platforms holds a row for each (TensorFS: the RC's build by URL for a rental's, the index's elsewhere,
+    // xs-216): the one this computer installs, a wheel built for it first.
+    let rows: Vec<Locked> = lock.package.into_iter().filter(|p| p.name == name).collect();
+    let host = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    let fits = |p: &&Locked| {
+        let url = p.source.get("url").and_then(toml::Value::as_str);
+        url.is_none_or(|url| !url.ends_with(".whl") || url.ends_with("-none-any.whl") || ::api::prerelease::native(url, &host))
+    };
+    let locked = rows.iter().filter(|p| p.source.contains_key("url")).find(fits).or_else(|| rows.iter().find(fits))?;
     if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
         return Some(format!("{name} @ {url}"));
     }

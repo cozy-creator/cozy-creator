@@ -49,7 +49,7 @@ pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(reqwest::Client::builder()
-        .user_agent(concat!("tensorfs/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("tensorfs/", env!("TENSORFS_VERSION")))
         .connect_timeout(CONNECT)
         .tcp_keepalive(PROBE * 6)
         .tcp_keepalive_interval(PROBE)

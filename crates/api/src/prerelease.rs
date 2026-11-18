@@ -2,9 +2,10 @@
 //! `v<version>`, cozy-creator `tensorfs-v<version>`), whose `SHA256SUMS` names its wheels. The open
 //! RC's newest builds (cl-922) are on its rolling prerelease `rc-<x.y.z>` in each repository, with the
 //! `cozy` a machine runs (`cozy-<version>-linux-<arch>`): its Runtime as a dev release of the minor it makes
-//! (`0.47.0.dev2260+g1a2b3c4d`, cl-952), so a package's floor can name the minor (`>=0.47.0.dev0`); TensorFS as
-//! `<version>+dev.g<sha8>`; cozy as the dev version of that minor with its commit (`0.26.0-dev+g1a2b3c4d`, cl-976). Each
-//! keeps its newest 20 builds of a kind, its `SHA256SUMS` naming them newest first: the first line that fits is the newest.
+//! (`0.47.0.dev2260+g1a2b3c4d`, cl-952), so a package's floor can name the minor (`>=0.47.0.dev0`); TensorFS the same
+//! (`0.27.0.dev3298+g1a2b3c4d`, xs-216), so the Runtime's floor names a build of it (`tensorfs>=0.27.0.dev3298`); cozy as the
+//! dev version of that minor with its commit (`0.26.0-dev+g1a2b3c4d`, cl-976). Each keeps its newest 20 builds of a kind
+//! (and any TensorFS build the RC pins), its `SHA256SUMS` naming them newest first: the first line that fits is the newest.
 
 fn repo_and_prefix(distribution: &str) -> (&'static str, &'static str) {
     let repo = repo(distribution);
@@ -39,9 +40,9 @@ pub fn wheel<'a>(sums: &'a str, distribution: &str, version: &str, platform: &st
         .copied()
 }
 
-/// Whether wheel `file` is the stable-ABI one built for `platform`: a version-specific
+/// Whether wheel `file` (its name, or a URL ending in it) is the stable-ABI one built for `platform`: a version-specific
 /// (`cp310-cp310`) wheel fits one Python only.
-fn native(file: &str, platform: &str) -> bool {
+pub fn native(file: &str, platform: &str) -> bool {
     let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
     file.contains("-abi3-") && match (os, arch) {
         ("linux", arch) => file.contains("manylinux") && file.contains(arch),
@@ -102,6 +103,16 @@ pub fn rc_build(sums: &str, distribution: &str, platform: &str) -> Option<Build>
     (!version.is_empty()).then(|| Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
 }
 
+/// Each native wheel of `distribution` for `platform` an RC's `SHA256SUMS` names, as it lists them (newest first): the TensorFS
+/// builds a lock on an RC Runtime may take beside it (xs-216).
+pub fn rc_natives<'a>(sums: &'a str, distribution: &str, platform: &'a str) -> impl Iterator<Item = Build> + 'a {
+    let prefix = format!("{}-", distribution.replace('-', "_"));
+    listed(sums).filter(move |(file, _)| file.starts_with(&prefix) && file.ends_with(".whl") && native(file, platform)).filter_map(|(file, sha256)| {
+        let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
+        Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+    })
+}
+
 /// The pure wheel (`-py3-none-any.whl`) of `distribution` an RC's `SHA256SUMS` names first, its newest: what a publish's floor
 /// check reads, on any platform.
 pub fn rc_pure(sums: &str, distribution: &str) -> Option<Build> {
@@ -117,13 +128,13 @@ pub fn rc_pures<'a>(sums: &'a str, distribution: &str) -> impl Iterator<Item = B
     })
 }
 
-/// Whether `version` is a dev build: the open RC's Runtime (`0.47.0.dev2260+g1a2b3c4d`) or cozy (`0.26.0-dev+g1a2b3c4d`), or
-/// one built from a commit (`0.45.0+dev.gb976b092`), the RC's TensorFS or one by hand.
+/// Whether `version` is a dev build: the open RC's Runtime or TensorFS (`0.47.0.dev2260+g1a2b3c4d`) or cozy
+/// (`0.26.0-dev+g1a2b3c4d`), or one built from a release's commit (`0.45.0+dev.gb976b092`).
 pub fn dev(version: &str) -> bool {
     version.contains("+dev.g") || version.contains("-dev") || version.parse::<pep440_rs::Version>().is_ok_and(|version| version.is_dev())
 }
 
-/// What a dev build is called in a line: the RC's Runtime by its version (`0.47.0.dev2260`), another by its commit
+/// What a dev build is called in a line: the RC's Runtime or TensorFS by its version (`0.47.0.dev2260`), another by its commit
 /// (`b976b092` of `0.45.0+dev.gb976b092`, `1a2b3c4d` of the RC's cozy `0.26.0-dev+g1a2b3c4d`); a release as it is.
 pub fn shown(version: &str) -> &str {
     if let Some((_, commit)) = version.split_once("+dev.g") {

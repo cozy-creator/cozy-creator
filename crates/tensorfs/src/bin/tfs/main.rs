@@ -336,8 +336,8 @@ fn version(json: bool) -> Result<(Json, String)> {
         .and_then(fs::read)
         .map_err(|e| Failure { kind: Kind::Io, detail: format!("read this binary: {e}") })?;
     let digest = tensorfs::sha256::hex_digest(&bytes);
-    let human = format!("tfs {} sha256:{digest}", env!("CARGO_PKG_VERSION"));
-    let doc = json!({"version": env!("CARGO_PKG_VERSION"), "sha256": digest, "store_format": tensorfs::STORE_FORMAT});
+    let human = format!("tfs {} sha256:{digest}", tensorfs::VERSION);
+    let doc = json!({"version": tensorfs::VERSION, "sha256": digest, "store_format": tensorfs::STORE_FORMAT});
     Ok(match json {
         true => (doc, String::new()),
         false => (doc, human),

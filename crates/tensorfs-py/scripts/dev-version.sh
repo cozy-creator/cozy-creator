@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python=$(command -v python3 || command -v python)
-sha=$(git rev-parse --short=8 HEAD)
+sha=$(git rev-parse HEAD | cut -c1-8)
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
 case $version in
   *.dev0)
