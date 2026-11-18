@@ -31,7 +31,7 @@ from transformers import Qwen3_5ForConditionalGeneration
 from cell import Cell, Json, defined, module, packages, save, size
 from tiny import _shared
 
-MODEL = "minimaxai/minimax-h3-image@0.1.0"
+MODEL = "minimaxai/minimax-h3-image@0.1.1"
 TEXT_ENCODER = "minimaxai/minimax-h3@1.0.0-rc.8"
 EXPANDER = "minimaxai/minimax-h3-image-pe@0.1.0"
 #: The text encoder's width, which the DiT's context embedder reads.
