@@ -13,6 +13,13 @@ while :; do
     echo "$t pid $pid $mib MiB $(tr "\0" " " < "/proc/$pid/cmdline" 2> /dev/null | cut -c1-200)"
   done
   echo "$t card $(nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv,noheader,nounits | paste -sd";")"
+  # PROOF ONLY (var-030 section 8): host memory that cannot be given back, the container's cgroup (less file cache) and the
+  # machine's (MemTotal less MemAvailable), bytes.
+  if [ -f /sys/fs/cgroup/memory.current ]; then c=$(cat /sys/fs/cgroup/memory.current)
+    f=$(awk "\$1 == \"inactive_file\" || \$1 == \"active_file\" {s += \$2} END {printf \"%d\", s}" /sys/fs/cgroup/memory.stat)
+  else c=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2> /dev/null || echo 0)
+    f=$(awk "\$1 == \"total_inactive_file\" || \$1 == \"total_active_file\" {s += \$2} END {printf \"%d\", s}" /sys/fs/cgroup/memory/memory.stat 2> /dev/null || echo 0); fi
+  echo "$t host $((c - f)) $(awk "/^MemTotal/ {t = \$2} /^MemAvailable/ {a = \$2} END {printf \"%d\", (t - a) * 1024}" /proc/meminfo)"
   sleep 5
 done
 EOS
@@ -33,7 +40,7 @@ gpu() { timeout 20 cozy machine ssh "$NAME" 't=$(tail -1 /var/tmp/ab-gpu.log | c
 readings() {
   local try
   for try in $(seq "${1:-1}"); do
-    timeout 120 cozy machine ssh "$NAME" "cat /var/tmp/ab-gpu.log" 2> /dev/null | grep -E '^[0-9:]{8} (pid|card) ' > "$OUT/gpu-pod.tmp"
+    timeout 120 cozy machine ssh "$NAME" "cat /var/tmp/ab-gpu.log" 2> /dev/null | grep -E '^[0-9:]{8} (pid|card|host) ' > "$OUT/gpu-pod.tmp"
     [ -s "$OUT/gpu-pod.tmp" ] && { mv "$OUT/gpu-pod.tmp" "$OUT/gpu-pod.log"; return 0; }
     [ "$try" = "${1:-1}" ] || sleep 15
   done
