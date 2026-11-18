@@ -306,7 +306,9 @@ J --arg m "$name" '[.runs[]? | select(.target | test("e2e-roomless"))] | length 
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] \
   || check "disk room: $(( ($(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ') - before) >> 20 )) MiB landed on this computer's small disk"
 # What placement weighed, for a red to read.
-grep -h "e2e/room\|roomless\|e2e-roomless" "$HOME"/.cozy/calcifer/calcifer.log* 2> /dev/null | cut -c1-600 > "$OUT/room-calcifer.log" || true
-cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/room-walk.log" 2> /dev/null || true
+cozy machine logs local calcifer --lines 0 --since 30m > "$OUT/room-calcifer.log" 2>&1 || true
+grep -E "roomless|stand-r|no room|short for|placed|wider" "$OUT/room-calcifer.log" | cut -c1-400 | tail -40 || true
+cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/room-walk.log" 2> /dev/null || echo "disk room: no walk log in $P"
+tail -n 60 "$OUT/room-walk.log" 2> /dev/null | cut -c1-400 || true
 timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
 }
