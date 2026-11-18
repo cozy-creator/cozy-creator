@@ -48,6 +48,8 @@ web_suite() {
         Xvfb :97 -screen 0 1920x1080x24 -nolisten tcp > "$OUT/web-xvfb.log" 2>&1 & xvfb=$!
       fi ;;
     solo) projects=(solo) workers=(--workers=1) ;;
+    # WebKit's own media stack: AVFoundation on a Mac (cl-1210's seeks across a growing video's joins).
+    webkit) projects=(webkit) ;;
     # A computer with no GPU (run.sh sets WEB_RENDERER=2d): the browser left as it is, so the canvas draws in 2D (fixtures.js names software
     # WebGL as hardware elsewhere).
     2d) projects=(chrome) ;;
