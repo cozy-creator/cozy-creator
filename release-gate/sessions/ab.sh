@@ -77,6 +77,16 @@ if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
 fi
 # se-154 (this proof branch only), at $0 before the quote: each `install` tree's qwen-image-2 locked and installed on this
 # runner (`--on local`, the real lock), and each `show` model's Hub record kept (show-<i>.json/txt).
+# Each `relock` tree's qwen-image-2 locked for real (its scripts/lock.sh, as `task lock` runs it), against the committed lock:
+# uv.lock-<tree>.generated and .diff kept; the install below then reads the generated one.
+for tree in $(param relock '[]' | jq -r '.[]'); do
+  cp "$PACKAGES/$tree/qwen-image-2/uv.lock" "$OUT/uv.lock-$tree.committed"
+  (cd "$PACKAGES/$tree" && scripts/lock.sh qwen-image-2) > "$OUT/relock-$tree.log" 2>&1 || fail "tree $tree: lock.sh: $(tail -c 400 "$OUT/relock-$tree.log")"
+  cp "$PACKAGES/$tree/qwen-image-2/uv.lock" "$OUT/uv.lock-$tree.generated"
+  diff -u "$OUT/uv.lock-$tree.committed" "$OUT/uv.lock-$tree.generated" > "$OUT/uv.lock-$tree.diff" &&
+    say "tree $tree: the real lock is the committed one, byte for byte" ||
+    say "tree $tree: the real lock differs from the committed one: $(grep -c '^[-+][^-+]' "$OUT/uv.lock-$tree.diff") lines (uv.lock-$tree.diff)"
+done
 for tree in $(param install '[]' | jq -r '.[]'); do
   step "install-$tree" package install "$PACKAGES/$tree/qwen-image-2" --on local -y ||
     fail "tree $tree's qwen-image-2 did not install here: $(grep -v '^ *$' "$OUT/install-$tree.txt" | tail -5 | tr '\n' ' ' | cut -c1-600)"

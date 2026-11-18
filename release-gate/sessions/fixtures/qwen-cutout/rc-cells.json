@@ -263,5 +263,8 @@
   "madebyollin/texture-fix-vae@0.3.0",
   "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0",
   "pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0"
+ ],
+ "relock": [
+  "a"
  ]
 }
