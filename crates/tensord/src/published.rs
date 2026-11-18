@@ -1872,7 +1872,7 @@ pub(crate) struct Made {
     /// How TensorFS read the source's layout, and what it verified it as: `detected h3.lora
     /// (musubi-tuner); LoRA of minimax-h3 transformer, trained on transformer_ref (…)`.
     pub format: String,
-    /// The words its provider says a LoRA's prompt uses (Civitai's trainedWords).
+    /// The words its provider says a LoRA's prompt uses (Civitai's trainedWords, a Hugging Face card's instance_prompt).
     pub trigger: Vec<String>,
 }
 

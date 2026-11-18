@@ -470,10 +470,7 @@ impl Record {
         }
         let client = signed_in(api, hub)?;
         let made = (client.create_model_checkpoint(&to.org, &to.name, &checkpoint, length).await).map_err(|e| refusal(hub, e))?;
-        let display = match (ask.triggers, ask.strength) {
-            (None, None) => None,
-            (triggers, strength) => Some(display(&api.machines, hub, to.to_string(), triggers, strength).await),
-        };
+        let display = display(&api.machines, hub, to.to_string(), ask.triggers, vec![], ask.strength).await;
         Ok(RecordedCheckpoint {
             next: vec![format!("cozy model publish {to} <version> {}", made.id)],
             checkpoint: made.id,

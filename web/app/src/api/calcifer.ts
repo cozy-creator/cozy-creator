@@ -724,6 +724,10 @@ export type Digest = string;
  */
 export type Displayed = { model: string, triggers?: Array<string>, strength: number | null,
 /**
+ * What a LoRA took for want of a value from its source or its uploader: no trigger, strength 1.0.
+ */
+defaulted?: Array<string>,
+/**
  * Why the Hub did not take them; the upload stands.
  */
 error?: string | null, };
@@ -889,6 +893,14 @@ author: ModelAuthor | null,
  * Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
  */
 strength?: number | null,
+/**
+ * What a LoRA's prompt uses, each entry one trigger kept whole.
+ */
+triggers?: Array<string>,
+/**
+ * The pinned upstream source.
+ */
+source?: string | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
