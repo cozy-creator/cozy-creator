@@ -125,7 +125,10 @@ n=$(runno calibrate); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --
 benches=()
 IFS=, read -ra models <<<"$MODELS"
 for model in "${models[@]}"; do
-  step "bench-$model" run "$FIX/drive/gemm_speed" lanes=ggml "shapes=$model" --on "$NAME" || fail "gemm_speed $model"
+  # A failed bench is told and the session goes on: the ride-along's lanes never wait on the kernel table (44416217064).
+  if ! step "bench-$model" run "$FIX/drive/gemm_speed" lanes=ggml "shapes=$model" --on "$NAME"; then
+    say "FAILED: gemm_speed $model: $(grep -m1 -E '^Run .* failed|^error' "$OUT/bench-$model.txt" | cut -c1-300)"; continue
+  fi
   n=$(runno "bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/bench-$model.json"
   benches+=("$OUT/bench-$model.json")
 done
