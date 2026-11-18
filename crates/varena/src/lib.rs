@@ -87,9 +87,9 @@ pub enum Error {
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
-    /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
-    /// done for it, an idle peer's before our weights, and short of that takes the reserve.
-    ReserveShort(usize),
+    /// The pages fit, not beside the driver's room: `reclaim::acquire` keeps it from what is idle
+    /// and finished, an idle peer's before our weights, and short of that the demand takes it.
+    RoomShort(usize),
     Other(Error),
 }
 
@@ -98,13 +98,13 @@ pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
 impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
-            Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
+            Self::DriverOutOfMemory(bytes) | Self::RoomShort(bytes) => Some(*bytes),
             Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::RoomShort(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -116,7 +116,7 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::RoomShort(requested_bytes) => {
                 Self::OutOfMemory { requested_bytes }
             }
             AllocationFailure::Other(error) => error,
@@ -663,17 +663,18 @@ impl PlanPhase {
 const CAP_SLACK: usize = 128 << 20;
 
 thread_local! {
-    /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
-    static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's demand is short only of the driver's room, with nothing idle and finished left
+    /// to keep it from (`reclaim::acquire`): it takes the room.
+    static TAKES_ROOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// `f` with the driver's reserve open to this thread's maps.
-pub(crate) fn waived<T>(f: impl FnOnce() -> T) -> T {
+/// `f` with the driver's room open to this thread's maps.
+pub(crate) fn taking_room<T>(f: impl FnOnce() -> T) -> T {
     struct Restore;
     impl Drop for Restore {
-        fn drop(&mut self) { RESERVE_WAIVED.set(false); }
+        fn drop(&mut self) { TAKES_ROOM.set(false); }
     }
-    RESERVE_WAIVED.set(true);
+    TAKES_ROOM.set(true);
     let _restore = Restore;
     f()
 }
@@ -727,6 +728,7 @@ pub struct Device {
     /// launch, not an allocation of ours, so no reclaim answers it (cr-293: a cold H3 on a full 5090
     /// failed its first `index_select`). What it is still expected to take for this process, measured
     /// (`cooperative::expect`); 0 where nothing is known.
+    /// The room is soft: kept only from idle, finished bytes, it never fails a demand or evicts weights a pass needs.
     driver_room: AtomicUsize,
     /// This process's bytes outside its books, as last measured (`cooperative::expect`).
     out_of_books: AtomicUsize,
@@ -925,7 +927,7 @@ impl Device {
 
     /// Of the driver's `free` bytes, what a map of ours may take: all but the driver's room.
     fn spare(&self, free: usize) -> usize {
-        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(self.driver_room()) }
+        if TAKES_ROOM.get() { free } else { free.saturating_sub(self.driver_room()) }
     }
 
     /// What every map leaves free for the driver's own allocations (`driver_room`).
@@ -941,16 +943,16 @@ impl Device {
         self.out_of_books.store(out_of_books, Ordering::Release);
     }
 
-    /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
+    /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the
     /// card has free now. More than the card has free is the driver's to refuse; less, but not
-    /// beside the reserve, is `ReserveShort`.
+    /// beside the room, is `RoomShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
         if self.over(bytes) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
         if bytes <= free && bytes > self.spare(free) {
-            return Err(AllocationFailure::ReserveShort(bytes));
+            return Err(AllocationFailure::RoomShort(bytes));
         }
         Ok(())
     }

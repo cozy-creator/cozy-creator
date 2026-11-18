@@ -54,9 +54,13 @@ learned on this machine (a file beside the GPU's ledger page) or, before any pro
 the release's figure for the card and driver (`out-of-books.tsv`, from the release gate's run records:
 `release-gate/ledger.py out-of-books`), less what this process holds there now; with neither, the
 context's own measured cost. It is measured as the process comes up and at each request's boundaries,
-and learned as each request ends. Pages that fit, but not beside it, take what is idle and done for it
-(no wait on our own work, no owner), an idle peer's before our weights, and short of that take the
-room. It never makes a demand fail: one the driver still refuses goes through the whole order.
+and learned as each request ends. A process coming up asks its peers for it once its context is up,
+before Torch's runtime and first stream, where a refusal reaches no one.
+
+The room is soft: kept only from idle, finished bytes, it never fails a demand or evicts weights a pass
+needs. Pages that fit, but not beside it, take what is idle and finished for it (no wait on our own
+work, no owner), an idle peer's before our weights, and short of that take the room. One the driver
+still refuses goes through the whole order.
 
 A fixed 800 MiB was left before (2x the 391 MiB a cold H3 15 s grew on a 4090, cr-293): 10-13% of
 an 8 GB card, kept free by evicting weights. A cold H3 15 s's process held 937-939 MiB outside its books
