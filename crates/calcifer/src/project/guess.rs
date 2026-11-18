@@ -396,6 +396,13 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         return Guessed::Nothing(Cow::Owned(format!("{why}, so nothing goes there ahead of it")));
     }
     let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing(Cow::Owned(format!("it would go to {}, no one machine", chosen.machine))) };
+    // An encrypted project's guess goes only where its files and code may go ahead (`Calcifer::sealed_from`): to a computer added by
+    // address nothing of it goes, its draft request included, until Paul rules such a computer trusted (cl-1123). Its render isn't held.
+    if crate::project::vault::encrypted_within(project.folder_root())
+        && let Some(why) = api.calcifer.sealed_from(machine)
+    {
+        return Guessed::Nothing(Cow::Owned(format!("nothing of this encrypted project goes ahead: {why}")));
+    }
     // Where else it would finish, and how long each one's line holds it from GPUs: what a load moving there could change.
     let others = (up.iter().filter(|offer| offer.fits && offer.machine != chosen.machine))
         .filter_map(|offer| match &offer.machine {
