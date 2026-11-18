@@ -126,7 +126,8 @@ if [ -n "$PROBE" ]; then
   [ "$PROBE" != gdb ] || pod 'export DEBIAN_FRONTEND=noninteractive; apt-get -qq update && apt-get -qq install -y gdb > /dev/null; gdb --version | head -1' \
     >> "$OUT/probe.txt" || say "probe: no gdb on $NAME"
   pod "mkdir -p /root/cl1202 && echo $(base64 -w0 "$(dirname "$0")/tensord-threads.py") | base64 -d > /root/cl1202/threads.py &&
-    (setsid nohup python3 /root/cl1202/threads.py 400 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &)" ||
+    (setsid nohup python3 /root/cl1202/threads.py 400 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &
+     echo \$! > /root/cl1202/pid)" ||
     fail "probe: the sampler didn't start on $NAME"
   say "probe: $NAME's TensorD threads sampled ($PROBE)"
 fi
@@ -168,7 +169,7 @@ A1=$(date +%s%3N)
 collect
 cp "$OUT/tensord.log" "$OUT/tensord-install.log"
 if [ -n "$PROBE" ]; then
-  pod 'pkill -f /root/cl1202/threads.py; tar czf - -C /root/cl1202 . | base64 -w0' | base64 -d > "$OUT/probe.tgz" &&
+  pod 'kill "$(cat /root/cl1202/pid)" 2> /dev/null; tar czf - -C /root/cl1202 . | base64 -w0' | base64 -d > "$OUT/probe.tgz" &&
     mkdir -p "$OUT/probe" && tar xzf "$OUT/probe.tgz" -C "$OUT/probe" || say "probe: the samples weren't fetched"
 fi
 # TensorD answered throughout the arm (cl-1202): the longest gap between the status reads each second (each `machine show` waits on
