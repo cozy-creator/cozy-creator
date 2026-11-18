@@ -172,5 +172,12 @@ for f in graphs-*.json; do
   [ -z "$m" ] || mismatched+=("${f%.json}: $m")
 done
 for m in "${mismatched[@]}"; do log "graphs mismatch: $m"; done
-[ "$audited" -gt 0 ] && [ "${#mismatched[@]}" = 0 ] && expect graphs-audit PASS "$audited replays audited, none differed" ||
+# Every 16th replay of a region is audited: only P-H3-Image's, SDXL's and Anima's repeats replay that often (a lone
+# graphs-klein-283 replays its DiT 13 times). A --only that asks for none of them audits nothing: nothing to judge.
+if [ "$audited" = 0 ] && [ "${#mismatched[@]}" = 0 ] && ! gwant graphs-ph3 && ! gwant graphs-sdxl && ! gwant graphs-anima; then
+  expect graphs-audit SKIP "no replay audited: --only asked for no graphs-ph3, graphs-sdxl or graphs-anima cell"
+elif [ "$audited" -gt 0 ] && [ "${#mismatched[@]}" = 0 ]; then
+  expect graphs-audit PASS "$audited replays audited, none differed"
+else
   expect graphs-audit FAIL "$audited replays audited; ${#mismatched[@]} records with a replay_mismatch: ${mismatched[*]:0:2}"
+fi
