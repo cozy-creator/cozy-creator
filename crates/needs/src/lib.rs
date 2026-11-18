@@ -423,16 +423,19 @@ pub fn estimate_faults(document: &Value) -> Vec<String> {
         for (name, _) in unknown {
             faults.push(format!("{function}: its estimate has no `{name}`: it has `size`, {}", OUTPUTS.map(|o| format!("`{o}`")).join(", ")));
         }
-        let names: Vec<String> = declared.size.iter().map(|(name, _)| name.clone()).collect();
-        let checks = (declared.size.iter().map(|(name, expression)| (format!("size {name}"), expression, None)))
-            .chain(declared.outputs.iter().map(|(name, expression)| (name.clone(), expression, Some(names.as_slice()))));
-        for (name, expression, size) in checks {
-            if let Err(why) = check_number(expression, &request, size) {
-                faults.push(format!("{function}: its estimate's {name}, `{expression}`: {why}"));
-            }
-        }
+        faults.extend(declared_faults(&declared, &request).into_iter().map(|fault| format!("{function}: {fault}")));
     }
     faults
+}
+
+/// Each expression of `declared` that can't be read against `request`, in words.
+fn declared_faults(declared: &Declared, request: &Struct) -> Vec<String> {
+    let names: Vec<String> = declared.size.iter().map(|(name, _)| name.clone()).collect();
+    let checks = (declared.size.iter().map(|(name, expression)| (format!("size {name}"), expression, None)))
+        .chain(declared.outputs.iter().map(|(name, expression)| (name.clone(), expression, Some(names.as_slice()))));
+    checks
+        .filter_map(|(name, expression, size)| check_number(expression, request, size).err().map(|why| format!("its estimate's {name}, `{expression}`: {why}")))
+        .collect()
 }
 
 /// Checks an estimate's `expression` against what it reads: the request alone (`size` None, a size variable), or the request, the size
@@ -853,8 +856,8 @@ impl<'a> Checker<'a> {
             "min" | "max" => Ok(Kind::Any),
             estimate::MEASURED if matches!(self.mode, Mode::Output(_)) => {
                 match (args.first(), call.args.get(1).map(|arg| &arg.expr), call.args.len()) {
-                    (Some(Kind::Machine), _, 1) | (Some(Kind::Machine), Some(Expr::Literal(LiteralValue::String(_))), 2) => Ok(Kind::Row),
-                    _ => Err("`measured` takes `machine`, and may name another function of its package: `measured(machine, \"generate\")`".into()),
+                    (Some(Kind::Machine), _, 1) | (Some(Kind::Machine), Some(Expr::Literal(LiteralValue::String(_))), 2 | 3) => Ok(Kind::Row),
+                    _ => Err("`measured` takes `machine`, may name another function of its package, and may give a placeholder row: `measured(machine, \"generate\", {\"warm_ms\": 1000.0})`".into()),
                 }
             }
             "pow" if !matches!(self.mode, Mode::Rule) => match args.len() {

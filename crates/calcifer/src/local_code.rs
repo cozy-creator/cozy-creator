@@ -1559,9 +1559,10 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// A `needs` rule that isn't CEL over its function's own request stops at the read, never at a run (cl-1103), and so does an
-/// estimate's expression (cl-1286): the static describer's reading, and a run's (`runs::target`), which may be its machine's own.
-pub(crate) fn read_faults(document: &Value) -> Result<(), Error> {
+/// A `needs` rule that isn't CEL over its function's own request stops at the describer's read, so its author finds out at describe
+/// and publish (cl-1103), and so does an estimate's expression (cl-1286). A run of an interface read otherwise (a published release, a
+/// machine's own reading) is never refused for one: its machine says so once and plans it as one without (TensorD `runs.rs`).
+fn read_faults(document: &Value) -> Result<(), Error> {
     if let Some(fault) = ::needs::faults(document).into_iter().next() {
         return Err(refuse("needs_rule_invalid", fault));
     }

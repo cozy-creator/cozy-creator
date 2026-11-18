@@ -5,7 +5,8 @@
 //! `request`, `size` and `machine`, a number). The expressions call three helpers, and nothing else of their own:
 //! - `measured(machine)`, `measured(machine, "function")`: the function's own benchmark row for this machine (another function of its
 //!   package, named): `warm_ms`, `cold_ms`, `peak_device_bytes`, `peak_host_bytes`, `budget_bytes`, `request` (its size), `gpu`,
-//!   `lane` and `scale` (`Row`). No value where nothing measured relates to the machine.
+//!   `lane` and `scale` (`Row`). No value where nothing measured relates to the machine; `measured(machine, "function", {…})`, that
+//!   map instead: a placeholder until a row of it exists.
 //! - `pow(x, y)`: x to the power y.
 //! - `sum(list)`: its numbers added; `min(x, y, …)`, `max(x, y, …)`: the least and the greatest.
 //!
@@ -108,6 +109,9 @@ pub struct Cost {
     pub size: JobSize,
     /// Each declared size variable that gave no number for it, and why: left out of `size`.
     pub size_unanswered: Vec<(String, String)>,
+    /// Its function's estimate where it can't be read against its request, in words: it is then as one that declares none (today's
+    /// guessed size and time). Refused where a package is read (`estimate_faults`); a run of one read before only says so.
+    pub faults: Vec<String>,
     request: Value,
     declared: Declared,
 }
@@ -121,14 +125,17 @@ impl Cost {
                 let declared = Declared::parse(&entry["estimate"]);
                 let why = format!("its request can't be read: {error}");
                 let size_unanswered = declared.size.iter().map(|(name, _)| (name.clone(), why.clone())).collect();
-                Cost { size: JobSize::of(sent), size_unanswered, request: sent.clone(), declared }
+                Cost { size: JobSize::of(sent), size_unanswered, faults: vec![], request: sent.clone(), declared }
             }
         }
     }
 
     /// The request `sent` to a function whose request is `request` and whose `estimate` is `estimate` (null: none declared).
     pub fn declared(request: &Struct, estimate: &Value, sent: &Value) -> Self {
-        let declared = Declared::parse(estimate);
+        let (mut declared, faults) = (Declared::parse(estimate), crate::declared_faults(&Declared::parse(estimate), request));
+        if !faults.is_empty() {
+            declared = Declared::default();
+        }
         let request = Value::Object(crate::fields(&request.fields, sent.as_object().unwrap_or(&Map::new())));
         let (mut size, mut size_unanswered) = (JobSize::default(), vec![]);
         if declared.size.is_empty() {
@@ -144,7 +151,7 @@ impl Cost {
                 Err(why) => size_unanswered.push((name.clone(), why)),
             }
         }
-        Cost { size, size_unanswered, request, declared }
+        Cost { size, size_unanswered, faults, request, declared }
     }
 
     /// Its function declares its own size variables.
@@ -176,13 +183,14 @@ fn on(declared: &Declared, function: &str, request: &Value, size: &JobSize, card
     }
     // A formula's time stands on the least sure of the rows it reads: a card's own, else scaled; one that reads none, on its author.
     let read = declared.output("ms").map(crate::measured_names).unwrap_or_default();
-    let basis = (read.iter().map(|name| rows.get(name).cloned().flatten().map_or(Basis::None, |row| row.basis)))
-        .max_by_key(|basis| match basis {
-            Basis::None => 3,
-            Basis::Scaled => 2,
-            _ => 1,
-        })
-        .unwrap_or(Basis::Reference);
+    // A row a formula reads with a placeholder may be absent: it then stands on the rows it does read. One read without a placeholder
+    // and absent gives no time at all (below).
+    let present: Vec<Basis> = read.iter().filter_map(|name| rows.get(name).cloned().flatten().map(|row| row.basis)).collect();
+    let basis = match (read.is_empty(), present.iter().max_by_key(|basis| matches!(basis, Basis::Scaled))) {
+        (true, _) => Basis::Reference,
+        (false, Some(basis)) => *basis,
+        (false, None) => Basis::None,
+    };
     let context = context(request, Some((size, card)), rows.iter().map(|(name, row)| (name.clone(), row.as_ref().map(Row::value))).collect());
     let mut estimated = Estimated { basis, declared: declared.output("ms").is_some(), ..Estimated::default() };
     for name in OUTPUTS {
@@ -344,8 +352,9 @@ fn context(request: &Value, machine: Option<(&JobSize, &Card)>, rows: HashMap<St
             Some(cel::Value::String(name)) => name.to_string(),
             _ => String::new(),
         };
-        match rows.get(&function) {
-            Some(Some(row)) => Ok(value(row)),
+        match (rows.get(&function), args.get(2)) {
+            (Some(Some(row)), _) => Ok(value(row)),
+            (_, Some(placeholder @ cel::Value::Map(_))) => Ok(placeholder.clone()),
             _ => Err(cel::ExecutionError::function_error("measured", "nothing measured relates to this machine")),
         }
     });

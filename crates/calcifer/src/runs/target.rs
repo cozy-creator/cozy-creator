@@ -220,11 +220,9 @@ pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
 }
 
 fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
-    let interface = Interface::parse(document).map_err(|why| {
+    Interface::parse(document).map_err(|why| {
         Error::new(Kind::Unavailable, "package_interface_invalid", format!("Cozy can't read this package's interface: {why}.")).remedy("Update cozy.").next("cozy update")
-    })?;
-    crate::local_code::read_faults(document)?;
-    Ok(interface)
+    })
 }
 
 /// A published target for a run `on` its machine (none: what this computer knows, for a read that

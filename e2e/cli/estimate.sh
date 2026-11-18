@@ -1,7 +1,7 @@
 # estimate_plan (cl-1286; Paul, 11-18: "we give it a prediction, and it says 'I need x models, and inference will take y'"): a
 # function's own size variables, as its plan reads a request, in its run's record; one that gives no
 # value left out and said once; a function without `estimate=` as before; a broken expression refused as cozy reads the package, in
-# one line; and the plan of real H3 and Qwen Image 2 requests (their packages checkout).
+# one line, and a run of it planned as one without, said once; and the plan of real H3 and Qwen Image 2 requests (their packages checkout).
 estimate_plan() {
 step "estimate plan (cl-1286): a request's size by its function's own variables, in its run's record"
 local s=$here/estimate/sized size='{"seconds": 7, "megapixels": 0.9216, "steps": 30}' code
@@ -22,11 +22,16 @@ run_cell "$OUT" est-plain "$here/weightless/reverse" text=sized --on local || ch
 run_show "$OUT" est-plain "$(cat "$OUT/est-plain.number")"
 J '.measurements.size == null' "$OUT/est-plain.json" || check "estimate: reverse's record has a size: $(jq -c .measurements.size "$OUT/est-plain.json")"
 
-step "estimate plan: a broken expression refused as cozy reads the package, in one line"
+step "estimate plan: a broken expression refused as cozy reads the package, in one line; a run of it says so once and runs as before"
 code=0
-"$RUN_CLI" run "$here/estimate/broken/broken" duration:=3 --on local > "$OUT/est-broken.out" 2> "$OUT/est-broken.err" || code=$?
-echo "estimate: broken exited $code: $(head -c 600 "$OUT/est-broken.err")"
-[ "$code" != 0 ] && grep -q 'request.durtion' "$OUT/est-broken.err" || check "estimate: broken wasn't refused for request.durtion"
+"$RUN_CLI" run "$here/estimate/broken/broken" --describe > "$OUT/est-broken.out" 2> "$OUT/est-broken.err" || code=$?
+echo "estimate: broken's describe exited $code: $(grep -m1 'estimate_invalid' "$OUT/est-broken.err" "$OUT/est-broken.out")"
+[ "$code" != 0 ] && grep -q 'request.durtion' "$OUT/est-broken.err" "$OUT/est-broken.out" || check "estimate: broken's describe wasn't refused for request.durtion"
+run_cell "$OUT" est-broken-run "$here/estimate/broken/broken" duration:=3 --on local || check "estimate: a run of broken didn't complete"
+run_show "$OUT" est-broken-run "$(cat "$OUT/est-broken-run.number")"
+echo "estimate: broken's run: $(jq -c '{status, size: .measurements.size, said: [.. | strings | select(test("estimate can.t be read"))]}' "$OUT/est-broken-run.json" 2> /dev/null | head -c 600)"
+J '.measurements.size == null and ([.. | strings | select(test("its estimate can.t be read"))] | length >= 1)' "$OUT/est-broken-run.json" \
+  || check "estimate: broken's run doesn't say its estimate can't be read, or keeps a size"
 
 [ -n "${PACKAGES:-}" ] && [ -n "$plan" ] || { echo "estimate: no packages checkout or no needs-plan: H3 and Qwen Image 2 not planned"; return 0; }
 step "estimate plan: real H3 and Qwen Image 2 requests, planned from the interfaces cozy read"
