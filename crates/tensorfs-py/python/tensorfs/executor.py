@@ -35,6 +35,7 @@ from ._ext.executor import (
     Preview,
     Publish,
     PublishPart,
+    Release,
     SavedFile,
     StageMemoLookup,
     StageMemoStore,
@@ -46,7 +47,7 @@ from ._ext.executor import (
 )
 
 #: Any command TensorD sends.
-Command = Hello | Start | Load | PrepareRequest | Cancel | Invoke | Map | Fork
+Command = Hello | Start | Load | PrepareRequest | Cancel | Invoke | Map | Fork | Release
 #: Any request an executor makes of TensorD.
 Request = (
     ChildEvents
@@ -96,6 +97,7 @@ __all__ = [
     "Preview",
     "Publish",
     "PublishPart",
+    "Release",
     "Request",
     "SavedFile",
     "StageMemoLookup",

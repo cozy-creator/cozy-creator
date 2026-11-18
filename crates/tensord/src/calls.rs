@@ -530,7 +530,12 @@ impl Calls {
 
     fn model_need(&self, parent: &Parent, seq: u64, need: &ModelNeed) -> Result<Answer, (&'static str, String)> {
         let runs = self.runs.upgrade().ok_or(("model_need_unsupported", "the machine is stopping".into()))?;
-        runs.need(&parent.id, &need.manifest, &need.components).map_err(|error| (error.code, error.message))?;
+        let held = runs.need(&parent.id, &need.manifest, &need.components).map_err(|error| (error.code, error.message))?;
+        // Held by its call until it ends, so the executor that asked opens it here (tfs-302).
+        let live = self.fetches.lock().unwrap().get(&parent.id).and_then(|live| live.iter().rev().find_map(Weak::upgrade));
+        if let Some(fetch) = live {
+            fetch.hold(vec![held]);
+        }
         Ok(Answer::ok(seq))
     }
 
