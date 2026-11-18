@@ -11,17 +11,17 @@
 #   warm        pk on the first 5 s of the plate: fetches every weight, never compared
 #   a1 b1 b2 a2 rc, pk, pk, rc: each its own arm (derived state reset, TensorD restarted, uncapped)
 #   c1 c2       pg (optional): its own arms too
-#   cap         pk under an 8 GiB VRAM cap (params.vram_cap): it must complete
+#   cap capa capc  pk, rc, pg under an 8 GiB VRAM cap (params.vram_cap): each must complete
 # Per run (results.txt, ab.tsv): exec, conditioning wall (the guide read and encoded), each denoise step (step 1, the dense
 # 2-4 and the sparse 5-8 means, steady 2-8), decode, peak VRAM (driver and allocated), SM clock and throttle share, and its
 # Runtime and TensorFS: a run on another pair than the first's fails the session. A1/A2 and B1/B2 are checked for the same
 # frames (one build, one seed). The pod ends before the summary.
-# params: runtime (the Runtime wheel, https://…#sha256=<hex>), cells, vram_cap (8GiB), need_s (7800). (`cap` is lib.sh's dollar cap.)
+# params: runtime (the Runtime wheel, https://…#sha256=<hex>), cells, vram_cap (8GiB), max_failures (2), need_s (7800). (`cap` is lib.sh's dollar cap.)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/h3-edit-sound" && pwd) || fail "no fixtures"
-CELLS=$(param cells "warm a1 b1 b2 a2 cap") VCAP=$(param vram_cap 8GiB)
+CELLS=$(param cells "warm a1 b1 b2 a2 cap") VCAP=$(param vram_cap 8GiB) MOST=$(param max_failures 2)
 [[ $VCAP =~ ^[0-9]+GiB$ ]] || fail "vram_cap $VCAP"
-declare -A TREE=([warm]=pk [a1]=rc [a2]=rc [b1]=pk [b2]=pk [c1]=pg [c2]=pg [cap]=pk)
+declare -A TREE=([warm]=pk [a1]=rc [a2]=rc [b1]=pk [b2]=pk [c1]=pg [c2]=pg [cap]=pk [capa]=rc [capc]=pg)
 for c in $CELLS; do [ -n "${TREE[$c]:-}" ] || fail "no cell $c"; done
 for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
   [ -f "$PACKAGES/$t/minimax-h3/pyproject.toml" ] || fail "no packages_refs checkout $t"
@@ -161,7 +161,7 @@ cell() {
   say "$k: $(LC_ALL=C grep -a -o -m1 -E 'continuation window [^"]*' "$OUT/$k.log") $(LC_ALL=C grep -a -o -m1 -E 'h3 output geometry denoise_rows=[0-9]+' "$OUT/$k.log")"
   # A cell that didn't complete is counted (two end the session); one that did must run on the first run's pair.
   if [ "$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)" != completed ]; then
-    RC=1; FAILS=$((FAILS + 1)); [ "$FAILS" -lt 2 ] || fail "$FAILS cells failed"; return 0
+    RC=1; FAILS=$((FAILS + 1)); [ "$FAILS" -lt "$MOST" ] || fail "$FAILS cells failed"; return 0
   fi
   # Both arms on one pair: a run that fell back to another Runtime or TensorFS than the first's ends the session.
   local pair; pair=$(jq -r '"\(.measurements.software.runtime // "?") \(.measurements.software.tensorfs // "?")"' "$OUT/$k.json" 2>/dev/null)
@@ -172,7 +172,7 @@ cell() {
 for c in $CELLS; do
   case $c in
     warm) ;;
-    cap) arm "$c" "$VCAP" ;;
+    cap|capa|capc) arm "$c" "$VCAP" ;;
     *) arm "$c" off ;;
   esac
   cell "$c"
@@ -194,7 +194,7 @@ done
 jq -Rr -s --argjson g "$(cat "$OUT/guided.json")" '
   split("\n") | .[1:] | map(select(length > 0) | split("\t")) | map({cell: .[0], tree: .[1], status: .[2], steady: (.[8] | tonumber? ),
     dense: (.[6] | tonumber?), sparse: (.[7] | tonumber?), cond: (.[4] | tonumber?), decode: (.[10] | tonumber?), peak: (.[11] | tonumber?)})
-  | map(select(.cell != "warm" and .cell != "cap" and .status == "completed")) | group_by(.tree)
+  | map(select(.cell != "warm" and (.cell | startswith("cap") | not) and .status == "completed")) | group_by(.tree)
   | map({tree: .[0].tree, runs: length, steady: (map(.steady) | add / length), dense: (map(.dense) | add / length),
          sparse: (map(.sparse) | add / length), cond: (map(.cond) | add / length), decode: (map(.decode) | add / length),
          peak: (map(.peak) | max), guided: $g[.[0].tree].guided, guided_latents: $g[.[0].tree].guided_latents})
