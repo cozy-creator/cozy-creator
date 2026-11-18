@@ -154,9 +154,15 @@ lsaved=$(cat graphs-*.json 2>/dev/null | jq -s -r '[.[] | .. | objects | .partia
   | capture("put back \\((?<n>[0-9]+) (?<u>[KMG])iB\\)") | (.n | tonumber) * {K: 1024, M: 1048576, G: 1073741824}[.u]]
   | "\(length) \(max // 0)"')
 read -r lchecks lmost <<< "${lsaved:-0 0}"
-[ "${lchecks:-0}" -gt 0 ] && [ "${lmost:-0}" -le $((64 << 20)) ] &&
-  expect graphs-lm-checks PASS "$lchecks decode checks, the largest saved $((lmost >> 10)) KiB beyond its decode state" ||
+# 64 MiB: a step's slots (4 positions a row of each key buffer) were 1 MiB at 8 rows of Qwen3.5-9B (gate 44282226329); whole
+# buffers were 153 MiB at Klein's one row. A --only that asks for no LM cell may run no decode check: nothing to judge.
+if [ "${lchecks:-0}" = 0 ] && ! gwant graphs-lm; then
+  expect graphs-lm-checks SKIP "no decode check ran: --only asked for no graphs-lm cell"
+elif [ "${lchecks:-0}" -gt 0 ] && [ "${lmost:-0}" -le $((64 << 20)) ]; then
+  expect graphs-lm-checks PASS "$lchecks decode checks, the largest saved $((lmost >> 10)) KiB beyond its decode state"
+else
   expect graphs-lm-checks FAIL "$lchecks decode checks said what they saved; the largest $((${lmost:-0} >> 20)) MiB beyond its decode state (64 MiB at most)"
+fi
 audited=0 mismatched=()
 for f in graphs-*.json; do
   [ -f "$f" ] || continue
