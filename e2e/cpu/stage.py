@@ -3,8 +3,8 @@ Calcifer's `checkout::stage`). Each `{ index = "tensorhub" }` source naming a pa
 that folder, copied beside it, and so on through what those take. The Runtime it is read with is `<runtime>` when that is
 a wheel or a source folder, and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
 folder; prints nothing when it takes no first-party package. <dest>/unpublished.txt names each first-party dependency whose
-requirement the production Hub's index can't meet yet: a committed lock pins only what a machine can fetch, so it leaves that one
-out until the gated publish puts it there (cli.sh's lock cell resolves it from the suite's Hub and compares the rest)."""
+checkout version production's Hub doesn't hold yet: a committed lock pins only what a machine can fetch, so it leaves that one out
+until the gated publish relocks it on (cli.sh's lock cell locks a copy without it)."""
 
 import platform
 import re
@@ -75,10 +75,15 @@ def published(name: str) -> list[Version] | None:
     return found
 
 
-wanted = {canonicalize_name(Requirement(r).name): Requirement(r) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
+wanted = {canonicalize_name(Requirement(r).name) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
+
+
 def unmet(key: str) -> bool:
+    """The checkout's own version of `key` isn't on production's index: what a lock of this checkout takes of it, no machine can
+    fetch (orbit's minimax-h3 0.16.0rc5 while production's newest, 0.15.0, caps the RC's Runtime)."""
     versions = published(key)
-    return versions is not None and not any(wanted[canonicalize_name(key)].specifier.contains(v, prereleases=True) for v in versions)
+    own = Version(tomllib.loads((packages / key / "pyproject.toml").read_text())["project"]["version"])
+    return versions is not None and own not in versions
 
 
 unpublished = [key for key in closure[package] if canonicalize_name(key) in wanted and unmet(key)]

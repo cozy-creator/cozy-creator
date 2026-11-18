@@ -5,8 +5,8 @@
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
 #             suite's Hub's: lock_same.py), for every package, and every first-party file it pins is one production's Hub
-#             serves: a committed lock pins only what a machine can fetch. A first-party dependency production doesn't have
-#             yet resolves from the checkout's build on this suite's Hub and is left out of the comparison; not under run.sh's
+#             serves: a committed lock pins only what a machine can fetch. A first-party dependency whose checkout version
+#             production doesn't hold yet is left out of the copy locked, as of the committed lock; not under run.sh's
 #             --lock fresh, which locked it first
 #   bind      a stand-in package's (drive.py, se-149) every cell's request (<out>/requests/<request>.json, its input files)
 #             bound by Calcifer's binder against the staged local code (the private estimate API; 0.22.1 refused
@@ -50,18 +50,20 @@ else
   line FAIL - upload "$(said "$cli/describe.json")"
 fi
 
-# A first-party dependency production's Hub doesn't have yet (stage.py's unpublished.txt) is no committed lock's: a machine can't
-# fetch it. The lock still resolves with it, the checkout's build isolated.sh published to this suite's Hub (a release's lock
-# refuses a path dependency: package_local_dependency), and lock_same.py leaves it, and what only it brings in, out of the
-# comparison.
+# A first-party dependency whose checkout version production's Hub doesn't hold yet (stage.py's unpublished.txt) is no committed
+# lock's: a machine can't fetch it, so the dependent's lock leaves it out until the gated publish relocks it on (packages
+# RELEASING.md). The copy locked here leaves it out the same way: its requirement and its source.
 unpublished=$(paste -sd, "$OUT/staged/unpublished.txt" 2> /dev/null || true)
+[ "${LOCK:-}" = fresh ] || for dep in ${unpublished//,/ }; do
+  spelled=$(sed 's/[-_.]/[-_.]/g' <<< "$dep")
+  sed -i -E "/^[[:space:]]*\"$spelled([<>=!~;[ ][^\"]*)?\",?[[:space:]]*\$/d; /^$spelled[[:space:]]*=/d" "$cli/src/$p/pyproject.toml"
+done
 if [ "${LOCK:-}" = fresh ]; then
   :
 elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
   # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same, and each
   # first-party file the committed lock pins one production's Hub serves.
-  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}" \
-      ${unpublished:+--unpublished "$unpublished"}); then
+  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
     line PASS - lock "${unpublished:+unpublished $unpublished left out}"
   else line FAIL - lock "the committed uv.lock is stale: $stale"; fi
 elif grep -qE 'not_logged_in|401|403' "$cli/lock.json" "$cli/lock.err"; then
