@@ -861,12 +861,13 @@ impl Journal {
         })
     }
 
-    /// A second connection on `root`'s journal for reads alone (cl-1202): in WAL mode it reads the last committed state while a
-    /// commit waits for the disk, so a reader (Status, a run's state) never waits on a writer. Opened after `open`, which made the
-    /// schema.
+    /// The status reader's connection (cl-1202): a second, ordinary connection on `root`'s journal. In WAL mode it reads the last
+    /// committed state while a commit waits for the disk, so Status and a run's state never wait on a writer. Every write is the
+    /// writer's (`Engine::with_journal`); one misplaced here waits on the writer's lock like any second writer, as SQLite allows
+    /// (cl-1225). Opened after `open`, which made the schema.
     pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
         let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
-        connection.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;").map_err(db_error)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_error)?;
         let workspace_id: String = connection
             .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
             .map_err(db_error)?;
@@ -1305,6 +1306,7 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
+    /// The record held for `actor`'s `computation`, its use recorded now: a write, so the writer's (cl-1225).
     pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
         if let Some(scope) = crate::private_io::current() {
             return crate::project_objects::held(&crate::project_objects::open(&scope)?, actor, computation);

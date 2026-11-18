@@ -100,8 +100,8 @@ pub(crate) struct Engine {
     /// Projects whose folders are gone, going as their last runs settle (cl-1031).
     gone: Mutex<HashSet<String>>,
     journal: Mutex<Journal>,
-    /// The journal's read connection (cl-1202): what only reads takes it, never the writer's lock, so a commit waiting for the
-    /// disk delays only other writers.
+    /// The status reader's connection to the journal (cl-1202): what only reads takes it, never the writer's lock, so a commit
+    /// waiting for the disk delays only other writers. Nothing that writes takes it (cl-1225).
     reader: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
@@ -556,7 +556,8 @@ impl Engine {
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
-    /// `f` on the journal's read connection: the last committed state, never waiting on a writer (cl-1202).
+    /// `f` on the status reader's connection: the last committed state, never waiting on a writer (cl-1202). Reads only: what
+    /// writes, even a use, takes `with_journal` (cl-1225).
     pub(crate) fn read_journal<T>(&self, f: impl FnOnce(&Journal) -> io::Result<T>) -> io::Result<T> {
         f(&self.reader.lock().unwrap())
     }

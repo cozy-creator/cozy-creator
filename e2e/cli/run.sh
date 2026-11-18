@@ -63,6 +63,7 @@ parse "$@"
 . "$(dirname "$0")/hubdown.sh"
 . "$(dirname "$0")/overhead.sh"
 . "$(dirname "$0")/grants.sh"
+. "$(dirname "$0")/heldmemo.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -690,6 +691,7 @@ case $SHARD in
     machine_show_runs
     writes_once
     answers_while_committing
+    held_memo
     project_stream
     agent_render
     agent_api
@@ -751,6 +753,8 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
   answers) parts="answers_while_committing logs" ;;
+  # A run repeated on another computer's machine is answered from its held memo (cl-1225): a stand-in, three runs.
+  held-memo) parts="held_memo logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
