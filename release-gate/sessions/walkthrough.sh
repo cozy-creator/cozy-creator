@@ -122,7 +122,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds; then
+if has tools || has idle || has cancel || has seeds || has lost; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -229,6 +229,19 @@ if has seeds; then
     say "cozy run sdxl/generate --lora $lora: exit $?: $(tail -3 "$W/cli/cli-sdxl-lora.txt" | tr '\n' ' ' | cut -c1-300)"
   else say "no SDXL LoRA found by cozy lora ls --family sdxl: $(head -c 300 "$W/cli/lora-sdxl.txt")"; fi
   say "seeds: $(jq -c '{name: .asset.name, versions: [.versions[]? | {v: (.version // .number // .id), seed: (.seed // .fields.seed // .request.seed // .call.seed // null), memo: (.memoized // .memo // null)}]}' "$W/out/seeds-assets.json" 2> /dev/null | tr '\n' ' ' | cut -c1-900)"
+fi
+# A machine lost mid-run: a long SDXL render going, the rental ended under it; what the box, the run and the CLI then say.
+if has lost; then
+  P=$W/garden
+  PAGE add "$P" lost --tool "$(tid sdxl/image)" --fields '{"instructions": "a sprawling city of glass towers at dusk, aerial view", "megapixels": 16, "seed": 4}' > "$W/out/lost.add.json" 2>&1
+  PAGE render "$P" --on "$NAME" --queue lost > "$W/out/lost.render.json" 2>&1
+  for _ in $(seq 1 300); do PAGE asset "$P" lost > "$W/out/lost-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/lost-poll.json" > /dev/null 2>&1 && break; sleep 2; done
+  sleep 5; t0=$SECONDS
+  DIR=$W c machine-end-midrun machine end "$NAME" -y; say "machine ended mid-run: exit $? in $((SECONDS - t0)) s"
+  for _ in $(seq 1 60); do PAGE asset "$P" lost > "$W/out/lost-after.json" 2> /dev/null; jq -e '.asset.failure != null and (.asset.making | not)' "$W/out/lost-after.json" > /dev/null 2>&1 && break; sleep 5; done
+  say "lost: after $((SECONDS - t0)) s the box says $(jq -c '{failure: .asset.failure, making: .asset.making, rendering: .asset.rendering}' "$W/out/lost-after.json" 2> /dev/null | cut -c1-500)"
+  DIR=$P c run-ls-lost run ls
+  say "lost: run ls: $(sed -n 2p "$W/cli/run-ls-lost.txt" | cut -c1-300)"
 fi
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
 if has idle; then
