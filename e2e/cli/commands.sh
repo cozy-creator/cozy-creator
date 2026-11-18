@@ -243,6 +243,24 @@ J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum'
 echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
 }
 
+# cl-1241 (the coordinator, 11-18, from a review of packages #982: FLUX.3 Klein's box gained a `text_encoder` slot before its
+# DiT, and a LoRA naming no slot went on the first slot built): a LoRA naming no slot goes on the slot whose model takes LoRAs
+# (its class's `Serving(loras=...)`, the interface's `loras`). script/lora_slots.py reads e2e/lora-base's text encoder in its
+# first slot, `text_encoder`, with a class that takes no LoRA, and its transformer in `model`; e2e/lora-proj adapts the
+# transformer's `proj`. Before (rc/0.27.0): the LoRA went on `text_encoder`, none of its layers fit, and the run was refused.
+lora_slot() {
+step "a LoRA naming no slot goes on the slot that takes LoRAs, not the first one built (cl-1241)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/lora_slots.py
+cell lora-slot "$script" --lora e2e/lora-proj || return 0
+J '[.measurements.models[] | select((.adapters // []) | length > 0) | .slot] == ["model"]' "$OUT/lora-slot.json" \
+  || check "lora slot: the LoRA naming no slot is not on model alone: $(jq -c '[.measurements.models[] | {slot, adapters}]' "$OUT/lora-slot.json")"
+cell lora-slot-plain "$script" || return 0
+J --slurpfile plain "$OUT/lora-slot-plain.json" '.result.sum != $plain[0].result.sum and .result.encoded == $plain[0].result.encoded' "$OUT/lora-slot.json" \
+  || check "lora slot: the LoRA did not change the transformer alone: $(jq -c .result "$OUT/lora-slot.json"), without it $(jq -c .result "$OUT/lora-slot-plain.json")"
+echo "lora slot: on $(jq -c '[.measurements.models[] | select((.adapters // []) | length > 0) | .slot]' "$OUT/lora-slot.json"); sums $(jq .result.sum "$OUT/lora-slot.json") with, $(jq .result.sum "$OUT/lora-slot-plain.json") without"
+}
+
 # ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
 # take an LTX-2.5 LoRA (including IC-LoRAs such as Lightricks' Ingredients) and store it as a LoRA whose component is
 # `transformer`, with Diffusers' `LTX2VideoTransformer3DModel` module names and a PEFT adapter config"; Paul 11-16: "convert
