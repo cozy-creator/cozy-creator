@@ -164,7 +164,7 @@ one() {
   ! grep -q '^Traceback' "$out/drive.err" || echo "FAIL $p - drive 0s: $(grep -v '^\s*$' "$out/drive.err" | tail -n1 | cut -c1-300)"
   [ -z "$COZY" ] || "$HERE/cli.sh" "$COZY" "$PROJECT" "$PACKAGES/$p" "$out"
   typed
-  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,mirror,cli/src} "$out"/cells/*/out
+  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,mirror,cli/src,cli/lock} "$out"/cells/*/out
 }
 export -f one
 
