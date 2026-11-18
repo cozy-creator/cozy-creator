@@ -144,9 +144,50 @@ def _pinprobe(when: str) -> list[str]:
                          f"{len(big)} of 16 MiB or more, {sum(r[0] for r in big.values()) / 2**30:.2f} GiB")
             for key, (count, nbytes, example) in sorted(kinds.items(), key=lambda kv: -kv[1][1])[:6]:
                 lines.append(f"PINPROBE {when} {count} storages, {nbytes / 2**30:.2f} GiB, {example}:{key}"[:900])
+            del chain  # its closure refers to itself: a cycle that would keep this probe's maps to the next collection
 
+        def slots() -> None:
+            """Each module slot (buffer or parameter) holding a bound CUDA tensor of 1 MiB or more: whether it is a
+            residency site, and the module's path in a loaded model (or that no loaded model has it)."""
+            sited: dict[tuple[int, str], str] = {}
+            paths: dict[int, str] = {}
+            for mem in memories:
+                for module, model in list(mem.models.items()):
+                    for name, sites in model.sites.items():
+                        for site in sites:
+                            sited[(id(site.table), site.name)] = f"{model.component}:{name}"
+                    for path, sub in module.named_modules(remove_duplicate=False):
+                        paths.setdefault(id(sub), f"{model.component}:{path}")
+            tally: dict[tuple[object, ...], list] = {}
+            for o in gc.get_objects():
+                if not isinstance(o, _torch.nn.Module):
+                    continue
+                for kind in ("_buffers", "_parameters"):
+                    table = o.__dict__.get(kind) or {}
+                    for name, t in list(table.items()):
+                        try:
+                            if (not isinstance(t, _torch.Tensor) or not t.is_cuda or getattr(t, "_varena_read", None) is not None
+                                    or not t.data_ptr() or t.untyped_storage().nbytes() < 1 << 20):
+                                continue
+                        except Exception:
+                            continue
+                        site = sited.get((id(table), name))
+                        k = (kind, name, type(o).__name__, "site" if site else "not a site", "in a model" if id(o) in paths else "in no model")
+                        row = tally.setdefault(k, [0, 0, ""])
+                        row[0] += 1
+                        row[1] += t.nbytes
+                        row[2] = paths.get(id(o), "") or site or ""
+            for k, (n, size, example) in sorted(tally.items(), key=lambda kv: -kv[1][1])[:6]:
+                lines.append(f"PINPROBE {when} slots {k[0]}[{k[1]}] of {k[2]}, {k[3]}, {k[4]}: {n}, {size / 2**30:.2f} GiB, e.g. {example}"[:400])
+            if not tally:
+                lines.append(f"PINPROBE {when} slots: none bound")
+
+        watch(memories)
+        lines.extend(f"PINPROBE {when} setter: {said}" for said in _PINWATCH[1][:4])
+        _PINWATCH[1].clear()
         lines.append(f"PINPROBE {when} varena: {pinned()}")
         blocks()
+        slots()
         objs, found = storages()
         holders(found, objs)
         del objs, found
@@ -161,3 +202,87 @@ def _pinprobe(when: str) -> list[str]:
     lines.append(f"PINPROBE {when} took {time.perf_counter() - began:.1f} s")
     return lines
 
+
+#: (installed, what the watch saw since the last probe)
+_PINWATCH: list = [False, []]
+
+
+def watch(memories: list) -> None:
+    """Once a process: after each residency block exit that leaves the block free, and after each graph capture
+    state's restore, whether any free block's slots still hold bound CUDA tensors; the first few, with the stack."""
+    if _PINWATCH[0] or not memories:
+        return
+    import sys
+    import traceback
+
+    import torch as _torch
+
+    _PINWATCH[0] = True
+
+    def bound(site) -> bool:
+        t = site.table.get(site.name)
+        return (isinstance(t, _torch.Tensor) and t.is_cuda and getattr(t, "_varena_read", None) is None
+                and bool(t.data_ptr()))
+
+    owned: dict[int, tuple[object, list]] = {}
+
+    def sites_of(block) -> list:
+        key = id(block)
+        if key not in owned:
+            prefix = f"{block.path}." if block.path else ""
+            model = block.model
+            others = [b.path for b in model.blocks.values() if b.path and b is not block]
+            found = []
+            for name, sites in model.sites.items():
+                if prefix and not name.startswith(prefix):
+                    continue
+                if not prefix and any(name.startswith(f"{o}.") for o in others):
+                    continue
+                found.extend(sites)
+            owned[key] = (block, found)
+        return owned[key][1]
+
+    def note(what: str) -> None:
+        if len(_PINWATCH[1]) < 4:
+            stack = " < ".join(f"{f.name}@{f.filename.rsplit('/', 1)[-1]}:{f.lineno}" for f in reversed(traceback.extract_stack(limit=14)[:-2]))
+            _PINWATCH[1].append(f"{what}; stack: {stack}"[:700])
+
+    def free_bound(models) -> str:
+        for model in models:
+            for b in model.groups():
+                if b.count or b.retained or b.loading:
+                    continue
+                n = sum(bound(site) for site in sites_of(b))
+                if n:
+                    return f"{model.component} block {b.path or '(common)'}: {n} slots bound while free"
+        return ""
+
+    memory_type = type(memories[0])
+    exit_ = memory_type._exit
+
+    def _exit(self, block):
+        exit_(self, block)
+        try:
+            if not block.count and not block.retained and not block.loading:
+                n = sum(bound(site) for site in sites_of(block))
+                if n:
+                    note(f"_exit left {block.model.component} block {block.path or '(common)'} free with {n} slots bound")
+        except Exception as error:
+            note(f"watch _exit failed: {type(error).__name__}: {error}")
+
+    memory_type._exit = _exit
+    graphs = sys.modules.get("cozy_runtime" + ".graphs")
+    state = getattr(graphs, "_State", None)
+    if state is not None:
+        restore = state.restore
+
+        def restored(self):
+            changed = restore(self)
+            try:
+                if said := free_bound([m for mem in memories for m in list(mem.models.values())]):
+                    note(f"_State.restore (changed: {changed or '-'}): {said}")
+            except Exception as error:
+                note(f"watch restore failed: {type(error).__name__}: {error}")
+            return changed
+
+        state.restore = restored
