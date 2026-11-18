@@ -699,8 +699,10 @@ fn benchmarks(root: &Path, interface: &Path) -> Result<Vec<PackageBenchmark>, Er
     for (at, row) in rows.iter().enumerate() {
         let why = match row {
             row if !callables.iter().any(|callable| callable.name == row.function) => Some(format!("{:?} is no function of this package", row.function)),
-            row if row.gpu.is_empty() || row.gpu.len() > 128 => Some("its gpu is empty or longer than 128 bytes".into()),
-            row if !(1..=8).contains(&row.gpus) => Some(format!("gpus {} is not 1 to 8", row.gpus)),
+            // A CPU row (cl-1279): no GPU, and the processor it ran on.
+            row if row.gpus == 0 && (!row.gpu.is_empty() || row.cpu.is_empty() || row.cpu.len() > 128) => Some("a CPU row (gpus 0) names its cpu in at most 128 bytes, and no gpu".into()),
+            row if row.gpus > 0 && (row.gpu.is_empty() || row.gpu.len() > 128) => Some("its gpu is empty or longer than 128 bytes".into()),
+            row if row.gpus > 8 => Some(format!("gpus {} is not 0 to 8", row.gpus)),
             row if row.warm_ms == 0 || row.warm_ms > 86_400_000 => Some(format!("warm_ms {} is not 1 ms to a day", row.warm_ms)),
             _ => None,
         };

@@ -1,0 +1,122 @@
+# gpuless-place (cl-1279; Paul, 11-18: "why are you trying to place jobs on a machine that cannot run them? … You can pre-fetch on
+# GPU-less machines if it makes sense"): this runner's own machine, which has no GPU, a dev home whose first-party packages come from
+# the packages_refs checkout `tree` (its birefnet has a CPU row in benchmarks.json, its qwen-image-2 none). No rental. A plain project
+# on `local` alone, shown by a page, takes a BiRefNet box and a Qwen Image 2 box (prompt_upsampling off):
+#   - BiRefNet is guessed onto this computer and made ready there, and `cozy render` runs it there, quoted from its CPU row;
+#   - Qwen is guessed nowhere; `cozy render` of it sends nothing, its box and the board say this computer has no GPU with the rental,
+#     and none of its weights land here;
+#   - stand-g joins the project: a stand-in that says only its Status (e2e/cli/fakemachine.py), one RTX 4090, so whatever is sent
+#     there is refused. The waiting render goes there by itself (its POST in stand-g's log), and still nothing of it lands here.
+# params:
+#   tree  the packages_refs checkout (default pk)
+. "$(dirname "$0")/lib.sh"
+TREE=$(param tree pk)
+logs() {
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
+  cozy machine logs local tensord --since 3h -n 0 > "$OUT/tensord-local.log" 2>&1
+}
+fail() { logs; say "FAIL: $*"; RC=1; exit 1; }
+FAILS=0
+judge() { if eval "$1"; then say "ok: $2"; else say "NOT: $2${3:+ ($3)}"; FAILS=$((FAILS + 1)); fi; }
+for tool in jq ffmpeg python3 openssl curl; do command -v "$tool" > /dev/null || fail "no $tool"; done
+SOURCE=$(cd "$PACKAGES/$TREE" 2> /dev/null && pwd) || fail "no packages_refs checkout $TREE"
+jq -e '[.[] | select(.function == "remove_background" and .gpus == 0)] | length == 1' "$SOURCE/birefnet/benchmarks.json" > /dev/null \
+  || fail "the checkout's birefnet has no CPU row"
+# A dev home, its first-party packages from the checkout (load-ahead.sh's).
+cfg=$HOME/.cozy/config.toml
+mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
+{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+awk -v source="$SOURCE" '
+  function ours() { print "diagnostics = true"; print "packages = \"" source "\""; put = 1 }
+  /^(diagnostics|packages) *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
+  "$cfg" > "$cfg.next" && mv "$cfg.next" "$cfg" || fail "[calcifer] not written"
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
+for _ in $(seq 60); do
+  cozy --json machine show local > "$OUT/local-before.json" 2> /dev/null
+  [ "$(jq -r '.status.phase // empty' "$OUT/local-before.json" 2> /dev/null)" = ready ] && break
+  sleep 5
+done
+[ "$(jq -r '.status.phase // empty' "$OUT/local-before.json")" = ready ] || fail "local isn't ready"
+[ "$(jq '.status.gpus // [] | length' "$OUT/local-before.json")" = 0 ] || fail "local has a GPU: this session is for a computer with none"
+say "cozy $(cozy --version | awk '{print $2}'), packages from $TREE ($(git -C "$SOURCE" rev-parse --short HEAD 2> /dev/null)); this runner: $(nproc) CPUs, $(awk '/MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo) GiB RAM"
+
+in_project() { (cd "$RUN_PROJECT" && cozy "$@"); }
+qwen_held() { cozy --json machine show local 2> /dev/null | jq -c '[.status.models[]? | select(.repository | test("qwen")) | .total_bytes] | add // 0'; }
+nice -n 19 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1024x1024:rate=1' -frames:v 1 "$OUT/photo.png" || fail "no picture"
+in_project --json machine use local > "$OUT/use.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use.json")"
+run_page import "$OUT/photo.png" --name photo > "$OUT/photo.json" 2>&1 || fail "import photo: $(tail -c 300 "$OUT/photo.json")"
+python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/show.json" 2> "$OUT/show.err" & BG="$BG $!"
+for _ in $(seq 100); do grep -q '"held"' "$OUT/show.json" 2> /dev/null && break; sleep 0.1; done
+grep -q '"held"' "$OUT/show.json" || fail "no page shows the project: $(tail -c 300 "$OUT/show.err")"
+QWEN0=$(qwen_held)
+run_page add cut --tool birefnet/remove_background --fields '{"image": "<photo>"}' > "$OUT/add-cut.json" 2>&1 || fail "the BiRefNet box: $(tail -c 300 "$OUT/add-cut.json")"
+run_page add q --tool qwen-image-2/image --fields '{"instructions": "A red bicycle against a white wall at night.", "prompt_upsampling": false}' \
+  > "$OUT/add-q.json" 2>&1 || fail "the Qwen box: $(tail -c 300 "$OUT/add-q.json")"
+
+# The guesses, as the board's rows of what each box's machine has ready.
+ahead() { run_page board 2> /dev/null | jq -c --arg n "$1" '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null; }
+for _ in $(seq 120); do row=$(ahead cut); jq -e '.ready == true' <<< "${row:-null}" > /dev/null 2>&1 && break; sleep 5; done
+say "cut's guess: ${row:-none}; q's: $(ahead q)"
+judge 'jq -e ".machine == \"local\" and .ready == true" <<< "${row:-null}" > /dev/null' "BiRefNet is guessed onto this computer and made ready there" "${row:-no row}"
+judge '[ -z "$(ahead q)" ]' "Qwen is guessed nowhere" "$(ahead q)"
+logs
+say "what Calcifer said of the guesses: $(grep -oE "(cut|q)('s guess| isn't guessed| guessed)[^\"]{0,300}" "$OUT/calcifer.log" | sort -u | paste -sd '|' | cut -c1-900)"
+
+# rendered <box> <limit s>: `cozy render <box>` followed until it ends or the limit; its run's record kept as runs-<box>.json.
+rendered() {
+  local p
+  (cd "$RUN_PROJECT" && exec timeout "$2" cozy render "$1") > "$OUT/render-$1.txt" 2>&1 & p=$!
+  wait "$p"; say "$1: cozy render exited $? and said: $(tr '\n' '|' < "$OUT/render-$1.txt" | cut -c1-900)"
+}
+rendered cut 900
+RUN=$(in_project --json run ls --limit 0 2> /dev/null | jq -r '[.runs[]? | select(.target | test("remove_background"))][0].number // empty')
+[ -n "$RUN" ] && in_project --json --full run watch "$RUN" --once > "$OUT/runs-cut.json" 2>&1
+say "cut's run: $(jq -c 'def s(a; b): if a != null and b != null then ((b - a) / 100 | round / 10) else null end;
+  {number, machine, status, execution_ms, ran_s: s(.started_at_ms; .settled_at_ms), placed: (.placed | if . then {machine, basis, warm, finish_s: s(.quoted_at_ms; .finish_at_ms), prepare_s: (.prepare_ms / 1000), fetch_bytes} else null end)}' "$OUT/runs-cut.json" 2> /dev/null)"
+judge 'jq -e ".status == \"completed\" and .machine == \"local\" and .placed.basis == \"reference\"" "$OUT/runs-cut.json" > /dev/null 2>&1' \
+  "BiRefNet renders on this computer, quoted from its CPU row (basis reference)"
+
+# Qwen: rendered, nothing is sent.
+(cd "$RUN_PROJECT" && exec cozy render q) > "$OUT/render-q.txt" 2>&1 & QP=$!
+for _ in $(seq 60); do
+  in_project --json status > "$OUT/status-q.json" 2> /dev/null
+  jq -e '[.queue[]? | select(.name == "q") | .no_gpu.line // empty] | length > 0' "$OUT/status-q.json" > /dev/null 2>&1 && break
+  sleep 2
+done
+sleep 30
+in_project --json status > "$OUT/status-q.json" 2> /dev/null; run_page board > "$OUT/board-q.json" 2> /dev/null
+LINE='This computer has no GPU, and nothing measured says this runs without one: render it on a new rental.'
+say "q's box: $(jq -c '[.queue[]? | select(.name == "q")]' "$OUT/status-q.json"); the board said: $(jq -c '[.said[]?.message]' "$OUT/board-q.json" | cut -c1-600); cozy render said: $(tr '\n' '|' < "$OUT/render-q.txt" | cut -c1-600)"
+judge 'jq -e --arg l "$LINE" "[.queue[]? | select(.name == \"q\") | .no_gpu.line] | index(\$l) != null" "$OUT/status-q.json" > /dev/null' "Qwen's box says this computer has no GPU, with the rental"
+judge 'jq -e --arg l "q: $LINE" "[.said[]?.message] | map(select(. == \$l)) | length == 1" "$OUT/board-q.json" > /dev/null' "the board says it once"
+judge 'grep -qF "$LINE" "$OUT/render-q.txt"' "cozy render says it"
+judge '[ -z "$(in_project --json run ls --limit 0 | jq -r "[.runs[]? | select(.target | test(\"qwen\"))][0].number // empty")" ]' "no run of Qwen was sent"
+judge '[ "$(qwen_held)" = "$QWEN0" ]' "none of Qwen's weights landed here" "$QWEN0 bytes, then $(qwen_held)"
+
+# stand-g joins: a stand-in with one RTX 4090 that only says its Status.
+version=$(jq -r '.status.version' "$OUT/local-before.json") runtime=$(jq -r '.status.runtime // empty' "$OUT/local-before.json") tensorfs=$(jq -r '.status.tensorfs // empty' "$OUT/local-before.json") now=$(date +%s%3N)
+jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --argjson now "$now" '
+  {worker_id: "stand-in-g", boot_id: "stand-g", version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
+   started_at_unix_ms: ($now - 60000), serving_gpus: 1, link_bytes_per_s: 1000000000, disk: {total_bytes: 322122547200, free_bytes: 300000000000},
+   gpus: [{index: 0, name: "NVIDIA GeForce RTX 4090", uuid: "GPU-stand-g-0", memory_bytes: 25757220864, family: "sm89", memory_class: "discrete"}],
+   models: [], queue: [], times: []}' > "$OUT/stand-g.frame.json"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=stand-g" -days 2 -keyout "$OUT/stand-g.key" -out "$OUT/stand-g.pem" > /dev/null 2>&1 || fail "stand-g's certificate"
+port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+python3 "$(dirname "$0")/../../e2e/cli/fakemachine.py" --port "$port" --cert "$OUT/stand-g.pem" --key "$OUT/stand-g.key" --frame "$OUT/stand-g.frame.json" > "$OUT/stand-g.log" 2>&1 & BG="$BG $!"
+for _ in $(seq 50); do curl -skf "https://127.0.0.1:$port/v1/status" > /dev/null 2>&1 && break; sleep 0.2; done
+fp=$(openssl x509 -in "$OUT/stand-g.pem" -outform der | sha256sum | cut -c1-64)
+cozy --json machine add stand-g "127.0.0.1:$port" --fingerprint "sha256:$fp" > "$OUT/stand-g-add.json" 2>&1 || fail "machine add stand-g: $(tail -c 300 "$OUT/stand-g-add.json")"
+in_project --json machine use local,stand-g > "$OUT/use-g.json" 2>&1 || fail "machine use local,stand-g: $(tail -c 300 "$OUT/use-g.json")"
+# Placed there: the walk's line for it (the only job left unsent), or its run's POST, which stand-g refuses.
+went() { cozy machine logs local calcifer --lines 3000 2> /dev/null | grep -q "goes to stand-g" || grep -q '"POST /v1/runs' "$OUT/stand-g.log"; }
+for _ in $(seq 60); do went && break; sleep 2; done
+say "stand-g was asked: $(grep -oE '"(POST|PUT) [^ ]+' "$OUT/stand-g.log" | sort | uniq -c | tr -s ' ' | paste -sd ';')"
+judge went "the waiting Qwen render went to stand-g by itself once it joined"
+run_page cancel q > "$OUT/cancel-q.txt" 2>&1; kill "$QP" 2> /dev/null; wait "$QP" 2> /dev/null
+sleep 20
+judge '[ "$(qwen_held)" = "$QWEN0" ]' "still none of Qwen's weights landed here" "$QWEN0 bytes, then $(qwen_held)"
+timeout 60 cozy --json machine end stand-g --force -y > "$OUT/stand-g-end.json" 2>&1 || say "stand-g end: $(tail -c 200 "$OUT/stand-g-end.json")"
+logs
+say "what Calcifer said of placement: $(grep -E "goes to|waits for a machine|isn't planned|guess" "$OUT/calcifer.log" | grep -vE 'GET|PUT /v1/events' | tail -20 | cut -c1-300 | paste -sd '|')"
+[ "$FAILS" = 0 ] || fail "$FAILS of the judged facts did not hold"
+say "PASS"

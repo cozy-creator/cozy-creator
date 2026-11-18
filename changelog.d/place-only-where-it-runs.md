@@ -1,0 +1,1 @@
+A computer with no GPU is sent a function that builds a model only when its own runs or the package's CPU benchmark row time it there; otherwise the render waits, nothing downloads, and its box and the CLI say so with the rental. Benchmark rows carry the lane they ran at, CPU rows and measured memory, and a quote interpolates between a function's measured sizes.

@@ -158,6 +158,8 @@ function faceNow(seen: Seen): Face {
   if (!run) {
     // None of its machines has room on its disk for its models (cl-1175): it waits, nothing of them downloaded.
     if (view.noRoom) return face("queued", "Needs", "Waiting for disk space", `${view.noRoom.short} more`)
+    // Its machines have no GPU, and nothing measured says it runs without one (cl-1279): it waits for a machine that can run it.
+    if (view.noGpu) return face("queued", "Needs", "Waiting for a machine", "a GPU")
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
     if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued, ${ordinal((ahead?.length ?? 0) + 1)} in line`, preparing)
     if (view.queued) return face("queued", "Queued,", "Choosing a machine", `${ordinal((ahead?.length ?? 0) + 1)} in line`)

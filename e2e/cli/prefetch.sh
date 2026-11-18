@@ -457,6 +457,58 @@ pre_local_end
 # pre_local_end: stand-l ended.
 pre_local_end() { timeout 60 "$COZY" --json machine end stand-l --force -y > "$OUT/stand-l-end.json" 2>&1 || true; }
 
+# prefetch_gpuless (cl-1279, Paul 11-18: "why are you trying to place jobs on a machine that cannot run them? … You can pre-fetch on
+# GPU-less machines if it makes sense"): this computer has no GPU. A project of it alone, shown by the page, has two boxes of local
+# code that each build a model: `unmeasured` (e2e/pre-req) has no time measured without a GPU; `measured` (e2e/pre-ask) has a CPU row
+# in its benchmarks.json. `measured` is guessed onto this computer, made ready there, and its render runs there, quoted from its row.
+# `unmeasured` is guessed nowhere; rendered, it waits with nothing sent, its box and the board saying this computer has no GPU and
+# the rental, and none of e2e/pre-req lands here. Without cl-1279 `unmeasured` was sent here and ran on the CPU, and `measured` was
+# never guessed (#3932's `not_simply`).
+prefetch_gpuless() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch gpuless (cl-1279): a computer with no GPU takes a function that builds a model only on a time measured without one"
+[ -n "${PRE_PAGE:-}" ] || { check "prefetch gpuless: the cells before it left no page"; return 0; }
+local P=$OUT/pre-gpuless job run line='^This computer has no GPU, and nothing measured says this runs without one: render it on a new rental[.]$' _
+pre_machine local "$OUT/gpuless-before.json"
+J '(.status.gpus // []) | length == 0' "$OUT/gpuless-before.json" || { echo "prefetch gpuless: this computer has a GPU"; return 0; }
+pre_project "$P" local || return 0
+jq -n --arg s "$here/project/gpuless/still" --arg m "$here/project/gpuless/measured" '[
+  {name: "unmeasured", tool: $s, kind: "image", fields: {instructions: "Nothing measured it without a GPU."}},
+  {name: "measured", tool: $m, kind: "image", fields: {instructions: "Its CPU row times it."}}]' | boxes_in "$P" || return 0
+pre_ready "$P" measured local 300 || return 0
+[ -z "$(pre_row "$P" unmeasured)" ] || check "prefetch gpuless: unmeasured was guessed: $(pre_row "$P" unmeasured)"
+coming_go measured '["local"]'
+coming_done measured 600
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "measured")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+if [ -n "$run" ] && J '.state == "done"' <<< "$job"; then
+  run_show "$OUT" gpuless-measured "$run"
+  echo "prefetch gpuless: measured's render $run: $(jq -c '{machine, status, execution_ms, placed: (.placed | {machine, basis, warm, fetch_bytes, prepare_ms, finish_s: ((.finish_at_ms - .quoted_at_ms) / 1000)})}' "$OUT/gpuless-measured.json" 2> /dev/null)"
+  J '.machine == "local" and .placed.basis == "reference"' "$OUT/gpuless-measured.json" \
+    || check "prefetch gpuless: measured's render wasn't placed here on its CPU row: $(jq -c '{machine, placed}' "$OUT/gpuless-measured.json")"
+else
+  check "prefetch gpuless: measured's render didn't end done here: ${job:-no job}"
+fi
+coming_go unmeasured '["local"]'
+for _ in $(seq 120); do
+  status "$P" > "$OUT/gpuless-status.json" 2> /dev/null || true
+  J --arg l "$line" '[.queue[]? | select(.name == "unmeasured") | .no_gpu.line // "" | test($l)] | any' "$OUT/gpuless-status.json" && break
+  sleep 0.5
+done
+job=$(jq -c '[.board.jobs[]? | select(.asset == "unmeasured")] | last // empty' "$OUT/gpuless-status.json" 2> /dev/null)
+echo "prefetch gpuless: unmeasured: $(jq -c '[.queue[]? | select(.name == "unmeasured")]' "$OUT/gpuless-status.json" 2> /dev/null) ${job:-no job}"
+J --arg l "$line" '[.queue[]? | select(.name == "unmeasured") | .no_gpu.line // "" | test($l)] | any' "$OUT/gpuless-status.json" \
+  || check "prefetch gpuless: unmeasured's box doesn't say this computer has no GPU: ${job:-no job on the board}"
+J --arg l "$line" '[.board.said[]? | .message] | any(ltrimstr("unmeasured: ") | test($l))' "$OUT/gpuless-status.json" \
+  || check "prefetch gpuless: the board didn't say unmeasured waits for a GPU: $(jq -c '[.board.said[]?.message]' "$OUT/gpuless-status.json" 2> /dev/null | head -c 500)"
+[ -z "$(jq -r '.run // empty' <<< "${job:-null}")" ] || check "prefetch gpuless: unmeasured's render was sent, run $(jq -r .run <<< "$job")"
+sleep 20
+pre_machine local "$OUT/gpuless-after.json"
+[ "$(pre_held "$OUT/gpuless-after.json" e2e/pre-req)" = "$(pre_held "$OUT/gpuless-before.json" e2e/pre-req)" ] \
+  || check "prefetch gpuless: e2e/pre-req landed here for unmeasured: $(pre_held "$OUT/gpuless-before.json" e2e/pre-req) then $(pre_held "$OUT/gpuless-after.json" e2e/pre-req)"
+project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -d '{"names":["unmeasured"]}' > "$OUT/gpuless-cancel.json" 2>&1 || true
+}
+
 # prefetch_disk (cl-1104): a guess on a short disk, and a guess's install. stand-q, a new stand-in, keeps its store on a 3 GiB disk, 1
 # GiB of it TensorFS's reserve. A run there reads e2e/pre-ask (256 MiB: a call's, the oldest it holds), and its machine starts again so
 # no executor holds it. A project of stand-q shows a box of e2e-slow-install, whose environment takes a wheel a server here sends at

@@ -2048,6 +2048,15 @@ ssh_key?: string | null, } | { "kind": "add", name: string, address: string,
 fingerprint: Digest, };
 
 /**
+ * A render waiting because its machines have no GPU and nothing measured says its function runs without one (cl-1279).
+ */
+export type NoGpu = {
+/**
+ * Why, once: `This computer has no GPU, and nothing measured says this runs without one: render it on a new rental.`
+ */
+line: string, };
+
+/**
  * A render waiting because none of its machines has room on its disk for its models (cl-1175).
  */
 export type NoRoom = {
@@ -2638,7 +2647,11 @@ export type Queued = { name: string, running: boolean, run?: number | null,
 /**
  * None of its machines has room on its disk for its models (cl-1175): it waits, nothing of it downloaded.
  */
-no_room?: NoRoom | null, };
+no_room?: NoRoom | null,
+/**
+ * Its machines have no GPU, and nothing measured says it runs without one (cl-1279): it waits, nothing of it sent or downloaded.
+ */
+no_gpu?: NoGpu | null, };
 
 /**
  * One thing an ask queued, and the names ahead of it.

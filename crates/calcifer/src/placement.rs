@@ -40,7 +40,8 @@ pub(crate) struct Job {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
-    /// It builds a model on a GPU, itself or a call it makes (`Interface::needs_gpu`): a machine with none can't run it.
+    /// It builds a model on a GPU, itself or a call it makes (`Interface::needs_gpu`): a machine with none takes it only on a time
+    /// that stands on something (`api::estimate::quote`).
     pub gpu: bool,
     /// The machines it may go to.
     pub on: Vec<On>,
@@ -79,6 +80,17 @@ pub(crate) struct Offer {
 }
 
 impl Offer {
+    /// Its machine has no GPU, and nothing measured says its job runs without one (`api::estimate::NO_GPU`, cl-1279).
+    pub(crate) fn no_gpu(&self) -> bool {
+        self.refusal.as_ref().is_some_and(|reason| reason.code == api::estimate::NO_GPU)
+    }
+
+    /// Its machine can't run it, by what that machine has (cl-1279, Paul 11-18: "why are you trying to place jobs on a machine that
+    /// cannot run them?"): no room on its disk for its weights (cl-1175), or no GPU. Nothing of it is ever sent there.
+    pub(crate) fn unable(&self) -> bool {
+        self.short_bytes > 0 || self.no_gpu()
+    }
+
     /// What a job held for a machine on its way says (cl-915): `waits for pluto, ready in about 2 min`. None for one that serves.
     pub(crate) fn waits_for(&self, now: i64) -> Option<String> {
         let at = self.ready_at_ms?;
@@ -492,12 +504,13 @@ pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
 
 /// Where a job goes that no machine of `on` quoted a finish for. A run named to one place goes there, which refuses it as it does;
 /// of several machines, the first, a rental before this computer, that can take a run at all (one booting or updating waits there).
-/// With none of them, where a run naming none would go, said once (fix, don't refuse; cl-1066): refused only when nothing can take it.
-pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result<(On, Option<String>), Error> {
-    // One whose disk has no room for its weights is never sent them (cl-1175): none of them would start to download.
-    let roomless = |machine: &On| offers.iter().any(|offer| offer.short_bytes > 0 && offer.machine == *machine);
-    let kept: Vec<On> = on.iter().filter(|machine| !roomless(machine)).cloned().collect();
-    if let (true, Some(refused)) = (kept.is_empty(), no_room(offers).filter(|_| !on.is_empty())) {
+/// With none of them, where a run naming none would go, said once (fix, don't refuse; cl-1066): the soonest of those to finish `job`
+/// as each quotes it, so never one that can't run it (cl-1279). Refused only when nothing can take it.
+pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer], job: Option<&Job>) -> Result<(On, Option<String>), Error> {
+    // One that can't run it is never sent it (cl-1175, cl-1279): nothing of it would start to download there.
+    let unable = |machine: &On| offers.iter().any(|offer| offer.unable() && offer.machine == *machine);
+    let kept: Vec<On> = on.iter().filter(|machine| !unable(machine)).cloned().collect();
+    if let (true, Some(refused)) = (kept.is_empty(), cant(offers).filter(|_| !on.is_empty())) {
         return Err(refused);
     }
     let on = kept.as_slice();
@@ -520,11 +533,12 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
         }
     }
     let said = format!("None of {} can take this run: {}.", names.join(", "), why.join("; "));
-    // Where a render naming none goes, this computer and this account's rentals alone, never a rental it would buy: the first there now.
-    for other in api.machines.fallback().into_iter().filter(|other| !on.contains(other) && !roomless(other)) {
-        let On::Machine(name) = &other else { continue };
-        if api.machines.reach(name).await.is_ok() {
-            return Ok((other.clone(), Some(format!("{said} It goes to {name}."))));
+    // Where a render naming none goes, this computer and this account's rentals alone, never a rental it would buy.
+    let others: Vec<On> = api.machines.fallback().into_iter().filter(|other| !on.contains(other) && matches!(other, On::Machine(_))).collect();
+    if let (Some(job), false) = (job, others.is_empty()) {
+        let (quoted, _) = Box::pin(self::offers(api, std::slice::from_ref(&Job { on: others, ..job.clone() }), false)).await;
+        if let Some(offer) = quoted.first().and_then(|quoted| soonest(quoted, now_ms())) {
+            return Ok((offer.machine.clone(), Some(format!("{said} It goes to {}.", offer.machine))));
         }
     }
     Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("Bring one of them back, or pick other machines.").next("cozy machine ls"))
@@ -616,10 +630,34 @@ pub(crate) fn no_room_line(offer: &Offer, verb: &str) -> String {
     }
 }
 
-/// `no_room_line` as a refusal, for what isn't held to wait for room: none of its weights downloaded anywhere. None: each has room.
-pub(crate) fn no_room(offers: &[Offer]) -> Option<Error> {
-    let offer = roomless(offers)?;
-    Some(Error::new(Kind::Unavailable, "machine_disk_full", no_room_line(offer, "run")).remedy("Free up disk space, or run it on a new rental with --on new."))
+/// The machine of `offers` that can't run a job (`Offer::unable`): this computer's first, else one without a GPU for it, else the one
+/// shortest of room. None: each can.
+pub(crate) fn unable(offers: &[Offer]) -> Option<&Offer> {
+    offers.iter().filter(|offer| offer.unable()).min_by_key(|offer| (!offer.machine.is_local(), offer.short_bytes))
+}
+
+/// What a job says that only a machine with no GPU could take, where nothing measured says it runs without one (cl-1279), once: why,
+/// and a rental.
+pub(crate) fn no_gpu_line(offer: &Offer, verb: &str) -> String {
+    let here = if offer.machine.is_local() { "This computer".to_owned() } else { offer.machine.to_string() };
+    format!("{here} has no GPU, and nothing measured says this runs without one: {verb} it on a new rental.")
+}
+
+/// What a job none of whose machines can run it says, once (`Offer::unable`): `no_gpu_line`, else `no_room_line`.
+pub(crate) fn unable_line(offer: &Offer, verb: &str) -> String {
+    match offer.no_gpu() {
+        true => no_gpu_line(offer, verb),
+        false => no_room_line(offer, verb),
+    }
+}
+
+/// `unable_line` as a refusal, for what isn't held to wait: nothing of it downloaded anywhere. None: each of `offers` can run it.
+pub(crate) fn cant(offers: &[Offer]) -> Option<Error> {
+    let offer = unable(offers)?;
+    Some(match offer.no_gpu() {
+        true => Error::new(Kind::Unavailable, "machine_no_gpu", no_gpu_line(offer, "run")).remedy("Run it on a machine with a GPU, or a new rental with --on new."),
+        false => Error::new(Kind::Unavailable, "machine_disk_full", no_room_line(offer, "run")).remedy("Free up disk space, or run it on a new rental with --on new."),
+    })
 }
 
 /// A job placed on `to` because `short`'s disk has no room for its weights, in a line (cl-1175).

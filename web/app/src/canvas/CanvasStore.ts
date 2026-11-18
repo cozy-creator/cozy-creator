@@ -7,6 +7,7 @@ import type {
   Ahead,
   ToolField as BoxField,
   Imported,
+  NoGpu,
   NoRoom,
   AssetDeleted,
   AssetPatch,
@@ -83,6 +84,8 @@ export interface ElementView {
   queued?: boolean
   /** Queued, none of its machines has room on its disk for its models (cl-1175): how much room it lacks. */
   noRoom?: NoRoom
+  /** Queued, its machines have no GPU and nothing measured says it runs without one (cl-1279): why. */
+  noGpu?: NoGpu
   /** What reading the project said of it. */
   warnings?: string[]
   /** A piece of a cut was clicked: where to play from. `at` is seconds, `ask` tells one click from the next. */
@@ -254,7 +257,7 @@ const SAYS_ITSELF = ["it stands", "nothing to do", "stays pinned"]
 const stood = (job: Job) => job.state === "done" && job.run == null && job.number != null && job.seconds == null && Boolean(job.why) && !SAYS_ITSELF.includes(job.why!)
 
 /** What the state says of one element: an asset, or an entity. */
-type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "noRoom" | "warnings">
+type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "noRoom" | "noGpu" | "warnings">
 
 const viewOf = (element: Placed): ElementView => ({ ...element })
 
@@ -972,6 +975,7 @@ export class CanvasStore {
     // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
     const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])
     const noRoom = new Map((state.queue ?? []).flatMap((item) => (item.no_room ? [[item.name, item.no_room] as const] : [])))
+    const noGpu = new Map((state.queue ?? []).flatMap((item) => (item.no_gpu ? [[item.name, item.no_gpu] as const] : [])))
     const warnings = warningsOf(state).byElement
     this.owners.clear()
     const said = (view: ElementView, name: string) => {
@@ -998,6 +1002,7 @@ export class CanvasStore {
         }
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.noRoom?.line !== noRoom.get(asset.name)?.line) change.noRoom = noRoom.get(asset.name)
+        if (view.noGpu?.line !== noGpu.get(asset.name)?.line) change.noGpu = noGpu.get(asset.name)
         if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
@@ -1052,7 +1057,7 @@ export class CanvasStore {
         // While an import is being asked, a new name may be that import's: its answer says, then this runs again. A box's old name while
         // its rename is on its way is that box, under its new name here: never another box of it (e2e 44094179191: `named` was drawn again
         // beside `renamed`, which went).
-        fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), noRoom: noRoom.get(asset.name), warnings: warnings.get(asset.name) })
+        fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), noRoom: noRoom.get(asset.name), noGpu: noGpu.get(asset.name), warnings: warnings.get(asset.name) })
       }
     }
     const standing = new Map(state.assets.map((asset) => [asset.name, asset.failure ? ("failed" as const) : asset.standing]))
