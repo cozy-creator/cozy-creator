@@ -1,5 +1,5 @@
 #!/bin/bash
-# promote.sh [--dry-run] [--images '<profile>=sha256:<hex> …'] [--packages DIR] <release-gate run id> | --record <URL> <gate dir>...:
+# promote.sh [--dry-run] [--phases LIST] [--images '<profile>=sha256:<hex> …'] [--packages DIR] <release-gate run id> | --record <URL> <gate dir>...:
 # the one step that hands a passed candidate set to users, the same bytes the gate ran (tracker design ci-v2, pre-release
 # and promotion). Testing is manual: the evidence is the passing release-gate.yml run the release agent dispatched, or the
 # hand gate's dirs with the URL where their result is recorded. verify.sh first; then, each waiting for the last to succeed:
@@ -15,18 +15,26 @@
 #   images    tensorhub worker-images-publish.yaml promote: the digests staged from those wheels (--images) become the tags.
 #             Last (cl-1164): a new package runs on an old image (its machine moves its Runtime up), an old package never on a
 #             new one (a release refuses a Runtime its cap leaves out), so new pods boot the new Runtime once its packages exist.
+# --phases pypi,smoke,cozy,packages,models,images (default all): only those, always in that order, so the release can stop
+# between them (a check that needs PyPI's Runtime before Latest moves). A phase whose earlier phases this run leaves out stands
+# on the world as they leave it, read before anything moves: PyPI serving the set's Runtime and TensorFS by the gate's digests,
+# the cozy release Latest, every gated package's final on the Hub, each held model public. smoke leaves nothing to read.
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
-DRY= IMAGES= PKGS=
+DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,packages,models,images
+PHASES=$ALL
 while [ $# -gt 0 ]; do
   case $1 in
     --dry-run) DRY=1; shift ;;
+    --phases) PHASES=$2; shift 2 ;;
     --images) IMAGES=$2; shift 2 ;;
     --packages) PKGS=$(cd "$2" && pwd); shift 2 ;;
     *) break ;;
   esac
 done
 HERE=$(cd "$(dirname "$0")" && pwd)
+for p in ${PHASES//,/ }; do [[ ,$ALL, == *,$p,* ]] || { echo "--phases takes $ALL: no $p" >&2; exit 2; }; done
+want() { [[ ,$PHASES, == *,$1,* ]]; }
 if [ "${1:-}" = --record ]; then
   gate=${2:-}; shift 2
   [[ $gate == https://* ]] && [ $# -gt 0 ] || { echo "--record <URL> <gate dir>...: the hand gate's dirs and where their result is recorded" >&2; exit 2; }
@@ -39,16 +47,67 @@ field() { jq -r ".$1 // empty" <<< "$set_"; }
 ref=$(field packages_ref)
 mapfile -t models < <(jq -r '.models[]?' <<< "$set_")
 # What it needs, checked before anything moves.
-if [ -n "$(field runtime_sha256)$(field tensorfs_sha256)$(field cozy_sha256)" ] && [ -z "$IMAGES" ]; then
+if want images && [ -n "$(field runtime_sha256)$(field tensorfs_sha256)$(field cozy_sha256)" ] && [ -z "$IMAGES" ]; then
   echo "the set moves cozy, the Runtime or TensorFS: --images '<profile>=sha256:… …', the worker images staged from it" >&2; exit 2
 fi
-if [ -n "$ref" ]; then
+if [ -n "$ref" ] && { want packages || want models || want images; }; then
   [ -n "$PKGS" ] && [ -f "$PKGS/Taskfile.yaml" ] || { echo "the set holds packages at $ref: --packages <a packages checkout>" >&2; exit 2; }
   [ "$(git -C "$PKGS" rev-parse --abbrev-ref HEAD)" = master ] || { echo "$PKGS is not on master" >&2; exit 2; }
 fi
-for m in "${models[@]}"; do
-  cozy --json model show "$m" > /dev/null 2>&1 || { echo "the Hub does not hold $m: nothing promoted" >&2; exit 1; }
+if want models; then
+  for m in "${models[@]}"; do
+    cozy --json model show "$m" > /dev/null 2>&1 || { echo "the Hub does not hold $m: nothing promoted" >&2; exit 1; }
+  done
+fi
+# done_<phase>: whether the world is as that phase leaves it, read now. WHY says what is missing.
+WHY=
+on_pypi() {  # <distribution> <version> <sha256>: PyPI serves that release with a file of that digest
+  curl -fsSL --retry 3 "https://pypi.org/pypi/$1/$2/json" 2> /dev/null | jq -e --arg s "$3" 'any(.urls[]; .digests.sha256 == $s)' > /dev/null ||
+    { WHY="PyPI does not serve $1 $2 with the gate's digest ${3:0:12}…"; return 1; }
+}
+done_pypi() {
+  { [ -z "$(field tensorfs_sha256)" ] || on_pypi tensorfs "$(field tensorfs)" "$(field tensorfs_sha256)"; } &&
+    { [ -z "$(field runtime_sha256)" ] || on_pypi cozy-runtime "$(field runtime)" "$(field runtime_sha256)"; }
+}
+done_cozy() {
+  local latest
+  [ -n "$(field cozy_sha256)" ] || return 0
+  latest=$(gh api repos/cozy-creator/cozy-creator/releases/latest -q .tag_name 2> /dev/null || true)
+  [ "$latest" = "v$(field cozy)" ] || { WHY="cozy v$(field cozy) is not Latest (${latest:-unread} is)"; return 1; }
+}
+done_packages() {  # every package at the gated ref has its final (its version less any prerelease part) or later on the Hub
+  local listed p t v final latest missing=
+  [ -n "$ref" ] || return 0
+  git -C "$PKGS" cat-file -e "$ref^{commit}" 2> /dev/null || git -C "$PKGS" fetch -q origin "$ref"
+  listed=$(cozy package ls --json --limit 200) || { WHY="the Hub's package listing did not answer"; return 1; }
+  for p in $(git -C "$PKGS" ls-tree --name-only "$ref"); do
+    t=$(git -C "$PKGS" show "$ref:$p/pyproject.toml" 2> /dev/null) && grep -q cozy.application <<< "$t" || continue
+    v=$(awk -F'"' '/^version = /{print $2; exit}' <<< "$t")
+    final=$(sed -E 's/(a|b|rc)[0-9]+$//; s/\.dev[0-9]+$//' <<< "$v")
+    latest=$(jq -r --arg p "_/$p" --arg q "$p" '[.packages[] | select(.package == $p or .package == $q)][0].latest_release // empty' <<< "$listed")
+    [ -n "$latest" ] && [ "$(printf '%s\n' "$final" "$latest" | sort -V | head -1)" = "$final" ] || missing="$missing $p $final"
+  done
+  [ -z "$missing" ] || { WHY="no final on the Hub for:$missing"; return 1; }
+}
+done_models() {
+  local m
+  for m in "${models[@]}"; do
+    [ "$(cozy --json model show "$m" 2> /dev/null | jq -r '.visibility // empty')" = public ] || { WHY="$m is not public"; return 1; }
+  done
+}
+# Each phase this run takes stands on every earlier one it leaves out.
+left= ordered= stood=
+for p in ${ALL//,/ }; do
+  if want "$p"; then
+    ordered="$ordered${ordered:+, }$p"
+    for q in $left; do
+      [[ " $stood " == *" $q "* ]] && continue
+      "done_$q" || { echo "--phases: $p stands on $q, which has not happened: $WHY. Nothing promoted" >&2; exit 1; }
+      stood="$stood $q"
+    done
+  elif [ "$p" != smoke ]; then left="$left $p"; fi
 done
+echo "phases: $ordered${stood:+ (standing on$stood, read now)}${DRY:+; dry run}"
 # go <repo> <workflow> <args...>: the workflow dispatched, then followed to its end; a failure stops the promotion.
 go() {
   local repo=$1 workflow=$2 since id; shift 2
@@ -67,10 +126,10 @@ go() {
   echo "  $workflow run $id passed"
 }
 run() { echo "+ $*"; [ -n "$DRY" ] || "$@"; }
-if [ -n "$(field tensorfs_sha256)" ]; then
+if want pypi && [ -n "$(field tensorfs_sha256)" ]; then
   go cozy-creator/cozy-creator tensorfs-publish.yaml --ref "tensorfs-v$(field tensorfs)" -f gate_run="$gate"
 fi
-if [ -n "$(field runtime_sha256)" ]; then
+if want pypi && [ -n "$(field runtime_sha256)" ]; then
   v=$(field runtime)
   sums=$(gh release download "v$v" -R cozy-creator/cozy-runtime -p SHA256SUMS -O - | tr '\n' ' ')
   go cozy-creator/cozy-runtime runtime-publish.yaml --ref master -f release_tag="v$v" -f mode=prebuilt -f gated_sha256sums="$sums" -f gate_run="$gate"
@@ -79,7 +138,7 @@ fi
 # floored on it, so no gate ran that. Now it locks one from the gated commit against PyPI's Runtime and runs it on CPU from that
 # lock (e2e cpu --lock fresh, the cozy-publish prerelease, Runtime and TensorFS from PyPI). Images and Latest wait for it; a failure
 # stops here.
-if [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ]; then
+if want smoke && [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ]; then
   tag="v$(field cozy)"
   pub=$(gh run list -R cozy-creator/cozy-creator -w cozy-publish.yaml -b "$tag" -L 5 --json databaseId,conclusion -q '[.[] | select(.conclusion == "success")][0].databaseId // empty')
   [ -n "$pub" ] || { echo "no successful cozy-publish run for $tag: nothing after PyPI promoted" >&2; exit 1; }
@@ -88,20 +147,21 @@ if [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ]; 
     -f select=cpu -f cpu_only=birefnet -f publish_run="$pub" -f runtime="$(field runtime)" -f tensorfs="$(field tensorfs)" -f packages_ref="$ref" -f cpu_lock_fresh=true
 fi
 c=$(field cozy)
-if [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
+if want cozy && [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
   go cozy-creator/cozy-creator cozy-promote.yaml -f tag="v$c" -f gate="$gate"
 fi
-if [ -n "$ref" ]; then
+if want packages && [ -n "$ref" ]; then
   base=$(ls "$HERE"/baselines/*.json 2> /dev/null | sort -V | tail -1 || true)
   run uv run -q --no-project --with numpy python -I "$HERE/bench.py" references "${base:-$HERE/benchmarks-seed.json}" --packages "$PKGS"
   if [ -n "$DRY" ]; then (cd "$PKGS" && run task publish -- --dry-run --gated "$ref")
   else (cd "$PKGS" && run task publish -- --gated "$ref"); fi
 fi
+want models || models=()
 for m in "${models[@]}"; do
   shown=$(cozy --json model show "$m")
   [ "$(jq -r '.visibility // empty' <<< "$shown")" != public ] || { echo "  $m is public already"; continue; }
   mapfile -t checkpoints < <(jq -r '[.. | objects | select(has("lane") and has("checkpoint")) | .checkpoint] | unique[]' <<< "$shown")
   run cozy model publish "${m%@*}" "${m#*@}" "${checkpoints[@]}" -y
 done
-[ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
-echo "promoted: $(jq -c . <<< "$set_"). Then the Hub pin, to this set."
+! want images || [ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
+echo "promoted (${PHASES//,/, }): $(jq -c . <<< "$set_").$(want images && echo ' Then the Hub pin, to this set.')"
