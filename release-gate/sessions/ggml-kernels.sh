@@ -24,6 +24,22 @@ say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version
 # packages checkout `tree`'s qwen3, quantized on the pod from `model`), each timed by ggml-decode's `decode` drive (warm, plain
 # and with MTP drafting) on this pod after the kernels: one pod tells a lane's kernels from its bytes (q8_0 against q8_0 with
 # its LM head kept bf16, beside int8).
+# llama.cpp's side built on the runner first (compiling and linking need no GPU): a build that can't link fails here, at $0,
+# not on a pod (44297995601). `arch` names the card's target where the SKU doesn't.
+ARCH=$(param arch '')
+[ -n "$ARCH" ] || case $SKU in
+  rtx-5090* | rtx-5080* | rtx-5070* | rtx-5060* | rtx-pro-6000*) ARCH=120a-real ;;
+  rtx-4090* | rtx-4080* | rtx-4070* | rtx-4060* | rtx-6000-ada | l4 | l40*) ARCH=89-real ;;
+  rtx-3090* | rtx-3080* | rtx-3070* | rtx-3060* | rtx-a4000 | rtx-a5000 | rtx-a6000 | a40) ARCH=86-real ;;
+  *) fail "arch: no target known for $SKU" ;;
+esac
+if ! W=$OUT/llama-check CUDA=$OUT/llama-check/cuda ARCH=$ARCH BUILD_ONLY=1 timeout 3600 bash "$FIX/pod.sh" "$LLAMA" "$LLAMA_SUM" \
+  > "$OUT/llama-check.out" 2>&1; then
+  tail -c 1500 "$OUT/llama-check/out/build.log" "$OUT/llama-check.out" 2> /dev/null | tee -a "$R"
+  fail "llama.cpp $LLAMA doesn't build for $ARCH on the runner"
+fi
+say "llama.cpp $LLAMA builds for $ARCH on the runner: $(tail -n 1 "$OUT/llama-check/out/pod.log")"
+rm -rf "$OUT/llama-check"
 DECODE=$(param decode '') MAKE=$(param make '') MODEL=$(param model '') TREE=$(param tree '')
 DFIX=$HERE/fixtures/ggml-decode
 . "$DFIX/preflight.sh"
