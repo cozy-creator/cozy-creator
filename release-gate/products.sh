@@ -209,7 +209,7 @@ product_relayvsr() {
   [ -f clip-1s.mp4 ] || nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
   cell relayvsr "$(pkg relayvsr upscale)" --file video="$OUT/clip-1s.mp4"
 }
-product_orbit() { cell orbit "$(pkg orbit orbit)" --file picture="${K:-$REF}" subject="character" seed:=$((R + 33)); }
+product_orbit() { cell orbit "$(pkg orbit orbit)" instructions='<character>' "references:=$(jq -cn --arg f "${K:-$REF}" '[{name: "character", image: $f}]')" seed:=$((R + 33)); }
 product_pan2() {
   cell pan2 "$(pkg pan2 generate)" prompt="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
     seed:=$((R + 34))
