@@ -6,7 +6,7 @@ import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
-import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn, waitingWords } from "../panels/machines/activity"
+import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
 import { attemptWords, bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
@@ -132,8 +132,9 @@ function faceNow(seen: Seen): Face {
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
   if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? `: ${on.stage}` : ""}`)
-  // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205).
-  if (on?.kind === "download") return { ...face("download", waitingWords(downloads?.length ? downloads : [on])), leads: { machine: run.machine, download: on.id } }
+  // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205;
+  // Paul: "the 3 jobs that are like 'waiting for download...'"). Which models, its machine's rows say: a box's line has no room for them.
+  if (on?.kind === "download") return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: (downloads?.[0] ?? on).id } }
   if (run.queue_position != null) return face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`)
   if (run.status === "completed") {
     const arriving = run.arriving
@@ -141,7 +142,7 @@ function faceNow(seen: Seen): Face {
     return face("result", owed(run) ? "Downloading the result" : "Saving")
   }
   const progress = run.progress
-  if (progress?.waiting_on?.length) return { ...face("download", stageParts(progress).words), leads: { machine: run.machine, download: progress.waiting_on[0] } }
+  if (progress?.waiting_on?.length) return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: progress.waiting_on[0] } }
   if (progress?.stage || progress?.total) {
     const { words, count } = stageParts(progress)
     const phase = bytesKind(progress) === "download" ? "download" : /install/i.test(progress.stage) ? "install" : "work"

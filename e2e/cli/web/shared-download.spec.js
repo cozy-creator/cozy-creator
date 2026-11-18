@@ -4,7 +4,7 @@
 // theirs as well". Three boxes of one tool, each reading one model this machine doesn't hold, rendered at once. While its weights come:
 // the machine lists one download of them, its bytes moving, naming all three runs; each run's progress names that download (`waiting_on`)
 // and says it waits, with no bytes or share of its own; the machine's tab and its drawer list the download once and each run as waiting
-// on it, a link to it; each box says "Waiting for <model> to download" with no count, and leads there. A fourth box, never rendered, is
+// on it, a link to it; each box says "Waiting for download" with no count, and leads there. A fourth box, never rendered, is
 // predicted on the same machine (the project prefers it, cl-1123): its fetch ahead is the same download, and its readiness counts that
 // download's bytes. Each run's record still says what the machine had and needed (`measurements.weights`, cl-1102). A second render,
 // the weights here now, has no download stage and lists no download (Paul: "those are just phases it's skipping"). Screenshots of the
@@ -52,7 +52,9 @@ const faces = (page) => page.evaluate((names) => Object.fromEntries(names.map((n
 
 test('shared-download', async ({ page, project, api, cli }) => {
   test.setTimeout(1_200_000);
+  // A waiting run's row names what it waits on; a box's line, narrow, says only that it waits (Paul: "'waiting for download...'").
   const words = `Waiting for ${modelWords(MODEL)} to download`;
+  const boxWords = 'Waiting for download';
   const shoot = async (label, region) => {
     for (const theme of ['paper', 'dark']) {
       await page.evaluate((dark) => {
@@ -138,7 +140,7 @@ test('shared-download', async ({ page, project, api, cli }) => {
 
     await test.step('each box says it waits on the download, with no count, and its words lead there', async () => {
       await softly.poll(async () => Object.entries(await faces(page)).map(([, face]) => face && { ...face, words: face.words?.replace(/\s+/g, ' ') }), { message: 'each box waits on the download', timeout: 30_000 })
-        .toEqual(BOXES.map(() => ({ words, count: null, leads: true })));
+        .toEqual(BOXES.map(() => ({ words: boxWords, count: null, leads: true })));
     });
 
     await test.step("the machine's tab lists the download once, with its bytes, and each run waiting on it, a link to it", async () => {
