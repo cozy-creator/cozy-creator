@@ -1,4 +1,4 @@
-# preflight.sh, sourced by the sessions that run a drive package on a pod (ggml-decode, ggml-kernels).
+# preflight.sh, sourced by the ggml sessions (ggml-decode, ggml-kernels, ggml-ingest).
 # drive_check <drive dir> <module> [label=<uv.lock>]...: on the runner, before anything is rented (the $0 pre-flight runs it
 # too), the candidates ($RUNTIME, $TENSORFS) stand in for each named lock by TensorD's rule (stands.py), and the drive's
 # environment (CPU Torch) with the candidates in it, as the pod's holds them over its lock, imports <module>. The candidates go
@@ -91,4 +91,40 @@ pod_install() {
     fail "$n did not take the candidate wheels (line above)"
   fi
   say "$n: ${dir##*/} is staged on $NAME, its environment's Runtime ${took:-unlisted}${told:+ · $told}"
+}
+
+# The card a ggml session rents. params: `skus`, the SKUs it accepts, comma-separated (default the dispatch's $SKU), and
+# `quoted`, the micro-USD/h the cheapest of them quoted at dispatch. pick_offer, just before `quote`, makes $SKU the cheapest
+# of them offered now, and refuses when that is above 1.5x `quoted`; offer_rent, in place of `rent`, ends an order whose rate
+# is above that before it boots (lalaru, 44400509329: a $1.511/h 4070 Ti Super where $0.51 was quoted at dispatch and 4090s
+# offered $0.77 to $1.08).
+OFFER_MAX=''
+pick_offer() {
+  local s f price best='' low=0 said='' quoted
+  quoted=$(param quoted '')
+  IFS=, read -ra offers <<<"$(param skus "$SKU")"
+  for s in "${offers[@]}"; do
+    f=$OUT/offer-$s.json
+    cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
+    price=$(jq -R -r 'fromjson? | select(.quote) | .quote.usd_micros_per_hour' "$f" | head -1)
+    said="$said $s ${price:-none}"
+    [[ $price =~ ^[0-9]+$ ]] || continue
+    [ -n "$best" ] && [ "$price" -ge "$low" ] || { best=$s low=$price; }
+  done
+  [ -n "$best" ] || fail "offers: none for$said"
+  say "offers$said micro-USD/h ($DISK GB): $best is the cheapest${quoted:+; $quoted quoted at dispatch}"
+  if [ -n "$quoted" ]; then
+    OFFER_MAX=$((quoted * 3 / 2))
+    [ "$low" -le "$OFFER_MAX" ] || fail "offers: the cheapest, $best at $low, is above 1.5x the $quoted quoted at dispatch"
+  fi
+  SKU=$best
+}
+offer_rent() {
+  local got
+  order
+  got=$(cozy machine show "$RID" --json 2> /dev/null | jq -r '.rental.usd_micros_per_hour // empty')
+  say "$RID: $SKU at ${got:-?} micro-USD/h"
+  [ -z "$OFFER_MAX" ] || [ -z "$got" ] || [ "$got" -le "$OFFER_MAX" ] ||
+    fail "$RID rents at $got micro-USD/h, above 1.5x the quoted: ended before it boots"
+  ready
 }
