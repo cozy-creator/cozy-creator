@@ -42,7 +42,7 @@
 #              model and LoRA it holds, so the cell's run starts cold: a before/after pair each fetches its own);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
-#              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
+#              in args, `{ref}` is release-gate/ref, `{clip15}` and `{clip1}` cap-sweep's 15 s and 1 s clips, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
 #              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
@@ -73,6 +73,13 @@ CLIP=$OUT/clip.mp4
 if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
+fi
+# `{clip15}`: cap-sweep's 15 s 1344x768 clip with a tone; `{clip1}`: the bench fixture's 1 s clip.
+CLIP15=$OUT/clip15.mp4 CLIP1=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd)/clip-1s-360p.mp4
+if jq -e 'any(.[].args[]?; contains("{clip15}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -nostdin -v error -y -loop 1 -i "$REF/seed.jpg" -f lavfi -i "sine=frequency=440:duration=15" \
+    -vf "scale=1792:-2,crop=1344:768:'(iw-1344)*t/15':'(ih-768)/2',fps=24,format=yuv420p" -t 15 -c:v libx264 -crf 18 \
+    -c:a aac -shortest "$CLIP15" || fail "the 15 s clip"
 fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
@@ -254,7 +261,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip15\}/$CLIP15}; a=${a//\{clip1\}/$CLIP1}; a=${a//\{clip\}/$CLIP}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
