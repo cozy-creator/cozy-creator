@@ -84,7 +84,7 @@ done
 i=0
 for ref in $(param show '[]' | jq -r '.[]'); do
   i=$((i + 1))
-  cozy --json model show "$ref" > "$OUT/show-$i.json" 2>&1; cozy model show "$ref" > "$OUT/show-$i.txt" 2>&1
+  cozy --json --full model show "$ref" > "$OUT/show-$i.json" 2>&1; cozy model show "$ref" > "$OUT/show-$i.txt" 2>&1
   say "show $ref: $(head -c 300 "$OUT/show-$i.txt" | tr '\n' ' ')"
 done
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
@@ -435,6 +435,9 @@ done
 # seconds. It measures; it never fails the session.
 if [ "$(jq length <<<"$ALPHA")" -gt 0 ]; then
   if [ -x "$OUT/judge-py/bin/python" ]; then
+    # The enhancers' system prompts and chat templates as the pod holds them, by sha256, if they sit there as files.
+    timeout 120 cozy machine ssh "$NAME" 'find / -xdev \( -name system_prompt.txt -o -name chat_template.jinja \) 2>/dev/null | head -20 | xargs -r sha256sum' \
+      > "$OUT/pod-prompts.txt" 2>&1; say "pod prompts: $(grep -v 'Permanently added' "$OUT/pod-prompts.txt" | paste -sd';' | cut -c1-900)"
     : > "$OUT/alpha-cells.tsv"
     for k in $(jq -r '.[]' <<<"$ALPHA"); do
       src=$(jq -r --arg k "$k" '[map(select(.name==$k)) | first | .args[] | (capture("\"image\": *\"(?<p>[^\"]+)\"")? | .p)] | first // empty' <<<"$CELLS")

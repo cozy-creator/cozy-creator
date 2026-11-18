@@ -1,77 +1,6 @@
 {
  "cells": [
   {
-   "name": "t2i-dragon-t",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
-    "turbo:=true",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ],
-   "update": {
-    "runtime": "44408061031",
-    "tensorfs": "artifact:44404174235/tensorfs-wheel-42fb656b8629d53bbd59d39e761b0240e627f680",
-    "tensord": true
-   }
-  },
-  {
-   "name": "t2i-dragon-f",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
-    "turbo:=false",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ]
-  },
-  {
-   "name": "t2i-perfume-t",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
-    "turbo:=true",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ]
-  },
-  {
-   "name": "t2i-perfume-f",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
-    "turbo:=false",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ]
-  },
-  {
-   "name": "t2i-cat-t",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
-    "turbo:=true",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ]
-  },
-  {
-   "name": "t2i-cat-f",
-   "tree": "a",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
-    "turbo:=false",
-    "megapixels:=2",
-    "seed:=1662846526"
-   ]
-  },
-  {
    "name": "woman-t-a",
    "tree": "a",
    "target": "qwen-image-2/image",
@@ -82,7 +11,12 @@
     "seed:=1662846526",
     "aspect_ratio:=\"5:8\"",
     "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
-   ]
+   ],
+   "update": {
+    "runtime": "44408061031",
+    "tensorfs": "artifact:44404174235/tensorfs-wheel-42fb656b8629d53bbd59d39e761b0240e627f680",
+    "tensord": true
+   }
   },
   {
    "name": "woman-t-b",
@@ -230,15 +164,75 @@
     "seed:=1662846526",
     "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/teapot.jpg\"}]"
    ]
+  },
+  {
+   "name": "t2i-dragon-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-dragon-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-perfume-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-perfume-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A clear glass perfume bottle with a gold cap, transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-cat-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "t2i-cat-f",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A fluffy long-haired orange cat sitting upright, isolated on a transparent background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
   }
  ],
  "alpha": [
-  "t2i-dragon-t",
-  "t2i-dragon-f",
-  "t2i-perfume-t",
-  "t2i-perfume-f",
-  "t2i-cat-t",
-  "t2i-cat-f",
   "woman-t-a",
   "woman-t-b",
   "woman-t-c",
@@ -251,10 +245,16 @@
   "pearl-f-a",
   "teapot-t-a",
   "teapot-f-a",
-  "teapot-transparent-t-a"
+  "teapot-transparent-t-a",
+  "t2i-dragon-t",
+  "t2i-dragon-f",
+  "t2i-perfume-t",
+  "t2i-perfume-f",
+  "t2i-cat-t",
+  "t2i-cat-f"
  ],
  "order": "one-way",
- "need_s": 4500,
+ "need_s": 3600,
  "max_failures": 3,
  "install": [
   "a"
