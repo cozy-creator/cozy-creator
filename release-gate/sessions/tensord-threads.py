@@ -17,6 +17,14 @@ seconds, out, gdb = float(sys.argv[1]), sys.argv[2], sys.argv[3:] == ["gdb"]
 os.makedirs(out, exist_ok=True)
 
 
+def run(*args: str) -> str:
+    """A command's output; empty where the pod lacks it."""
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def read(path: str) -> str:
     try:
         with open(path, "rb") as f:
@@ -57,7 +65,7 @@ def threads(pid: int) -> list[list[object]]:
 with open(os.path.join(out, "host.txt"), "w") as host:
     host.write(f"nproc {os.cpu_count()}\nuname {os.uname().release}\n")
     host.write(read("/proc/mounts"))
-    host.write(subprocess.run(["df", "-T", "/", "/var/lib/cozy"], capture_output=True, text=True).stdout)
+    host.write(run("df", "-T", "/", "/var/lib/cozy"))
     for block in sorted(os.listdir("/sys/block")):
         host.write(f"{block} {read(f'/sys/block/{block}/queue/scheduler').strip()}\n")
     host.write(f"ptrace_scope {read('/proc/sys/kernel/yama/ptrace_scope').strip()}\n")
@@ -83,11 +91,11 @@ with open(os.path.join(out, "threads.ndjson"), "w") as samples, open(os.path.joi
             pressure = " ".join(read(f"/proc/pressure/{kind}").split("\n")[0].replace("some ", f"{kind}:") for kind in ("cpu", "io", "memory"))
             host.write(f"{now:.3f} load {read('/proc/loadavg').strip()} {pressure}\n")
             # TensorD's API connections (its listening ports'): their queues, RTT and window, to tell a stalled link from a stalled process.
-            listening = subprocess.run(["ss", "-tlnpH"], capture_output=True, text=True).stdout
+            listening = run("ss", "-tlnpH")
             ports = {line.split()[3].rsplit(":", 1)[1] for line in listening.splitlines() if '"tensord"' in line and len(line.split()) > 3}
             if ports:
                 match = " or ".join(f"sport = :{p}" for p in sorted(ports)).split()
-                api = subprocess.run(["ss", "-tniH", "state", "established", "(", *match, ")"], capture_output=True, text=True).stdout
+                api = run("ss", "-tniH", "state", "established", "(", *match, ")")
                 # Queues, RTT and windows only: no address of the pod or its peers goes into a published artifact.
                 api = re.sub(r"\S+:\d+\s+\S+:\d+", "conn", api)
                 host.write(f"{now:.3f} api {' '.join(api.split())[:4000]}\n")
