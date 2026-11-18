@@ -128,6 +128,10 @@ media() {
   cp "$f" "$W/out/$1.${f##*.}"
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
+# going <project dir> <target regex>: the newest run of it that `cozy run ls` says is running, its whole line (status and progress).
+going() { (cd "$1" && cozy run ls < /dev/null 2> /dev/null) | awk -v t="$2" 'NR > 1 && $2 ~ t && $4 ~ /^running/ {print; exit}'; }
+# stepof <run ls line>: the step it is at, from its progress (`3/40`, `step 3 of 40`), else 0.
+stepof() { grep -oE '([0-9]+) ?(/|of) ?[0-9]+' <<< "$1" | head -1 | grep -oE '^[0-9]+' || echo 0; }
 # 4. Rented: one machine by the CLI, the tools chained on it.
 if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
@@ -176,8 +180,10 @@ if has relock; then
     local label=$1 on=$2 box=$3 t0 i
     PAGE add "$G" "$box" --tool "$(tid "$4")" --fields "$5" > "$W/out/$box.add.json" 2>&1
     PAGE render "$G" --on "$on" --queue "$box" > "$W/out/$box.render.json" 2>&1
-    for i in $(seq 1 300); do PAGE asset "$G" "$box" > "$W/out/$box-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/$box-poll.json" > /dev/null 2>&1 && break; sleep 1; done
-    say "relock $label: $box rendering on $on ($(jq -c '.asset.rendering' "$W/out/$box-poll.json" 2> /dev/null | cut -c1-120)); restarting Calcifer"
+    local line=''
+    for i in $(seq 1 600); do line=$(going "$G" "${4%%@*}"); [ -z "$line" ] || break; sleep 1; done
+    sleep 3
+    say "relock $label: $box running on $on (${line:-never seen running}); restarting Calcifer"
     t0=$SECONDS; DIR=$G c "restart-$label" restart
     DIR=$G c "status-locked-$label" status; PAGE asset "$G" "$box" > "$W/out/$box-locked.json" 2>&1
     DIR=$PJ/plain c "runs-while-locked-$label" run ls
@@ -305,12 +311,15 @@ if has cancel; then
   say "qr warm-up: exit $? in $((SECONDS - t1)) s"
   t1=$SECONDS; PAGE render "$P" --on "$NAME" --queue qr > "$W/out/qr-cancel.render.json" 2>&1
   cancelled=''
-  for _ in $(seq 1 600); do
-    PAGE asset "$P" qr > "$W/out/qr-poll.json" 2> /dev/null
-    jq -c --arg t $((SECONDS - t1)) '{t: $t, rendering: .asset.rendering, making: .asset.making}' "$W/out/qr-poll.json" >> "$W/out/qr-cancel.poll.ndjson" 2> /dev/null
-    step=$(jq -r '.asset.rendering | if type == "object" then (.step // .done // .steps_done // 0) elif type == "number" then . else 0 end' "$W/out/qr-poll.json" 2> /dev/null)
-    if [[ ${step%.*} =~ ^[0-9]+$ ]] && { [ "${step%.*}" -ge 3 ] || { (( $(awk -v s="$step" 'BEGIN{print (s > 0 && s < 1)}') )) && awk -v s="$step" 'BEGIN{exit !(s >= 0.075)}'; }; }; then
-      PAGE cancel "$P" qr > "$W/out/qr.cancel.json" 2>&1; cancelled="at $((SECONDS - t1)) s, rendering $step"; break
+  first=''
+  for _ in $(seq 1 1200); do
+    line=$(going "$P" 'qwen-image-2/image')
+    printf '%s\t%s\n' "$((SECONDS - t1))" "$line" >> "$W/out/qr-cancel.poll.tsv"
+    if [ -n "$line" ]; then
+      first=${first:-$SECONDS}; step=$(stepof "$line")
+      if [ "${step:-0}" -ge 3 ] || [ $((SECONDS - first)) -ge 8 ]; then
+        PAGE cancel "$P" qr > "$W/out/qr.cancel.json" 2>&1; cancelled="at $((SECONDS - t1)) s, at step ${step:-?} ($line)"; break
+      fi
     fi
     sleep 0.5
   done
@@ -354,7 +363,8 @@ fi
 if has lost; then
   PAGE add "$P" lost --tool "$(tid sdxl/image)" --fields '{"instructions": "a sprawling city of glass towers at dusk, aerial view", "megapixels": 16, "seed": 4}' > "$W/out/lost.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lost > "$W/out/lost.render.json" 2>&1
-  for _ in $(seq 1 300); do PAGE asset "$P" lost > "$W/out/lost-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/lost-poll.json" > /dev/null 2>&1 && break; sleep 2; done
+  for _ in $(seq 1 600); do line=$(going "$P" 'sdxl/image'); [ -z "$line" ] || break; sleep 1; done
+  say "lost: the render is going: ${line:-never seen running}"
   sleep 5; t0=$SECONDS
   DIR=$W c machine-end-midrun machine end "$NAME" -y; say "machine ended mid-run: exit $? in $((SECONDS - t0)) s"
   for _ in $(seq 1 60); do PAGE asset "$P" lost > "$W/out/lost-after.json" 2> /dev/null; jq -e '.asset.failure != null and (.asset.making | not)' "$W/out/lost-after.json" > /dev/null 2>&1 && break; sleep 5; done
