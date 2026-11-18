@@ -1,0 +1,16 @@
+pod-session 44212384515, RTX 5060 Ti (muichirou), TensorD cozy 0.27.0-dev+gbaf34b90; cozy machine show beside nvidia-smi on the pod (index, util, mem used, mem total, power, limit, temp, SM clock, clocks_event_reasons)
+
+## idle
+GPU 0 NVIDIA GeForce RTX 5060 Ti · 15 GiB · sm120 · discrete · driver 595.91.07
+GPU 0 now 0% busy · 19 MiB of 16 GiB · 11 of 180 W · 44 °C · 180 of 3090 MHz
+0, 0 %, 19 MiB, 16311 MiB, 10.64 W, 180.00 W, 44, 180 MHz, 0x0000000000000000
+
+## during
+GPU 0 NVIDIA GeForce RTX 5060 Ti · 15 GiB · sm120 · discrete · driver 595.91.07
+GPU 0 now 100% busy · 11 GiB of 16 GiB · 174 of 180 W · 67 °C · 2775 of 3090 MHz
+0, 46 %, 11089 MiB, 16311 MiB, 91.89 W, 180.00 W, 54, 2827 MHz, 0x0000000000000000
+
+## after
+GPU 0 NVIDIA GeForce RTX 5060 Ti · 15 GiB · sm120 · discrete · driver 595.91.07
+GPU 0 now 0% busy · 11 GiB of 16 GiB · 11 of 180 W · 45 °C · 180 of 3090 MHz
+0, 0 %, 11089 MiB, 16311 MiB, 10.85 W, 180.00 W, 44, 180 MHz, 0x0000000000000000
