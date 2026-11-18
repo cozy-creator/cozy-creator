@@ -6,18 +6,19 @@
 # them there and sends nothing more, and nothing is run ahead.
 # Qwen Image 2 from a packages checkout (a dev home), every step through this runner's cozy and its Calcifer, on the session's TensorD;
 # evidence is the machine's own log and records.
-# 0. An encrypted project (`cozy new`, its passphrase from a file), unlocked with no idle lock. `photo` and `wide`, pictures of noise
-#    (2048 and 4096 pixels square, so each goes in ranges), imported into it; its own code (e2e/cli/project/boxed, weightless) copied
-#    into it, and `own`, a box of that code. On this computer that code stays in its vault: a page shows the project and Calcifer
-#    says so. All of it before anything is rented. Then the rental, with qwen-image-2 installed.
+# 0. An encrypted project (`cozy new`, its passphrase from a file), unlocked with no idle lock. `photo`, `wide` and `third`, pictures
+#    of noise (2048, 4096 and 1920 pixels square, so each goes in ranges), imported into it; its own code (e2e/cli/project/boxed,
+#    weightless) copied into it, and `own`, a box of that code. On this computer that code stays in its vault: a page shows the
+#    project and Calcifer says so. All of it before anything is rented. Then the rental, with qwen-image-2 installed.
 # 1. A page shows the project: own's guess goes to the rental, its code carried there (the machine's log lands its objects) and its
 #    item ready; own's render adopts the item.
 # 2. photo gets Qwen and an edit: Calcifer says photo's guess carried its picture ahead to the rental, an encrypted project's, and the
 #    machine says it landed whole, before any render. Its request is `loaded` and stays so, its draft unchanged: nothing runs ahead.
-# 3. The runner's uplink shaped to `mbit`: wide gets Qwen and an edit, and while its picture goes ahead, photo is rendered. The carry
-#    waits for the render's ("a run's inputs go first") and goes on after, from what had landed ("going on from … there"); the
-#    machine lands wide's picture whole once, and the runner sends about its size, not more.
-# 4. Each render (photo in 3, then wide) reused its picture there ("reused … already on"), the machine landed none of its picture while it
+# 3. The runner's uplink shaped to `mbit`: wide gets Qwen and an edit (no prompt enhancer: cr-333 faults an executor's second LM call),
+#    and while its picture goes ahead, third gets the project's own `plain` on its picture and is rendered at once, so its run sends
+#    that picture. The carry waits for the render's ("a run's inputs go first") and goes on after, from what had landed ("going on
+#    from … there"); the machine lands third's picture in the render and wide's whole once, and the runner sends about their sizes.
+# 4. photo and wide rendered: each reused its picture there ("reused … already on"), the machine landed none of its picture while it
 #    was sent, and it adopted its item. No predicted request ran: the machine's log names no speculative run, and its Status never
 #    said `running` or `done` for one.
 # 5. yield (load-ahead.sh's): `other`'s weights fetched by one call, TensorD restarted, and `other` sent while a predicted request is
@@ -78,19 +79,20 @@ cozy --json vault --directory "$OUT/sealed" status > "$OUT/vault.json" 2>&1 || f
 jq -e '.encrypted == true and .state == "unlocked"' "$OUT/vault.json" > /dev/null || fail "the project isn't encrypted and unlocked: $(cat "$OUT/vault.json")"
 RUN_PROJECT=$(cd "$OUT/sealed" && pwd)
 noise() { nice -n 19 ffmpeg -v error -y -f lavfi -i "nullsrc=s=$1:d=1,format=rgb24,geq=r='random(1)*255':g='random(2)*255':b='random(3)*255'" -frames:v 1 "$2"; }
-noise 2048x2048 "$OUT/photo.png" && noise 4096x4096 "$OUT/wide.png" || fail "no pictures"
-for box in photo wide; do
+noise 2048x2048 "$OUT/photo.png" && noise 4096x4096 "$OUT/wide.png" && noise 1920x1920 "$OUT/third.png" || fail "no pictures"
+for box in photo wide third; do
   run_page import "$OUT/$box.png" --name "$box" > "$OUT/$box.json" 2>&1 || fail "import $box: $(tail -c 300 "$OUT/$box.json")"
 done
-PHOTO=sha256:$(sha256sum "$OUT/photo.png" | cut -c1-64) WIDE=sha256:$(sha256sum "$OUT/wide.png" | cut -c1-64)
-WIDE_B=$(stat -c %s "$OUT/wide.png")
-say "cozy $V, a dev home, an encrypted project ($(grep -o '"id": *"[^"]*"' "$OUT/sealed.json" | head -1)); photo $(stat -c %s "$OUT/photo.png") bytes ($PHOTO), wide $WIDE_B bytes ($WIDE)"
+PHOTO=sha256:$(sha256sum "$OUT/photo.png" | cut -c1-64) WIDE=sha256:$(sha256sum "$OUT/wide.png" | cut -c1-64) THIRD=sha256:$(sha256sum "$OUT/third.png" | cut -c1-64)
+WIDE_B=$(stat -c %s "$OUT/wide.png") THIRD_B=$(stat -c %s "$OUT/third.png")
+say "cozy $V, a dev home, an encrypted project ($(grep -o '"id": *"[^"]*"' "$OUT/sealed.json" | head -1)); photo $(stat -c %s "$OUT/photo.png") bytes ($PHOTO), wide $WIDE_B bytes ($WIDE), third $THIRD_B bytes ($THIRD)"
 
 shown() { cozy --json machine show "$NAME" > "$1" 2> /dev/null || true; }
 whole() { jq -e --arg m "$2" '[.status.models[]? | select(.repository == $m) | .checkpoints[]?.complete] | any' "$1" > /dev/null 2>&1; }
+# record <box> <file> [run]: its run's record (the box's last take's, or [run]).
 record() {
-  local n
-  n=$(run_page asset "$1" | jq -r '.versions[-1].runs[-1] // empty')
+  local n=${3:-}
+  [ -n "$n" ] || n=$(run_page asset "$1" | jq -r '.versions[-1].runs[-1] // empty')
   [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$2" 2>&1 &&
     (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "${2%.json}.txt" 2>&1
 }
@@ -246,13 +248,15 @@ for line in lines:
         print(line.split(" ", 1)[0][11:26], "load ahead: " + line.split("load ahead: ", 1)[1][:200])
 PY
 }
+# edit <box> [fields]: Qwen on <box>, then its words edited, with [fields] (a JSON object) besides.
 edit() {
-  local written
+  local written more=${2:-}
+  [ -n "$more" ] || more='{}'
   run_page set "$1" --tool qwen-image-2/image --fields '{}' > "$OUT/$1-attach.json" 2>&1 || fail "Qwen on $1: $(tail -c 300 "$OUT/$1-attach.json")"
   written=$(run_page asset "$1" | jq -r '.asset.fields.instructions // empty')
   [[ $written == "<self."* ]] || fail "$1's instructions don't start from its picture: '$written'"
-  run_page set "$1" --fields "$(jq -nc --arg w "$written The same scene at night, under a full moon." '{instructions: $w, megapixels: 1}')" > "$OUT/$1-edit.json" 2>&1 ||
-    fail "$1's edit: $(tail -c 300 "$OUT/$1-edit.json")"
+  run_page set "$1" --fields "$(jq -nc --arg w "$written The same scene at night, under a full moon." --argjson more "$more" '{instructions: $w, megapixels: 1} + $more')" \
+    > "$OUT/$1-edit.json" 2>&1 || fail "$1's edit: $(tail -c 300 "$OUT/$1-edit.json")"
 }
 # carried <box> <digest> <s>: Calcifer says <box>'s guess carried its picture ahead to $NAME and TensorD that it landed, within <s>.
 carried() {
@@ -272,22 +276,20 @@ MISMATCH=() ADOPTED=''
 adopted() { grep -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | tail -1 | sed 's/.*INFO tensord::ahead: //'; }
 # timed <box>: its run's number and times, from its record.
 timed() { jq -r '"run \(.number), \(.status): accepted to started \(.started_at_ms - .accepted_at_ms) ms, execution \(.execution_ms) ms"' "$OUT/$1-run.json" 2> /dev/null; }
-# rendered <box> <digest> [soft]: rendered on $NAME, it reused its picture there, the machine landed none of it while it was sent, and
-# it adopted its item. A render that fails ends the session; `soft`, it is said at the end with what else didn't match, and the
-# session goes on to what it has left to measure (44242484131: wide's render failed in varena's replay, and nothing after it ran).
+# rendered <box> <digest>: rendered on $NAME, it reused its picture there, the machine landed none of it while it was sent, and it
+# adopted its item. A render that fails is said at the end with what else didn't match, its run still read for those, and the
+# session goes on to what it has left to measure (44242484131: wide's render failed in an LM graph's check, cr-333).
 rendered() {
-  local began ended took
+  local began ended took n=''
   began=$(date +%s%3N)
   if ! timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" "$1" > "$OUT/$1.txt" 2>&1; then
-    [ "${3:-}" = soft ] || fail "$1: $(tail -c 400 "$OUT/$1.txt")"
-    logs
-    took=$(adopted)
-    say "$1's render failed: $(grep -o '"message": "[^"]*' "$OUT/$1.txt" | head -1 | cut -c1-300); its run on $NAME: ${took:-named no predicted request}"
+    say "$1's render failed: $(grep -o '"message": "[^"]*' "$OUT/$1.txt" | head -1 | cut -c13-300)"
     MISMATCH+=("$1's render failed: $(grep -o '"message": "[^"]*' "$OUT/$1.txt" | head -1 | cut -c13-200)")
-    return 0
+    n=$(grep -o 'cozy run watch [0-9]*' "$OUT/$1.txt" | tail -1 | awk '{print $4}')
+    [ -n "$n" ] || { say "$1's failed render names no run"; return 0; }
   fi
   ended=$(date +%s%3N)
-  record "$1" "$OUT/$1-run.json" || fail "$1 has no run record: $(tail -c 300 "$OUT/$1.txt")"
+  record "$1" "$OUT/$1-run.json" "$n" || { MISMATCH+=("$1 has no run record"); return 0; }
   logs
   grep -ho "reused [^\"]* already on $NAME" "$OUT/$1-run.json" "$OUT/$1-run.txt" | head -1 > "$OUT/$1-reused.txt"
   say "$1: rendered in $((ended - began)) ms ($(timed "$1")); its run: $(cat "$OUT/$1-reused.txt")"
@@ -297,6 +299,27 @@ rendered() {
   say "$1's run on $NAME: ${took:-named no predicted request}"
   [[ $took == *"is the request"*"takes what it made ready"* && $took != "$ADOPTED" ]] || MISMATCH+=("$1's render didn't adopt its item: ${took:-it named none}")
   ADOPTED=$took
+}
+# uploaded: third gets the project's own `plain` on its picture and is rendered at once, so its run sends the picture while wide's
+# goes ahead: the guess's carry waits for it ("a run's inputs go first"), and the machine lands third's picture in the render.
+uploaded() {
+  local began ended
+  run_page set third --tool ./boxed/plain --fields '{"instructions": "<self.1> a shade lighter"}' > "$OUT/third-attach.json" 2>&1 ||
+    fail "plain on third: $(tail -c 300 "$OUT/third-attach.json")"
+  began=$(date +%s%3N)
+  if ! timeout 900 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" third > "$OUT/third.txt" 2>&1; then
+    MISMATCH+=("third's render: $(tail -c 300 "$OUT/third.txt")")
+    return 0
+  fi
+  ended=$(date +%s%3N)
+  record third "$OUT/third-run.json" || true
+  logs
+  say "third: rendered in $((ended - began)) ms ($(timed third)) while wide's picture went ahead"
+  between "$OUT/calcifer.log" "$began" "$ended" "a run's inputs go first" | sed 's/^/  Calcifer: /' | tee -a "$R"
+  objects "$began" "$ended" | grep -E "$THIRD landed|, $THIRD_B bytes in" | sed "s/^/  $NAME: /" | tee "$OUT/third-landed.txt" | tee -a "$R"
+  [ -n "$(between "$OUT/calcifer.log" "$began" "$ended" "a run's inputs go first")" ] || MISMATCH+=("wide's carry didn't wait for third's render")
+  [ -s "$OUT/third-landed.txt" ] || MISMATCH+=("$NAME landed none of third's picture in its render")
+  ! grep -qs "reused" "$OUT/third-run.txt" || MISMATCH+=("third's picture was on $NAME before its render: $(grep -o 'reused [^"]*' "$OUT/third-run.txt" | head -1)")
 }
 # own_ahead: step 1. A page shows the project, and the box of its own code is guessed onto $NAME: its code carried there at the guess,
 # its item ready, and its render adopting the item. What doesn't match is said at the end; the session goes on.
@@ -447,27 +470,28 @@ if [ "$loaded" = true ]; then
 else
   MISMATCH+=("photo's request wasn't loaded on $NAME in 600 s: $(stages)")
 fi
-say "step 3: the uplink shaped to $MBIT Mbit/s; wide gets Qwen and an edit, and photo is rendered while wide's picture goes ahead"
+say "step 3: the uplink shaped to $MBIT Mbit/s; wide gets Qwen and an edit, and third is rendered while wide's picture goes ahead"
 kept wide || fail "$NAME doesn't keep the session's software"
 sudo tc qdisc add dev "$DEV" root tbf rate "${MBIT}mbit" burst 64kb latency 400ms || fail "the uplink couldn't be shaped"
 TX0=$(cat "/sys/class/net/$DEV/statistics/tx_bytes")
-edit wide
+edit wide '{"prompt_upsampling": false}'
 for _ in $(seq 120); do [ $(($(cat "/sys/class/net/$DEV/statistics/tx_bytes") - TX0)) -ge $((4 << 20)) ] && break; sleep 0.5; done
 say "wide's picture is going ahead: $(($(cat "/sys/class/net/$DEV/statistics/tx_bytes") - TX0)) bytes sent since its edit"
-rendered photo "$PHOTO"
+uploaded
 carried wide "$WIDE" $((WIDE_B * 8 / (MBIT * 1000000) * 4 + 120))
 TX=$(($(cat "/sys/class/net/$DEV/statistics/tx_bytes") - TX0))
 sudo tc qdisc del dev "$DEV" root || fail "the uplink shaping wasn't removed"
 waits=$(grep -c "what goes ahead to $NAME waits: a run's inputs go first" "$OUT/calcifer.log")
-say "wide: the carry waited for a run's $waits times; it landed $(landed "$WIDE" | wc -l) times; the runner sent $TX bytes for its $WIDE_B"
-[ "$waits" -ge 1 ] || MISMATCH+=("wide's carry never waited for photo's render")
+say "wide: the carry waited for a run's $waits times; it landed $(landed "$WIDE" | wc -l) times; the runner sent $TX bytes for its $WIDE_B and third's $THIRD_B"
 # Cut, it went on from what had landed: Calcifer's line says what the machine held of it then.
 grep -q "wide's guess carried 1 files .* ahead to $NAME .*, going on from .* there" "$OUT/calcifer.log" || MISMATCH+=("wide's carry didn't go on from what had landed before the render's carry cut it")
 [ "$(landed "$WIDE" | wc -l)" = 1 ] || MISMATCH+=("wide's picture landed $(landed "$WIDE" | wc -l) times")
-[ "$TX" -le $((WIDE_B * 13 / 10)) ] || MISMATCH+=("the runner sent $TX bytes while wide's $WIDE_B went ahead")
-say "step 4: wide rendered"
+[ "$TX" -le $(((WIDE_B + THIRD_B) * 12 / 10)) ] || MISMATCH+=("the runner sent $TX bytes while wide's $WIDE_B went ahead and third's $THIRD_B with its render")
+say "step 4: photo and wide rendered"
+kept photo-render || fail "$NAME doesn't keep the session's software"
+rendered photo "$PHOTO"
 kept wide-render || fail "$NAME doesn't keep the session's software"
-rendered wide "$WIDE" soft
+rendered wide "$WIDE"
 say "Calcifer's carries ahead: $(grep -o "[a-z]*'s guess carried .*" "$OUT/calcifer.log" | paste -sd ';' -)"
 # Nothing ran ahead: no speculative run in the machine's log, and no predicted request its Status ever said was running or done.
 ran_log=$(grep -acE "runs as if it were sent|predicted requests run ahead here|speculative run" "$OUT/tensord-$NAME.log")
@@ -491,4 +515,4 @@ logs
 say "$NAME ends on TensorD, Runtime and TensorFS $(set_of); checked before each step:"
 sed 's/^/  /' "$OUT/versions.txt" | tee -a "$R"
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
-say "PASS: an encrypted project's own code and its pictures went ahead to the rental, the pictures behind a render's carry and each landing once; each render found what it reads there and adopted its item; nothing ran ahead${YIELDED:+; $OTHER, sent while a load held the GPU: $YIELDED}"
+say "PASS: an encrypted project's own code and its pictures went ahead to the rental, behind a render's upload and each landing once; each render found what it reads there and adopted its item; nothing ran ahead${YIELDED:+; $OTHER, sent while a load held the GPU: $YIELDED}"
