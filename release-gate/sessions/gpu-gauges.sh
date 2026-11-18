@@ -2,16 +2,16 @@
 # like what runpod has. I don't see it yet on the /machines page. Why not? I want to see how much GPUs are being utilized please."
 # One rental of $SKU, its TensorD this runner's cozy (pod-session `cozy`: a dev build) by `machine update --tensord`. SDXL is warmed with one
 # image, then `renders` more go one after another while Machines is open in Chrome (gpu-gauges.spec.js's GPU branch, GPU_MACHINE): its row's
-# GPU 0 bar must reach 50% during them and fall to 10% after, each look logged twice a second (gauges.jsonl) and Machines and the rental's
-# drawer screenshotted at 1440×900 and 1920×1080, paper and dark, during and after. `cozy machine show` prints the GPU's numbers idle,
+# GPU 0 bar must reach 50% during them and fall to 10% once they've ended (GAUGE_DONE), each look logged twice a second (gauges.jsonl) and
+# Machines and the rental's drawer screenshotted at 1440×900 and 1920×1080, paper and dark, during and after. `cozy machine show` prints the GPU's numbers idle,
 # during and after, each beside the pod's own nvidia-smi.
 # Without `rent`, $0: the quote only.
 # params:
 #   sdxl     the SDXL function (sdxl/generate)
-#   renders  images after the warm one (6)
+#   renders  images after the warm one (12)
 . "$(dirname "$0")/lib.sh"
 WEB=$(cd "$(dirname "$0")/../../e2e/cli/web" && pwd)
-SDXL=$(param sdxl sdxl/generate) RENDERS=$(param renders 6)
+SDXL=$(param sdxl sdxl/generate) RENDERS=$(param renders 12)
 [[ $RENDERS =~ ^[1-9][0-9]?$ ]] || fail "renders $RENDERS"
 for tool in jq node npm google-chrome; do command -v "$tool" > /dev/null || fail "no $tool"; done
 BIN=$(command -v cozy)
@@ -42,7 +42,7 @@ step warm run "$SDXL" --on "$NAME" 'prompt=a lighthouse on a cliff at dusk, phot
 
 # Chrome on Machines from before the renders until after them.
 say "page: Machines, during and after the renders"
-env GPU_MACHINE="$NAME" GAUGE_LOG="$OUT/gauges.jsonl" HOLDER="$HOME/.cozy/calcifer/calcifer.lock.holder" COZY="$BIN" \
+env GPU_MACHINE="$NAME" GAUGE_LOG="$OUT/gauges.jsonl" GAUGE_DONE="$OUT/renders.done" HOLDER="$HOME/.cozy/calcifer/calcifer.lock.holder" COZY="$BIN" \
   CHROME="$(command -v google-chrome)" OUT="$OUT" ARGV_LOG="$OUT/argv.log" NODE_PATH="$PW/node_modules" \
   node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/gpu.config.js" -g 'gpu-gauges: a rental under a render' > "$OUT/page.log" 2>&1 & page=$!
 BG="$BG $page"
@@ -55,6 +55,7 @@ BG="$BG $renders"
 sleep 25
 look during
 wait "$renders" || { say "FAIL a render failed: $(tail -3 "$OUT"/render-*.txt | tail -c 400)"; RC=1; }
+touch "$OUT/renders.done"
 sleep 20
 look after
 wait "$page"; code=$?

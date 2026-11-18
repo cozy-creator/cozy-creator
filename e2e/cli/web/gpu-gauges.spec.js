@@ -7,7 +7,7 @@
 // limit and temperature, and "Power-limited" and "Thermal" when the readings say so; its drawer the same, a row each. A stream whose page
 // doesn't show GPU use hears none, and the page says it shows them only while it does: closed, it takes it back. Screenshots of both at 1440×900 and 1920×1080,
 // paper and dark.
-const { readFileSync, writeFileSync } = require('fs');
+const { existsSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, themed } = require('./fixtures');
 
@@ -158,8 +158,9 @@ test('gpu-gauges', { tag: '@solo' }, async ({ page, project, calcifer, cli, calc
 });
 
 // GPU_MACHINE (release-gate/sessions/gpu-gauges.sh: a rental, SDXL renders on it one after another): Machines open from before the renders
-// to after them. Its row's GPU 0 bar reaches 50% during them and falls to 10% after; each look's bar, figures and limits logged twice a
-// second to GAUGE_LOG; Machines and the rental's drawer at 1440×900 and 1920×1080, paper and dark, during and after.
+// to after them. Its row's GPU 0 bar reaches 50% during them, and once GAUGE_DONE (a file the session makes as the last render ends)
+// exists, falls to 10%; each look's bar, figures and limits logged twice a second to GAUGE_LOG; Machines and the rental's drawer at
+// 1440×900 and 1920×1080, paper and dark, 30 s into the renders and 15 s after them.
 test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, project }) => {
   const name = process.env.GPU_MACHINE;
   test.skip(!name, 'GPU_MACHINE names a rental');
@@ -199,19 +200,23 @@ test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, proj
     phase = 'waiting';
     await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'busy during the renders', timeout: 600_000, intervals: [500] }).toBeGreaterThanOrEqual(50);
     phase = 'during';
+    // Its trace showing the rise.
+    await page.waitForTimeout(30_000);
     await shoot('during');
     await drawer('during');
+    phase = 'rendering';
+    if (process.env.GAUGE_DONE) await expect.poll(() => existsSync(process.env.GAUGE_DONE), { message: 'the renders ended', timeout: 900_000, intervals: [1_000] }).toBe(true);
     phase = 'falling';
     await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'idle after the renders', timeout: 900_000, intervals: [500] }).toBeLessThanOrEqual(10);
+    await page.waitForTimeout(15_000);
     phase = 'after';
-    await page.waitForTimeout(10_000);
     await shoot('after');
     await drawer('after');
   } finally {
     clearInterval(looks);
     if (process.env.GAUGE_LOG) writeFileSync(process.env.GAUGE_LOG, log.map((look) => JSON.stringify(look)).join('\n') + '\n');
   }
-  const during = log.filter((look) => look.phase === 'during' || look.phase === 'waiting').map((look) => look.busy);
+  const during = log.filter((look) => ['waiting', 'during', 'rendering'].includes(look.phase)).map((look) => look.busy);
   expect(Math.max(...during), 'the bar rose during the renders').toBeGreaterThanOrEqual(50);
   expect(log.filter((look) => look.phase === 'after').every((look) => look.busy <= 30), 'and stayed down after').toBe(true);
 });
