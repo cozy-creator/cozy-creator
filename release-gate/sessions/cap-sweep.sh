@@ -33,7 +33,8 @@
 #              and unheld, managed per `twin_managed` (false), with its own seed: another build is no call memo's to answer
 #   red_tensorfs   a wheel every cell that completed (and each marked `"red": true`, but none marked `"no_red": true`) runs
 #              again on, held, unmanaged: what the release does there. A cell marked `"no_twin": true` has no twin.
-#   The runtime and tensorfs wheels may be artifact:<run>/<name> too. Rows stay in measured.jsonl: none goes to the ledger,
+#   The runtime and tensorfs wheels may be artifact:<run>/<name> too (a runtime also a cozy-runtime dev-build run id), and
+#   a cell may name its own `tree`. Rows stay in measured.jsonl: none goes to the ledger,
 #   whose cap field cannot say "held physically".
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree '') CAPV=$(param cap 6GiB) RW=$(param runtime '') TW=$(param tensorfs '') CELLS=$(param cells '[]')
@@ -53,7 +54,7 @@ V=$(cozy --version | awk '{print $2}')
 # wheel <URL#sha256=hex>: the wheel under its own name (a URL's %2B is a version's +), held to its digest.
 wheel() {
   local n f
-  if [[ $1 == artifact:*/* ]]; then
+  if [[ $1 == artifact:*/* || $1 =~ ^[0-9]+$ ]]; then
     f=$(wheel_from "${RUNNER_TEMP:-$OUT}/wheels/${1//[^A-Za-z0-9]/_}" "$1") && [ -f "$f" ] || return 1
     say "wheel ${f##*/} from $1: sha256 $(sha256sum "$f" | cut -c1-64)" > /dev/null; echo "$f"; return 0
   fi
@@ -106,8 +107,8 @@ mapfile -t names < <(jq -r '.[].name' <<< "$CELLS")
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   [[ $k =~ ^[A-Za-z0-9_-]+$ ]] && [ "$(jq --arg k "$k" 'map(select(.name == $k)) | length' <<< "$CELLS")" = 1 ] || fail "cell names must be unique words: $k"
-  t=$(jq -r .target <<< "$c")
-  [ -f "$PACKAGES/$TREE/${t%/*}/pyproject.toml" ] || fail "cell $k: no package ${t%/*} in $TREE"
+  t=$(jq -r .target <<< "$c") tr=$(jq -r --arg d "$TREE" '.tree // $d' <<< "$c")
+  [ -f "$PACKAGES/$tr/${t%/*}/pyproject.toml" ] || fail "cell $k: no package ${t%/*} in $tr"
   for other in $(jq -r '.after // empty, .unless // empty' <<< "$c"); do
     [[ " ${names[*]} " == *" $other "* ]] || fail "cell $k waits on $other, which is no cell"
   done
@@ -115,9 +116,9 @@ for k in "${names[@]}"; do
     for f in $(expand "$a" | grep -oE "($M|$FX|$REF)/[A-Za-z0-9._-]+"); do [ -f "$f" ] || fail "cell $k: no $f"; done
   done < <(jq -r '.args[]' <<< "$c")
   # ledger.py reads these two lines: the cell's package code and its cap.
-  say "cell $k: $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD) ./$t $(jq -r '.args | join(" ")' <<< "$c" | cut -c1-600)"
+  say "cell $k: $(git -C "$PACKAGES/$tr" rev-parse --short HEAD) ./$t $(jq -r '.args | join(" ")' <<< "$c" | cut -c1-600)"
   say "cell $k: caps VRAM at $CAPV"
-  kernels "$PACKAGES/$TREE/${t%/*}"
+  kernels "$PACKAGES/$tr/${t%/*}"
 done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
@@ -364,7 +365,7 @@ run() {
   rm -f "$OUT/$name.capped" "$OUT/$name.stuck"
   pod 'wc -l < /var/tmp/ab-gpu.log > /var/tmp/cap-sweep.mark' > /dev/null
   watch "$name" "$most" "$limit"
-  cd "$PACKAGES/$TREE" || fail "no tree for $name"
+  cd "$PACKAGES/$(jq -r --arg d "$TREE" '.tree // $d' <<< "$c")" || fail "no tree for $name"
   step "$name" run "./$target" "${args[@]}" --on "$NAME"; code=$?
   pkill -P "$BG" 2> /dev/null; kill "$BG" 2> /dev/null; BG=''
   N=$(runno "$name"); [ -n "$N" ] || N=$(current "$name")
