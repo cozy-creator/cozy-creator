@@ -157,6 +157,7 @@ class Table[R](TypedDict, total=False):
     constants: dict[str, Constant]
     files: dict[str, dict[str, JSON]]
     keep_config: bool
+    named: bool
     components: Required[list[Component[R]]]
 
 
@@ -1656,6 +1657,44 @@ def qwen_moe(name: str, pinned: str) -> Table[TableRow | RepeatedRow]:
             "components": [{"name": "model", "expect": dict(sorted(expect.items())), "rows": rows}]}
 
 
+# ------------------------------------------------------------------ Qwen3.5-9B as a pipeline's text encoder
+
+QWEN35_9B = "hf://Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+QWEN35_FILES = VECTORS / "qwen3.5-9b-headers"
+#: Each table's family, the Transformers class its `text_encoder` is, and where that class's keys sit in the LLM's checkpoint.
+QWEN35_ENCODERS = {
+    "moss.text_encoder": ("moss", "transformers:Qwen3_5Model", "model."),
+    "pan2.text_encoder": ("pan2", "transformers:Qwen3_5TextModel", "model.language_model."),
+}
+
+
+def qwen35_encoder(name: str) -> Table[TableRow]:
+    """Qwen3.5-9B in its own Transformers layout (`Qwen3_5ForConditionalGeneration`, as Qwen publishes it and its
+    abliterations keep it, `vectors/`) as a family's text encoder: MOSS-Image's `Qwen3_5Model` (`language_model.`,
+    `visual.`) or PAN2's `Qwen3_5TextModel` (the language model bare). Every tensor is renamed and none moves; the head,
+    the multi-token-prediction layer and, for PAN2, the vision tower are left out. That key set is the LLM's own, which
+    an upload keeps as it is, so the table converts only when named (`named`). No reference: the file takes its config
+    and tokenizer from the Hub base it is uploaded on (`--base`)."""
+    family_name, model, prefix = QWEN35_ENCODERS[name]
+    family: FamilyDoc = json.loads((FAMILIES / f"{family_name}.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"]["text_encoder"]["keys"]}
+    config = reference_config(QWEN35_9B, "config.json")
+    built = construct(model, config if model.endswith(":Qwen3_5Model") else config["text_config"])
+    census = {k: tuple(v.shape) for k, v in built.state_dict().items()}
+    assert census == keys, f"Qwen3.5-9B's {model} census is not {family_name}'s text_encoder"
+    published: Header = {}
+    for vector in sorted(QWEN35_FILES.glob("*.safetensors.header")):
+        published |= header(vector)
+    index: dict[str, str] = json.loads((QWEN35_FILES / "model.safetensors.index.json").read_text())["weight_map"]
+    assert set(published) == set(index), "the shards are not the index's"
+    whole = construct("transformers:Qwen3_5ForConditionalGeneration", config).state_dict()
+    assert set(published) - set(whole) == {k for k in published if k.startswith("mtp.")}, "not Qwen3.5-9B's own layout"
+    rows = [row(k, prefix + k) for k in census]
+    assert all(published[prefix + k][1] == shape for k, shape in census.items()), "a renamed tensor changes shape"
+    optional = sorted(set(published) - {prefix + k for k in census})
+    return {"name": name, "named": True, "components": [{"name": "text_encoder", "optional": optional, "rows": rows}]}
+
+
 def generate() -> dict[str, Generated]:
     sdxl, layers = single_file("sdxl.single_file")
     anima, _ = single_file("anima.single_file")
@@ -1689,6 +1728,7 @@ def generate() -> dict[str, Generated]:
         "relayvsr": relayvsr(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},
+        **{name: qwen35_encoder(name) for name in QWEN35_ENCODERS},
     }
 
 

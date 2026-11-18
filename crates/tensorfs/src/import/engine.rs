@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 27] = [
+pub(crate) const TABLES: [&str; 29] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("anima.diffusion_model"),
@@ -51,6 +51,8 @@ pub(crate) const TABLES: [&str; 27] = [
     table!("relayvsr"),
     table!("ideogram4.fp8"),
     table!("qwen3.6-35b-a3b.experts"),
+    table!("moss.text_encoder"),
+    table!("pan2.text_encoder"),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +68,11 @@ pub(crate) struct Table {
     /// one of these producers, whose own code writes it. Absent: its key set alone chooses it.
     #[serde(default)]
     pub producers: Option<Vec<Producer>>,
+    /// Converts only a source that names it (`--source-format`): its key set is a model's own Transformers
+    /// layout, which recognition keeps as it is, re-laid for one family's component (Qwen3.5-9B as MOSS-Image's
+    /// `Qwen3_5Model` or PAN2's `Qwen3_5TextModel`).
+    #[serde(default)]
+    pub named: bool,
     /// A LoRA table: rows are modules, any non-empty subset may be present. It claims a file most
     /// of whose keys it knows; any other key refuses the conversion, but for those a component
     /// leaves out by name (`optional`), which are said (`plan`'s `ignored`).
@@ -586,7 +593,7 @@ pub(crate) fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) 
                 );
             }
         },
-        None => (0..tables.len()).collect(),
+        None => (0..tables.len()).filter(|t| !tables[*t].named).collect(),
     };
     let mut out = Recognized::default();
     let mut owner: BTreeMap<usize, usize> = BTreeMap::new();
