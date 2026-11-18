@@ -2,22 +2,14 @@
 Calcifer's `checkout::stage`). Each `{ index = "tensorhub" }` source naming a package the checkout holds becomes a path to
 that folder, copied beside it, and so on through what those take. The Runtime it is read with is `<runtime>` when that is
 a wheel or a source folder, and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
-folder; prints nothing when it takes no first-party package. <dest>/unpublished.txt names each first-party dependency whose
-requirement the production Hub's index can't meet yet: its committed lock can't name it until promotion publishes it."""
+folder; prints nothing when it takes no first-party package."""
 
 import platform
 import re
 import shutil
 import sys
 import tomllib
-import urllib.request
 from pathlib import Path
-
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
-from packaging.version import InvalidVersion, Version
-
-INDEX = "https://tensorhub.com/v1/index/_"
 
 packages, package, dest, runtime = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[4]
 
@@ -57,29 +49,4 @@ for name, siblings in closure.items():
     project.write_text(text)
 
 
-def published(name: str) -> list[Version] | None:
-    """Its versions on production's index. One it can't read is taken as published: the lock check then runs and says why."""
-    try:
-        with urllib.request.urlopen(f"{INDEX}/simple/{name}/", timeout=30) as page:
-            html = page.read().decode()
-    except OSError as error:
-        print(f"stage.py: {name} on {INDEX}: {error}", file=sys.stderr)
-        return None
-    found = []
-    for version in set(re.findall(rf'href="/v1/index/_/{re.escape(name)}/([^/"]+)/', html)):
-        try:
-            found.append(Version(version))
-        except InvalidVersion:
-            pass
-    return found
-
-
-wanted = {canonicalize_name(Requirement(r).name): Requirement(r) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
-def unmet(key: str) -> bool:
-    versions = published(key)
-    return versions is not None and not any(wanted[canonicalize_name(key)].specifier.contains(v, prereleases=True) for v in versions)
-
-
-unpublished = [key for key in closure[package] if canonicalize_name(key) in wanted and unmet(key)]
-(dest / "unpublished.txt").write_text("".join(f"{key}\n" for key in unpublished))
 print(dest / package)
