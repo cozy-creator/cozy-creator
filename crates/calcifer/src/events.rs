@@ -652,11 +652,7 @@ impl Watch {
             }
             _ => None,
         };
-        project_id.is_none_or(|id| {
-            self.showing.as_ref().is_some_and(|showing| showing.includes(id))
-                && self.api.calcifer.store().known_project(id).ok().flatten()
-                    .is_some_and(|known| project::vault::require_path(&known.path).is_ok())
-        })
+        project_id.is_none_or(|id| self.showing.as_ref().is_some_and(|showing| showing.includes(id)) && project::readable(&self.api, id))
     }
 
     /// Takes in whatever else has arrived: a run is sent once, as it is now, and nothing waits behind
@@ -741,7 +737,7 @@ impl Watch {
         let _took = crate::took::Took::new("events_machines");
         // What a machine does for the projects this page shows, unlocked, is theirs to see: never another's.
         let projects: Vec<String> = self.showing.as_ref().map(Showing::projects).unwrap_or_default().into_iter()
-            .filter(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
+            .filter(|id| project::readable(&self.api, id))
             .collect();
         for project in &projects {
             if self.api.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) {

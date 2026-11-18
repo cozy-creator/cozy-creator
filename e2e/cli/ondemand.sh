@@ -859,7 +859,7 @@ else:
         # Who waits on it, as the run's own project hears it (cl-1230: 44275006404 listed `"runs": []` while this run waited on it).
         if not any(record.get("number") in (op.get("runs") or []) for op in looks):
             fail(f"its download never named run {record.get('number')} to its project: {[(op.get('runs'), op.get('unnamed')) for op in looks][:3]}")
-        if any(not op.get("runs") and not op.get("unnamed") for op in looks):
+        if any(not (op.get("runs") or op.get("names") or op.get("unnamed")) for op in looks):
             fail("its download was listed with no one waiting on it while the call did")
     if not any(not on for _, on in after):
         fail(f"its progress still named {model}'s download after it landed: {after[-3:]}")

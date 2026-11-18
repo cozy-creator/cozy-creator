@@ -1982,10 +1982,9 @@ pub(crate) async fn list(
 }
 
 /// The project a client in `project` reads as its own (cl-1230): its runs waiting on a machine's downloads are named to it, as to a
-/// page showing it. None for a project this computer doesn't know or can't open now (a locked one).
+/// page showing it. None for one it can't read now (`project::readable`).
 fn readers(api: &Api, project: Option<&str>) -> Vec<String> {
-    let opens = |id: &&str| api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| crate::project::vault::require_path(&known.path).is_ok());
-    project.filter(opens).map(str::to_owned).into_iter().collect()
+    project.filter(|id| crate::project::readable(api, id)).map(str::to_owned).into_iter().collect()
 }
 
 #[derive(Deserialize)]
