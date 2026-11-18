@@ -640,7 +640,19 @@ hold() {
 }
 hold & KEEP=$!
 "$CLI" machine show "$M" > machine-fresh.txt 2>&1
-{ [ -n "$TDF" ] && echo "$TDF" || awk '$1 == "version" {print $2}' machine-fresh.txt; } > gate-tensord
+# The TensorD every later update names: the candidate's file, else the pod's own. A dev build is named by its file on the RC's
+# release, held to its SHA256SUMS digest: its version alone is refused once the RC moves past it (rc_build_absent).
+td=$TDF
+if [ -z "$td" ]; then
+  td=$(awk '$1 == "version" {print $2}' machine-fresh.txt)
+  if [[ $td == *-dev+g* ]]; then
+    tda=cozy-$td-linux-x86_64 tdu=https://github.com/$REPO/releases/download/rc-${td%%-dev*}
+    tds=$(curl -fsSL --retry 3 "$tdu/SHA256SUMS" 2>/dev/null | awk -v a="$tda" '$2 == a {print $1}')
+    tdf=; [ -z "$tds" ] || tdf=$(fetch "$tdu/${tda//+/%2B}#sha256=$tds") || tdf=
+    if [ -n "$tdf" ]; then td=$tdf; else log "the pod's cozy $td: no file of it on rc-${td%%-dev*}, named by version"; fi
+  fi
+fi
+echo "$td" > gate-tensord
 # reported: $M's cozy, Runtime and TensorFS into $v $rt $tfs once it reports them (a fresh pod does once up); empty
 # when it ends first, or Calcifer answers a typed error.
 reported() {
