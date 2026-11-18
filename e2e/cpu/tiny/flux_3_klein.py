@@ -62,7 +62,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     # BFL's upsampler prompts are the checkpoint's own since flux.3-klein 0.9.2 (xs-183): the bytes it bundled before.
     (upsampler / "system_prompts.json").write_bytes((Path(__file__).with_name("assets") / "flux_3_klein" / "system_prompts.json").read_bytes())
     torch.manual_seed(3)
-    return {DISTILLED: root / "klein", BASE: root / "klein-base", UPSAMPLER: upsampler, DRAFTER: _drafter(store)}
+    return {DISTILLED: root / "klein", BASE: root / "klein-base", "text_encoder": root / "klein", UPSAMPLER: upsampler,
+            DRAFTER: _drafter(store)}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -74,6 +75,9 @@ _SNOW = _shared.picture("snow", 128, 128)
 #: 128², 2 steps, the prompt as written.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 128 * 128 / (1 << 20), "steps": 2, "prompt_upsampling": False}
 _SIGN: list[Json] = [{"box": [0.55, 0.6, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]
+#: The default `text_encoder` is the distilled checkpoint's tiny encoder; a Base cell binds Base's own, as `model`
+#: was read before the slot (se-160), so its reference stands: the tiny checkpoints' encoders differ, the real ones' don't.
+_OWN = {"generate": {"generate.models.text_encoder": BASE}, "image": {"image.models.text_encoder": BASE}}
 
 CELLS: list[Cell] = [
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -92,13 +96,15 @@ CELLS: list[Cell] = [
     {"entry": "generate_turbo", "name": "regions", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL,
                                                                "regions": _SIGN}},
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL,
-                                                      "negative_prompt": "blurry"}, "check": size(128, 128)},
+                                                      "negative_prompt": "blurry"}, "models": _OWN["generate"],
+     "check": size(128, 128)},
     {"entry": "generate", "name": "two-references",
      "payload": {"prompt": _prompt("the fox in <fox> on <snow>", "fox", "snow"), **_SMALL},
-     "files": {"prompt.references.0.file": _FOX, "prompt.references.1.file": _SNOW}},
+     "files": {"prompt.references.0.file": _FOX, "prompt.references.1.file": _SNOW}, "models": _OWN["generate"]},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7},
      "check": size(1024, 1024)},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
-                                                  "prompt_upsampling": False}, "check": size(1024, 1024)},
+                                                  "prompt_upsampling": False}, "models": _OWN["image"],
+     "check": size(1024, 1024)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

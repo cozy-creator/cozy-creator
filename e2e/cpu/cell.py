@@ -60,8 +60,9 @@ class Fixture(Protocol):
     CELLS: list[Cell]
 
     def models(self, root: Path, store: Path) -> dict[str, Path | str]:
-        """Each model a slot binds (its `default` ref or its path) -> a source folder that TensorFS imports, or a
-        `sha256:` checkpoint already written into `store`."""
+        """Each model a slot binds (its `default` ref, its path, or its name: every slot of that name, under the default
+        its package declares) -> a source folder that TensorFS imports, or a `sha256:` checkpoint already written into
+        `store`."""
         ...
 
 

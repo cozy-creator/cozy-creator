@@ -142,7 +142,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _part(out, root / "dit", ("transformer", "scheduler"))
     _part(out, root / "text-encoder", ("text_encoder", "tokenizer"))
     _part(out, root / "vae", ("vae",))
-    return {RAW: out, TURBO: out, DIT: root / "dit", ENCODER: root / "text-encoder", VAE: root / "vae",
+    return {RAW: out, TURBO: out, "text_encoder": out, DIT: root / "dit", ENCODER: root / "text-encoder", VAE: root / "vae",
             EDIT: _adapter(store, 1, 8, _TEXT + _DIT, alphas=True),
             DEPTH: _adapter(store, 2, 2, _DIT, torch.float32, projection=True), POSE: _adapter(store, 3, 1, _TEXT + _DIT),
             LINEART: _adapter(store, 4, 2, _TEXT + _DIT), INPAINT: _adapter(store, 5, 2, _TEXT + _DIT)}

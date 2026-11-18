@@ -61,7 +61,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     for folder, name in ((vlm, VLM), (edit_vlm, EDIT_VLM)):
         config = json.loads((folder / "config.json").read_text())
         (folder / "config.json").write_text(json.dumps({**config, "cozy_e2e_release": name}, indent=2))
-    return {DEV: root / "fibo-2-dev", TURBO: root / "fibo-2-edit-turbo", VLM: vlm, EDIT_VLM: edit_vlm}
+    return {DEV: root / "fibo-2-dev", TURBO: root / "fibo-2-edit-turbo", "text_encoder": root / "fibo-2-dev", VLM: vlm,
+            EDIT_VLM: edit_vlm}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -74,6 +75,9 @@ _CAPTION = json.dumps({"short_description": "a red fox in fresh snow", "objects"
                        "background_setting": "a snowy field", "text_render": [{"text": "SNOW", "location": "bottom"}]})
 #: 512², Fibo's smallest canvas (0.25 MP), 2 steps, the prompt as written.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 0.25, "steps": 2, "prompt_upsampling": False}
+#: The default `text_encoder` is Dev's tiny encoder; an Edit Turbo cell binds Turbo's own, as `model` was read before the
+#: slot (se-160), so its reference stands: the tiny checkpoints' encoders differ, the real ones' don't.
+_OWN = {"generate_turbo": {"generate_turbo.models.text_encoder": TURBO}, "image": {"image.models.text_encoder": TURBO}}
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -83,14 +87,14 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "edit", "payload": {"prompt": _prompt("give <fox> a hat", "fox"), **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
-     "check": size(512, 512)},
+     "models": _OWN["generate_turbo"], "check": size(512, 512)},
     {"entry": "generate_turbo", "name": "edit-upsampled",
      "payload": {"prompt": _prompt("give <fox> a hat", "fox"), **_SMALL, "prompt_upsampling": True},
-     "files": {"prompt.references.0.file": _FOX}},
+     "files": {"prompt.references.0.file": _FOX}, "models": _OWN["generate_turbo"]},
     {"entry": "generate_turbo", "name": "two-edits", "payload": {"prompt": _prompt("<fox> on <snow>", "fox", "snow"), **_SMALL},
-     "files": {"prompt.references.0.file": _FOX, "prompt.references.1.file": _SNOW}},
+     "files": {"prompt.references.0.file": _FOX, "prompt.references.1.file": _SNOW}, "models": _OWN["generate_turbo"]},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7},
-     "check": size(1024, 1024)},
+     "models": _OWN["image"], "check": size(1024, 1024)},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
                                                   "prompt_upsampling": False}, "check": size(1024, 1024)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},

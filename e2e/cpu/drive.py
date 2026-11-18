@@ -583,6 +583,15 @@ def same_model(manifests: Mapping[str, str], ref: str) -> str | None:
     return found[0] if len(found) == 1 else None
 
 
+def built(manifests: Mapping[str, str], slot: Slot) -> str | None:
+    """The fixture's build for a slot, keyed by its path, its default ref, or its name (`text_encoder`). Each slot of that
+    name binds a name-keyed build under the default its package declares, so a fixture keyed by name never has to repeat
+    the ref and still matches when the default moves to another model (se-160)."""
+    ref = slot_ref(slot)
+    return (manifests.get(slot["path"]) or manifests.get(ref) or manifests.get(slot["path"].rsplit(".", 1)[-1])
+            or same_model(manifests, ref))
+
+
 def held(manifest: str, store: Path) -> list[str]:
     import tensorfs
 
@@ -662,7 +671,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         if slot.get("weights"):
             continue
         ref = slot_ref(slot)
-        manifest = manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref)
+        manifest = built(manifests, slot)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
