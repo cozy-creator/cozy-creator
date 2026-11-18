@@ -2,7 +2,8 @@
 - `logits`: a lane's next-token distributions against a reference lane's on the same text. Per position: whether the
   top tokens agree, and KL(reference || lane) in nats.
 - `decode`: the lane's single-row greedy decode of `PROMPT` for a fixed number of tokens, timed with the checkpoint's
-  MTP head drafting (as every call runs) and without it, warm (each after its own warm-up)."""
+  MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
+- `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls."""
 
 import json
 import time
@@ -69,6 +70,21 @@ def logits(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
             "kl_p99": float(kl.quantile(0.99)),
             "kl_max": float(kl.max()),
         })
+    return Agreement(json.dumps(rows))
+
+
+@app.entrypoint(accelerator=True)
+def quality(ctx: Context, model: VisionLM) -> Agreement:
+    """Each of `TEXTS` under this lane alone: its top-1 next token at every position and its perplexity of the text
+    (exp of the mean negative log-likelihood of each next token). Two lanes' top-1 agreement is read from two such calls,
+    so a lane and its bf16 reference never share a card."""
+    tokenizer = model.processor.tokenizer
+    rows = []
+    for text in TEXTS:
+        ids = torch.tensor([tokenizer(text)["input_ids"]])
+        logp = _logprobs(model, ids)
+        nll = -logp[:-1].gather(-1, ids[0, 1:, None]).squeeze(-1)
+        rows.append({"tokens": int(ids.shape[1]), "top1": logp.argmax(-1).tolist(), "ppl": float(nll.mean().exp())})
     return Agreement(json.dumps(rows))
 
 
