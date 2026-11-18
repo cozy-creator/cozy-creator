@@ -44,11 +44,14 @@ DECODE=$(param decode '') MAKE=$(param make '') MODEL=$(param model '') TREE=$(p
 DFIX=$HERE/fixtures/ggml-decode
 . "$DFIX/preflight.sh"
 drive_check "$FIX/drive" ggml_drive
+drive_lock "$FIX/drive"
 if [ -n "$DECODE$MAKE" ]; then
   [ -z "$MAKE" ] || { [[ $MODEL == */*@sha256:* ]] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ]; } ||
     fail "make needs model (org/name@sha256:…) and a packages checkout tree with qwen3"
   kernels "$PACKAGES/$TREE/qwen3"
   drive_check "$DFIX/drive" ggml_logits ${TREE:+"qwen3=$PACKAGES/$TREE/qwen3/uv.lock"}
+  drive_lock "$DFIX/drive"
+  [ -z "$TREE" ] || drive_lock "$PACKAGES/$TREE/qwen3"
 fi
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
