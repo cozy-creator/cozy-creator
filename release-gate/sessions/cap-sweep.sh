@@ -165,10 +165,94 @@ watch() {
     done ) 9>&- & BG=$!
 }
 ONE=${RUNNER_TEMP:-/tmp}/cap-sweep-one TWIN_S=$(param twin_s 2400)
+# measured.py <out> <run> <verdict> <why>: ledger.py rows on stdin, each out with a package benchmark's fields (bench.py
+# `references`: function, gpu, gpus, request, cold_ms or warm_ms, ran_on, note) and what a measured memory and time table needs
+# beside them: budget, card, lanes, memory.*, outcome.{reason, stood, sweep, why}.
+cat > "$ONE.py" << 'PY'
+import json, os, sys
+
+out, run, verdict, why = sys.argv[1:5]
+card = (json.load(open(os.path.join(out, 'show-capped.json'))).get('status', {}).get('gpus') or [{}])[0]
+
+
+def walk(v):
+    if isinstance(v, dict):
+        yield v
+        for x in v.values():
+            yield from walk(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from walk(x)
+
+
+for line in sys.stdin:
+    row = json.loads(line)
+    name = row['source']['cell']
+    rec = json.load(open(os.path.join(out, name + '.json')))
+    inp = (rec.get('request') or {}).get('input') or {}
+    res = rec.get('result') if isinstance(rec.get('result'), dict) else {}
+    ms = [m for m in [rec.get('measurements')] + [c.get('measurements') for c in rec.get('calls') or []] if m]
+    rows = [v for m in ms for v in ((m.get('memory') or {}).get('stats') or {}).get('varena') or [] if isinstance(v, dict)]
+    stats = [v.get('stats') or {} for v in rows]
+    ph, w, st = row.get('phases') or {}, row.get('workload') or {}, row.get('state') or {}
+    size = {'refs': len(inp.get('references') or [])}
+    if res.get('width') and res.get('height'):
+        size['megapixels'] = round(res['width'] * res['height'] / 1e6, 2)
+    elif isinstance(inp.get('megapixels'), (int, float)):
+        size['megapixels'] = float(inp['megapixels'])
+    for key, value in (('frames', res.get('frame_count')), ('steps', ph.get('steps')), ('tokens', inp.get('max_tokens')),
+                       ('seconds', (w.get('shape') or {}).get('seconds') or inp.get('duration_s'))):
+        if value:
+            size[key] = value
+    row['function'], row['gpu'], row['gpus'], row['request'] = w.get('function'), rec.get('gpu'), w.get('gpus'), size
+    if ph.get('execution_s') is not None and (row.get('outcome') or {}).get('status') == 'completed' and not st.get('memoized'):
+        row['cold_ms' if st.get('temperature') == 'cold' else 'warm_ms'] = round(ph['execution_s'] * 1000)
+    v = row.get('versions') or {}
+    row['ran_on'] = {'cozy': v.get('tensord'), 'runtime': v.get('runtime'), 'tensorfs': v.get('tensorfs')}
+    row['note'] = f'pod-session {run} cap-sweep {name}'
+    row['budget'] = w.get('cap')
+    row['card'] = {k: card.get(k) for k in ('name', 'memory_bytes', 'family', 'driver')}
+    row['lanes'] = {str(m.get('slot')): m.get('lane') for x in ms for m in x.get('models') or [] if isinstance(m, dict)}
+    mem = row.setdefault('memory', {})
+    mem['peak_reserved_gib'] = round(max([(m.get('memory') or {}).get('peak_reserved_bytes') or 0 for m in ms] or [0]) / 2**30, 2)
+    mem['torch_peak_gib'] = round(max([x.get('torch_peak') or 0 for x in rows if isinstance(x.get('torch_peak'), (int, float))] or [0]) / 2**30, 2)
+    mem['host_peak_gib'] = round(max([s.get('host') or 0 for s in stats if isinstance(s.get('host'), (int, float))] or [0]) / 2**30, 2)
+    try:
+        mem['card_peak_mib'] = int(open(os.path.join(out, name + '.smi')).read().strip())
+    except (OSError, ValueError):
+        mem['card_peak_mib'] = None
+    allocs = [s.get('working_allocator') or {} for s in stats]
+    mem['ooms'] = sum(a.get('ooms') or 0 for a in allocs if isinstance(a, dict))
+    mem['reclaim_s'] = round(sum(a.get('reclaim_ns') or 0 for a in allocs if isinstance(a, dict)) / 1e9, 1)
+    mem['largest_allocation_bytes'] = max([d[k] for s in stats for d in walk(s) for k in d
+                                           if 'largest' in k and isinstance(d[k], (int, float)) and not isinstance(d[k], bool)] or [0]) or None
+    reason = rec.get('reason')
+    row.setdefault('outcome', {})['reason'] = reason if isinstance(reason, (dict, str)) else None
+    row['outcome']['stood'] = rec.get('progress')
+    row['outcome']['sweep'], row['outcome']['why'] = verdict, why[:2000]
+    print(json.dumps(row, sort_keys=True))
+PY
+: > "$OUT/measured.jsonl"
+# publish <name> <verdict> <why>: the run's row into measured.jsonl and, as the cell ends, into the tracker's ledger
+# (ledger.py append: benchmarks/<sku>/, by its deploy key; a row there once is never written again), so a failure reads
+# from a `git fetch` while the session goes on. ROW is its ledger row.
+ROW='{}'
+row() {
+  ROW=$(python3 -I "$LEDGER" rows "$OUT" --source session:cap-sweep --packages "$PACKAGES" 2> "$OUT/rows.err" | jq -c --arg n "$1" 'select(.source.cell == $n)' | head -1)
+  [ -n "$ROW" ] || ROW='{}'
+}
+publish() {
+  [ "$ROW" != '{}' ] || { say "$1: no ledger row of it ($(tail -c 200 "$OUT/rows.err" | tr '\n' ' '))"; return 0; }
+  python3 -I "$ONE.py" "$OUT" "${GITHUB_RUN_ID:-local}" "$2" "$3" <<< "$ROW" > "$ONE.row" 2>> "$OUT/rows.err" && [ -s "$ONE.row" ] ||
+    { say "$1: its row was not made ($(tail -c 200 "$OUT/rows.err" | tr '\n' ' '))"; return 0; }
+  cat "$ONE.row" >> "$OUT/measured.jsonl"
+  timeout 240 python3 -I "$LEDGER" append "$ONE.row" >> "$OUT/ledger-cells.log" 2>&1 ||
+    say "$1: its row was not pushed ($(tail -c 200 "$OUT/ledger-cells.log" | tr '\n' ' '))"
+}
 ran=0 completed=0 failed=0 unfinished=0 skipped=0 LOST=''
 # run <cell> <name> <budget>: the cell's request once under <budget> (the cap, or `off` for its uncapped twin), as <name>.
 run() {
-  local k=$1 name=$2 budget=$3 c target most limit left N st smi row steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
+  local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
   local -a args
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   mapfile -t args < <(jq -r '.args[]' <<< "$c")
@@ -197,9 +281,8 @@ run() {
   st=$(jq -r '.status // "none"' "$OUT/$name.json" 2> /dev/null); st=${st:-none}
   smi=$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"card\" {gsub(\",\", \"\"); if (\$4 + 0 > m) m = \$4 + 0} END {print m + 0}"')
   [[ ${smi:-0} =~ ^[1-9][0-9]*$ ]] && echo "$smi" > "$OUT/$name.smi" || smi=unread
-  rm -rf "$ONE"; mkdir -p "$ONE"; cp "$OUT/$name.json" "$ONE/" 2> /dev/null
-  row=$(python3 -I "$LEDGER" rows "$ONE" --source session:cap-sweep 2> /dev/null | head -1); [ -n "$row" ] || row='{}'
-  steps=$(jq -r '"step 1 \(.phases.step1_s // "-") s, steady \(.phases.steady_s // "-") s x\(.phases.steps // "-")"' <<< "$row" 2> /dev/null)
+  row "$name"
+  steps=$(jq -r '"step 1 \(.phases.step1_s // "-") s, steady \(.phases.steady_s // "-") s x\(.phases.steps // "-")"' <<< "$ROW" 2> /dev/null)
   read -r total ex peak memo throttled stood < <(jq -r '[.measurements, (.calls[]?.measurements)] as $m
     | [(((.settled_at_ms // 0) - (.created_at_ms // 0)) / 1000 | floor), ((.execution_ms // 0) / 1000 | floor),
        ([$m[]? | .memory.driver[]?.peak_bytes] | max // 0 | . / 1073741824 * 100 | floor / 100),
@@ -218,7 +301,7 @@ run() {
   elif [ -s "$OUT/$name.capped" ] && [ "$st" != completed ]; then
     # Still moving at its cap: its step rate and what the stage it stood in would still take.
     verdict=UNFINISHED
-    why="$(cat "$OUT/$name.capped"); $(jq -rn --argjson r "$row" --arg at "${stood:-}" '($at | capture("(?<a>[0-9]+)/(?<b>[0-9]+)$")) as $p
+    why="$(cat "$OUT/$name.capped"); $(jq -rn --argjson r "$ROW" --arg at "${stood:-}" '($at | capture("(?<a>[0-9]+)/(?<b>[0-9]+)$")) as $p
       | ($r.phases.steady_s // $r.phases.step1_s) as $s | (($p.b | tonumber) - ($p.a | tonumber)) as $n
       | if $s and $n > 0 then "\($n) steps of this stage left at \($s) s each: about \($n * $s | floor) s more" else "no step rate in its record" end' 2> /dev/null); $why"
   fi
@@ -226,6 +309,7 @@ run() {
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
   say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
+  publish "$name" "$verdict" "$why"
   if [ "$st" = completed ] && jq -e --arg k "{out:$name|" 'any(.[].args[]; contains($k))' <<< "$CELLS" > /dev/null; then
     (cd "$RUN_PROJECT" && cozy run watch "$N" --once -o "$OUT/$name.out") > /dev/null 2>&1
     MADE[$name]=$(ls "$OUT/$name.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
@@ -271,70 +355,4 @@ if [ "${#twins[@]}" -gt 0 ] && [ -z "$LOST" ] && [ $(( END_AT - $(date +%s) )) -
   fi
 fi
 say "SWEEP at $CAPV on $NAME: $ran ran: $completed completed, $failed failed, $unfinished unfinished at their caps; $skipped not run"
-# measured.jsonl: each run as its ledger.py row, with a package benchmark's fields (bench.py `references`: function, gpu,
-# gpus, request, cold_ms or warm_ms, ran_on, note) and what a measured memory and time table needs beside them.
-python3 -I "$LEDGER" rows "$OUT" --source session:cap-sweep --packages "$PACKAGES" > "$OUT/rows.jsonl" 2> "$OUT/rows.err"
-python3 -I - "$OUT" "${GITHUB_RUN_ID:-local}" > "$OUT/measured.jsonl" 2>> "$OUT/rows.err" << 'PY' || say "measured.jsonl: $(tail -c 300 "$OUT/rows.err")"
-import json, os, sys
-
-out, run = sys.argv[1:3]
-card = (json.load(open(os.path.join(out, 'show-capped.json'))).get('status', {}).get('gpus') or [{}])[0]
-
-
-def walk(v):
-    if isinstance(v, dict):
-        yield v
-        for x in v.values():
-            yield from walk(x)
-    elif isinstance(v, list):
-        for x in v:
-            yield from walk(x)
-
-
-for line in open(os.path.join(out, 'rows.jsonl')):
-    row = json.loads(line)
-    name = row['source']['cell']
-    rec = json.load(open(os.path.join(out, name + '.json')))
-    inp = (rec.get('request') or {}).get('input') or {}
-    res = rec.get('result') if isinstance(rec.get('result'), dict) else {}
-    ms = [m for m in [rec.get('measurements')] + [c.get('measurements') for c in rec.get('calls') or []] if m]
-    rows = [v for m in ms for v in ((m.get('memory') or {}).get('stats') or {}).get('varena') or [] if isinstance(v, dict)]
-    stats = [v.get('stats') or {} for v in rows]
-    ph, w, st = row.get('phases') or {}, row.get('workload') or {}, row.get('state') or {}
-    size = {'refs': len(inp.get('references') or [])}
-    if res.get('width') and res.get('height'):
-        size['megapixels'] = round(res['width'] * res['height'] / 1e6, 2)
-    elif isinstance(inp.get('megapixels'), (int, float)):
-        size['megapixels'] = float(inp['megapixels'])
-    for key, value in (('frames', res.get('frame_count')), ('steps', ph.get('steps')), ('tokens', inp.get('max_tokens')),
-                       ('seconds', (w.get('shape') or {}).get('seconds') or inp.get('duration_s'))):
-        if value:
-            size[key] = value
-    row['function'], row['gpu'], row['gpus'], row['request'] = w.get('function'), rec.get('gpu'), w.get('gpus'), size
-    if ph.get('execution_s') is not None and (row.get('outcome') or {}).get('status') == 'completed' and not st.get('memoized'):
-        row['cold_ms' if st.get('temperature') == 'cold' else 'warm_ms'] = round(ph['execution_s'] * 1000)
-    v = row.get('versions') or {}
-    row['ran_on'] = {'cozy': v.get('tensord'), 'runtime': v.get('runtime'), 'tensorfs': v.get('tensorfs')}
-    row['note'] = f'pod-session {run} cap-sweep {name}'
-    row['budget'] = w.get('cap')
-    row['card'] = {k: card.get(k) for k in ('name', 'memory_bytes', 'family', 'driver')}
-    row['lanes'] = {str(m.get('slot')): m.get('lane') for x in ms for m in x.get('models') or [] if isinstance(m, dict)}
-    mem = row.setdefault('memory', {})
-    mem['peak_reserved_gib'] = round(max([(m.get('memory') or {}).get('peak_reserved_bytes') or 0 for m in ms] or [0]) / 2**30, 2)
-    mem['torch_peak_gib'] = round(max([x.get('torch_peak') or 0 for x in rows if isinstance(x.get('torch_peak'), (int, float))] or [0]) / 2**30, 2)
-    mem['host_peak_gib'] = round(max([s.get('host') or 0 for s in stats if isinstance(s.get('host'), (int, float))] or [0]) / 2**30, 2)
-    try:
-        mem['card_peak_mib'] = int(open(os.path.join(out, name + '.smi')).read().strip())
-    except (OSError, ValueError):
-        mem['card_peak_mib'] = None
-    allocs = [s.get('working_allocator') or {} for s in stats]
-    mem['ooms'] = sum(a.get('ooms') or 0 for a in allocs if isinstance(a, dict))
-    mem['reclaim_s'] = round(sum(a.get('reclaim_ns') or 0 for a in allocs if isinstance(a, dict)) / 1e9, 1)
-    mem['largest_allocation_bytes'] = max([d[k] for s in stats for d in walk(s) for k in d
-                                           if 'largest' in k and isinstance(d[k], (int, float)) and not isinstance(d[k], bool)] or [0]) or None
-    reason = rec.get('reason')
-    row.setdefault('outcome', {})['reason'] = reason if isinstance(reason, (dict, str)) else None
-    row['outcome']['stood'] = rec.get('progress')
-    print(json.dumps(row, sort_keys=True))
-PY
 say "measured.jsonl: $(wc -l < "$OUT/measured.jsonl") rows"

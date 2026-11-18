@@ -20,6 +20,29 @@
    "twin": true
   },
   {
+   "name": "hid-gen-hardest",
+   "target": "hidream-o1/generate",
+   "args": [
+    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+    "megapixels:=4",
+    "seed:=30035"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "ideo-gen-hardest",
+   "target": "ideogram-4/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing; a hand-lettered card in the foreground reads \"FRESH TODAY\", photo",
+    "regions:=[{\"box\":[0.05,0.6,0.45,0.95],\"prompt\":\"a hand-lettered card\",\"text\":\"FRESH TODAY\"},{\"box\":[0.55,0.05,0.95,0.4],\"prompt\":\"a paper banner\",\"text\":\"WELCOME\"},{\"box\":[0.3,0.3,0.7,0.7],\"prompt\":\"a white lighthouse\"}]",
+    "megapixels:=4",
+    "prompt_upsampling:=true",
+    "seed:=30036"
+   ],
+   "max_s": 3600
+  },
+  {
    "name": "f2-turbo-hardest",
    "target": "flux-2/generate_turbo",
    "args": [
@@ -27,31 +50,9 @@
     "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
     "megapixels:=4",
     "prompt_upsampling:=true",
-    "seed:=30035"
-   ],
-   "max_s": 3000
-  },
-  {
-   "name": "f2-upscale",
-   "target": "flux-2/upscale",
-   "args": [
-    "--file",
-    "image={pic1}",
-    "seed:=30036"
-   ],
-   "max_s": 3000,
-   "twin": true
-  },
-  {
-   "name": "hid-gen-hardest",
-   "target": "hidream-o1/generate",
-   "args": [
-    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
-    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
-    "megapixels:=4",
     "seed:=30037"
    ],
-   "max_s": 4500
+   "max_s": 3000
   },
   {
    "name": "hid-turbo-hardest",
@@ -65,16 +66,15 @@
    "max_s": 3000
   },
   {
-   "name": "ideo-gen-hardest",
-   "target": "ideogram-4/generate",
+   "name": "f2-upscale",
+   "target": "flux-2/upscale",
    "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing; a hand-lettered card in the foreground reads \"FRESH TODAY\", photo",
-    "regions:=[{\"box\":[0.05,0.6,0.45,0.95],\"prompt\":\"a hand-lettered card\",\"text\":\"FRESH TODAY\"},{\"box\":[0.55,0.05,0.95,0.4],\"prompt\":\"a paper banner\",\"text\":\"WELCOME\"},{\"box\":[0.3,0.3,0.7,0.7],\"prompt\":\"a white lighthouse\"}]",
-    "megapixels:=4",
-    "prompt_upsampling:=true",
+    "--file",
+    "image={pic1}",
     "seed:=30039"
    ],
-   "max_s": 3600
+   "max_s": 3000,
+   "twin": true
   },
   {
    "name": "f2-gen-default",

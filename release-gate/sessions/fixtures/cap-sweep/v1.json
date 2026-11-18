@@ -7,6 +7,18 @@
  "floor_mb_s": 25,
  "cells": [
   {
+   "name": "pan2-hardest",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=<Start>. A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left, stops at the centre and looks around. One continuous wide shot.",
+    "references:=[{\"name\":\"Start\",\"image\":\"{pic1}\"}]",
+    "duration:=20",
+    "seed:=30009"
+   ],
+   "max_s": 5400,
+   "twin": true
+  },
+  {
    "name": "ltx-hardest",
    "target": "ltx-2.5/generate",
    "args": [
@@ -15,18 +27,6 @@
     "resolution=1080p",
     "--file",
     "first_frame={pic1}",
-    "seed:=30009"
-   ],
-   "max_s": 5400,
-   "twin": true
-  },
-  {
-   "name": "pan2-hardest",
-   "target": "pan2/generate",
-   "args": [
-    "instructions=<Start>. A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left, stops at the centre and looks around. One continuous wide shot.",
-    "references:=[{\"name\":\"Start\",\"image\":\"{pic1}\"}]",
-    "duration:=20",
     "seed:=30010"
    ],
    "max_s": 5400,
