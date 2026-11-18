@@ -8,7 +8,8 @@
 //! A box's machine is the one placement would send its render to (`placement::soonest`, by what each machine has of it), of the
 //! machines that serve now: nothing is started, rented or waited for to hold a guess. It stays where it is guessed unless another
 //! would finish it clearly sooner (`plan::clearly_sooner`), and its render stays there by the same rule (`Walk::plan`), so the
-//! machine made ready is the one Render picks.
+//! machine made ready is the one Render picks (`well_placed`). A machine its render would run on its CPU (`not_simply`) gets nothing
+//! ahead.
 //!
 //! What a guess fetches (`item`) is decided here, with nothing installed and no package code run (`Host::foreseen`, cl-1103; Paul,
 //! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): the
@@ -387,6 +388,13 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         Some(held) if !plan::clearly_sooner(soonest, held, now) => held,
         _ => soonest,
     };
+    // Where its render would go, and whether it would simply run there, as a render's placement judges both (`super::well_placed`,
+    // `super::not_simply`; cl-1123: a runner with no GPU took 20 GiB for a dragged Qwen box its render would run on its CPU).
+    let function = package.maker().ok().flatten().map(|renderer| renderer.function).unwrap_or_default();
+    let chosen = &super::well_placed(api, &up, chosen, hub, Some(&package), &function, &made, now);
+    if let Some(why) = super::not_simply(api, chosen, job.gpu) {
+        return Guessed::Nothing(Cow::Owned(format!("{why}, so nothing goes there ahead of it")));
+    }
     let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing(Cow::Owned(format!("it would go to {}, no one machine", chosen.machine))) };
     // Where else it would finish, and how long each one's line holds it from GPUs: what a load moving there could change.
     let others = (up.iter().filter(|offer| offer.fits && offer.machine != chosen.machine))

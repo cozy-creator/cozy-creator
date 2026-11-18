@@ -6878,6 +6878,16 @@ fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, pac
     }
 }
 
+/// Why a render placed on `offer` (`well_placed`) wouldn't simply run there (cl-1123), so nothing goes there ahead of it: its machine
+/// has no GPU and the function builds a model on one (`gpu`), so it would run on its CPU, slowly or not at all (`runs::gpuless`). A
+/// GPU that runs it slowly is no reason: a render sent there runs on it, asking nothing (cl-1066). None: it runs there.
+fn not_simply(api: &Api, offer: &Offer, gpu: bool) -> Option<String> {
+    let On::Machine(name) = &offer.machine else { return None };
+    let here = if offer.machine.is_local() { "this computer" } else { name.as_str() };
+    (gpu && api.machines.frame(name).is_some_and(|frame| frame.gpus.is_empty()))
+        .then(|| format!("{here} has no GPU, so its render would run on its CPU: slowly, or not at all"))
+}
+
 /// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.
 pub(crate) async fn queue_set(api: &Arc<Api>, row: &crate::store::RunRow) -> Vec<On> {
     if row.project_root.is_some()
