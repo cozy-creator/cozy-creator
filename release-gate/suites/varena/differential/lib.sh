@@ -46,7 +46,7 @@ diff_eager() {  # diff_eager <name> <package> <function> <args...>: graphs off a
   fi
   diff_copy "$package" eager "" eager || { expect "diff-$name-eager" FAIL "no copy of $package with the hook in it"; return; }
   diff_run "diff-$name-eager" eager "$package" "$function" "$@"
-  native=$(jq '[.. | .native_steps? // 0] | add' "diff-$name-base-1.json" 2>/dev/null)
-  log "diff-$name-eager: base's first call ran ${native:-no} steps natively"
+  native=$(jq '[.. | objects | .graphs? // empty | objects | .[] | .replays? // 0] | add // 0' "diff-$name-base-1.json" 2>/dev/null)
+  log "diff-$name-eager: base's first call replayed ${native:-no} region calls"
   diff_expect "diff-$name-eager" "diff-$name-base-1" "diff-$name-eager"
 }

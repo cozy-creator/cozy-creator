@@ -41,7 +41,7 @@ diff_press() {  # diff_press <name> <package> <function> <args...>: after diff_m
   done
   diff_expect "diff-$name-refill" "diff-$name-base-2" "diff-$name-refill-2"
   diff_expect "diff-$name-noroom" "diff-$name-base-2" "diff-$name-hold-2"
-  [ "$(jq '[.. | .native_steps? // 0] | max' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
+  [ "$(jq '[.. | objects | .graphs? // empty | objects | .[] | .replays? // 0] | add // 0' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
     expect "diff-$name-refill-replayed" FAIL "the second call ran eagerly: nothing refilled for a replay"
   [ "$(jq '[.. | .weight_residency?.evictions? // 0] | max' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
     expect "diff-$name-refill-left" FAIL "no weight left the card: the replay refilled nothing"
