@@ -5,6 +5,9 @@ Every changed file is a package's pyproject.toml whose one changed line is its `
 whose only change is its own [[package]] row's version, to the same value. Anything else refuses, naming the file.
 Prints each package's move (`sdxl 0.13.0rc2 -> 0.13.1rc1`), or why not."""
 import re, subprocess, sys, tomllib
+from typing import Any
+
+type Toml = Any  # type: ignore[explicit-any]  # a pyproject.toml or uv.lock, read by key
 
 checkout, gated, release = sys.argv[1:4]
 VERSION = re.compile(r'[-+]version = "[^"]*"\Z')
@@ -14,7 +17,12 @@ def git(*args: str) -> str:
     return subprocess.run(['git', '-C', checkout, *args], capture_output=True, text=True, check=True).stdout
 
 
-def show(ref: str, path: str) -> dict | None:
+def norm(name: object) -> str:
+    """A package name as a lock writes it (PEP 503)."""
+    return re.sub(r'[-_.]+', '-', str(name)).lower()
+
+
+def show(ref: str, path: str) -> dict[str, Toml] | None:
     try:
         return tomllib.loads(git('show', f'{ref}:{path}'))
     except (subprocess.CalledProcessError, tomllib.TOMLDecodeError):
@@ -46,10 +54,8 @@ for path in git('diff', '--name-only', gated, release).splitlines():
             continue
         moved[pkg] = (a.get('version'), b.get('version'))
     else:
-        rows = lambda doc: [p for p in doc.get('package', [])]
-        a, b = rows(old), rows(new)
+        a, b = list(old.get('package', [])), list(new.get('package', []))
         same = len(a) == len(b) and {**old, 'package': None} == {**new, 'package': None}
-        norm = lambda n: re.sub(r'[-_.]+', '-', str(n)).lower()  # a lock names packages normalized (PEP 503)
         own = [i for i, p in enumerate(b) if norm(p.get('name')) == norm(project.get('name'))]
         if not same or len(own) != 1 or any(x != y for i, (x, y) in enumerate(zip(a, b)) if i != own[0]) \
                 or {**a[own[0]], 'version': None} != {**b[own[0]], 'version': None} or b[own[0]].get('version') != project.get('version'):
