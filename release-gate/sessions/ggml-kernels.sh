@@ -68,6 +68,14 @@ there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
   say "pod: $(there "tail -n 1 /w/out/pod.log; du -sh /w/hf /w/build /w/*.gguf 2>/dev/null | tr '\n' ' '; uptime" < /dev/null 2>&1 | tr '\n' ' ' | cut -c1-300)"
 done) & BG="$BG $!"
 
+# First, every package this session runs is staged on the pod: its lock and the candidates over it are settled in the pod's
+# first minutes, not after llama.cpp's build.
+pod_install stage-drive "$FIX/drive"
+if [ -n "$DECODE$MAKE" ]; then
+  pod_install stage-decode "$DFIX/drive"
+  [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
+fi
+
 # Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
 there "mkdir -p /w/out" < /dev/null || fail "ssh"
 there "cat > /w/pod.sh" < "$FIX/pod.sh" && there "cat > /w/shapes.py" < "$FIX/shapes.py" || fail "copy the fixtures to the pod"
@@ -78,6 +86,7 @@ there "cat /w/out/llama-perf.txt" < /dev/null > "$OUT/llama-perf.txt"
 
 # Ours.
 step calibrate run "$FIX/drive/host_calibrate" --on "$NAME" || fail "host_calibrate"
+on_candidates calibrate
 n=$(runno calibrate); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/calibrate.json"
 benches=()
 IFS=, read -ra models <<<"$MODELS"
@@ -100,8 +109,7 @@ if [ -n "$DECODE$MAKE" ]; then
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
     step "pull-$label" model install "$ref" --on "$NAME" || fail "pull $label"
     step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || fail "speed $label"
-    ! grep -qE "it runs on (that series|that|its lock's)|wheel carries no kernels" "$OUT/speed-$label.txt" ||
-      fail "speed-$label did not run on the candidate wheels"
+    on_candidates "speed-$label"
     n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
     say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
   done

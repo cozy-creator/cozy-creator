@@ -4,6 +4,8 @@ of that lock on them (crates/tensord/src/published/environment.rs `stands_in`, `
   over it (the open RC's TensorFS is 0.27's dev line since xs-216, a released lock's is 0.26);
 - otherwise each member must be the lock's version or a later patch of it, or (the Runtime) both dev builds of one series,
   else the run goes on the lock's pair and only warns.
+A lock naming a member once per platform (the RC's TensorFS build for Linux x86_64 after the index's for the rest) is read as
+TensorD reads it (`published.rs` `read_lock`): its last row.
 Exit 1 when the candidates don't stand in."""
 
 import re
@@ -16,8 +18,8 @@ text = open(lock).read()
 
 
 def locked(name: str) -> Version | None:
-    m = re.search(r'^name = "%s"\nversion = "([^"]+)"' % re.escape(name), text, re.M)
-    return Version(m.group(1)) if m else None
+    rows = re.findall(r'^name = "%s"\nversion = "([^"]+)"' % re.escape(name), text, re.M)
+    return Version(rows[-1]) if rows else None
 
 
 def wheel(path: str) -> Version:
@@ -38,5 +40,6 @@ for name, mine in ({} if foreign else ours).items():
         bad.append(f"{name} {mine} does not stand in for its lock's {theirs}")
 pair = ", ".join(f"{n} {v}" for n, v in ours.items())
 how = "over a lock of another series" if foreign else "as the lock's or a later patch"
-print(f"{label}: " + ("; ".join(bad) if bad else f"the candidates stand in, {how} ({pair})"))
+lock_pair = ", ".join(f"{n} {v}" for n, v in theirs_all.items() if v is not None)
+print(f"{label}: " + ("; ".join(bad) if bad else f"the candidates stand in, {how} ({pair}; the lock's: {lock_pair})"))
 sys.exit(1 if bad else 0)

@@ -66,7 +66,8 @@ for t in "${pure[@]}"; do types+=("pure:$t"); done
 SCALE=$(param scale 1); [[ $SCALE =~ ^[1-9]$ ]] || fail "scale: 1 to 9"
 there "SCALE=$SCALE bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" $((10800 * SCALE)) < /dev/null & LLAMA_PID=$!
 
-# 1. Ours.
+# 1. Ours. The package staged first: its lock and the candidates over it are settled before the model's download.
+pod_install stage "$PACKAGES/$TREE/$PACKAGE"
 step pull model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
 declare -A REF
 for pair in $(param have ''); do REF[${pair%%=*}]=${pair#*=}; done
@@ -76,6 +77,7 @@ for lane in "${lanes[@]}"; do
     continue
   fi
   step "$lane" model quantize "$MODEL" --lane "$lane" --package "./$PACKAGE" --on "$NAME" || fail "quantize $lane"
+  on_candidates "$lane"
   c=$(made "$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
   REF[$lane]="${MODEL%@*}@$c"; say "$lane: ${REF[$lane]}"
   n=$(runno "$lane")
