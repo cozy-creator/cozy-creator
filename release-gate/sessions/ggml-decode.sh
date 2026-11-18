@@ -16,16 +16,18 @@
 # takes; the Runtime a native dev build carrying `_ggml`). A lane that fails is reported and the rest still run; the session
 # fails at its end if any did.
 # params: tree (required), lanes (required), tensorfs, runtime (required), capped (q8_0=6GiB; "" for none),
-#         llama (b12466; "" for none), gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (3600).
+#         llama (b12466; "" for none), gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (3600),
+#         only ("engine": each lane through the drive's `engine` (the engine's decoder against today's path on the same
+#         call), then stock llama.cpp; no comparison of lanes, no capped run; xs-213 phase 2).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
-TREE=$(param tree '') LANES=$(param lanes '') CAPPED=$(param capped q8_0=6GiB) LLAMA=$(param llama b12466)
+TREE=$(param tree '') LANES=$(param lanes '') CAPPED=$(param capped q8_0=6GiB) LLAMA=$(param llama b12466) ONLY=$(param only '')
 GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf')
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 read -ra lanes <<<"$LANES"
-[ "${#lanes[@]}" -ge 2 ] || fail "lanes: at least a reference and one lane"
+[ "${#lanes[@]}" -ge 2 ] || [ "$ONLY" = engine ] || fail "lanes: at least a reference and one lane"
 [[ -z $CAPPED || ${CAPPED#*=} =~ ^[0-9]+[MG]iB$ ]] || fail "capped: label=<n>GiB"
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
@@ -62,6 +64,14 @@ ran() {
 lane() {
   local label=$1 ref=$2
   step "pull-$label" model install "$ref" --on "$NAME" || return 1
+  if [ "$ONLY" = engine ]; then
+    fresh "engine-$label"
+    step "engine-$label" run "$FIX/drive/engine" --model "model=$ref" --on "$NAME" || { ran "engine-$label"; return 1; }
+    ran "engine-$label"
+    record "engine-$label"
+    say "engine $label: $(jq -r '.result.detail // ""' "$OUT/engine-$label.json")"
+    return 0
+  fi
   fresh "speed-$label"
   step "speed-$label" run "$FIX/drive/decode" --model "model=$ref" --on "$NAME" || { ran "speed-$label"; return 1; }
   ran "speed-$label"
@@ -85,6 +95,7 @@ lane "$reflabel" "$refref" || fail "the reference $reflabel"
 for pair in "${lanes[@]:1}"; do
   label=${pair%%=*} ref=${pair#*=}
   lane "$label" "$ref" || { say "FAILED: lane $label (its step's output above)"; FAILED+=("$label"); continue; }
+  [ "$ONLY" = engine ] && continue
   same=$(python3 -c "import sys; a, b = (open(p).read().split() for p in sys.argv[1:]); n = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b))); print(f'{n} of {len(a)} words alike')" \
     "$OUT/caption-$reflabel.txt" "$OUT/caption-$label.txt")
   say "caption $label against $reflabel: $same"
@@ -95,7 +106,7 @@ for pair in "${lanes[@]:1}"; do
   say "logits $label against $reflabel: $(jq -r '.result.detail // ""' "$OUT/logits-$label.json")"
 done
 
-if [ -n "$CAPPED" ]; then
+if [ -n "$CAPPED" ] && [ "$ONLY" != engine ]; then
   label=${CAPPED%%=*} limit=${CAPPED#*=} ref=
   for pair in "${lanes[@]}"; do [ "${pair%%=*}" = "$label" ] && ref=${pair#*=}; done
   [ -n "$ref" ] || fail "capped: no lane $label"
