@@ -153,6 +153,44 @@
    ]
   },
   {
+   "name": "bf16all",
+   "tree": "rc",
+   "fn": "generate_turbo",
+   "flags": [
+    "--lane",
+    "bf16",
+    "--model",
+    "text_encoder=atomicchat/qwen-image-2.1-text-encoder-abliterated@sha256:8957732315600acd02ac9742ac5eaa9a4844decb28195e21f50c91b1d8797662"
+   ],
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "te16",
+   "tree": "rc",
+   "fn": "generate_turbo",
+   "flags": [
+    "--model",
+    "text_encoder=atomicchat/qwen-image-2.1-text-encoder-abliterated@sha256:8957732315600acd02ac9742ac5eaa9a4844decb28195e21f50c91b1d8797662"
+   ],
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2,
+      4
+     ]
+    }
+   ]
+  },
+  {
    "name": "qturbo",
    "tree": "pf",
    "fn": "generate_qwen_turbo",
@@ -330,6 +368,6 @@
   }
  ],
  "chain_mp": 2,
- "seconds": 4200,
+ "seconds": 4500,
  "chains_first": true
 }
