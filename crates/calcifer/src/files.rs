@@ -67,7 +67,8 @@ pub(crate) fn send(
     let (response, status, first, count) = match ranged(range, len) {
         Ok(None) => (response, StatusCode::OK, 0, len),
         Ok(Some((first, last))) => {
-            let last = if pieces { last.min(first.saturating_add(MOST_PER_ANSWER - 1)) } else { last };
+            // PROBE, never merged: the cap reverted, every range answered whole whatever the request asks (cl-1220's red).
+            let _ = (pieces, MOST_PER_ANSWER);
             let response = response.header(header::CONTENT_RANGE, format!("bytes {first}-{last}/{len}"));
             (response, StatusCode::PARTIAL_CONTENT, first, last - first + 1)
         }
