@@ -24,8 +24,9 @@ if ! command -v uv > /dev/null; then
   fi
 fi
 # Each phase has its deadline and logs its time: a stall costs one deadline, and the 5-minute report names the phase.
+# SCALE (the session's `scale`, default 1) multiplies every deadline, for a checkpoint several times the 9B's size.
 phase() {
-  local name=$1 secs=$2 t0=$(date +%s) code=0; shift 2
+  local name=$1 secs=$(($2 * ${SCALE:-1})) t0=$(date +%s) code=0; shift 2
   log "$name (deadline $secs s)"
   timeout "$secs" bash -c "$*" || code=$?
   [ $code = 0 ] || { log "FAILED $name after $(($(date +%s) - t0)) s (exit $code)"; exit 1; }
