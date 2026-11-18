@@ -438,8 +438,18 @@ async function ration(names: string[], signal: AbortSignal): Promise<() => void>
 /** What's playing in this tab, oldest first: a third stops the first. */
 export const playingHere: (() => void)[] = []
 
-/** One of the two live `<video>`s or `<audio>`s, across tabs. Resolves when it is ours; abort to stop waiting. */
-export const holdMedia = (signal: AbortSignal) => ration(["cozy-media-0", "cozy-media-1"], signal)
+/** One of the two live `<video>`s or `<audio>`s, across tabs. A free one if there is one; else the first is taken from whichever
+ *  tab holds it (cl-1208; Paul, 11-18: Focus showed only the poster while two other tabs held both, waiting silently forever). */
+export const holdMedia = async (signal: AbortSignal): Promise<() => void> => {
+  const names = ["cozy-media-0", "cozy-media-1"]
+  for (const name of names) {
+    const release = await lock(name, { ifAvailable: true })
+    if (release) return release
+  }
+  if (signal.aborted) throw signal.reason
+  const taken = await lock(names[0], { steal: true })
+  return taken ?? (() => {})
+}
 
 /** The one run's log stream, across tabs. */
 export const holdLog = (signal: AbortSignal) => ration(["cozy-log"], signal)
