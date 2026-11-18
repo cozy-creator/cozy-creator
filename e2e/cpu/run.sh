@@ -12,7 +12,8 @@
 # resolved per GPU family first (lanes.py; `--cells lanes` alone).
 # --lock fresh (a release's smoke, promote.sh; needs --cozy, and R and T release versions): that cozy locks each package
 # first and it runs from that lock, which must pin R and T from PyPI. Its committed lock isn't compared.
-# --shard K/N runs every Nth package from the Kth, slowest first: N runners share the suite (e2e.yaml's cpu shards).
+# --shard K/N runs every Nth package from the Kth, slowest first: N runners share the suite (e2e.yaml's cpu shards). With
+# --cozy, the packages a stand-in TensorD runs (drive.py) take shard 1 and the rest the others.
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
@@ -73,7 +74,10 @@ export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP CO
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
-export -f fixture
+# A fixture that patches release geometry (PATCH, WAIVE: se-149) runs in the stand-in TensorD (drive.py) until its package
+# takes a tiny geometry itself; with no cozy, every package does.
+standin() { [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$1")" 2> /dev/null; }
+export -f fixture standin
 if [ -n "$ONLY" ]; then packages=${ONLY//,/ }
 else packages=$(cd "$PACKAGES" && for d in */pyproject.toml; do dirname "$d"; done); fi
 # The slowest first, so the jobs end together: H3's cells are a third of the whole.
@@ -85,7 +89,18 @@ absent=$(for q in $packages; do [ -f "$PACKAGES/$q/pyproject.toml" ] || echo "$q
 packages=$(for q in $packages; do if [ -f "$PACKAGES/$q/pyproject.toml" ]; then echo "$q"; fi; done)
 packages=$(echo $packages)
 packages="$(for q in $SLOWEST; do [[ " $packages " != *" $q "* ]] || echo "$q"; done) $(for q in $packages; do [[ " $SLOWEST " == *" $q "* ]] || echo "$q"; done)"
-packages=$(i=0; for q in $packages; do [ $((i % ${SHARD#*/})) != $((${SHARD%/*} - 1)) ] || echo "$q"; i=$((i + 1)); done)
+every() { local n=$1 k=$2 i=0 q; shift 2; for q; do [ $((i % n)) != $((k - 1)) ] || echo "$q"; i=$((i + 1)); done; }
+# A stand-in's executors run outside cozy's contained machine, so TensorD counts them as the computer's other programs and
+# lowers the machine's limit to keep its reserve beside them: minimax-h3's two ranks and the typechecks left a
+# minimax-h3-image run 1.2 GB (xs-217). With two shards or more, they never share a runner with the machine's packages.
+apart=$(for q in $packages; do ! standin "$q" || echo "$q"; done)
+inside=$(for q in $packages; do standin "$q" || echo "$q"; done)
+k=${SHARD%/*} n=${SHARD#*/}
+if [ "$n" -gt 1 ] && [ -n "$apart" ] && [ -n "$inside" ]; then
+  if [ "$k" = 1 ]; then packages=$apart; else packages=$(every $((n - 1)) $((k - 1)) $inside); fi
+else
+  packages=$(every "$n" "$k" $packages)
+fi
 packages=$(echo $packages)
 [ -n "$packages$absent" ] || { echo "cpu: shard $SHARD holds none of the packages asked for"; exit 0; }
 
@@ -161,10 +176,9 @@ one() {
   fi
   echo "PASS $p - describe $((SECONDS - t))s"
   # With a cozy, each cell runs as a person runs it (real.py: `cozy run <package dir>/<function> --on local`, real TensorD,
-  # its tiny models published on the suite's Hub). A fixture that patches release geometry (PATCH, WAIVE: se-149) runs in
-  # the stand-in TensorD (drive.py) until its package takes a tiny geometry itself.
+  # its tiny models published on the suite's Hub), but a stand-in's (`standin`).
   local driver=(drive.py "$PACKAGES/$p")
-  [ -z "$COZY" ] || grep -qE '^(PATCH|WAIVE)\b' "$(fixture "$p")" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg")
+  standin "$p" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg")
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/${driver[0]}" "${driver[@]:1}" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
   # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
