@@ -203,9 +203,19 @@ impl Waiting {
     }
 
     /// It waits on `objects` of the download, from `remote` on `machine`: those absent when it wanted them. Each joins the download's
-    /// bytes once, whichever wait wants it first; one here now landed since.
+    /// bytes once, whichever wait wants it first; one here now landed since. The store is asked which are here with the lock let go,
+    /// as `look` does: Status waits on that lock, and a slow disk held it (cl-1231). What another wait did meanwhile is read again
+    /// under the lock: one it landed or wants is counted as before; one that landed on disk since this asked comes, and is landed by
+    /// the next `look`.
     pub(crate) fn objects(&self, machine: &Arc<Machine>, remote: &Remote, objects: &[ObjectRef]) {
+        let unknown: Vec<&ObjectRef> = {
+            let listed = operations();
+            let Some(operation) = listed.get(&self.id) else { return };
+            let held = &operation.objects;
+            objects.iter().filter(|object| !held.landed.contains(&object.sha256) && !held.coming.contains_key(&object.sha256)).collect()
+        };
         let store = machine.store();
+        let here: BTreeSet<&str> = unknown.into_iter().filter(|object| store.holds(object)).map(|object| object.sha256.as_str()).collect();
         let mut listed = operations();
         let Some(operation) = listed.get_mut(&self.id) else { return };
         let held = &mut operation.objects;
@@ -221,7 +231,7 @@ impl Waiting {
                 wanted.push(object.sha256.clone());
                 continue;
             }
-            if store.holds(object) {
+            if here.contains(object.sha256.as_str()) {
                 held.landed.insert(object.sha256.clone());
                 held.landed_bytes += object.length;
                 continue;
