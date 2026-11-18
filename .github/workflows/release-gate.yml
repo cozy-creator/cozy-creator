@@ -81,9 +81,9 @@ on:
         type: boolean
         default: false
       publish:
-        description: "Publish a PASS as the SKU's new baseline"
+        description: "Publish a PASS as the SKU's new baseline: a whole suite's result only, never with `only` or `cells`"
         type: boolean
-        default: true
+        default: false
       seeds:
         description: "Replay: the first seed of a logged gate (its \"seeds from <n>\" line; empty: fresh)"
         type: string
@@ -125,8 +125,16 @@ jobs:
           GPUS: ${{ inputs.gpus }}
           DISK: ${{ inputs.disk }}
           CELLS: ${{ inputs.cells }}
+          ONLY: ${{ inputs.only }}
+          BASELINE: ${{ inputs.publish }}
           PACKAGES_REF: ${{ inputs.packages_ref }}
         run: |
+          # A baseline is a whole suite's result or nothing, refused here before anything rents. On 11-18 two proof runs
+          # with `only` and the then default publish replaced rtx-3070-varena's and rtx-5090-runtime's baselines with 7 cells each
+          # (44311983731, 44231117915).
+          if [ "$BASELINE" = true ] && [ -n "$ONLY$CELLS" ]; then
+            echo "::error::publish=true with only='$ONLY' cells='$CELLS': a baseline is a whole suite's result or nothing. Dispatch it with publish=false"; exit 1
+          fi
           # One job per SKU, running every chosen suite whose `skus` (`<sku> [disk GB] [gpus]` per line) names it;
           # `skus` gives every chosen suite those SKUs instead. key names the job's baseline, gate-<sku>-<key>.json.
           d=creator/release-gate/suites
@@ -518,7 +526,12 @@ jobs:
             args+=(--cli "$PWD/creator/e2e/bin/cozy")
             export COZY_E2E_LOG=$OUT/argv.log COZY_E2E_BIN=$HOME/.cozy/bin/cozy
           fi
-          creator/release-gate/gate.sh "${{ matrix.sku }}" --suite "${{ matrix.suite }}" --hub "$HUB" --out "$OUT" --cap "$CAP" "${args[@]}"
+          # This repo is public: the gate's log is scrubbed as it prints, as a session's is (e2e/publish/scrub.js), and its
+          # artifact before it uploads (the publish step below). The canary is made up: both must show it `[scrubbed]`.
+          mkdir -p "$OUT"
+          { echo 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.txt"
+            creator/release-gate/gate.sh "${{ matrix.sku }}" --suite "${{ matrix.suite }}" --hub "$HUB" --out "$OUT" --cap "$CAP" "${args[@]}"
+          } 2>&1 | node creator/e2e/publish/scrub.js
       # Suite bench's ComfyUI column against Cozy's, then sealed for the owner with every file holding ComfyUI's numbers
       # (seal.sh: a public repo's artifacts are public, Paul 11-10).
       - if: ${{ always() && contains(inputs.cells, 'comfyui.sh') }}
@@ -562,21 +575,19 @@ jobs:
           [ -d "$OUT" ] || exit 0
           find "$OUT" -name '*.db' -path '*/project/*' -exec python3 -I -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1], timeout=30).execute("PRAGMA wal_checkpoint(TRUNCATE)")' {} \; || true
           rm -rf "$RUNNER_TEMP/gate-upload"; cp -al "$OUT" "$RUNNER_TEMP/gate-upload" || true
+      # Scrubbed first, and nothing goes up if the scrub fails (e2e/publish); SQLite's -shm and -wal stay out there too.
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./creator/e2e/publish
         with:
           name: gate-${{ matrix.sku }}-${{ matrix.key }}
-          path: |
-            ${{ runner.temp }}/gate-upload
-            !${{ runner.temp }}/gate-upload/**/*.db-shm
-            !${{ runner.temp }}/gate-upload/**/*.db-wal
+          path: ${{ runner.temp }}/gate-upload
           if-no-files-found: ignore
           retention-days: 30
 
-  # A passed SKU's numbers and references become its baseline.
+  # A passed SKU's numbers and references become its baseline, when the dispatch asked (`publish`) and ran its suites whole.
   baseline:
     needs: [gate, hub-fixture]
-    if: ${{ always() && inputs.rent && inputs.publish && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' && (needs['hub-fixture'].result == 'success' || needs['hub-fixture'].result == 'skipped') }}
+    if: ${{ always() && inputs.rent && inputs.publish && inputs.only == '' && inputs.cells == '' && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' && (needs['hub-fixture'].result == 'success' || needs['hub-fixture'].result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

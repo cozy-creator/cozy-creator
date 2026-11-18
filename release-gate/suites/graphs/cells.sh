@@ -6,6 +6,7 @@
 #   graphs-ph3-short-*  then a shorter prompt three times, an idle period after the first: its key moved, so its DiT records
 #                       at idle on its own call's inputs (cr-287: invented zero indices raced in `index_copy_`); 2 and 3
 #                       replay it, their images byte-identical to 1's as written
+#                       (the idle recording is judged on a card over 24 GiB: on 24 GB its weights aren't resident at idle)
 #   graphs-anima-*      Anima three times: its text encoder (2-D token ids, held out of idle recording until cr-300's hold
 #                       went) replays in the third, its image byte-identical to the first's; again at 6 GiB
 #   graphs-sdxl-*       SDXL at one size, then another twice with an idle period between: the new size's UNet records at
@@ -76,9 +77,17 @@ elif gcopy p-h3-image; then
   idle=$(gfact graphs-ph3-short-2 "$(gregion transformer '.graph.measured[]? | select(.replay_ms == null)') | length")
   replays=$(gfact graphs-ph3-short-2 "$(gregion transformer '.replays // 0') | add // 0")
   eager=$(gfact graphs-ph3-short-2 "$(gregion transformer '.graph.eager // [] | .[]') | join(\"; \")")
-  [ "$replays" -gt 0 ] && [ "$idle" -gt 0 ] && [ "$eager" = '""' ] &&
-    expect graphs-ph3-idle PASS "the short prompt's DiT recorded at idle ($idle) and replayed $replays steps" ||
+  # Judged on a card over 24 GiB (cr-287: it needs an rtx-5090). On 24 GB the short prompt's DiT is queued for idle, but
+  # its weights aren't resident then and nothing records (gates 44185248105, 44384060967): there the row says so and the
+  # three calls are still held to the same bytes above.
+  ggib=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
+  if [ "${ggib:-0}" -le 24 ]; then
+    expect graphs-ph3-idle SKIP "not judged on a ${ggib:-?} GiB card (cr-287): idle recordings $idle, replays $replays, as written for $eager"
+  elif [ "$replays" -gt 0 ] && [ "$idle" -gt 0 ] && [ "$eager" = '""' ]; then
+    expect graphs-ph3-idle PASS "the short prompt's DiT recorded at idle ($idle) and replayed $replays steps"
+  else
     expect graphs-ph3-idle FAIL "the short prompt's DiT: idle recordings $idle, replays $replays, as written for $eager"
+  fi
 else
   expect graphs-ph3 FAIL "no copy of p-h3-image"
 fi
