@@ -171,8 +171,8 @@ plan = ["crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs", "crat
   "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh", "e2e/cli/plan.py", "e2e/cli/machineset.sh"]
 queue = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/machines.rs", "crates/tensord/src/estimate.rs", "e2e/cli/plan.sh",
   "e2e/cli/fakemachine.py"]
-prefetch = ["crates/calcifer/src/prefetch.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/placement.rs",
-  "crates/tensord/src/ahead.rs", "e2e/cli/prefetch.sh"]
+prefetch = ["crates/calcifer/src/prefetch.rs", "crates/calcifer/src/project/guess.rs", "crates/calcifer/src/plan.rs",
+  "crates/calcifer/src/placement.rs", "crates/tensord/src/ahead.rs", "e2e/cli/prefetch.sh"]
 coming = ["crates/calcifer/src/coming.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/rentals.rs", "e2e/cli/coming.sh"]
 disk-room = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/project/mod.rs",
   "crates/calcifer/src/runs/mod.rs", "crates/tensord/src/reclaim.rs", "crates/tensord/src/api/machine_status.rs",
