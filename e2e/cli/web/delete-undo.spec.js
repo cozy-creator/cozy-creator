@@ -55,19 +55,35 @@ test('delete-undo', async ({ page, project, api, guards }) => {
 
   const history = async () => (await api.get(project.at('/history'))).entries;
   const undoButton = page.locator('.top .history').getByRole('button', { name: 'Undo', exact: true });
-  /** From now, the page notes when it first draws a frame without `name`: "at once" is judged on the page's own clock, never by a round trip
-   *  to it (e2e 44142655129: d2 was gone in the first sample, which a busy page took 801 ms to answer). */
+  /** From now, the page notes how long after the next press (its first keydown or pointerdown, as the page took it) it first draws a frame
+   *  without `name`: "at once" is judged from the press on the page's own clock, never by a round trip to it (e2e 44142655129: d2 was gone
+   *  in the first sample, which a busy page took 801 ms to answer) nor by the cell finding what to press (44340216031: 1,382 ms from the
+   *  watch, 1.34 s of it finding K's trash; K was gone within 45 ms of the click). */
   const watch = (name) => page.evaluate((name) => {
     const inspection = document.querySelector('.canvas-root').canvasInspection;
-    const from = performance.now();
     window.goneIn = { ...window.goneIn, [name]: null };
-    const look = () => { if (inspection.names().includes(name)) requestAnimationFrame(look); else window.goneIn[name] = performance.now() - from; };
+    let pressed = null;
+    const press = (event) => { pressed ??= event.timeStamp; };
+    const types = ['keydown', 'pointerdown'];
+    for (const type of types) addEventListener(type, press, { capture: true });
+    const look = () => {
+      if (inspection.names().includes(name)) return requestAnimationFrame(look);
+      for (const type of types) removeEventListener(type, press, { capture: true });
+      window.goneIn[name] = pressed === null ? 'no press' : performance.now() - pressed;
+    };
     requestAnimationFrame(look);
   }, name);
-  /** `name` gone: from the canvas at once (watched from just before it was asked), from the API, and the history says so. */
-  const gone = async (name, how) => {
+  /** How long after its press `name` left the canvas, in ms, once it has; said on every run. */
+  const offIn = async (name, how) => {
     await expect.poll(() => page.evaluate((name) => window.goneIn?.[name] ?? null, name), { message: `${how}: ${name} off the canvas` }).not.toBeNull();
-    expect.soft(await page.evaluate((name) => window.goneIn[name], name), `${how}: ${name} off the canvas at once, in ms`).toBeLessThan(1000);
+    const ms = await page.evaluate((name) => window.goneIn[name], name);
+    expect(ms, `${how}: ${name} left the canvas with no key or pointer press after its watch`).not.toBe('no press');
+    test.info().annotations.push({ type: `${name}-off-canvas-ms`, description: `${Math.round(ms)} (${how})` });
+    return ms;
+  };
+  /** `name` gone: from the canvas at once (from its press), from the API, and the history says so. */
+  const gone = async (name, how) => {
+    expect.soft(await offIn(name, how), `${how}: ${name} off the canvas at once, in ms`).toBeLessThan(1000);
     await expect.poll(() => project.asset(name), { message: `${how}: ${name} out of the API` }).toBeUndefined();
     await expect.poll(async () => (await history()).some((entry) => entry.words === `Deleted ${name}` && !entry.undone), { message: `${how}: the history says "Deleted ${name}"` }).toBe(true);
   };
@@ -120,8 +136,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await back('d2', "the top bar's Undo");
     await watch('d2');
     await page.keyboard.press('ControlOrMeta+Shift+z');
-    await expect.poll(() => page.evaluate(() => window.goneIn?.d2 ?? null), { message: 'Redo takes d2 off the canvas' }).not.toBeNull();
-    expect.soft(await page.evaluate(() => window.goneIn.d2), 'Redo takes d2 off the canvas at once, in ms').toBeLessThan(1000);
+    expect.soft(await offIn('d2', 'Redo'), 'Redo takes d2 off the canvas at once, in ms').toBeLessThan(1000);
     await expect.poll(() => project.asset('d2'), { message: 'Redo deletes d2 again' }).toBeUndefined();
   });
 
