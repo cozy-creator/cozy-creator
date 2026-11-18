@@ -5,7 +5,7 @@
 # qwen-image-2, minimax-h3, sdxl and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
 # root index, hub_dependency calls its echo), after the models their cells download: BiRefNet's weights from the Hugging Face
 # revision production mirrors, and random weights for queued_download's two; and a 1 MiB stand-in for each other default of the
-# packages (th-412). macOS and Windows run no models and need no weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
+# packages (th-412). macOS and Windows run no models, so no machine there could publish their defaults: their shards take nothing. Imports stages Hub-dependent locks against its own published dependencies.
 # Then this computer's cozy is removed, and the suite starts as on a fresh runner, signed out, in
 # this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
@@ -308,6 +308,8 @@ case $shard in
 esac
 case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
+  # Native shards: no machine there uploads a model, so none could publish a package's defaults (th-412), and their cells read none.
+  cli:projectvault-native | cli:notraces) needs='' ;;
   # forward's run that moves local's Runtime for its project (cl-1055).
   cli:selfupdate) needs='next scratch' ;;
   # llm_write's Qwen3.5 0.8B (xs-204), which llm_stream and responses_sdk run too (xs-209).
@@ -331,8 +333,8 @@ case $key in
   cli:disk) needs='packages disk' ;;
   # A tool whose model a small disk has no room for (cl-1175).
   cli:disk-room) needs='packages room' ;;
-  # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
-  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
+  # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows, nothing: their cells list no Hub tool (th-412).
+  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='' ;;
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
