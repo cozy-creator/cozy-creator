@@ -15,7 +15,7 @@ const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = 
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint, png } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
@@ -470,6 +470,11 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const runOnCpu = async () => {
         await page.goto(`${project.url('new')}?target=${encodeURIComponent('birefnet/remove_background')}`);
         await drawer.getByRole('combobox', { name: 'Machine', exact: true }).selectOption('new:cpu');
+        // Its one input, which a quote asks for as a run does.
+        await drawer.locator('input[type="file"]').first().setInputFiles({ name: 'still.png', mimeType: 'image/png', buffer: png(90) });
+        const still = drawer.locator('.filerow').filter({ hasText: 'still.png' });
+        await expect(still, 'the still, chosen').toBeVisible();
+        await expect(still, 'the still, sent').not.toContainText(/Reading|Uploading|Waiting to upload/, { timeout: 60_000 });
         await drawer.getByRole('button', { name: 'Get the price', exact: true }).click();
         await expect(drawer.getByRole('button', { name: /^Run on a new CPU at \$\d+\.\d{2}\/h$/ }), 'New run, priced on a new cpu rental').toBeVisible({ timeout: 60_000 });
       };
