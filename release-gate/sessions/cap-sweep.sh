@@ -16,8 +16,9 @@
 #              "max_s" (optional: the run is canceled this long in, and said to be unfinished, not failed),
 #              "after" (optional: runs only if that cell completed), "unless" (optional: only if that cell did not)}]
 #              in args: {seed} {lighthouse} {teapot} are 1024x1024 pictures, {pic1}..{pic16} 2048x2048 ones, {depth} and
-#              {lines} a grey and an edge map of {seed}, {clip1} 1 s of 640x360, {clip5} and {clip15} 1344x768 at 24 fps
-#              with a tone, and {out:<cell>|<file>} an earlier cell's picture or video, else <file>
+#              {lines} a grey and an edge map of {seed}, {long} an 8192x1024 picture, {clip1} 1 s of 640x360, {clip5} and
+#              {clip15} 1344x768 at 24 fps with a tone, {clip5q} {clip5} at 2560x1440, {digits} 65,000 characters of
+#              digit groups (a long prompt), and {out:<cell>|<file>} an earlier cell's picture or video, else <file>
 #   need_s     the session's seconds from its start, which the cap in USD must buy (3600), at most 19800: a hosted job
 #              ends at 6 h with nothing kept
 #   stall_s    how long a run's progress may stand before the pod's GPU and disk are read (1800)
@@ -51,6 +52,9 @@ clip() {
     -vf "scale=1792:-2,crop=1344:768:'(iw-1344)*t/$1':'(ih-768)/2',fps=24,format=yuv420p" -t "$1" -c:v libx264 -crf 18 -c:a aac -shortest "$M/clip$1.mp4"
 }
 clip 5 && clip 15 || fail "the clips"
+ffmpeg -nostdin -v error -y -i "$M/clip5.mp4" -vf "scale=2560:1440:flags=lanczos" -c:v libx264 -crf 18 -c:a copy "$M/clip5q.mp4" || fail "the 1440p clip"
+ffmpeg -nostdin -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1024:1024,tile=8x1" -frames:v 1 -q:v 2 "$M/long.jpg" || fail "the long picture"
+DIGITS=$(awk 'BEGIN { x = 20261118; for (i = 0; i < 16250; i++) { x = (x * 48271) % 2147483647; printf "%03d ", x % 1000 } }')
 SRC=("$REF/seed.jpg" "$FX/lighthouse.jpg" "$FX/teapot.jpg")
 for i in $(seq 16); do
   ffmpeg -nostdin -v error -y -i "${SRC[$((i % 3))]}" -vf "hue=h=$((i * 22)),scale=2048:2048:flags=lanczos" -q:v 2 "$M/pic$i.jpg" || fail "picture $i"
@@ -63,7 +67,8 @@ expand() {
   local a=$1
   a=${a//\{seed\}/$REF/seed.jpg}; a=${a//\{lighthouse\}/$FX/lighthouse.jpg}; a=${a//\{teapot\}/$FX/teapot.jpg}
   a=${a//\{clip1\}/$FX/clip-1s-360p.mp4}; a=${a//\{clip5\}/$M/clip5.mp4}; a=${a//\{clip15\}/$M/clip15.mp4}
-  a=${a//\{depth\}/$M/depth.png}; a=${a//\{lines\}/$M/lines.png}
+  a=${a//\{depth\}/$M/depth.png}; a=${a//\{lines\}/$M/lines.png}; a=${a//\{long\}/$M/long.jpg}
+  a=${a//\{clip5q\}/$M/clip5q.mp4}; a=${a//\{digits\}/$DIGITS}
   while [[ $a =~ \{pic([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/$M/pic${BASH_REMATCH[1]}.jpg}; done
   while [[ $a =~ \{out:([A-Za-z0-9_-]+)\|([^}]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/${MADE[${BASH_REMATCH[1]}]:-${BASH_REMATCH[2]}}}; done
   printf '%s' "$a"
@@ -230,6 +235,9 @@ for line in sys.stdin:
     row.setdefault('outcome', {})['reason'] = reason if isinstance(reason, (dict, str)) else None
     row['outcome']['stood'] = rec.get('progress')
     row['outcome']['sweep'], row['outcome']['why'] = verdict, why[:2000]
+    # A capped 24 GB card leaves about 4.9 GiB to varena and a real 6 GB card about 4.4 (var-030 5.1): a run that completed
+    # with its allocator's high-water above that would not fit the real card.
+    row['outcome']['tight'] = verdict == 'completed' and w.get('cap') not in (None, 'off') and mem['torch_peak_gib'] > 4.4
     print(json.dumps(row, sort_keys=True))
 PY
 : > "$OUT/measured.jsonl"

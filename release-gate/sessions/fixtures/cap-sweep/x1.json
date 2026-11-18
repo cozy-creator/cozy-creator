@@ -1,0 +1,66 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 10800,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "krea-raw-edit-control",
+   "target": "krea-2/generate",
+   "args": [
+    "prompt=<P1>, <P2> side by side on a quay at dusk, photo",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"}]",
+    "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"}]",
+    "megapixels:=2",
+    "seed:=30069"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "ltx-i2v-5s",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "--file",
+    "first_frame={pic1}",
+    "seed:=30070"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "q3-ask-long",
+   "target": "qwen3/ask",
+   "args": [
+    "system={digits}",
+    "prompt={digits} How many groups above are 777? Answer with one number.",
+    "max_tokens:=32",
+    "seed:=31004"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "relayvsr-1440p-source",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip5q}",
+    "resolution=2160p",
+    "aspect_ratio=16:9"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "h3i-long-pictures",
+   "target": "minimax-h3-image/generate",
+   "args": [
+    "instructions=One wide photo that joins <L1>, <L2>, <L3> and <L4> into a single panorama",
+    "references:=[{\"name\":\"L1\",\"image\":\"{long}\"},{\"name\":\"L2\",\"image\":\"{long}\"},{\"name\":\"L3\",\"image\":\"{long}\"},{\"name\":\"L4\",\"image\":\"{long}\"}]",
+    "megapixels:=20",
+    "seed:=30071"
+   ],
+   "max_s": 3000
+  }
+ ]
+}
