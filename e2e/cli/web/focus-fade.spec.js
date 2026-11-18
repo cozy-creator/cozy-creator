@@ -7,7 +7,9 @@
 // opacity it has, never faster than the move's curve. With reduced motion, the move and the fade come at once. Frame times of these moves
 // with all 120 in view, and of a plain zoom on the same canvas, go to focus-fade.json; the moves as the browser painted them (start, the
 // frames part way, end; paper and dark, 1440×900 and 1920×1080) to focus-fade/. `@solo`: a runner busy with other cells draws no frame
-// inside a move (web-3, e2e 44205054246), and its frame times are the cell's own.
+// inside a move (web-3, e2e 44205054246), and its frame times are the cell's own. A move in or out with no frame inside its own time is
+// void, neither passed nor failed, and observed again, three times at most (cl-1272); one that jumps fails at once, three void fail on
+// their own words, and how many were void is said on every run.
 const { mkdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasPoint, canvasIdle, png, themed } = require('./fixtures');
@@ -24,6 +26,13 @@ const WATCHED = [OPENED, RIGHT, LEFT];
 /** The canvas's move into and out of Focus (CanvasHost's HERE_MS), and the steepest its curve (easeInOutSine) goes: π/2 over its time. */
 const MOVE_MS = 260;
 const STEEPEST = Math.PI / 2 / MOVE_MS;
+/** On time, the move takes this long from 2% to 98% of its way (easeInOutSine): two frames either side of it closer together than this,
+ *  with none part way, mean it jumped. */
+const UNDER_WAY_MS = MOVE_MS * (1 - (2 * Math.acos(0.96)) / Math.PI);
+/** A move with no frame inside its time is void, neither passed nor failed (cl-1272: a stalled runner drew frames 283 and 350 ms long as
+ *  Focus opened, e2e 44302714447): it is observed again, at most this many times in all. Three: void about once in 25 moves today, so a
+ *  runner that isn't stalling every time voids all three about once in 15,000. */
+const TRIES = 3;
 const soft = expect.configure({ soft: true });
 
 /** Picture `i`: its own hue, lighter down and stronger across, so no two share a file. */
@@ -92,6 +101,8 @@ async function closed(page) {
 /** Every frame from `act` until `done`, sampled in the page (SAMPLE); with `turn`, `done` waits for the turn first. */
 async function watch(page, act, done, turn = null) {
   await page.evaluate(SAMPLE, { names: WATCHED, turn });
+  // A frame from before the action, so a move is judged on the frames either side of it (cl-1272).
+  await page.waitForFunction(() => window.__fade.frames.length > 0);
   await act();
   if (turn) await expect.poll(() => page.evaluate(() => window.__fade.turned), { message: 'the move under way' }).not.toBeNull();
   await done();
@@ -118,6 +129,17 @@ const against = (frames, name, from, sign) => {
   const turn = after.indexOf(sign > 0 ? Math.min(...known) : Math.max(...known));
   return after.slice(turn).flatMap((alpha, i, list) => (i > 0 && alpha !== null && list[i - 1] !== null && sign * (alpha - list[i - 1]) < -0.01 ? [{ frame: from + turn + i, from: list[i - 1], to: alpha }] : []));
 };
+
+/** How the page drew a move from zoom `from` to `to`: `seen` (a frame part way), `jumped` (none part way, though the frames either side of
+ *  it came closer together than the move takes), or `void` (no frame inside its time: none drawn for `gap` ms). */
+function drawn(frames, from, to) {
+  const p = frames.map((frame) => along(frame.zoom, from, to));
+  if (p.some((at) => at > 0.02 && at < 0.98)) return { kind: 'seen' };
+  const before = p.findLastIndex((at) => at <= 0.02), after = p.findIndex((at) => at >= 0.98);
+  if (before < 0 || after < before) return { kind: 'jumped', gap: null };
+  const gap = Math.round(frames[after].t - frames[before].t);
+  return { kind: gap >= UNDER_WAY_MS ? 'void' : 'jumped', gap };
+}
 
 /** The neighbours against the camera, frame by frame, on a move from zoom `from` to `to`: each one drawn, where the move is part way, at
  *  `want(p)`; how many frames show one part way; how many frames the move took. */
@@ -179,14 +201,34 @@ test('focus-fade', { tag: '@solo' }, async ({ page, project, api }, testInfo) =>
 
   const home = await camera();
   let focusZoom = null;
+  /** A move observed until a frame of it is drawn part way, at most TRIES times (`again` puts the page back to try again); every void
+   *  observation's gap, said on every run. */
+  const voids = {};
+  const observe = async (way, act, done, again, from, to) => {
+    voids[way] = [];
+    for (let attempt = 1; ; attempt++) {
+      const { frames } = await watch(page, act, done);
+      const seen = drawn(frames, from(), to(frames));
+      if (seen.kind === 'void') voids[way].push(seen.gap);
+      if (seen.kind !== 'void' || attempt === TRIES) {
+        record.voids = voids;
+        save();
+        testInfo.annotations.push({ type: `void ${way}`, description: `${voids[way].length} of ${attempt}${voids[way].length ? ` (no frame for ${voids[way].join(', ')} ms)` : ''}` });
+        return { frames, seen };
+      }
+      await again();
+    }
+  };
 
   await test.step('into Focus: the other boxes go from 1 to 0 with the move, then are neither drawn nor hit; the box opened stays', async () => {
-    const { frames } = await watch(page, dblclick(page, OPENED), () => opened(page, OPENED));
+    const { frames, seen } = await observe('into', dblclick(page, OPENED), () => opened(page, OPENED), async () => { await page.keyboard.press('Escape'); await closed(page); },
+      () => home.zoom, (frames) => frames.at(-1).zoom);
     const last = frames.at(-1);
     focusZoom = last.zoom;
     const { off, partWay, moving } = onTheMove(frames, { from: home.zoom, to: focusZoom, want: (p) => 1 - p });
     record.into = { zoom: [home.zoom, focusZoom], frames: frames.length, moving, partWay };
-    expect(moving, `frames of the move from zoom ${home.zoom} to ${focusZoom}`).toBeGreaterThanOrEqual(1);
+    expect(seen.kind === 'void' ? voids.into : [], `the page drew no frame for ${voids.into.join(', ')} ms as Focus opened, ${TRIES} times of ${TRIES}`).toEqual([]);
+    expect(seen, `the move from zoom ${home.zoom} to ${focusZoom}: a frame part way (it jumped: frames ${seen.gap} ms apart either side, under its ${Math.round(UNDER_WAY_MS)} ms)`).toEqual({ kind: 'seen' });
     soft(partWay, 'frames of the move with a neighbour part way out: it fades as the camera moves, not before or after').toBeGreaterThanOrEqual(1);
     soft(off, 'each neighbour as far out as the camera is in, frame by frame').toEqual([]);
     soft(frames.filter((frame) => frame.boxes[OPENED] && frame.boxes[OPENED].alpha !== 1).map((frame) => frame.boxes[OPENED].alpha), `${OPENED}, opened, at 1 throughout`).toEqual([]);
@@ -200,11 +242,13 @@ test('focus-fade', { tag: '@solo' }, async ({ page, project, api }, testInfo) =>
   });
 
   await test.step('out of Focus: back from 0 to 1 with the move, hit only once at 1', async () => {
-    const { frames } = await watch(page, () => page.keyboard.press('Escape'), () => closed(page));
+    const { frames, seen } = await observe('out', () => page.keyboard.press('Escape'), () => closed(page), async () => { await dblclick(page, OPENED)(); await opened(page, OPENED); },
+      () => focusZoom, () => home.zoom);
     const last = frames.at(-1);
     const { off, partWay, moving } = onTheMove(frames, { from: focusZoom, to: home.zoom, want: (p) => p });
     record.out = { frames: frames.length, moving, partWay };
-    expect(moving, 'frames of the move back').toBeGreaterThanOrEqual(1);
+    expect(seen.kind === 'void' ? voids.out : [], `the page drew no frame for ${voids.out.join(', ')} ms as Focus closed, ${TRIES} times of ${TRIES}`).toEqual([]);
+    expect(seen, `the move back to zoom ${home.zoom}: a frame part way (it jumped: frames ${seen.gap} ms apart either side, under its ${Math.round(UNDER_WAY_MS)} ms)`).toEqual({ kind: 'seen' });
     soft(partWay, 'frames of the move with a neighbour part way in').toBeGreaterThanOrEqual(1);
     soft(off, 'each neighbour as far in as the camera is out, frame by frame').toEqual([]);
     soft(frames.filter((frame) => frame.boxes[OPENED]?.drawn && frame.boxes[OPENED].alpha !== 1).map((frame) => frame.boxes[OPENED].alpha), `${OPENED} at 1 on its way back`).toEqual([]);
