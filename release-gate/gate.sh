@@ -340,8 +340,10 @@ whole() { ! grep -q "^$1"$'\t' stopped.tsv 2> /dev/null; }
 # name, in SKIP_ORDER. A cell that runs runs its group's skipped cells first, so it starts from the state it always did.
 declare -A SKIPPED=()
 SKIP_ORDER=()
+# `caption=<text>` among a cell's inputs is quality.py's, never the run's: what the output should show, judged in place of the
+# prompt. An empty one says the prompt is an instruction (an edit, a question) and nothing here describes the output.
 cell() {
-  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0 asked said s call; shift 2
+  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0 asked said s call caption='' captioned='' inputs=(); shift 2
   p=${target%/*}; p=${p##*/}
   [ -z "${TWIN:-}" ] || [[ ,${TWINS:-}, == *",$base,"* ]] || return 0
   [ -z "$ONLY" ] || [[ $ONLY == *",$base,"* || $ONLY == *",$p,"* ]] || return 0
@@ -350,7 +352,8 @@ cell() {
   issue=$(jq -r --arg s "$SKU" --arg c "$base" '.[] | select((.sku == $s or .sku == "*") and ((.cells // []) | index($c))) | .issue' \
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
-  asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "$@")
+  for s in "$@"; do case $s in caption=*) caption=${s#caption=} captioned=1 ;; *) inputs+=("$s") ;; esac; done
+  asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "${inputs[@]}")
   if [ -n "$SKIP_UNCHANGED" ] && [ -z "${REPLAY:-}" ] && [[ " kernels gemm execution " != *" ${SUITE:-} "* ]]; then
     said=$(python3 -I "$HERE/ledger.py" skip "$OUT" ledger-recorded.jsonl "$name" "$target" "$asked" ${PKGS:+--packages "$PKGS"}) && s=1 || s=
     log "$said"
@@ -368,9 +371,11 @@ cell() {
     log "$s: runs after all, before $name of its group"
     eval "REPLAY=1 $call"
   done
+  set -- "${inputs[@]}"
   for p in "$@"; do  # quality.py
     case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
   done
+  [ -z "$captioned" ] || printf '%s\t%s\n' "$name" "$caption" >> captions.tsv
   [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   ahead "$name" "$target" "$@"
   # Its machine's downloads while it runs, each once (cl-1205): a run waiting on one names it (`progress.waiting_on`) and says no bytes

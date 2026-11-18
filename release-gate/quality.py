@@ -1,7 +1,10 @@
 """Output quality of one gate, one of analyze.py's CHECKS, with cozy-eval's two cheapest instruments on one CLIP
 (ViT-B/16, OpenAI weights, CPU):
-  - adherence: cosine similarity between each render (or 3 frames of a video) and its prompt (prompts.tsv, which
-    gate.sh's `cell` writes). Every image must clear FLOOR: noise, a flat field, a broken decode or a text encoder
+  - adherence: cosine similarity between each render (or 3 frames of a video) and what it should show: the cell's caption
+    (captions.tsv, its `caption=`), else its prompt (prompts.tsv; gate.sh's `cell` writes both). A prompt that is an
+    instruction (an edit of a picture, a question) describes no output: its cell gives a caption and is judged against it,
+    or an empty one and is not judged here (the describer's question; "make her shirt red" scored 0.231 on a correct edit
+    of a photo). A cell with neither has nothing to be held against (a cutout, an upscale). Every image must clear FLOOR: noise, a flat field, a broken decode or a text encoder
     that ignores the prompt lands far under any real render. A video scores 0.17-0.23 against its long motion prompt
     (every H3 gate since 0.34.5) and noise 0.16-0.18, so no fixed floor separates them: a video is held against the
     last passed gate's score on the same prompt and seed (seeds.tsv; products.sh fixes H3's request), MARGIN under it.
@@ -37,7 +40,6 @@ FLOORS = {'host-sdxl': 0.20}
 MARGIN = 0.03
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
 BUDGET, KEEP = 0.25, 5
-SKIP = ('birefnet', 'describer', 'seedvr2')  # cutouts on white, text, upscales of H3's own frames
 _clip: 'tuple[CLIPModel, CLIPProcessor, ModuleType] | None' = None
 
 
@@ -90,15 +92,20 @@ def sources(out: str, names: list[str]) -> tuple[dict[str, str], dict[str, dict[
     return made, refs
 
 
-def judged(name: str, prompts: dict[str, str], made: dict[str, str], refs: dict[str, dict[str, str]],
-           seen: tuple[str, ...] = ()) -> str:
-    """The prompt `name` is judged against: each `<mention>` whose picture a cell of this gate made reads as that cell's
-    own (judged) prompt; any other stays as written."""
+def judged(name: str, prompts: dict[str, str], captions: dict[str, str], made: dict[str, str],
+           refs: dict[str, dict[str, str]], seen: tuple[str, ...] = ()) -> str:
+    """What `name` is judged against: its caption, else its prompt, each `<mention>` whose picture a cell of this gate made
+    reading as what that cell is judged against; any other stays as written, and so does one whose maker's prompt is an
+    instruction with no caption."""
+    if captions.get(name):
+        return captions[name]
     text = prompts[name]
     for key, digest in (refs.get(name) or {}).items():
         maker = made.get(digest)
-        if maker in prompts and maker != name and maker not in seen:
-            text = text.replace(f'<{key}>', judged(maker, prompts, made, refs, (*seen, name)))
+        if maker is None or maker == name or maker in seen:
+            continue
+        if captions.get(maker) or (maker in prompts and maker not in captions):
+            text = text.replace(f'<{key}>', judged(maker, prompts, captions, made, refs, (*seen, name)))
     return text
 
 
@@ -136,6 +143,8 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
     out, base = gate['out'], gate.get('baseline') or {}
     p = os.path.join(out, 'prompts.tsv')
     prompts = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
+    p = os.path.join(out, 'captions.tsv')
+    captions = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
     p = os.path.join(out, 'seeds.tsv')
     seeds = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
     label = open(os.path.join(out, 'label')).read().strip()
@@ -159,15 +168,16 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
     made, mentions = sources(out, names)
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
-        if name not in prompts or not number.isdigit() or name.split('-')[0] in SKIP:
+        # Judged against its caption, else its prompt; an empty caption says its prompt is an instruction: not judged.
+        if not number.isdigit() or not (captions.get(name) or (name in prompts and name not in captions)):
             continue
         run = Run.read(os.path.join(out, name + '.json'))
         files = run.outputs if run else ()
         ims = [rgb(f) for f in files if f.endswith(('.png', '.webp', '.jpg'))] + [fr for f in files if f.endswith('.mp4') for fr in frames(f)]
         if not ims:
             continue
-        text = judged(name, prompts, made, mentions)
-        if text != prompts[name]:
+        text = judged(name, prompts, captions, made, mentions)
+        if text != prompts.get(name):
             notes.append(f'quality {name}: judged against "{text}"')
         cells[name] = judge(ims, text)
         worst = min(a for a, _ in cells[name])
@@ -176,7 +186,7 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             if worst < floor:
                 fails.append(f'quality {name}: adherence {worst:.3f} under {floor}: not what its prompt asked for (noise, flat, broken)')
             continue
-        key = hashlib.sha256(f'{prompts[name]}\t{seeds.get(name, "")}'.encode()).hexdigest()[:16]
+        key = hashlib.sha256(f'{prompts.get(name, text)}\t{seeds.get(name, "")}'.encode()).hexdigest()[:16]
         ref = refs.get(name) or {}
         kept[name] = {'key': key, 'adherence': worst, 'label': label}
         if ref.get('key') != key:
