@@ -272,12 +272,20 @@ MISMATCH=() ADOPTED=''
 adopted() { grep -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | tail -1 | sed 's/.*INFO tensord::ahead: //'; }
 # timed <box>: its run's number and times, from its record.
 timed() { jq -r '"run \(.number), \(.status): accepted to started \(.started_at_ms - .accepted_at_ms) ms, execution \(.execution_ms) ms"' "$OUT/$1-run.json" 2> /dev/null; }
-# rendered <box> <digest> [&]: rendered on $NAME, it reused its picture there, the machine landed none of it while it was sent, and
-# it adopted its item.
+# rendered <box> <digest> [soft]: rendered on $NAME, it reused its picture there, the machine landed none of it while it was sent, and
+# it adopted its item. A render that fails ends the session; `soft`, it is said at the end with what else didn't match, and the
+# session goes on to what it has left to measure (44242484131: wide's render failed in varena's replay, and nothing after it ran).
 rendered() {
   local began ended took
   began=$(date +%s%3N)
-  timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" "$1" > "$OUT/$1.txt" 2>&1 || fail "$1: $(tail -c 400 "$OUT/$1.txt")"
+  if ! timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" "$1" > "$OUT/$1.txt" 2>&1; then
+    [ "${3:-}" = soft ] || fail "$1: $(tail -c 400 "$OUT/$1.txt")"
+    logs
+    took=$(adopted)
+    say "$1's render failed: $(grep -o '"message": "[^"]*' "$OUT/$1.txt" | head -1 | cut -c1-300); its run on $NAME: ${took:-named no predicted request}"
+    MISMATCH+=("$1's render failed: $(grep -o '"message": "[^"]*' "$OUT/$1.txt" | head -1 | cut -c13-200)")
+    return 0
+  fi
   ended=$(date +%s%3N)
   record "$1" "$OUT/$1-run.json" || fail "$1 has no run record: $(tail -c 300 "$OUT/$1.txt")"
   logs
@@ -459,7 +467,7 @@ grep -q "wide's guess carried 1 files .* ahead to $NAME .*, going on from .* the
 [ "$TX" -le $((WIDE_B * 13 / 10)) ] || MISMATCH+=("the runner sent $TX bytes while wide's $WIDE_B went ahead")
 say "step 4: wide rendered"
 kept wide-render || fail "$NAME doesn't keep the session's software"
-rendered wide "$WIDE"
+rendered wide "$WIDE" soft
 say "Calcifer's carries ahead: $(grep -o "[a-z]*'s guess carried .*" "$OUT/calcifer.log" | paste -sd ';' -)"
 # Nothing ran ahead: no speculative run in the machine's log, and no predicted request its Status ever said was running or done.
 ran_log=$(grep -acE "runs as if it were sent|predicted requests run ahead here|speculative run" "$OUT/tensord-$NAME.log")
