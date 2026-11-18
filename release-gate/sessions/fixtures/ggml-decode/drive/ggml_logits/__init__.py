@@ -83,7 +83,8 @@ def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float,
 @app.entrypoint(accelerator=True)
 def decode(ctx: Context, model: VisionLM) -> Agreement:
     """`PROMPT` decoded greedily for 512 tokens, never stopping, with the MTP head drafting and without: wall tokens/s
-    (its ~40-token prefill included), each after a 64-token warm-up of its own, and whether both made the same tokens."""
+    (its ~40-token prefill included), each after a warm-up of the same length, so the timed call captures nothing (the
+    windows a 512-token call grows into are captured by the warm-up), and whether both made the same tokens."""
     net = model.pipe.components["model"]
     ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
     head = lm.HEADS.get(net)
@@ -93,7 +94,7 @@ def decode(ctx: Context, model: VisionLM) -> Agreement:
         if mode == "plain" and head is not None:
             del lm.HEADS[net]
         try:
-            _timed(net, ids, 64)
+            _timed(net, ids, 512)
             seconds, made[mode] = _timed(net, ids, 512)
         finally:
             if head is not None:
