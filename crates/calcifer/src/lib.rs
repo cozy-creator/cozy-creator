@@ -3260,12 +3260,13 @@ impl Calcifer {
     }
 
     /// What `machine` lacks of `inputs`, landed there ahead of the run that reads them: the one way anything goes ahead (cl-1123), a
-    /// guess's files (`carried_ahead`) and its local code (`ship`) alike. By the link a run goes by, only to a machine a guess may
-    /// carry to (`trusted`); a `project`'s own goes through the check its run passes there (`private_io::execution_link`, as `step`
+    /// guess's files (`carried_ahead`) and its local code (`ship`) alike. By the link a run goes by, to a machine a guess may carry
+    /// them to (`ahead_link`); a `project`'s own goes through the check its run passes there (`private_io::execution_link`, as `step`
     /// calls it), into that project's execution scope, the store its run's inputs land in (`write_inputs`). Answers the ones it sent,
     /// each with the bytes the machine held of it before: what a carry cut earlier had landed.
     async fn ahead_to<'a>(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[&'a StagedInput]) -> Result<Vec<(&'a StagedInput, u64)>, String> {
-        let base = self.trusted(machine)?;
+        let encrypted = project.is_some_and(|(_, root)| crate::project::vault::encrypted_within(root));
+        let base = self.ahead_link(machine, encrypted)?;
         let link = match project {
             Some((id, root)) => private_io::execution_link(id, root, machine, &base).await.map_err(|e| e.message)?,
             None => base,
@@ -3280,14 +3281,14 @@ impl Calcifer {
         Ok(lacking.into_iter().map(|(input, held)| (input, v1::held_bytes(&held))).collect())
     }
 
-    /// The link a guess carries to `machine` by, where it may (cl-1123; Paul, 11-18: "What really matters is that we can trust the
-    /// remote machine as safe"): the one its runs go by (`machine`), pinned to the leaf its Hub recorded at rent (`rentals::endpoint`)
-    /// and signing every request with this computer's key (`Link::new`), and only to one of this account's own: this computer's, or one
-    /// it rented. Another computer's, added by address (`Machines::add`), is its owner's, so nothing is carried ahead to it, nor to one
-    /// ending.
-    fn trusted(&self, machine: &str) -> Result<Link, String> {
+    /// The link a guess carries to `machine` by, where it may: the one its runs go by (`machine`), pinned to the leaf its Hub recorded
+    /// at rent (`rentals::endpoint`) and signing every request with this computer's key (`Link::new`); none to one ending. A plain
+    /// project's files and code go to any machine its runs go to, as before cl-1123 carried an encrypted project's (#3857). An
+    /// `encrypted` project's go only to one of this account's own (Paul, 11-18: "What really matters is that we can trust the remote
+    /// machine as safe"): this computer's, or one it rented; another computer's, added by address (`Machines::add`), is its owner's.
+    fn ahead_link(&self, machine: &str, encrypted: bool) -> Result<Link, String> {
         let (row, link, ..) = self.machine(machine)?;
-        if !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
+        if encrypted && !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
             return Err(format!("{machine} is another computer's, which this account doesn't own"));
         }
         if row.state == ::api::calcifer::MachineState::Ended || self.closing(machine).is_some() {
@@ -3387,7 +3388,7 @@ impl Calcifer {
 
     /// `files` landed on `machine`, each what it lacks of them, each project's through its own check (`ahead_to`), so its render
     /// finds them held and sends nothing more. Said once for each box whose files landed, with what a carry cut earlier had landed
-    /// of them; an encrypted project's said so.
+    /// of them; an encrypted project's said so. Err: the first project's that didn't go, after every other's went.
     async fn carried_ahead(&self, machine: &str, files: &[AheadFile]) -> Result<(), String> {
         let mut projects: Vec<(&str, &Path)> = vec![];
         for file in files {
@@ -3395,16 +3396,21 @@ impl Calcifer {
                 projects.push((file.project.as_str(), file.root.as_path()));
             }
         }
+        let mut failed = None;
         for (project, root) in projects {
             let of: Vec<&AheadFile> = files.iter().filter(|file| file.project == project).collect();
             let inputs: Vec<&StagedInput> = of.iter().copied().map(|file| &file.input).collect();
             let began = Instant::now();
-            // What failed is said in Calcifer's log, which names nothing of an encrypted project (`prefetch::say`).
+            // One project's that can't go there (an encrypted one's to another computer's machine) holds back no other's. What failed
+            // is said in Calcifer's log, which names nothing of an encrypted project (`prefetch::say`).
             let encrypted = of.iter().any(|file| file.encrypted);
-            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await.map_err(|why| match encrypted {
-                true => "an encrypted project's files didn't go".to_owned(),
-                false => why,
-            })?;
+            let sent = match self.ahead_to(machine, Some((project, root)), &inputs).await {
+                Ok(sent) => sent,
+                Err(why) => {
+                    failed.get_or_insert(if encrypted { "an encrypted project's files didn't go".to_owned() } else { why });
+                    continue;
+                }
+            };
             let lacking: Vec<&AheadFile> = of.into_iter().filter(|file| sent.iter().any(|(input, _)| input.digest == file.input.digest)).collect();
             let mut boxes: Vec<(&str, &str, bool)> = vec![];
             for file in &lacking {
@@ -3423,7 +3429,7 @@ impl Calcifer {
                 prefetch::say(folder, || format!("{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{on}{whose}", theirs.len(), began.elapsed().as_millis()));
             }
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 
     /// What `machine` lacks of the objects a run reads or a guess carries, landed there: the one way objects go to a machine (cl-1123).
