@@ -27,6 +27,9 @@ retried "$CLI" machine update "$M" --gpu-memory-limit off -y > comfy-free.log 2>
 # The machine's restart above can leave its SSH unreachable for a few minutes (a PRO 6000, 43039533939: "Connection timed
 # out", and the pass never started): the runner's start is retried until its pid file is there.
 started() { podsh "test -s /var/tmp/bm/comfy.pid || { cd /var/tmp/bm && setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > /var/tmp/bm/comfy.pid; }; test -s /var/tmp/bm/comfy.pid" > /dev/null 2>&1; }
+# Every GPU's clock, temperature and slowdown reasons each second while ComfyUI runs (smi.csv, sealed with its rows): a pass
+# on a card held back by heat or its power limit is set aside, as Cozy's runs are by their records.
+podsh "cd /var/tmp/bm && { setsid nohup nvidia-smi --query-gpu=timestamp,index,clocks.sm,clocks.max.sm,temperature.gpu,power.draw,utilization.gpu,clocks_event_reasons.active --format=csv,noheader -lms 1000 > smi.csv 2>&1 < /dev/null & echo \$! > smi.pid; }" > /dev/null 2>&1 || true
 retried started || { expect comfyui-start FAIL "the benchmarks runner did not start on $M (its SSH did not answer for 5 minutes)"; return 0; }
 log "comfyui: $(jq -r 'map(.cell + " as " + .key) | join(", ")' comfy-jobs.json) on $M"
 date +%s%3N > comfy-window  # its start and end: bench.py sets the pass aside when another controller's run overlapped it
@@ -46,7 +49,8 @@ while sleep 30; do
 done
 date +%s%3N >> comfy-window
 mkdir -p comfyui
-"$CLI" machine ssh "$M" "tar -cf - -C /var/tmp/bm comfy.log -C results bench-comfy.jsonl bench-comfy" | tar -xf - -C comfyui
+podsh "kill \$(cat /var/tmp/bm/smi.pid) 2> /dev/null || true" > /dev/null 2>&1
+"$CLI" machine ssh "$M" "tar -cf - -C /var/tmp/bm comfy.log smi.csv -C results bench-comfy.jsonl bench-comfy" | tar -xf - -C comfyui
 "${COMFY_PY[@]}" rows "$OUT" > comfyui-rows.json
 # In CI (a public log) ComfyUI's numbers stay in comfyui-rows.json, which release-gate.yml seals (seal.sh).
 if [ -n "${GITHUB_ACTIONS:-}" ]; then log "comfyui: rows for $(jq -r 'keys | join(", ")' comfyui-rows.json) in comfyui-rows.json"
