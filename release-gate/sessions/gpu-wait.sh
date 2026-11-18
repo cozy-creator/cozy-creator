@@ -7,8 +7,8 @@
 # and dark. A page named `red` must fail, every other pass. Any other check that needs a run waiting for a GPU (the scheduler's,
 # cl-1187) can follow `stage`. Without `rent`, $0: the quote, then the same on this runner's machine, which has no GPU, so nothing waits:
 # the page reads `holding` as it runs, and nothing of a wait is asked of it. The session's cozy is an RC build (pod-session `cozy`: a
-# dev-build run of rc/<x> or a branch of it: rc-dev leaves no cozy to download), and the rental moves to the RC's builds before anything
-# runs on it. Dispatched from rc/<x> or a proof/* branch: release-gate deploys from no other. params:
+# dev-build run of rc/<x> or a branch of it: rc-dev leaves no cozy to download), and the rental runs its TensorD before anything runs
+# on it. Dispatched from rc/<x> or a proof/* branch: release-gate deploys from no other. params:
 #   hold     how long `holding` keeps the GPU, s (default 300: each page's reads and looks fit in it)
 #   pages    {name: cozy-creator ref}: the pages pod-session builds and the cell is run with, in the order named (default: the cozy's own)
 #   seconds  what the cap must buy (default 1500)
@@ -135,15 +135,14 @@ fi
 GUARD_ALSO=own guard
 order
 ready
-for _ in $(seq 180); do
-  cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
-  [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] && [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && break
-  sleep 5
-done
-[ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] || fail "$NAME isn't on the RC's builds in 15 min: $(jq -c .rc "$OUT/show-rc.json")"
+# The pod runs the session cozy's own TensorD, as gpu-queue's does: a dev build follows no RC, so none is waited for (session 44234639273
+# waited 15 min for `rc.state`, null on a dev build, and rented for nothing). The pod keeps its image's released Runtime.
+step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "$NAME refused the session's TensorD"
+cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
+[ "$(jq -r '.status.version // empty' "$OUT/show-rc.json")" = "$V" ] || fail "$NAME runs TensorD $(jq -r '.status.version // "?"' "$OUT/show-rc.json"), not the session's $V"
 gpus=$(jq '.status.gpus // [] | length' "$OUT/show-rc.json")
 [ "$gpus" = 1 ] || fail "$NAME has $gpus GPUs: a wait needs exactly one"
-say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name) \(.memory_bytes / 1073741824 | floor) GiB"] | join(", "))' "$OUT/show-rc.json")"
+say "on the session's build: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name) \(.memory_bytes / 1073741824 | floor) GiB"] | join(", "))' "$OUT/show-rc.json")"
 # Each tool once, its environment and model here, so the wait is the GPU's alone.
 for f in hold wait; do step "warm-$f" run "$FIX/$f" seconds:=1 --on "$NAME" || fail "$f didn't run on $NAME"; done
 stage gpu "$NAME" gpu
