@@ -105,7 +105,10 @@ ours() {
     sleep 30; tries=$((tries + 1))
   done
 }
-step rc machine update "$NAME" -y || fail "$NAME didn't move to the open RC's builds"
+# The open RC's builds, asked again a minute apart: 44412034392's first ask said "Input tensord: no file was given" (its builds moving).
+moved=''
+for try in 1 2 3; do step "rc$try" machine update "$NAME" -y && { moved=1; break; }; say "rc builds, try $try: $(tail -c 200 "$OUT/rc$try.txt")"; sleep 60; done
+[ -n "$moved" ] || fail "$NAME didn't move to the open RC's builds"
 ours
 say "$NAME runs the session's TensorD $V"
 
