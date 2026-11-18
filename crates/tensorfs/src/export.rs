@@ -9,6 +9,8 @@
 //!   its folder, and any other is `<component>.safetensors` at the root.
 //! - A component's weights are `<weights>.safetensors` in its folder, where `<weights>` is
 //!   `diffusion_pytorch_model` for a Diffusers component and `model` otherwise.
+//! - A root whose class is split at import (`converters/splits.json`) is one folder again: each
+//!   part's tensors are the root's, under their upstream keys (`vision`'s under `model.visual.`).
 //! - Files are sharded at [`SHARD`] bytes as `<weights>-00001-of-0000N.safetensors` beside the
 //!   standard `<weights>.safetensors.index.json`. Each file's `__metadata__` is its component's
 //!   source `__metadata__` ([`crate::import::FILE_METADATA`]), with `format: pt` when it has none.
@@ -35,9 +37,9 @@ use serde_json::{json, Map, Value as Json};
 
 use crate::failure::{fail, Kind, Result};
 use crate::format::{
-    is_header, Body, Component, Config, ConfigValue, Dtype, Location, ObjectRef, Value,
+    is_header, Body, Component, Config, ConfigValue, Dtype, Location, ObjectRef, Tensor, Value,
 };
-use crate::import::{FILE_METADATA, PIPELINE_FILE, ROOT_COMPONENT};
+use crate::import::{split_of, FILE_METADATA, PIPELINE_FILE, ROOT_COMPONENT};
 use crate::store::Checkpoint;
 
 /// The largest shard, as Diffusers and Transformers write them (20 GB).
@@ -88,10 +90,10 @@ pub(crate) fn cozytensors(
     Ok(written)
 }
 
-/// Where one safetensors tensor's bytes come from.
+/// Where one safetensors tensor's bytes come from: stored, or decoded from a component's tensor.
 enum Bytes<'a> {
     Stored(Location),
-    Decoded(&'a str),
+    Decoded(&'a str, &'a str),
 }
 
 struct Entry<'a> {
@@ -138,7 +140,12 @@ pub(crate) fn safetensors(
         write(&dir.join(PIPELINE_FILE), &crate::format::config_json(&pipeline.config))?;
         written.push(PIPELINE_FILE.to_owned());
     }
-    for c in header.components() {
+    let split = (header.pipeline().is_none())
+        .then(|| header.component(ROOT_COMPONENT))
+        .flatten()
+        .and_then(|root| split_of(&root.class.name));
+    let joined = |name: &str| split.is_some_and(|s| s.parts.iter().any(|p| p.component == name));
+    for c in header.components().iter().filter(|c| !joined(&c.name)) {
         let component = &c.name;
         let bare = c.config.is_empty() && c.config_file.is_none() && c.assets.is_empty();
         let (folder, weights) = match (header.pipeline(), component.as_str()) {
@@ -156,13 +163,22 @@ pub(crate) fn safetensors(
             copy(&mut ck.object(object)?, &dir.join(&path))?;
             written.push(path);
         }
-        if c.tensors.is_empty() {
+        // Each tensor's component, its upstream key, and the tensor: the root's own, then its parts'.
+        let mut tensors: Vec<(&str, String, &Tensor)> = (c.tensors.iter()).map(|t| (component.as_str(), t.key.clone(), t)).collect();
+        for part in split.filter(|_| component == ROOT_COMPONENT).into_iter().flat_map(|s| &s.parts) {
+            for t in header.component(&part.component).into_iter().flat_map(|p| &p.tensors) {
+                let Some(key) = part.upstream_key(&t.key) else {
+                    return fail(Kind::Invalid, format!("{}/{}: not under {:?}", part.component, t.key, part.stored));
+                };
+                tensors.push((part.component.as_str(), key, t));
+            }
+        }
+        if tensors.is_empty() {
             continue;
         }
         let mut entries = Vec::new();
         let mut encodings = Map::new();
-        for t in &c.tensors {
-            let key = &t.key;
+        for (from, key, t) in &tensors {
             match (&t.body, decode) {
                 (Body::Data(at), _) => entries.push(Entry {
                     name: key.clone(),
@@ -175,7 +191,7 @@ pub(crate) fn safetensors(
                     let Some(length) = t.dtype.byte_len(&t.shape) else {
                         return fail(
                             Kind::Invalid,
-                            format!("{component}/{key}: {:?} overflows", t.shape),
+                            format!("{from}/{}: {:?} overflows", t.key, t.shape),
                         );
                     };
                     entries.push(Entry {
@@ -183,7 +199,7 @@ pub(crate) fn safetensors(
                         dtype: t.dtype.clone(),
                         shape: t.shape.clone(),
                         length,
-                        bytes: Bytes::Decoded(key),
+                        bytes: Bytes::Decoded(from, &t.key),
                     })
                 }
                 (Body::Encoded { encoding, parts }, false) => {
@@ -258,13 +274,7 @@ pub(crate) fn safetensors(
                 weight_map.insert(e.name.clone(), ConfigValue::from(file.as_str()));
                 total += e.length;
             }
-            write_file(
-                ck,
-                component,
-                shard,
-                &metadata,
-                &dir.join(&folder).join(&file),
-            )?;
+            write_file(ck, shard, &metadata, &dir.join(&folder).join(&file))?;
             written.push(format!("{folder}{file}"));
         }
         if n > 1 {
@@ -302,7 +312,6 @@ fn copy(from: &mut File, dest: &Path) -> Result<()> {
 
 fn write_file(
     ck: &Checkpoint,
-    component: &str,
     entries: &[Entry],
     metadata: &Map<String, Json>,
     dest: &Path,
@@ -338,7 +347,7 @@ fn write_file(
         for e in entries {
             match &e.bytes {
                 Bytes::Stored(at) => stored(ck, at, &mut out)?,
-                Bytes::Decoded(key) => out.write_all(&ck.read(component, key)?)?,
+                Bytes::Decoded(component, key) => out.write_all(&ck.read(component, key)?)?,
             }
         }
         out.flush()?;
