@@ -44,7 +44,9 @@ BUDGET, KEEP = 0.25, 5
 # pattern, one pixel of every 2x2 a level or two dark (`dots`), as Diffusers' does; madebyollin's texture-fix decoder, the
 # package's default since 0.15.0rc5, cuts it about tenfold. A qwen-image-2 picture whose pattern passes DOTS levels fails.
 # Pod-session 44237459562, 170 renders at 2 and 4 MP: stock 0.36-1.01 at the package's settings (0.24 at the lowest, CFG 3),
-# texture-fix 0.02-0.11.
+# texture-fix 0.02-0.11. Known miss: the 0.26.1 gate's qwen-lora (generate_turbo with a LoRA, a dark library) reads 0.177 with the
+# stock decoder and passes, its checker visible at 400%; qwen 0.26 and qwen-refs 1.13 fail there (pod-session 44281082970). Tighten
+# from the rc5 gate's texture-fix readings.
 DOTS = 0.20
 _clip: 'tuple[CLIPModel, CLIPProcessor, ModuleType] | None' = None
 
