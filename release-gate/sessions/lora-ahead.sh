@@ -9,7 +9,8 @@
 #    code) are guessed. Which LoRAs come, and when.
 # 3. Once `lora_a`'s own bytes come, styled's `lora` is swapped to `lora_b`: whether `lora_a` stops.
 # 4. Both ready, nothing rendered: what the machine holds of each LoRA.
-# 5. styled rendered, then turn: each one's quote, what it waited for, and what landed during it.
+# 5. styled rendered, then a caller's bare `--lora` (cl-1241: it adapts the DiT), then turn: each one's quote, what it waited for, and
+#    what landed during it.
 # params:
 #   tree     the packages_refs checkout (`-f packages_refs=pk=rc/0.27.0`, tree pk)
 #   lora_a, lora_b, lora_c  Krea 2 LoRAs on the Hub (defaults below)
@@ -201,6 +202,14 @@ say "step 5: styled rendered on $NAME, then turn"
 ours
 rendered styled
 listing after-styled
+say "bare: cozy run krea-2/image --lora $LORA_C, naming no slot, on $NAME"
+step bare run "$SOURCE/krea-2/image" "instructions=A red bicycle against a white wall." megapixels:=1 seed:="$SEED" --lora "$LORA_C" --on "$NAME" ||
+  { say "the bare --lora run failed: $(tail -c 400 "$OUT/bare.txt")"; RC=1; }
+BARE_N=$(runno bare)
+if [ -n "$BARE_N" ]; then
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$BARE_N" --once) > "$OUT/bare.json" 2>&1
+  say "bare --lora, run $BARE_N: $(jq -c '{status, target, placed, weights: .measurements.weights, adapted: [.measurements.models[]? | select((.adapters // []) | length > 0) | {slot, repository, adapters: [.adapters[] | {model, strength, components, layers}]}]}' "$OUT/bare.json" 2> /dev/null | cut -c1-1500)"
+fi
 rendered turn
 listing after-turn
 pod_logs
