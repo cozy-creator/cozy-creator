@@ -214,13 +214,13 @@ def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, item
         # Its weights come down before it runs (`downloading`) or as it reads them (a load that counts their bytes). A run waiting on its
         # machine's download says which, and that download says the bytes, once (cl-1205).
         moved = [s for s in seen if s.kind in ('downloading', 'loading') and s.progress.get('bytes_total')]
-        waited = sorted({str(i) for s in seen for i in cast(list[object], s.progress.get('waiting_on') or [])})
-        if not moved and not any(came(items.get(i, [])) for i in waited):
+        waited = sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])})
+        if not moved and not any(came(items.get(on, [])) for on in waited):
             fails.append(f'{name}: a cold run whose weights never said their bytes coming (no download or load with bytes)')
     # Every download it waited on says its bytes coming, on its machine.
-    for i in sorted({str(i) for s in seen for i in cast(list[object], s.progress.get('waiting_on') or [])}):
-        if not came(items.get(i, [])):
-            fails.append(f'{name}: it waited on {i!r}, whose download never said its bytes coming on its machine')
+    for on in sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])}):
+        if not came(items.get(on, [])):
+            fails.append(f'{name}: it waited on {on!r}, whose download never said its bytes coming on its machine')
     if not name.endswith('-memo') and not any(k in WORK for k in kinds):
         fails.append(f'{name}: no work phase seen')
     # Numbers and words: every part of every stage is one the page knows; a step is a denoising loop's.

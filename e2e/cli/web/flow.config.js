@@ -1,5 +1,6 @@
-// user-flow.spec.js alone (xs-203; release-gate/sessions/user-flow.sh): the web suite's fixtures and Chrome, without its setup, which warms
-// local fixture tools and reads an isolated Hub's seed. One test, hours long, on real rentals: nothing is retried.
+// user-flow.spec.js alone (xs-203; release-gate/sessions/user-flow.sh), or another session's spec ($FLOW_SPEC: shared-download.sh's): the
+// web suite's fixtures and Chrome, without its setup, which warms local fixture tools and reads an isolated Hub's seed. One test, hours
+// long, on real rentals: nothing is retried.
 const { defineConfig } = require('@playwright/test');
 const { tmpdir } = require('os');
 const { join } = require('path');
@@ -8,7 +9,7 @@ const { chromeArgs } = require('./chrome');
 const out = join(process.env.OUT || tmpdir(), 'web');
 module.exports = defineConfig({
   testDir: __dirname,
-  testMatch: 'user-flow.spec.js',
+  testMatch: process.env.FLOW_SPEC || 'user-flow.spec.js',
   outputDir: join(out, 'results'),
   workers: 1,
   retries: 0,
