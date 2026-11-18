@@ -95,7 +95,7 @@ impl Sums {
             .collect()
     }
 
-    /// The RC's builds for `platform`, in words: `Runtime 0.47.0.dev2260 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`; `local`'s, no cozy.
+    /// The RC's builds for `platform`, in words: `Runtime 0.47.0.dev2260 · TensorFS 0.27.0.dev3298 · cozy 5e6f7a8b`; `local`'s, no cozy.
     fn said(&self, platform: &str, local: bool) -> String {
         [("runtime", "Runtime"), ("tensorfs", "TensorFS"), ("tensord", "cozy")]
             .into_iter()
@@ -183,6 +183,28 @@ pub(crate) async fn runtime_builds() -> Result<Builds, Error> {
         (build, url)
     }).collect();
     read.sort_by_cached_key(|(build, _)| std::cmp::Reverse(build.version.parse::<pep440_rs::Version>().ok()));
+    let read = Arc::new(read);
+    *READ.lock().expect("rc lock") = Some((Instant::now(), read.clone()));
+    Ok(read)
+}
+
+/// The open RC's TensorFS builds for a rental's platform, newest first, each with its wheel's URL: what a lock on an RC Runtime
+/// build takes beside it (`floor::rc_tensorfs_wheel`, xs-216). Read as often as the Runtime's.
+pub(crate) async fn tensorfs_builds() -> Result<Builds, Error> {
+    static READ: Mutex<Option<(Instant, Builds)>> = Mutex::new(None);
+    if let Some((at, read)) = READ.lock().expect("rc lock").clone() {
+        if at.elapsed() < RUNTIME_FRESH {
+            return Ok(read);
+        }
+    }
+    let base = prerelease::rc("cozy-creator", &open());
+    let sums = text(&base).await?;
+    let mut read: Vec<(Build, String)> = prerelease::rc_natives(&sums, "tensorfs", RENTAL_PLATFORM).map(|build| {
+        let url = format!("{base}/{}", build.file);
+        (build, url)
+    }).collect();
+    // By dev number; builds of one version (`0.26.0+dev.g…`) stay as listed, newest first.
+    read.sort_by_cached_key(|(build, _)| std::cmp::Reverse(build.version.parse::<pep440_rs::Version>().ok().map(|version| version.without_local())));
     let read = Arc::new(read);
     *READ.lock().expect("rc lock") = Some((Instant::now(), read.clone()));
     Ok(read)

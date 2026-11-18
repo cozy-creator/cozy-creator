@@ -14,7 +14,7 @@ use std::{
 use api::{
     calcifer::{Component, MachineKind, MachineUpdate, Note, NoteLevel, Run, Status},
     error::{Error, Kind},
-    prerelease,
+    prerelease::{self, Build},
     release::{series, Bound},
 };
 use api::hub::types::Software;
@@ -404,7 +404,8 @@ pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
 /// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`, xs-194), unless
 /// the developer explicitly selected a wheel, which the completed lock binds. The RC build the first of `held` (locks it holds)
 /// takes while that build meets the floor, the RC still serves it and its lock's TensorFS is this cozy's series; else the RC's
-/// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). A new RC build alone moves no lock: a relock is a
+/// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). Its lock takes the RC's TensorFS build beside
+/// it (`rc_tensorfs_wheel`). A new RC build alone moves no lock: a relock is a
 /// new environment on every machine and a new key for every guess made of it, and a machine following the RC runs its own
 /// build over the lock's anyway (TensorD's `stands_in`). None: it names no RC floor, a release meets it, or no RC build does.
 pub(crate) async fn rc_runtime(src: &Path, held: &[&str]) -> Result<Option<Wheel>, Error> {
@@ -499,13 +500,61 @@ fn runtime_wheel(lock: Lock) -> Option<Wheel> {
 }
 
 /// The RC build a lock takes by URL, when the TensorFS it holds is this cozy's series: what a machine with no pair of its own runs
-/// it on (TensorD's `speaks`).
+/// it on (TensorD's `speaks`). A lock for several platforms holds a TensorFS row for each (the RC's build for a rental's, the
+/// index's elsewhere: xs-216): one of this cozy's series is enough.
 fn rc_locked(lock: &str) -> Option<Wheel> {
     let lock: Lock = toml::from_str(lock).ok()?;
-    let tensorfs = lock.package.iter().find(|row| row.name == "tensorfs").map(|row| row.version.clone());
+    let tensorfs: Vec<String> = lock.package.iter().filter(|row| row.name == "tensorfs").map(|row| row.version.clone()).collect();
     let wheel = runtime_wheel(lock).filter(|wheel| prerelease::dev(&wheel.version))?;
-    let pinned = tensorfs.and_then(|version| VersionSpecifiers::from_str(&format!("=={version}")).ok());
-    this_series(pinned.as_ref()).then_some(wheel)
+    let ours = |version: &String| this_series(VersionSpecifiers::from_str(&format!("=={version}")).ok().as_ref());
+    (tensorfs.is_empty() || tensorfs.iter().any(ours)).then_some(wheel)
+}
+
+/// The open RC's TensorFS build a lock takes beside the RC Runtime build `runtime`, by URL for a rental's platform (xs-216): the
+/// RC's set together, never an RC Runtime on the index's TensorFS, which lacks what the RC's added (gate 44238862903:
+/// `Device.region() takes 3 positional arguments but 4 were given`). The one a lock of `held` (those it holds) takes beside this
+/// very Runtime build while the RC still serves it, so a new build alone moves no lock (cl-1199) and nothing is read of the
+/// Runtime's wheel; else the RC's newest that `runtime`'s `tensorfs` requirement admits. Either of this cozy's TensorFS series
+/// first (a lock made before the RC's TensorFS was the next minor's moves to it). None: `src` selects a source for either
+/// itself (the developer's cohort: nothing is put beside it), `runtime` names no requirement, the RC serves no build it admits,
+/// or its builds can't be read; the index resolves it then.
+pub(crate) async fn rc_tensorfs_wheel(src: &Path, runtime: &Wheel, held: &[&str]) -> Option<Wheel> {
+    let project: Option<toml::Value> = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok());
+    let sources = project.as_ref().and_then(|p| p.get("tool")).and_then(|p| p.get("uv")).and_then(|p| p.get("sources"));
+    if sources.is_some_and(|sources| sources.get("cozy-runtime").is_some() || sources.get("tensorfs").is_some()) {
+        return None;
+    }
+    let builds = crate::rc::tensorfs_builds().await.inspect_err(|e| tracing::warn!("the open RC's TensorFS builds: {}", e.message)).ok()?;
+    let wheel = |(build, url): &(Build, String)| Wheel { version: build.version.clone(), url: url.clone(), sha256: build.sha256.clone() };
+    let beside = |lock: &&str| lock.contains(&runtime.url);
+    // This cozy's series first: what a machine with no pair of its own speaks (TensorD's `speaks`). A held build of another stands
+    // while the RC serves none of ours.
+    let ours = |build: &Build| this_series(VersionSpecifiers::from_str(&format!("=={}", build.version)).ok().as_ref());
+    let serves_ours = builds.iter().any(|(build, _)| ours(build));
+    if let Some(taken) = held.iter().copied().filter(beside)
+        .find_map(|lock| builds.iter().find(|(build, url)| lock.contains(url.as_str()) && (ours(build) || !serves_ours)))
+    {
+        return Some(wheel(taken));
+    }
+    let needs = rc_tensorfs(runtime).await?;
+    let admitted = |(build, _): &&(Build, String)| Version::from_str(&build.version).is_ok_and(|version| needs.contains(&version.without_local()));
+    builds.iter().filter(admitted).find(|(build, _)| ours(build)).or_else(|| builds.iter().find(admitted)).map(wheel)
+}
+
+/// Whether a lock is made for a rental's platform, where it takes the RC's TensorFS build (`rc_tensorfs_wheel`): every lock but one
+/// whose declared environments (`supported-markers`) each name another OS or CPU.
+pub(crate) fn locks_rental(lock: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Markers {
+        #[serde(default, rename = "supported-markers")]
+        supported: Vec<String>,
+    }
+    let Ok(Markers { supported }) = toml::from_str::<Markers>(lock) else { return true };
+    let other = |marker: &str, key: &str, ours: &str| {
+        let named = marker.split(&format!("{key} == '")).nth(1).and_then(|rest| rest.split('\'').next());
+        named.is_some_and(|named| named != ours)
+    };
+    supported.is_empty() || supported.iter().any(|marker| !other(marker, "sys_platform", "linux") && !other(marker, "platform_machine", "x86_64"))
 }
 
 /// Whether a `tensorfs` requirement admits a TensorFS of this cozy's series, whose protocol a machine with no pair of its own
@@ -536,16 +585,16 @@ async fn rc_tensorfs(wheel: &Wheel) -> Option<VersionSpecifiers> {
         return needs.clone();
     }
     let bytes = download(wheel).await.inspect_err(|e| tracing::warn!("{}", e.message)).ok()?;
-    let requires = tokio::task::spawn_blocking(move || requires_dist(&bytes)).await.ok()??;
+    let requires = tokio::task::spawn_blocking(move || requires_dist(std::io::Cursor::new(bytes))).await.ok()??;
     let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs");
     RC_TENSORFS.lock().expect("rc tensorfs lock").insert(wheel.version.clone(), needs.clone());
     needs
 }
 
 /// A wheel's `Requires-Dist` lines, from its `.dist-info/METADATA`.
-fn requires_dist(wheel: &[u8]) -> Option<Vec<String>> {
+pub(crate) fn requires_dist<R: std::io::Read + std::io::Seek>(wheel: R) -> Option<Vec<String>> {
     use std::io::Read as _;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(wheel)).ok()?;
+    let mut archive = zip::ZipArchive::new(wheel).ok()?;
     let mut text = String::new();
     for at in 0..archive.len() {
         let mut file = archive.by_index(at).ok()?;

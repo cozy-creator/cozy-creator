@@ -246,6 +246,10 @@ impl Machines {
             }
             return Ok((Updating { machine: m, run: None, target: String::new() }, true));
         }
+        // A dev build's Runtime named alone takes the open RC's TensorFS build beside it when the machine's doesn't meet its floor (xs-216).
+        if let Some(tensorfs) = self.rc_tensorfs_beside(&m, &asked).await {
+            asked.push(("tensorfs", "tensorfs", Component::Version(tensorfs)));
+        }
         rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
         // Nothing named, off the RC: each moves to its Hub's target, said `(Hub)`, which holds the machine on nothing.
@@ -385,6 +389,30 @@ impl Machines {
         };
         let updating = Updating { machine: m, run: Some(submitted.run), target };
         Ok((updating, !submitted.replay))
+    }
+
+    /// The open RC's TensorFS build `m` takes beside a Runtime `asked` names alone (xs-216): a dev build's wheel, held here, whose
+    /// `tensorfs` requirement the machine's TensorFS doesn't meet and the RC's build for its platform does. An RC Runtime floors on a
+    /// TensorFS build no index has, so TensorD, which keeps the machine's or pairs one from the index, would find none. None: nothing
+    /// to add.
+    async fn rc_tensorfs_beside(&self, m: &Machine, asked: &[(&str, &str, Component)]) -> Option<String> {
+        if asked.iter().any(|(member, _, _)| *member == "tensorfs") {
+            return None;
+        }
+        let build = asked.iter().find_map(|(member, _, component)| match component {
+            Component::File(build) if *member == "runtime" => Some(build),
+            _ => None,
+        })?;
+        let status = m.status.as_ref()?;
+        let path = crate::runs::files::held(&build.sha256)?;
+        let requires = tokio::task::spawn_blocking(move || crate::floor::requires_dist(std::fs::File::open(path).ok()?)).await.ok()??;
+        let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs")?;
+        let admits = |version: &str| version.parse::<pep440_rs::Version>().is_ok_and(|version| needs.contains(&version.without_local()));
+        if admits(&status.tensorfs) {
+            return None;
+        }
+        let (rc, _) = self.rc.now().await.ok()?.build("tensorfs", &status.platform)?;
+        admits(&rc.version).then_some(rc.version)
     }
 
     /// The PyTorch `m` installs as its own base when `asked` (cl-1030): the version its Hub names (`named`, else read

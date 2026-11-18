@@ -491,6 +491,9 @@ jobs:
           repository: cozy-creator/${{ matrix.repo }}
           ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && needs.affected.outputs.runtime || needs.affected.outputs.stack }}
           path: .build
+          # TensorFS's version counts the commit's first-parent history (dev-version.sh): all of it, no trees.
+          fetch-depth: ${{ matrix.what != 'tensorfs' && 1 || 0 }}
+          filter: ${{ matrix.what == 'tensorfs' && 'tree:0' || '' }}
       - uses: astral-sh/setup-uv@v7
       # A dispatch on cozy-creator's master always builds: its Rust caches are the ones merge groups restore.
       - id: reuse
