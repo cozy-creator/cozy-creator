@@ -37,6 +37,9 @@ watched() { (cd "$RUN_PROJECT" && cozy --json run watch "$1" --once) 2> /dev/nul
 # render <label> <box> <machine>: its render followed in the background (stopping the follower never cancels it), its events in
 # $OUT/<label>.ndjson.
 render() { (cd "$RUN_PROJECT" && exec cozy --json render "$2" --on "$3" --new -y) > "$OUT/$1.ndjson" 2> "$OUT/$1.err" & }
+# follow <label> <run>: every event of a run as it goes (its stages, its waits, what it waited on), in the background: what each phase its
+# face could say came from, warm renders' included.
+follow() { (cd "$RUN_PROJECT" && exec cozy --json run watch "$2") > "$OUT/$1-watch.ndjson" 2>&1 & }
 # run_of <fn>: this project's newest run of gpuwait.py's <fn> that hasn't ended, once there is one (up to 2 min): its number. A
 # render's own events name its run only once it's done.
 run_of() {
@@ -56,6 +59,7 @@ stage() {
   local label=$1 machine=$2 gpu=${3:-} now
   render "$label-holding" holding "$machine"
   HOLDING_RUN=$(run_of hold) || fail "$label: holding's render made no run: $(tail -c 300 "$OUT/$label-holding.err")"
+  follow "$label-holding" "$HOLDING_RUN"
   for _ in $(seq 600); do
     watched "$HOLDING_RUN" | jq -r '.progress.stage // empty' | grep -qi holding && break
     [ "$(watched "$HOLDING_RUN" | jq -r '.status // empty')" = failed ] && fail "$label: holding failed: $(watched "$HOLDING_RUN" | jq -c .reason)"
@@ -66,6 +70,7 @@ stage() {
   say "$label: run $HOLDING_RUN holds $what for ${HOLD}s"
   render "$label-waiting" waiting "$machine"
   WAITING_RUN=$(run_of wait) || fail "$label: waiting's render made no run: $(tail -c 300 "$OUT/$label-waiting.err")"
+  follow "$label-waiting" "$WAITING_RUN"
   WAITING_SAID=''
   [ -n "$gpu" ] || return 0
   for _ in $(seq 120); do
