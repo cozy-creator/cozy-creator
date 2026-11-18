@@ -2,7 +2,8 @@
 # while another session read that machine's whole 16 MB log through the same Calcifer, and `--lines 0 --since 5m` moved the whole
 # log). The local TensorD's log gets, in one append, 4 MB of random lines stamped an hour back (gzip can't shrink them), then ten
 # marker lines before a cut and ten after it. `--since` returns exactly the ten after, and what TensorD sends Calcifer for them is
-# about their size, not the log's. Linux, the runner's own machine; its own shard (`log-since`).
+# about their size, not the log's: counted on the Calcifer→TensorD connection, which must be seen (a count of 0 measured nothing).
+# Linux, the runner's own machine; its own shard (`log-since`).
 log_since() (
 step "a log's time window is cut on the machine: exactly its lines, and only they, cross (cl-1216)"
 [ "$RUNNER_OS" = Linux ] || { echo "log since: the runner's own machine is Linux's"; return 0; }
@@ -60,5 +61,9 @@ echo "log since: ${filler} B before the cut, read with --since 30s: $text B of t
 grep -F "cl1216: $run " "$OUT/since.txt" > "$OUT/since-got.txt" || true
 cmp -s "$OUT/since-got.txt" "$OUT/since-expected.txt" \
   || check "log since: not exactly the 10 lines after the cut: $(grep -c ' before ' "$OUT/since-got.txt") before it, $(grep -c ' filler ' "$OUT/since-got.txt") filler, $(grep -c ' after ' "$OUT/since-got.txt") after"
-[ -n "$wire" ] && [ "$wire" -lt 524288 ] || check "log since: TensorD sent ${wire:-an uncounted number of} B for a $text B window: the cut happened after the log crossed"
+if ! [[ ${wire:-} =~ ^[0-9]+$ ]] || [ "$wire" -eq 0 ]; then
+  check "log since: the Calcifer→TensorD connection wasn't seen (no socket to 127.0.0.1:$port brought bytes), so what crossed wasn't measured"
+elif [ "$wire" -ge 524288 ]; then
+  check "log since: TensorD sent $wire B for a $text B window: the cut happened after the log crossed"
+fi
 )
