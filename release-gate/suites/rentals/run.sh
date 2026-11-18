@@ -16,7 +16,9 @@ for c in "${CELLS[@]}"; do
       "$CLI" --json machine rent "${IDLE_SKU:-cpu}" --disk-gb 50 -y >idle-rent.out 2>&1
       r=$(grep -m1 '"type":"rental.accepted"' idle-rent.out | jq -r '.rental_id // empty') m=$(grep -o '"machine":{"name":"[^"]*"' idle-rent.out | head -1 | sed 's/.*"name":"//; s/"$//')
       [ -n "$m" ] || { expect rental-idle-through-updates FAIL "no cpu rental: $(tail -c 300 idle-rent.out)"; [ -z "$r" ] || "$CLI" machine end "$r" -y; continue; }
-      [ -z "$TD" ] || "$CLI" machine update "$m" --tensord "$TD" -y >idle-tensord.out 2>&1 || log "tensord update: $(tail -c 300 idle-tensord.out)"
+      if [ -n "$TD" ] && ! put_tensord "$m" "$TD"; then
+        expect rental-idle-through-updates FAIL "$m does not run the candidate TensorD: $(show "$m" version)"; "$CLI" machine end "$m" -y; continue
+      fi
       rental_idle_through_updates "$m" "$r" ;;
   esac
 done

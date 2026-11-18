@@ -8,8 +8,25 @@ show() {
   "$CLI" --json machine show "$1" 2>/dev/null | jq -r --arg f "$2" '
     if $f == "deadline" then (.status.idle_deadline_ms // 0)
     elif $f == "runtime" then (.status.runtime // "")
+    elif $f == "version" then (.status.version // "")
     elif $f == "offline" then (.offline // "")
     else (.[$f] // "") end'
+}
+# settled <machine>: no update or other job of Calcifer's queued or going on it (up to 5 min).
+settled() {
+  for _ in $(seq 30); do
+    "$CLI" --json machine show "$1" 2>/dev/null | jq -e '[.jobs[]? | select(.status == "queued" or .status == "in_progress")] | length == 0' >/dev/null && return
+    sleep 10
+  done
+}
+# put_tensord <machine> <bin>: the candidate TensorD on a pod of the cell's own, after the RC follower's move at its boot (on
+# mucheng, 11-18, one queued before the candidate replaced it after); false unless the machine runs it then.
+put_tensord() {
+  local want; want=$("$2" --version | awk '{print $2}')
+  settled "$1"
+  "$CLI" machine update "$1" --tensord "$2" -y >"$RT/tensord-$1.out" 2>&1
+  settled "$1"
+  [ "$(show "$1" version)" = "$want" ]
 }
 # gone <rental id>: its Hub released it and proved it absent at its provider (`machine ls --history`: released).
 gone() {
@@ -65,10 +82,13 @@ rental_stop_closes() {
   [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
   # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
   local sku
+  # An order that is not up in 7 minutes (waiting for capacity at the price it agreed, th-403) is ended, and the next asked.
   for sku in cpu ${RENTALS_GPU_FALLBACK:-rtx-5060-ti rtx-3070 rtx-3060 rtx-4060-ti rtx-3080}; do
-    "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
-    grep -q '"rental.sku_out_of_stock"' "$RT/rent.out" || break
-    log "rental-stop-closes: no $sku on $p now; the next"
+    timeout 420 "$CLI" --json machine rent "$sku" --provider "$p" --disk-gb 50 --ssh "$RT/pod-ssh.pub" -y >"$RT/rent.out" 2>&1
+    grep -q '"machine":{"name"' "$RT/rent.out" && break
+    r=$(grep -m1 '"type":"rental.accepted"' "$RT/rent.out" | jq -r '.rental_id // empty' 2>/dev/null)
+    [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
+    log "rental-stop-closes: no $sku up on $p now; the next"
   done
   r=$(grep -m1 '"type":"rental.accepted"' "$RT/rent.out" | jq -r '.rental_id // empty' 2>/dev/null)
   m=$(grep -o '"machine":{"name":"[^"]*"' "$RT/rent.out" | head -1 | sed 's/.*"name":"//; s/"$//')
@@ -77,7 +97,11 @@ rental_stop_closes() {
     [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
     return
   fi
-  [ -z "${TDF:-}" ] || "$CLI" machine update "$m" --tensord "$TDF" -y >"$RT/tensord.out" 2>&1 || log "rental-stop-closes: $m's TensorD: $(tail -c 200 "$RT/tensord.out")"
+  if [ -n "${TDF:-}" ] && ! put_tensord "$m" "$TDF"; then
+    expect "rental-stop-closes" FAIL "$m does not run the candidate TensorD: $(show "$m" version); $(tail -c 200 "$RT/tensord-$m.out")"
+    "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
+    return
+  fi
   local agent SSH_AUTH_SOCK SSH_AGENT_PID; agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$RT/pod-ssh"
   local ask="mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && pkill -USR2 -P 1 -x tensord && echo asked"
   for _ in 1 2 3 4 5 6; do "$CLI" machine ssh "$m" -- "$ask" </dev/null >"$RT/stop.out" 2>&1 && grep -q asked "$RT/stop.out" && break; sleep 10; done
