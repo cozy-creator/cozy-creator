@@ -51,10 +51,14 @@ test('turbo-kept', async ({ page, project, api, cli }, testInfo) => {
       await themed(page, theme);
       region = page.getByRole('region', { name: 'Focused asset' });
       await expect(region).toHaveAttribute('data-focused-asset', 'shot');
-      await expect(turbo()).toBeVisible();
+      // Its settings, below its prompts: at the top, then scrolled to.
+      const settings = region.locator('.edit-parameters').first();
+      await expect(settings).toBeVisible();
       await canvasIdle(page);
       await page.screenshot({ path: join(shots, `focus-${theme}.png`) });
-      await region.locator('.edit-face').first().screenshot({ path: join(shots, `fields-${theme}.png`) });
+      await settings.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `focus-settings-${theme}.png`) });
+      await settings.screenshot({ path: join(shots, `settings-${theme}.png`) });
     }
     await project.look(null);
     await page.reload();
