@@ -1583,6 +1583,13 @@ impl Calcifer {
         let moving = |op: &&v1::Operation| op.bytes_per_s >= 1.0;
         let left = |op: &&v1::Operation| op.bytes_total == 0 || op.bytes_done < op.bytes_total;
         let waiting: HashSet<&String> = downloads.iter().flat_map(|op| &op.runs).collect();
+        // A run waiting on a download that moves moves with it (cl-1205): it says no bytes of its own, so its progress moves as the
+        // download's do, at most every `LINE_MOVED_MS`, and it never reads stalled.
+        for run in waiting.iter().copied().filter(|run| downloads.iter().any(|op| op.runs.contains(*run) && moving(op))) {
+            if let Ok(id) = RunId::try_from(store::calcifer_id(run).to_owned()) {
+                self.line_moved(&id);
+            }
+        }
         let mut behind = HashMap::new();
         for run in waiting {
             let (own, others): (Vec<&v1::Operation>, Vec<&v1::Operation>) = downloads.iter().partition(|op| op.runs.contains(run));

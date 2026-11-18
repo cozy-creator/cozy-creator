@@ -207,7 +207,10 @@ impl Waiting {
         let source = held.sources.len();
         held.sources.push((machine.clone(), remote.clone()));
         let mut wanted = self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
-        for object in objects.iter().filter(|object| !held.landed.contains(&object.sha256)) {
+        for object in objects {
+            if held.landed.contains(&object.sha256) {
+                continue;
+            }
             if let Some(coming) = held.coming.get_mut(&object.sha256) {
                 coming.wants += 1;
                 wanted.push(object.sha256.clone());

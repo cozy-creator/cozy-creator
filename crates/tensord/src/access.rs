@@ -828,7 +828,7 @@ impl Fetch {
     fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<ModelTransfer> {
         let mut arriving = list.lock().unwrap();
         let mut each: Vec<ModelTransfer> = vec![];
-        for Arriving { model, remote, fetch, here, absent } in arriving.iter_mut() {
+        for Arriving { model, remote, fetch, here, absent, .. } in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
             let mut states = self.machine.fetching(remote, absent).into_iter();
             let mut missing = 0;

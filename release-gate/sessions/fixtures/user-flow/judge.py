@@ -205,6 +205,15 @@ for e in events:
         one = obj(ev.get('machine'))
         machine_events[text(one.get('name'))].append((at, one))
 
+
+def waited_bytes(timeline: list[tuple[float, Obj]]) -> list[float]:
+    """The bytes of each download a run's stream said it waits on (`progress.waiting_on`, cl-1205), as its machine's one item of it
+    said them on the page's stream: its run says none of its own."""
+    ids = {text(i) for _, one in timeline for i in arr(obj(one.get('progress')).get('waiting_on'))}
+    where = {text(one.get('machine')) for _, one in timeline if one.get('machine')}
+    return [num(obj(o).get('bytes_total')) or 0.0 for m in where for _, one in machine_events.get(m, [])
+            for o in arr(one.get('activity')) if text(obj(o).get('id')) in ids]
+
 for failure in arr(flow.get('failures')):
     check('flow', False, text(failure))
 if not renting:
@@ -293,7 +302,8 @@ for s in map(obj, arr(flow.get('sent'))):
     placed = next((at for at, one in timeline if one.get('machine')), None)
     row.placed_s = secs(row.sent_at, placed)
     downloads = [(at, obj(one.get('progress'))) for at, one in timeline if phase(one) == 'downloading']
-    row.dl_bytes = max((num(p.get('bytes_total')) or 0.0 for _, p in downloads), default=0.0)
+    # Its download's bytes: a run waiting on one says which (`progress.waiting_on`, cl-1205), and the machine's one item says them.
+    row.dl_bytes = max([num(p.get('bytes_total')) or 0.0 for _, p in downloads] + waited_bytes(timeline), default=0.0)
     # The time its stream said it was downloading: not its wait for a GPU after, nor a later look at a download long done.
     took = sum(then - at for (at, one), (then, _) in zip(timeline, timeline[1:]) if phase(one) == 'downloading') / 1000
     row.dl_s = took if took > 0 else None
@@ -689,9 +699,12 @@ def take_now(run: Obj, on: Obj | None, machine_state: str) -> tuple[str, float |
         return 'Saving', share(num(arriving.get('bytes_done')), num(arriving.get('bytes_total'))) if arriving else None
     if machine_state == 'booting':
         return 'Starting up', None
+    # Waiting on downloads it says so, with no share of its own: each is its machine's, shown once there (cl-1205).
+    if (on and text(on.get('kind')) == 'download') or arr(obj(run.get('progress')).get('waiting_on')):
+        return 'Waiting for download', None
     if on:
         total = num(on.get('bytes_total'))
-        return ('Downloading' if text(on.get('kind')) == 'download' else 'Installing'), ((num(on.get('bytes_done')) or 0.0) / total if total else None)
+        return 'Installing', ((num(on.get('bytes_done')) or 0.0) / total if total else None)
     if not run.get('machine') or status == 'queued' or run.get('machine_state') == 'queued' or run.get('queue_position') is not None:
         return 'Queued', None
     progress = run.get('progress')
@@ -726,8 +739,10 @@ def waits_on(machine: Obj, run: Obj) -> Obj | None:
     project = run.get('project_id') or None
     its = [obj(o) for o in arr(obj(machine).get('activity')) if (obj(o).get('project') or None) == project]
     number = run.get('number')
+    # Its downloads, as its progress names them (`downloadsOf`, cl-1205).
+    ids = {text(i) for i in arr(obj(run.get('progress')).get('waiting_on'))}
     return next((o for o in its if o.get('kind') == 'install' and number in arr(o.get('runs'))), None) \
-        or next((o for o in its if number in arr(o.get('runs'))), None)
+        or next((o for o in its if o.get('kind') == 'download' and text(o.get('id')) in ids), None)
 
 
 # A phase the page shows for less than this is a flicker no one reads (the flow looks at the page every 500 ms): a run's stream says its
