@@ -522,7 +522,6 @@ WEB_2=(
 )
 WEB_3=(
   focus
-  focus-original
   create
   project-name
   takes

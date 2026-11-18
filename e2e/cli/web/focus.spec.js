@@ -1,12 +1,12 @@
 // focus (cl-973 core cell 4): a double click opens a box in Focus, at its own address; every way out (Esc, Close focus, Back to canvas, the
 // browser's Back, and while a trackpad's scroll or pinch still glides: cl-955) puts the canvas back exactly where it was, and Forward and a
 // reload come back to Focus on the same box. A press that began inside Focus, the Assets drawer or a box's menu and was let go outside keeps
-// it open; one that began outside closes it (Paul, 11-12). In Focus the wheel zooms the picture, its own file (cl-1184), never the canvas,
+// it open; one that began outside closes it (Paul, 11-12). In Focus the wheel zooms the picture, never the canvas, and a sharper one loads
 // with no blank frame. An edit's backdrop shows every picture its words use, as large as they can be (cl-949).
 const { test, expect, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
 const { camera, drag, sameCamera } = require('./geometry');
 
-// A tall picture, fitted in Focus narrower than its thumbnail and still its own file (cl-1184); and Qwen's Image with a take beside it.
+// A tall picture, so its fitted size in Focus asks for a small thumbnail, and a zoom for a larger one; and Qwen's Image with a take beside it.
 const PICTURE = 'tall';
 const TOOLED = 'harbour';
 // cl-949's edit: Qwen's box with a take, its words mentioning three pictures of three shapes.
@@ -190,9 +190,9 @@ test('focus', async ({ page, project, api }) => {
     const region = await focus(page, PICTURE);
     await inFocus(page, project, PICTURE);
     const shown = region.locator('.focus-viewer .buffered-image').first();
-    const picture = () => shown.evaluate((el) => ({ resolution: el.dataset.displayedResolution ?? null, width: Number(el.dataset.displayedWidth), loaded: Boolean(el.querySelector('img')?.complete && el.querySelector('img').naturalWidth > 0) }));
-    const own = { resolution: 'original', width: 1200, loaded: true };
-    await expect.poll(picture, { message: 'fitted, its own file drawn' }).toMatchObject(own);
+    const picture = () => shown.evaluate((el) => ({ width: Number(el.dataset.displayedWidth), loaded: Boolean(el.querySelector('img')?.complete && el.querySelector('img').naturalWidth > 0) }));
+    await expect.poll(picture, { message: 'its fitted picture drawn' }).toMatchObject({ loaded: true });
+    const fitted = await picture();
     const imageZoom = () => region.locator('.focus-image-transform').evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
     const canvasHeld = await camera(page);
     // Every frame from here, whether a decoded picture is drawn.
@@ -210,7 +210,7 @@ test('focus', async ({ page, project, api }) => {
     await page.mouse.move(viewer.x, viewer.y);
     await page.mouse.wheel(0, -350);
     await expect.poll(imageZoom, { message: 'the wheel zooms the picture' }).toBeGreaterThan(1.9);
-    expect.soft(await picture(), 'zoomed, its own file still').toMatchObject(own);
+    await expect.poll(async () => (await picture()).width, { message: `a sharper picture than the fitted ${fitted.width} px` }).toBeGreaterThan(fitted.width);
     const frames = await page.evaluate(() => {
       cancelAnimationFrame(window.__blank.id);
       return window.__blank;

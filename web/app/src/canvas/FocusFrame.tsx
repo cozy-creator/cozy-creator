@@ -19,13 +19,10 @@ const UI = "button, input, select, textarea, a, video, audio, [contenteditable],
 const UNDER = 44
 /** Full screen, the transport goes once the pointer has rested this long, and comes back as it moves (cl-1080). */
 const REST_MS = 2500
-/** The most a picture zooms: 8× its fit, or to 8 screen pixels to each of its own where that's more, so a picture of any size can be
- *  looked at pixel by pixel (cl-1184). */
-const MOST = 8
 
 /** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted, and goes full
- *  screen (cl-1080): letterboxed on black at its own aspect, what's `under` it over its bottom. `pixels`: a picture's own width. */
-export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; pixels?: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
+ *  screen (cl-1080): letterboxed on black at its own aspect, what's `under` it over its bottom. */
+export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
   const zoomable = fitted && zooms
   const store = useCanvasStore()
   const element = useRef<HTMLDivElement>(null)
@@ -67,9 +64,8 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
     x: resize.from.camera.x + (width - resize.from.width) * resize.from.camera.scale / 2,
     y: resize.from.camera.y + (height - resize.from.height) * resize.from.camera.scale / 2,
   } : camera
-  const most = Math.max(MOST, pixels && width ? (MOST * pixels) / (width * (window.devicePixelRatio || 1)) : 0)
-  const geometry = useRef({ width, height, room, most })
-  geometry.current = { width, height, room, most }
+  const geometry = useRef({ width, height, room })
+  geometry.current = { width, height, room }
   const bound = useCallback((next: Camera): Camera => {
     const g = geometry.current
     const x = Math.max(0, (g.width * next.scale - g.room.width) / 2)
@@ -79,7 +75,7 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
   const zoom = useCallback((value: number, relative = false, point = { x: 0, y: 0 }) => {
     if (resizing.current) return
     setCamera((was) => {
-      const scale = Math.max(1, Math.min(geometry.current.most, relative ? was.scale * value : value))
+      const scale = Math.max(1, Math.min(8, relative ? was.scale * value : value))
       return bound({ scale, x: point.x - (point.x - was.x) * scale / was.scale, y: point.y - (point.y - was.y) * scale / was.scale })
     })
   }, [bound])
@@ -207,7 +203,7 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
       {/* In the frame's bottom right, a picture's own (cl-958): held to the frame, not the window, and not scaled with the picture. */}
       {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
         <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
-        <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= most} onClick={() => zoom(1.25, true)}>+</button>
+        <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
       </div>}
       {under && <div className="focus-under" style={full ? undefined : { width: width || "100%" }}>{under}</div>}
     </div>
