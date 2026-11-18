@@ -6,8 +6,9 @@
 # machine's queue, once for each of the `pages` pod-session built (CANDIDATE_DIST: the same wait seen by each), with each look in paper
 # and dark. A page named `red` must fail, every other pass. Any other check that needs a run waiting for a GPU (the scheduler's,
 # cl-1187) can follow `stage`. Without `rent`, $0: the quote, then the same on this runner's machine, which has no GPU, so nothing waits:
-# the page reads `holding` as it runs, and nothing of a wait is asked of it. The session's cozy is an RC build (pod-session `cozy`: an
-# rc-dev or dev-build run of rc/<x>), and the rental moves to the RC's builds before anything runs on it. params:
+# the page reads `holding` as it runs, and nothing of a wait is asked of it. The session's cozy is an RC build (pod-session `cozy`: a
+# dev-build run of rc/<x> or a branch of it: rc-dev leaves no cozy to download), and the rental moves to the RC's builds before anything
+# runs on it. Dispatched from rc/<x> or a proof/* branch: release-gate deploys from no other. params:
 #   hold     how long `holding` keeps the GPU, s (default 300: each page's reads and looks fit in it)
 #   pages    {name: cozy-creator ref}: the pages pod-session builds and the cell is run with, in the order named (default: the cozy's own)
 #   seconds  what the cap must buy (default 1500)
@@ -19,7 +20,7 @@ for tool in jq node npm google-chrome; do command -v "$tool" > /dev/null || fail
 HOLD=$(param hold 300)
 [[ $HOLD =~ ^[0-9]+$ ]] && [ "$HOLD" -ge 60 ] || fail "hold $HOLD"
 V=$(cozy --version | awk '{print $2}')
-[[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<an rc-dev or dev-build run of rc/<x>>"
+[[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run of rc/<x> or a branch of it>"
 mapfile -t PAGE_NAMES < <(param pages '{}' | jq -r 'keys_unsorted[]')
 for name in "${PAGE_NAMES[@]}"; do [ -f "${PAGES:-}/$name/index.html" ] || fail "page $name wasn't built (pod-session's pages step: \$PAGES/$name)"; done
 [ "${#PAGE_NAMES[@]}" -gt 0 ] || PAGE_NAMES=(own)
