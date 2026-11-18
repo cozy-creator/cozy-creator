@@ -34,6 +34,7 @@ kernels "$SOURCE/qwen3"
 # The runs' environments, checked on the runner before anything is rented (fixtures/ggml-decode/preflight.sh).
 . "$FIX/preflight.sh"
 drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
+drive_lock "$FIX/drive"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param seconds 3600)"

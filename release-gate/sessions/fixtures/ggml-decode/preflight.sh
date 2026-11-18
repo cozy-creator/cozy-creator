@@ -28,3 +28,19 @@ print('cozy-runtime', cozy_runtime.__version__, '· tensorfs', tensorfs.__versio
   say "$name imports $module on the runner: $imported"
   rm -rf "$check" "$env"
 }
+
+# drive_lock <drive dir>: the drive locked as the pod's run will lock it. Calcifer locks local code when it stages it
+# (crates/calcifer/src/local_code.rs `locked`: the open RC's Runtime build, the RC's TensorFS beside it) and keeps that lock for
+# the copy, so installing the drive on the runner's own machine makes the lock the session's runs take. One uv can't make
+# fails here, at $0, in uv's words; a runner with no machine of its own says so and goes on.
+drive_lock() {
+  local drive=$1 name=${1##*/}
+  if (cd "$RUN_PROJECT" && cozy package install "$drive" --on local -y) > "$OUT/lock-$name.txt" 2>&1; then
+    say "$name: locked and installed on the runner as a run stages it: $(grep -m1 -oE 'is installed on [^ ]+' "$OUT/lock-$name.txt")"
+  elif grep -qiE 'lock_failed|unsatisfiable|no solution found' "$OUT/lock-$name.txt"; then
+    tail -c 2500 "$OUT/lock-$name.txt" | tee -a "$R"
+    fail "$name: its lock can't be made (lines above)"
+  else
+    say "$name: no lock check on the runner: $(tail -n 4 "$OUT/lock-$name.txt" | tr '\n' ' ' | cut -c1-400)"
+  fi
+}
