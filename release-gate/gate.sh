@@ -544,7 +544,7 @@ if [ -z "$ON" ]; then
       continue
     fi
     [ -s acquisition.repriced ] || break
-    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
+    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(if (.gpus // 0) > 0 then "\(.gpus)× " else "" end)\(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
     cat rent.err >> rent-orders.err
     if [ "$order" = "$REORDERS" ]; then
       echo "$REORDERS orders, each under the market by the time it could place" > acquisition.stuck

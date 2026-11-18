@@ -2127,17 +2127,23 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
     }
     let widths = || status.sku.iter().flat_map(|s| &s.widths);
     let offered: Vec<String> = widths().map(|w| w.accelerator_count.to_string()).collect();
-    let error = match offered.first() {
+    let error = match offered.as_slice() {
         // A machine with no GPU has the one width, which names no count.
-        Some(_) if widths().all(|w| w.machine_gpus() == 0) => {
+        [_, ..] if widths().all(|w| w.machine_gpus() == 0) => {
             message += &format!(" {sku} has no GPU: rent it without --gpus.");
             Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku}"))
         }
-        Some(first) => {
-            message += &format!(" {sku} is available now with {} GPUs.", offered.join(" or "));
-            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku} --gpus {first}"))
+        [first, ..] => {
+            let counts = offered.join(" or ");
+            message += &format!(" {sku} is available now with {counts} GPU{}.", if counts == "1" { "" } else { "s" });
+            // An order naming no width asks for one GPU (`admit_sku`'s), so one names none.
+            let next = match first.as_str() {
+                "1" => format!("cozy machine rent {sku}"),
+                _ => format!("cozy machine rent {sku} --gpus {first}"),
+            };
+            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(next)
         }
-        None => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
+        [] => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
     };
     error.next("cozy machine rent")
 }
