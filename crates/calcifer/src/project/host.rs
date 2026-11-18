@@ -492,11 +492,11 @@ impl Host {
         None
     }
 
-    /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub doesn't call it offline, and it hasn't evicted them.
+    /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub isn't ending it, and it hasn't evicted them.
     pub(crate) async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
         let machines = &self.api.machines;
         machines.named(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
-            && machines.offline(machine).is_none()
+            && machines.closing(machine).is_none()
             && self.api.calcifer.still_holds(sha256, machine).await
     }
 

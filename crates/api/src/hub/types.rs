@@ -848,7 +848,7 @@ pub struct Rental {
     pub boot: Option<RentalBoot>,
 }
 
-/// What went wrong with the rental, by the Hub's code (`readiness.provider_stopped`, …).
+/// What went wrong with the rental, by the Hub's code (`readiness.provider_lost`, …).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RentalFailure {

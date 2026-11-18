@@ -1399,9 +1399,9 @@ impl Calcifer {
         self.granting.get().and_then(Weak::upgrade)
     }
 
-    /// Why the machine is offline by its Hub's word; None for one that answers or may.
-    pub(crate) fn offline(&self, name: &str) -> Option<String> {
-        self.machines()?.offline(name)
+    /// Why the machine is ending by its Hub's word; None for one that answers or may.
+    pub(crate) fn closing(&self, name: &str) -> Option<String> {
+        self.machines()?.closing(name)
     }
 
     /// Why nothing can run on the machine (cl-977).
@@ -2090,21 +2090,21 @@ impl Calcifer {
                 }
                 continue;
             }
-            // Offline by its Hub's word: an unsent run leaves it now, back to Calcifer's queue (cl-1132), and a sent one waits for it
-            // to come back or end: it may be running there. Nothing dials it meanwhile.
-            if let Some(reason) = self.offline(&name) {
+            // Ending by its Hub's word: an unsent run leaves it now, back to Calcifer's queue (cl-1132), and a sent one waits for
+            // its end. Nothing dials it meanwhile.
+            if let Some(reason) = self.closing(&name) {
                 if run.state == State::Queued {
-                    self.left_unsent(&run, &format!("{name} is offline ({reason})"), "machine_offline");
+                    self.left_unsent(&run, &format!("{name} is ending ({reason})"), "machine_ending");
                     continue;
                 }
-                self.waiting(id, format!("{name} is offline ({reason})."));
+                self.waiting(id, format!("{name} is ending ({reason})."));
                 tokio::select! {
                     _ = changed.changed() => {}
                     _ = wake.notified() => {}
                 }
                 continue;
             }
-            // Broken (cl-977): an unsent run leaves it now, as from one offline. One it holds is followed on: it settles there (its
+            // Broken (cl-977): an unsent run leaves it now, as from one ending. One it holds is followed on: it settles there (its
             // GPUs out of service fail it, to be placed again) or with the machine's end.
             if run.state == State::Queued
                 && let Some(broken) = self.broken(&name)
@@ -2269,7 +2269,7 @@ impl Calcifer {
                 }
                 // A rental's word that it released itself is not its end: its Hub's is (cl-977, as for a releasing Status). Until
                 // the Hub affirms it gone it is `ending`, and `machine ls` never says gone while it may bill. A run it was never sent
-                // leaves it now, as from one offline; one it holds settles with that end.
+                // leaves it now, as from one ending; one it holds settles with that end.
                 Err(Stop::Released(message)) if machine.kind == ::api::calcifer::MachineKind::Rental => {
                     if let Some(machines) = self.machines()
                         && let Err(e) = machines.released_itself(&name)

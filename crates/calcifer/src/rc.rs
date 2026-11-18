@@ -1,9 +1,9 @@
 //! A dev home's rentals run the open RC (cl-922; `dev = true`, crates/cli/DEV.md): its newest CI builds of the Runtime
 //! (with its kernels), TensorFS and the `cozy` a machine runs, which each push to `rc/<x.y.z>` puts on the rolling
 //! prerelease `rc-<x.y.z>` of cozy-runtime and cozy-creator (their rc-dev.yaml). A rental this computer ordered moves to
-//! them once it is ready, before its first run, and again as the RC moves, only while it has no work. One an update by
-//! hand named software for (any version, the RC's builds too) keeps it until `cozy machine update <machine>` names nothing,
-//! which in a dev home is the RC.
+//! them once it is ready, before its first run, and to newer ones once after each use, only while it has no work: never
+//! just to stay current while idle, which it ends (cl-1203). One an update by hand named software for (any version, the
+//! RC's builds too) keeps it until `cozy machine update <machine>` names nothing, which in a dev home is the RC.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -98,9 +98,9 @@ impl Sums {
     }
 }
 
-/// The RC's prereleases, read at most once a [`FRESH`].
+/// The RC's prereleases, read at most once a [`FRESH`], and each rental's idle deadline when it last moved to them.
 #[derive(Default)]
-pub(crate) struct Rc(Arc<Read>);
+pub(crate) struct Rc(Arc<Read>, Mutex<std::collections::HashMap<String, i64>>);
 
 #[derive(Default)]
 struct Read {
@@ -272,7 +272,8 @@ impl Machines {
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
     /// unless `sending`, any waiting for it): the update run to wait for. None when nothing moves, or the RC can't be read
     /// (its runs go on what it runs). A send moves only a machine not on the RC's builds yet, as at its boot (cl-922): one on them
-    /// moves to a newer build at idle alone, never ahead of work (cl-1123: PRO6-33 waited 92 s for hougetsu's move to the next).
+    /// moves to a newer build at idle alone, never ahead of work (cl-1123: PRO6-33 waited 92 s for hougetsu's move to the next),
+    /// and once after each use (cl-1203).
     pub(crate) async fn follow_rc(self: &Arc<Self>, name: &str, sending: bool) -> Option<Run> {
         let row = self.follows(name)?;
         let frame = self.frame(name).filter(|frame| frame.phase == "ready" && frame.update.is_none())?;
@@ -290,6 +291,12 @@ impl Machines {
             return None;
         }
         if self.held_by_hand(name).is_some() {
+            return None;
+        }
+        // On the RC's builds, a rental moves to newer ones once after each use (a job's end moves its idle deadline), never again
+        // while it stays idle: an update is no use, and its idle deadline ends it (cl-1203).
+        let deadline = frame.idle_deadline_unix_ms;
+        if !local && on_rc(&frame.version) && self.rc.1.lock().expect("rc lock").get(name) == Some(&deadline) {
             return None;
         }
         // A send reads what the look-over last read rather than wait on GitHub.
@@ -313,6 +320,9 @@ impl Machines {
         match self.update(&key, name, MachineUpdate::default()).await {
             Ok((updating, fresh)) => {
                 let run = updating.run?;
+                if !local {
+                    self.rc.1.lock().expect("rc lock").insert(name.to_owned(), deadline);
+                }
                 if fresh {
                     let rest = if local { format!(", at rest for {} s", AT_REST.as_secs()) } else { String::new() };
                     info!(machine = name, run = run.number, "to the open RC {}{rest}: {}", sums.rc, updating.target);

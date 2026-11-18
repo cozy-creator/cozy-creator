@@ -1258,14 +1258,10 @@ pub struct Machine {
     /// The sha256 of its pinned TLS leaf: what `cozy machine add … --fingerprint` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<Digest>,
-    /// Why it ended.
+    /// Why it ended; while `ending`, why by its Hub's word when the Hub ends it (its provider stopped it: cl-1203). A rental is
+    /// up, ending or ended, never offline in between (Paul 11-17).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Why a ready machine is offline, by its Hub's word (its provider stopped it, or its Hub is
-    /// ending it), while it does not answer: runs to it are refused. Its state stays `ready`,
-    /// which is what a reader that predates this field shows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline: Option<String>,
     /// Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
     /// can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
     /// It takes no work; a rental is released, by itself or by the computer that ordered it.
@@ -1946,7 +1942,7 @@ impl MachineList {
 /// `local`, which says why it can't where it can't. Never a test pod, a rental whose GPU memory is capped (a VRAM-capped matrix pod): it
 /// runs only what names it (cl-920).
 pub fn render_set(machines: &[Machine]) -> Vec<On> {
-    let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
+    let held = |machine: &&Machine| machine.ordered;
     let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
     let rented = (machines.iter().filter(held))
         .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));

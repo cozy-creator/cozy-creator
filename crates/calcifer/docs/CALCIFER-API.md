@@ -236,7 +236,7 @@ a spec.
     `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
     (`on: local` where this OS runs no models) comes once the target names a function, or at once for local code.
     `machine_unreachable` records nothing: ask again under the same key (the CLI does, five times with backoff, saying
-    each); `machine_offline` and `machine_ended` are the Hub's word, and asking again won't help.
+    each); `machine_ending` and `machine_ended` are the Hub's word, and asking again won't help.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
   (`RunQuote`), or `null` for one that rents nothing, as Calcifer's own work does, or a `new` run a machine up or on its way finishes
   sooner ("Placement"). Nothing is rented or recorded.
@@ -774,12 +774,12 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   one locks first; a locked one needs no secret, as nothing of it is read. It leaves the index as a folder found gone does (cl-1031), and
   every stream hears `project.gone` and `projects.changed`. `503 project_trash` where no trash can take it (a Windows drive with no
   Recycle Bin).
-- `PUT /v1/projects/{id}/machines` `{machines}` (cl-873): the machines its runs and renders go to, each to whichever of them finishes first, unless a run names its own `on`; `[]`: any machine. Each is `local` or a machine `GET /v1/machines` lists, by name or rental id (`404 machine_not_found`, `409 machine_ended`), kept by name once, an offline one too; `any` and `new` are `400 project_machines`. Kept in `project.db`'s `meta`, no history step and no export; `GET /v1/projects/{id}` says it as `machines`, and every reader hears `project.changed` with `head`. Answers `{machines}` as kept.
-  A machine that ended leaves it at its next read (cl-920). With every one gone (ended, ending, offline), a run or render naming none goes
+- `PUT /v1/projects/{id}/machines` `{machines}` (cl-873): the machines its runs and renders go to, each to whichever of them finishes first, unless a run names its own `on`; `[]`: any machine. Each is `local` or a machine `GET /v1/machines` lists, by name or rental id (`404 machine_not_found`, `409 machine_ended`), kept by name once, an ending one too; `any` and `new` are `400 project_machines`. Kept in `project.db`'s `meta`, no history step and no export; `GET /v1/projects/{id}` says it as `machines`, and every reader hears `project.changed` with `head`. Answers `{machines}` as kept.
+  A machine that ended leaves it at its next read (cl-920). With every one gone (ended or ending), a run or render naming none goes
   to this computer and this account's rentals (`render_set` without added machines, which may be other people's; cl-1066), and a
   render sent to them goes there too, saying so once (`said`, a warning: `rabou
   ended: it goes where it finishes soonest of …`). A send refused because its machine went that second (`machine_ended`,
-  `machine_offline`, `machine_ending`: a pod releasing itself) is placed again, never failed. `render_set` never holds a test pod, a
+  `machine_ending`: a pod releasing itself, or its Hub ending it) is placed again, never failed. `render_set` never holds a test pod, a
   rental whose GPU memory is capped: it runs only what names it.
 - `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, unrecorded?, deleted?, next?, lost?, unheld?}`. `unrecorded`: how many of the files nothing has a record of, which `yes` leaves. `unheld`: what runs left in `.runs/` that `files/` doesn't hold by its sha256, each `{path, sha256?, bytes}` (a folder has no `sha256`), which `yes` leaves: an output `files/` couldn't take stands there, where its run's record names it. `yes` clears discarded versions, and keeps what another version names, a clip of an Edit's version cut, or a `<name.N>` in any text reads, with its record, a deleted asset's too. `lost` says why `yes` would be `409 project_history_lost`: the project lists no version or run while `files/` holds what nothing names. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too, and canvas rows nothing names (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again.
