@@ -122,7 +122,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds || has lost; then
+if has tools || has idle || has cancel || has seeds || has lost || has updates; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -130,6 +130,37 @@ if has tools || has idle || has cancel || has seeds || has lost; then
   quote "$(param seconds 3600)"
   t0=$SECONDS; order; ready; say "rented $NAME ($RID) in $((SECONDS - t0)) s by the CLI"
   DIR=$W c machine-ls-rented machine ls; DIR=$W c machine-show-rented machine show "$NAME"
+fi
+# Updates (coordinator, 11-18: after `machine update` said completed, a render's first run waited 342 s; after a settings-only update the
+# pod refused connections ~3 min): each update timed, `machine show` until it answers ready, then a small run's created → accepted →
+# started; any gap over 5 s keeps the pod's own logs at once.
+if has updates; then
+  ms() { date +%s%3N; }
+  upd() {
+    local arm=$1 t0 t1 first='' rc run gap; shift
+    t0=$(ms); (cd "$PJ/plain" && timeout 900 cozy machine update "$NAME" -y "$@") > "$W/upd-$arm.txt" 2>&1 < /dev/null; rc=$?; t1=$(ms)
+    for _ in $(seq 1 900); do
+      timeout 10 cozy machine show "$NAME" --json < /dev/null > "$W/upd-$arm-show.json" 2> /dev/null && jq -e '.state == "ready"' "$W/upd-$arm-show.json" > /dev/null 2>&1 && { first=$(ms); break; }
+      sleep 1
+    done
+    (cd "$PJ/plain" && timeout 1800 cozy --json run sdxl/generate prompt="a red apple on a wooden table, $arm" seed=$RANDOM --on "$NAME") > "$W/upd-$arm-run.ndjson" 2>&1 < /dev/null
+    run=$(handle "$W/upd-$arm-run.ndjson")
+    (cd "$PJ/plain" && cozy --json run show "$run" --full) > "$W/upd-$arm-record.json" 2>&1 < /dev/null
+    local times; times=$(jq -c '[paths(scalars) as $p | select(($p[-1] | tostring) | test("_at_ms$")) | {key: ($p | map(tostring) | join(".")), value: getpath($p)}] | from_entries' "$W/upd-$arm-record.json" 2> /dev/null)
+    gap=$(jq -r '((.accepted_at_ms // .["run.accepted_at_ms"] // 0) - (.created_at_ms // .["run.created_at_ms"] // 0))' <<< "$times" 2> /dev/null)
+    say "update $arm ($*): exit $rc in $((t1 - t0)) ms ($(grep -v '^\s*$' "$W/upd-$arm.txt" | tail -2 | tr '\n' ' ' | cut -c1-200)); machine show ready $(( ${first:-$t1} - t1 )) ms after it returned${first:+}${first:- (never in 15 min)}; run ${run:-?}: $times; created→accepted ${gap:-?} ms"
+    if [ -z "$first" ] || [ "${gap:-0}" -gt 5000 ] 2> /dev/null || [ $(( ${first:-$t1} - t1 )) -gt 5000 ]; then
+      cozy machine logs "$NAME" tensord -n 300 < /dev/null > "$W/upd-$arm-tensord.log" 2>&1
+      cozy machine logs "$NAME" tensorfs -n 100 < /dev/null > "$W/upd-$arm-tensorfs.log" 2>&1
+      cozy machine logs "$NAME" calcifer -n 150 < /dev/null > "$W/upd-$arm-calcifer.log" 2>&1
+      say "update $arm: a gap over 5 s; the pod's tensord log's last 60 lines follow (upd-$arm-tensord.log)"
+      tail -60 "$W/upd-$arm-tensord.log" | cut -c1-300 | sed 's/^/    /' >> "$R"
+    fi
+  }
+  upd plain
+  upd limit-off --gpu-memory-limit off
+  upd limit-20 --gpu-memory-limit 20GiB
+  upd limit-back --gpu-memory-limit off
 fi
 if has tools; then
   P=$PJ/garden
