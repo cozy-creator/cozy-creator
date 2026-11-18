@@ -212,7 +212,7 @@ if has seeds; then
     t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" free > "$W/out/free-$i.render.json" 2> "$W/out/free-$i.render.err"
     say "free render $i: exit $? in $((SECONDS - t1)) s; $(media free-$i)"
   done
-  DIR=$P TO=1800 c render-n3 render free -n 3 --on "$NAME"; say "cozy render free -n 3: exit $?: $(tail -4 "$W/cli/render-n3.txt" | tr '\n' ' ' | cut -c1-300)"
+  DIR=$P TO=1800 c render-n3 render free -n 3 --new --on "$NAME"; say "cozy render free -n 3 --new: exit $?: $(tail -4 "$W/cli/render-n3.txt" | tr '\n' ' ' | cut -c1-300)"
   DIR=$P c render-help render --help
   PAGE add "$P" fixed --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo", "seed": 42}' > "$W/out/fixed.add.json" 2>&1
   for i in 1 2; do
@@ -221,6 +221,13 @@ if has seeds; then
   done
   PAGE asset "$P" free fixed > "$W/out/seeds-assets.json" 2>&1
   (cd "$P" && cozy --json run ls --full) > "$W/out/seeds-runs.json" 2>&1 < /dev/null
+  # A LoRA, as a CLI user finds one: the catalog's first SDXL LoRA, on SDXL.
+  DIR=$P c lora-sdxl lora ls --family sdxl --limit 5
+  lora=$(cd "$P" && cozy --json lora ls --family sdxl --limit 5 2> /dev/null < /dev/null | jq -r '[.. | objects | select(has("ref") or has("model")) | (.ref // .model) | strings | select(test("^[a-z0-9_.-]+/[a-z0-9_.-]+"))] | first // empty' 2> /dev/null)
+  if [ -n "$lora" ]; then
+    DIR=$P TO=1800 c cli-sdxl-lora run sdxl/generate prompt='a cozy wooden cabin in a snowy forest at night' seed=5 --lora "$lora" --on "$NAME"
+    say "cozy run sdxl/generate --lora $lora: exit $?: $(tail -3 "$W/cli/cli-sdxl-lora.txt" | tr '\n' ' ' | cut -c1-300)"
+  else say "no SDXL LoRA found by cozy lora ls --family sdxl: $(head -c 300 "$W/cli/lora-sdxl.txt")"; fi
   say "seeds: $(jq -c '{name: .asset.name, versions: [.versions[]? | {v: (.version // .number // .id), seed: (.seed // .fields.seed // .request.seed // .call.seed // null), memo: (.memoized // .memo // null)}]}' "$W/out/seeds-assets.json" 2> /dev/null | tr '\n' ' ' | cut -c1-900)"
 fi
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
