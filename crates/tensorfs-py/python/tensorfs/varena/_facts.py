@@ -24,6 +24,11 @@ class DeviceStats(TypedDict):
     context_joins: int
     driver_physical_ooms: int
     event_waits: int
+    #: this process's bytes on the card outside its books (context, kernel modules, local memory,
+    #: libraries' handles), as last measured; 0 where it can't be
+    out_of_books_bytes: int
+    #: what every map leaves free for the driver's own allocations still expected
+    driver_room_bytes: int
     reclaimed_by_reason: ReclaimedByReason
     poisoned: bool
 

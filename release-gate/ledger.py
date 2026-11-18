@@ -6,6 +6,7 @@ tracker as `benchmarks/<sku>/<YYYY-MM>.jsonl`, so a new version is compared with
     ledger.py append <rows.jsonl>            one commit to the tracker; a push race fetches the new tip and appends again
     ledger.py backfill <artifact id>         a run's ledger.jsonl that could not be pushed (no key, or the push kept racing)
     ledger.py query --sku SKU [--target PKG/FN]
+    ledger.py out-of-books                   varena's out-of-books table (crates/varena/out-of-books.tsv), to stdout
     ledger.py compare <rows.jsonl> [--against runtime=0.46.0]   each row against the newest comparable recorded row
     ledger.py seconds --sku SKU [--establish] <gate dir> <cell>...   a suite's time row: its cells against the SKU's fastest figure
     ledger.py throttled <record.json>...     a line for each run whose GPU was held back (its times aren't its card's)
@@ -306,6 +307,9 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             ph['download_s'] = round((b - a) / 1000, 3)
         peaks = [num(obj(x).get('peak_bytes')) or 0 for m in measurements(rec) for x in arr(obj(m.get('memory')).get('driver'))]
         procs = [num(obj(m.get('memory')).get('peak_allocated_bytes')) or 0 for m in measurements(rec)]
+        # varena's measure of each process's bytes outside its books (context, modules, local memory): `out-of-books`.
+        books = [num(obj(obj(obj(v).get('stats')).get('weight_residency')).get('out_of_books_bytes')) or 0
+                 for m in measurements(rec) for v in arr(obj(obj(m.get('memory')).get('stats')).get('varena'))]
         machine = by_name.get(text(rec.get('machine'))) or (machines[0] if machines else {})
         at = num(rec.get('created_at_ms'))
         yield {
@@ -315,7 +319,8 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             'sku': sku or text(obj(machine.get('rental')).get('sku')) or re.sub(r'^(nvidia )?(geforce )?', '', str(rec.get('gpu') or '').lower()).replace(' ', '-'),
             'workload': w, 'versions': versions(rec, tree(packages, commits.get(name) or text(cand.get('packages_ref')), pkgdir(target) or str(w['package'])), gate),
             'state': st, 'phases': ph,
-            'memory': {'peak_vram_gib': round(max(peaks or [0]) / 2**30, 2), 'peak_allocated_gib': round(max(procs or [0]) / 2**30, 2)},
+            'memory': {'peak_vram_gib': round(max(peaks or [0]) / 2**30, 2), 'peak_allocated_gib': round(max(procs or [0]) / 2**30, 2),
+                       'out_of_books_bytes': int(max(books or [0]))},
             'host': host(rec, machine),
             'outcome': {'status': rec.get('status'), 'verdict': verdict.get(name),
                         'output': [obj(o).get('sha256') for o in arr(rec.get('output')) if obj(o).get('sha256')]},
@@ -399,6 +404,23 @@ def append(path: str, repo: str, message: str | None = None) -> None:
         print(f'ledger: push {attempt + 1}/6 refused: {r.stderr.strip()[:200]}', file=sys.stderr)
         time.sleep(min(60, 2 ** attempt))
     sys.exit('ledger: no push after 6 tries; the rows stay in ' + path)
+
+
+def out_of_books(repo: str) -> None:
+    """varena's table (crates/varena/out-of-books.tsv): per card and driver major version, the most bytes one process held
+    outside varena's books in any recorded row, which a process on that card leaves free for the driver's own growth."""
+    lock = locked(repo)
+    d = os.path.join(checkout(repo), 'benchmarks')
+    os.close(lock)
+    most: dict[tuple[str, str], int] = {}
+    for sku in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        for row in recorded(repo, sku):
+            h, held = obj(row.get('host')), num(obj(row.get('memory')).get('out_of_books_bytes'))
+            card, driver = text(h.get('gpu_name')), (text(h.get('driver')) or '').split('.')[0]
+            if card and driver and held:
+                most[(card, driver)] = max(most.get((card, driver), 0), int(held))
+    for (card, driver), held in sorted(most.items()):
+        print(f'{card}\t{driver}\t{held}')
 
 
 def recorded(repo: str, sku: str) -> list[Row]:
@@ -676,6 +698,8 @@ def main() -> None:
         a.add_argument('rows' if name == 'append' else 'artifact')
         a.add_argument('--repo')
         a.add_argument('-m', '--message', help="the commit's message (a seed's sources)")
+    o = sub.add_parser('out-of-books', help="varena's table: per card and driver, the most bytes outside a process's books")
+    o.add_argument('--repo')
     q = sub.add_parser('query')
     q.add_argument('--sku', required=True)
     q.add_argument('--target', help='package/function')
@@ -724,6 +748,8 @@ def main() -> None:
             w = obj(row.get('workload'))
             if not args.target or args.target == f"{w.get('package')}/{w.get('function')}":
                 print(json.dumps(row, sort_keys=True))
+    elif args.cmd == 'out-of-books':
+        out_of_books(repo_url(args.repo))
     elif args.cmd == 'compare':
         compare(args.rows, repo_url(args.repo), args.against)
     elif args.cmd == 'seconds':
