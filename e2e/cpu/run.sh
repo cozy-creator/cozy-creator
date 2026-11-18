@@ -5,7 +5,7 @@
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--shard K/N] [--refs DIR] [--helpers pkg,...] [--record]
-#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes]
+#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes] [--mirror]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
 # package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
@@ -20,11 +20,13 @@
 # A helper locked to the Hub's index comes from the checkout, before uv can contact production.
 # --lanes-key FILE: lanes.py reads tensorhub.com as the CI account (an RC's run, its held defaults NOTEs); --public-lanes: as
 # anyone, a default that isn't public failing (the release, before any package final).
+# --mirror (isolated.sh's first pass, th-412): each package's tiny builds published at the releases its cells read, and no cell
+# run, so the packages that default to them can publish first.
 #
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK=''
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK='' MIRROR=''
 RUN_CODE_STAGE=${RUN_CODE_STAGE:-} LANES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -35,6 +37,7 @@ while [ $# -gt 0 ]; do
     --public-lanes) LANES=(--public); shift; continue ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
+    --mirror) MIRROR=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -70,7 +73,7 @@ fi
 NEEDS_ANSWERS=$(abs "$NEEDS_ANSWERS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK MIRROR
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
@@ -108,6 +111,8 @@ one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t
   rm -rf "$out"; mkdir -p "$out"
   if [ ! -f "$(fixture "$p")" ]; then echo "FAIL $p - fixture 0s: no tiny/$(basename "$(fixture "$p")")"; return 1; fi
+  # A stand-in TensorD's package (drive.py) publishes nothing.
+  if [ -n "$MIRROR" ] && standin "$p"; then return 0; fi
   local pkg=$PACKAGES/$p runtime=$RUNTIME tensorfs=$TENSORFS pinned
   if [ "$LOCK" = fresh ]; then
     # A release's question (promote.sh): the cozy under test locks it, from a copy, and it runs from that lock.
@@ -150,6 +155,14 @@ one() {
   if [ -n "$KEEP" ]; then
     "$env/bin/python" "$HERE/provenance.py" "$out/environment.json" "$RUNTIME" "$TENSORFS" "$(fixture "$p")" \
       > "$out/provenance.log" 2>&1 || { echo "FAIL $p - environment-provenance 0s: $(tail -n1 "$out/provenance.log")"; return 1; }
+  fi
+  if [ -n "$MIRROR" ]; then
+    [ -z "$staging" ] || return 0
+    CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$read" > "$out/interface.json" 2> "$out/describe.err" \
+      && CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/real.py" "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg" "$out/interface.json" \
+        "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} --mirror-only 2> "$out/drive.err" \
+      || echo "FAIL $p - mirror 0s: $(cat "$out/describe.err" "$out/drive.err" 2> /dev/null | grep . | tail -n1 | cut -c1-300)"
+    return 0
   fi
   # The driver and the package's fixture, strictly typed against the package's own environment, beside its cells (one
   # core for a minute, cold).
@@ -194,14 +207,14 @@ started=$SECONDS
 for q in $absent; do echo "SKIP $q - package 0s: not applicable: the packages under test ($commit) carry no $q" | tee -a "$OUT/cells.txt"; done
 # The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
 # cl-1076); `--cells lanes` runs it alone.
-if [ -n "$COZY" ] && [ -n "$packages" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
+if [ -z "$MIRROR" ] && [ -n "$COZY" ] && [ -n "$packages" ] && { [ -z "$CELLS" ] || [[ ",$CELLS," == *,lanes,* ]]; }; then
   python3 -I "$HERE/lanes.py" --cozy "$COZY" --project "$PROJECT" --packages "$PACKAGES" --out "$OUT/lanes" "${LANES[@]}" $packages \
     | tee -a "$OUT/cells.txt" || true
 fi
 if [ "$CELLS" != lanes ]; then
   printf '%s\n' $packages | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} | tee -a "$OUT/cells.txt" || true
   # Static: the TensorFS names the Runtime reads, against the candidate TensorFS (in any package's environment).
-  for q in $packages; do
+  [ -n "$MIRROR" ] || for q in $packages; do
     py=$ENVS/$q/bin/python
     [ -x "$py" ] || continue
     CUDA_VISIBLE_DEVICES= "$py" "$HERE/surface.py" "$("$py" -c 'import cozy_runtime, os; print(os.path.dirname(cozy_runtime.__file__))')" \
@@ -216,4 +229,4 @@ case ${cpu,,} in *amd*) refs="AMD's references" ;; *intel*) refs="Intel's refere
 said="cpu: $pass passed, $fail failed in $((SECONDS - started)) s on ${cpu:-an unnamed CPU} ($refs)"
 echo "$said"
 [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "### $said" >> "$GITHUB_STEP_SUMMARY"
-[ "$fail" = 0 ] && { [ "$pass" != 0 ] || [ -n "$absent" ]; }
+[ "$fail" = 0 ] && { [ -n "$MIRROR" ] || [ "$pass" != 0 ] || [ -n "$absent" ]; }

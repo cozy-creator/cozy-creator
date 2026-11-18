@@ -272,6 +272,8 @@ def main() -> int:
         except Exception as exc:
             line(False, "-", f"mirror/{ref}", started, first_line(exc) if isinstance(exc, Failed) else f"{type(exc).__name__}: {first_line(exc)}")
             return 1
+    if "--mirror-only" in flags:  # run.sh --mirror: published, no cell run
+        return 0
 
     ran: dict[str, Seen] = {}
     kept: dict[str, Files] = {}

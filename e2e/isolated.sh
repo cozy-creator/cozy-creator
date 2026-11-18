@@ -54,8 +54,7 @@ publish() {
     [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached isolated package seeding" >&2; return 1; }
     uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
   fi
-  # cpu/real.py publishes its packages' tiny builds at their defaults' releases, which a stand-in would take.
-  [ "$suite" = cpu ] || standin_defaults "$1" || return 1
+  standin_defaults "$1" || return 1
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
   if [ "${2:-}" = cohort ]; then
@@ -409,9 +408,6 @@ if [ "$suite" = cpu ]; then
   dependencies=''
   [ -z "$packages" ] || dependencies=$(hub_dependencies ${only//,/ })
   if [ -n "$dependencies" ]; then
-    for dependency in $dependencies; do
-      publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
-    done
     sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
@@ -424,6 +420,16 @@ if [ "$suite" = cpu ]; then
   [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
     || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
   (cd "$project" && cozy --json new --unencrypted . > /dev/null)
+  if [ -n "$dependencies" ]; then
+    # First the tiny builds this shard's cells read, at their releases (run.sh --mirror): a dependency's default one of them
+    # builds is that build, and any other a stand-in (publish), before the dependency publishes (th-412).
+    GITHUB_STEP_SUMMARY='' bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" --mirror > "$seed/cpu-mirror.log" 2>&1 \
+      || { echo "the cpu suite's tiny builds weren't published: $(grep '^FAIL' "$seed/cpu-mirror.log" | head -3)" >&2; exit 1; }
+    sed -n 's/^PASS \([^ ]*\) - mirror\/\([^ ]*\) .*/\2 (\1'"'"'s tiny build)/p' "$seed/cpu-mirror.log" | while read -r line; do log "published $line"; done
+    for dependency in $dependencies; do
+      publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
+    done
+  fi
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
 fi
