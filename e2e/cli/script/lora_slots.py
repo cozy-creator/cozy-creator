@@ -8,6 +8,8 @@ linear, `proj`, which e2e/lora-proj adapts) of e2e/lora-base or e2e/lora-base-b 
 function is the shape of first-party ones: `encoded` FLUX.3 Klein's `generate`, `chosen` Klein's, Fibo's and Krea 2's
 `image` box, `edited` qwen-image's functions, `pair` two models at once, `plain` none that takes one."""
 
+from typing import cast
+
 import msgspec
 import torch
 from cozy_runtime.author import App, Loader, Model, Serving, uses_components
@@ -45,7 +47,8 @@ class Encoder(Model[Parts]):
 
     @uses_components("text_encoder")
     def read(self) -> float:
-        return float(self.graph.components["text_encoder"].w[:8].double().sum())
+        encoder = cast(Vector, self.graph.components["text_encoder"])
+        return float(encoder.w[:8].double().sum())
 
 
 class Transformer(Model[Parts]):
@@ -58,7 +61,8 @@ class Transformer(Model[Parts]):
     @uses_components("transformer")
     def read(self) -> float:
         with torch.no_grad():
-            return float(self.graph.components["transformer"].proj(torch.ones(1, 256)).double().sum())
+            transformer = cast(Proj, self.graph.components["transformer"])
+            return float(transformer.proj(torch.ones(1, 256)).double().sum())
 
 
 class Ask(msgspec.Struct, kw_only=True):
