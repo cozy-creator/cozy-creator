@@ -248,6 +248,8 @@ impl PyDevice {
             ("context_joins", stats.context_joins),
             ("driver_physical_ooms", stats.driver_physical_ooms),
             ("event_waits", stats.event_waits),
+            ("out_of_books_bytes", stats.out_of_books_bytes as u64),
+            ("driver_room_bytes", stats.driver_room_bytes as u64),
         ] {
             output.set_item(name, value)?;
         }

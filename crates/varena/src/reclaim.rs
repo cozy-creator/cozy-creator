@@ -487,8 +487,8 @@ fn reserve(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
     if working::existing(device)?.is_none() {
         return Ok(false);
     }
-    let want = crate::DRIVER_RESERVE;
     let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
+    let want = sequence.gpu.driver_room();
     while sequence.released < want && sequence.step < ORDER.len() {
         let (step, left) = (ORDER[sequence.step], want - sequence.released);
         if step == Step::IdlePeers {
