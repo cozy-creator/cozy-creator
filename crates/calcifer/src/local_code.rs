@@ -1431,7 +1431,7 @@ fn locked_requirement(root: &Path, name: &str) -> Option<String> {
         });
         return Some(format!("{name} @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
     }
-    Some(format!("{name}=={}", locked.version))
+    Some(api::release::requirement(name, api::release::Bound::Exactly, &locked.version))
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
@@ -1441,7 +1441,7 @@ fn describer_requirement(dir: &Path, runtime: Option<&str>) -> Result<String, Er
     match runtime {
         Some(wheel) if wheel.starts_with("https://") => return Ok(format!("cozy-runtime @ {wheel}")),
         Some(locked) if locked.starts_with("cozy-runtime") => return Ok(locked.to_owned()),
-        Some(version) => return Ok(format!("cozy-runtime=={version}")),
+        Some(version) => return Ok(api::release::requirement("cozy-runtime", api::release::Bound::Exactly, version)),
         None => {}
     }
     let text = fs::read_to_string(dir.join("pyproject.toml"))
