@@ -1,0 +1,3 @@
+# The most bytes one process held on the card outside varena's books (its context, kernel modules, local memory,
+# libraries' handles), by card (NVML's name) and driver major version: the largest weight_residency.out_of_books_bytes
+# of the release gate's run records, as `release-gate/ledger.py out-of-books` prints it. Tab-separated: card, driver, bytes.

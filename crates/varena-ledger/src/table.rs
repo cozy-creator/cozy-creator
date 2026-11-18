@@ -124,6 +124,30 @@ fn directory() -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// The most bytes any process on this GPU held outside its own books (its context, kernel modules,
+/// local memory, libraries' handles), as each measured it this boot: None before any did. A file
+/// beside the GPU's page, so the page's layout stays.
+pub fn out_of_books(uuid: &[u8; 16]) -> Option<u64> {
+    fs::read_to_string(out_of_books_path(uuid).ok()?).ok()?.trim().parse().ok()
+}
+
+/// Records `bytes` held outside one process's books on this GPU, kept if the most yet. Two writers
+/// racing may lose one figure; the next boundary of either writes it again.
+pub fn held_out_of_books(uuid: &[u8; 16], bytes: u64) -> io::Result<()> {
+    if out_of_books(uuid).is_some_and(|most| most >= bytes) {
+        return Ok(());
+    }
+    let path = out_of_books_path(uuid)?;
+    let staged = path.with_extension(format!("{}", std::process::id()));
+    fs::write(&staged, bytes.to_string())?;
+    fs::rename(&staged, &path)
+}
+
+fn out_of_books_path(uuid: &[u8; 16]) -> io::Result<PathBuf> {
+    let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(directory()?.join(format!("out-of-books-{name}")))
+}
+
 /// A `GPU-…` or `MIG-…` name's 16 bytes, as CUDA reports them.
 pub fn parse_uuid(name: &str) -> Option<[u8; 16]> {
     let (kind, rest) = name.split_once('-')?;

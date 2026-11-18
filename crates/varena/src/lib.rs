@@ -146,6 +146,11 @@ pub struct Stats {
     pub driver_physical_ooms: u64,
     /// This device's cuEventSynchronize calls.
     pub event_waits: u64,
+    /// This process's bytes on the card outside its books (its context, kernel modules, local
+    /// memory, libraries' handles), as last measured; 0 where it can't be.
+    pub out_of_books_bytes: usize,
+    /// What every map leaves free for the driver's own allocations still expected here.
+    pub driver_room_bytes: usize,
     pub poisoned: bool,
 }
 
@@ -654,13 +659,6 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
-/// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
-/// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
-/// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
-/// (cr-293). Measured (os-memory-patterns 10-24): 2x the largest out-of-books growth a request showed,
-/// 391 MiB in a cold H3 15 s (README: The driver's reserve), rounded up to 32 MiB.
-pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
-
 thread_local! {
     /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
     static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -721,6 +719,14 @@ pub struct Device {
     outside_floor: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
+    /// The card's free bytes every map of ours leaves to the driver, which allocates on its own (a
+    /// kernel's code at its first launch, local memory, a library's handle): its refusal fails that
+    /// launch, not an allocation of ours, so no reclaim answers it (cr-293: a cold H3 on a full 5090
+    /// failed its first `index_select`). What it is still expected to take for this process, measured
+    /// (`cooperative::expect`); 0 where nothing is known.
+    driver_room: AtomicUsize,
+    /// This process's bytes outside its books, as last measured (`cooperative::expect`).
+    out_of_books: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
@@ -770,6 +776,8 @@ impl Device {
             outside_floor: AtomicUsize::new(usize::MAX),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
+            driver_room: AtomicUsize::new(0),
+            out_of_books: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
@@ -912,9 +920,22 @@ impl Device {
         Ok(free)
     }
 
-    /// Of the driver's `free` bytes, what a map of ours may take: all but its reserve.
+    /// Of the driver's `free` bytes, what a map of ours may take: all but the driver's room.
     fn spare(&self, free: usize) -> usize {
-        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(DRIVER_RESERVE) }
+        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(self.driver_room()) }
+    }
+
+    /// What every map leaves free for the driver's own allocations (`driver_room`).
+    pub(crate) fn driver_room(&self) -> usize {
+        self.driver_room.load(Ordering::Acquire)
+    }
+
+    /// The driver is now expected to take `room` more bytes for this process, which holds
+    /// `out_of_books` outside its books (`cooperative::expect`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn expect_driver(&self, room: usize, out_of_books: usize) {
+        self.driver_room.store(room, Ordering::Release);
+        self.out_of_books.store(out_of_books, Ordering::Release);
     }
 
     /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
@@ -1177,6 +1198,8 @@ impl Device {
             context_joins,
             driver_physical_ooms,
             event_waits,
+            out_of_books_bytes: self.out_of_books.load(Ordering::Acquire),
+            driver_room_bytes: self.driver_room(),
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };
