@@ -3,12 +3,13 @@
 //! again after model work, eviction, a changed model set or a substantial disk change, not
 //! every status poll. A header alone is listed as partial until its whole closure is cached.
 use crate::api::v1;
+use crate::origin::Machine;
 use crate::storage::{self, Store};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
     path::{Path, PathBuf},
-    sync::{Mutex, atomic::{AtomicU64, Ordering}},
+    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}},
     time::SystemTime,
 };
 use tensorfs::format::{ObjectRef, Model};
@@ -109,8 +110,9 @@ fn moved(root: &Path) -> u64 {
     platform::durable::space(root).map_or(0, |space| space.free / (space.total / 100).max(1))
 }
 
-/// The store at `root`'s held models; none while it cannot be read.
-pub(crate) fn listing(root: &Path) -> Listing {
+/// The store at `root`'s held models, and of what each lacks what `drive`, the machine's NFS drive, holds (cl-1282); none while
+/// it cannot be read.
+pub(crate) fn listing(root: &Path, drive: Option<&Arc<Machine>>) -> Listing {
     if !root.join("format").is_file() {
         return Listing::default();
     }
@@ -130,7 +132,7 @@ pub(crate) fn listing(root: &Path) -> Listing {
             return listing.clone();
         }
     }
-    let listing = list(&store, &seen).unwrap_or_else(|error| {
+    let listing = list(&store, &seen, drive).unwrap_or_else(|error| {
         tracing::warn!("held models unreadable: {error}");
         Listing::default()
     });
@@ -158,16 +160,16 @@ fn seen(store: &Store) -> std::io::Result<Seen> {
     Ok(seen)
 }
 
-fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
+fn list(store: &Store, seen: &Seen, drive: Option<&Arc<Machine>>) -> std::io::Result<Listing> {
     let mut closures: BTreeMap<&str, Vec<ObjectRef>> = BTreeMap::new();
     let mut holders: HashMap<ObjectRef, usize> = HashMap::new();
     let mut models: Vec<v1::Model> = vec![];
     for (model, release, lane, header, tree) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
-        let complete = closure.iter().all(|object| store.holds(object));
         let bytes = closure.iter().map(|o| o.length).sum();
-        let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
-        let held_bytes = held.iter().map(|o| o.length).sum();
+        let (held, absent): (Vec<ObjectRef>, Vec<ObjectRef>) = closure.into_iter().partition(|o| store.holds(o));
+        let (complete, held_bytes) = (absent.is_empty(), held.iter().map(|o| o.length).sum());
+        let drive_bytes = drive.filter(|_| !complete).map_or(0, |drive| drive.near(&absent));
         let entry = closures.entry(model).or_default();
         for object in held {
             if !entry.contains(&object) {
@@ -192,6 +194,7 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
             tree: tree.id(),
             bytes,
             held_bytes,
+            drive_bytes,
         });
     }
     for objects in closures.values() {
@@ -226,7 +229,7 @@ mod tests {
             model.set_lane("1", "bf16", tree.clone());
             Some(model)
         }).unwrap();
-        let before = listing(root.path());
+        let before = listing(root.path(), None);
         assert_eq!(before.models[0].checkpoints[0].complete, Some(false));
         assert_eq!(before.bytes, header.length);
 
@@ -238,7 +241,7 @@ mod tests {
             Err(())
         };
         assert!(interrupted().is_err());
-        let partial = listing(root.path());
+        let partial = listing(root.path(), None);
         assert_eq!(partial.models[0].checkpoints[0].complete, Some(false));
         assert_eq!(partial.bytes, header.length + first.length);
 
@@ -246,7 +249,7 @@ mod tests {
             let _inventory = ModelChange;
             store.put_bytes(b"second weights").unwrap();
         }
-        let complete = listing(root.path());
+        let complete = listing(root.path(), None);
         assert_eq!(complete.models[0].checkpoints[0].complete, Some(true));
         assert_eq!(complete.bytes, header.length + first.length + second.length);
     }

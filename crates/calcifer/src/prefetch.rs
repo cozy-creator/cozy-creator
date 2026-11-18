@@ -614,9 +614,9 @@ impl Lists {
     }
 
     /// What of `machine`'s Status could change where a render goes (cl-1104, cl-1123): the runs in its line (each where it stands),
-    /// the update it may wait on, its phase and its GPUs out of service; and how long the weights its line waits for take at its
-    /// link. `load_moved` moves when one of the first changed, or that time by the move threshold (`plan::STAY_MS`), and each open
-    /// project's guesses are placed again. An install's or a model's download comes and goes in the line with each download, and
+    /// the update it may wait on, its phase and its GPUs out of service; and how long the weights its line waits for take there, as
+    /// a quote times them (`api::estimate::fetch_ms`). `load_moved` moves when one of the first changed, or that time by the move
+    /// threshold (`plan::STAY_MS`), and each open project's guesses are placed again. An install's or a model's download comes and goes in the line with each download, and
     /// its bytes tick down: neither moves it (44068453992: 26 of 30 rounds came of them, every 1–2 s).
     fn weigh(&self, machine: &str, frame: &v1::StatusFrame) {
         use std::hash::{Hash as _, Hasher as _};
@@ -633,9 +633,9 @@ impl Lists {
                 for root in &line {
                     (&root.run, &root.function, root.running, root.width, root.gpu_waits, root.started_at_unix_ms).hash(&mut hasher);
                 }
-                let bytes: u64 = queue.iter().filter(theirs).map(|root| root.bytes_left).sum();
+                let left = queue.iter().filter(theirs).map(|root| api::estimate::Fetch::of(root.bytes_left, root.drive_left)).sum();
                 let waits_ms = match frame.link_bytes_per_s > 0.0 {
-                    true => (bytes as f64 / frame.link_bytes_per_s * 1000.0) as i64,
+                    true => api::estimate::fetch_ms(left, frame.link_bytes_per_s / 1e3, frame.drive_bytes_per_s.unwrap_or(0.0) / 1e3) as i64,
                     false => 0,
                 };
                 (hasher.finish(), line.len(), waits_ms)

@@ -87,13 +87,17 @@ fn chunks_in(header: &str, object: &ObjectRef, components: &[String], parsed: &t
 }
 
 /// The chunks `components` of checkpoint `header` read (all, when none): as its structure here says, else as it said when it was
-/// last here. None: its header isn't here and never was read here. Read off disk alone: a reader opens no checkpoint (cl-1202).
-fn chunks_of(store: &Store, header: &str, components: &[String]) -> Option<Arc<[ObjectRef]>> {
+/// last here, else as `drive`'s copy of its header says (cl-1282: known again past a restart). None: none of these knows it yet.
+/// Read off disk alone: a reader opens no checkpoint (cl-1202).
+fn chunks_of(store: &Store, header: &str, components: &[String], drive: Option<&Arc<Machine>>) -> Option<Arc<[ObjectRef]>> {
     if let Some(known) = CHUNKS.lock().unwrap().get(&(header.to_owned(), components.to_vec())) {
         return Some(known.clone());
     }
-    let (object, parsed) = storage::structure(store, header).ok()?;
-    Some(chunks_in(header, &object, components, &parsed))
+    if let Ok((object, parsed)) = storage::structure(store, header) {
+        return Some(chunks_in(header, &object, components, &parsed));
+    }
+    let held = drive?.header(header)?;
+    Some(chunks_in(header, &held.0, components, &held.1))
 }
 
 /// Of what `read` names, the bytes not here now: of its chunks, those the store doesn't hold, though its header went with its model
@@ -102,28 +106,35 @@ pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64
     if whole(store, &read.checkpoint, &read.components) {
         return 0;
     }
-    match chunks_of(store, &read.checkpoint, &read.components) {
+    match chunks_of(store, &read.checkpoint, &read.components, None) {
         Some(chunks) => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
         None => read.bytes,
     }
 }
 
-/// Each of `read`'s components: its bytes, and of them those not here now (cl-1104: a quote of one slot counts only those it reads).
-/// None for a header never read here (`chunks_of`).
-pub(crate) fn parts(store: &Store, read: &crate::journal::FunctionRead) -> Vec<(String, u64, u64)> {
+/// `read` as Status says it (cl-967): of what it names, the bytes not here now (`missing`), of them those the machine's NFS drive
+/// holds (cl-1282), and each component's (cl-1104: a quote of one slot counts only those it reads), none for a header never read here.
+pub(crate) fn said(store: &Store, read: &crate::journal::FunctionRead, drive: Option<&Arc<Machine>>) -> crate::api::v1::Read {
     let whole = whole(store, &read.checkpoint, &read.components);
-    (read.components.iter())
-        .map(|component| {
-            let chunks = chunks_of(store, &read.checkpoint, std::slice::from_ref(component))?;
-            let bytes: u64 = chunks.iter().map(|o| o.length).sum();
-            let absent: u64 = match whole {
-                true => 0,
-                false => chunks.iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
-            };
-            Some((component.clone(), bytes, absent))
+    let absent = |chunks: &[ObjectRef]| -> Vec<ObjectRef> { chunks.iter().filter(|o| !whole && !store.holds(o)).cloned().collect() };
+    let near = |absent: &[ObjectRef]| drive.filter(|_| !absent.is_empty()).map_or(0, |drive| drive.near(absent));
+    let bytes = |objects: &[ObjectRef]| objects.iter().map(|o| o.length).sum::<u64>();
+    let (missing, on_drive) = match chunks_of(store, &read.checkpoint, &read.components, drive) {
+        Some(chunks) => {
+            let absent = absent(&chunks);
+            (bytes(&absent), near(&absent))
+        }
+        None => (if whole { 0 } else { read.bytes }, 0),
+    };
+    let components = (read.components.iter())
+        .map(|name| {
+            let chunks = chunks_of(store, &read.checkpoint, std::slice::from_ref(name), drive)?;
+            let absent = absent(&chunks);
+            Some(crate::api::v1::ReadComponent { name: name.clone(), bytes: bytes(&chunks), missing: bytes(&absent), drive: near(&absent) })
         })
         .collect::<Option<Vec<_>>>()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::api::v1::Read { model: read.model.clone(), checkpoint: read.checkpoint.clone(), bytes: read.bytes, missing, drive: on_drive, components }
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
@@ -136,7 +147,7 @@ pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool 
     if WHOLE.lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
         return true;
     }
-    let whole = storage::present(store, header) && chunks_of(store, header, components).is_some_and(|chunks| chunks.iter().all(|o| store.holds(o)));
+    let whole = storage::present(store, header) && chunks_of(store, header, components, None).is_some_and(|chunks| chunks.iter().all(|o| store.holds(o)));
     match whole {
         true => WHOLE.lock().unwrap().insert(key, evicted),
         false => WHOLE.lock().unwrap().remove(&key),

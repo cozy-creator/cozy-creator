@@ -526,6 +526,8 @@ pub struct Machine<'r> {
     pub gpus: usize,
     /// Bytes a millisecond its weights arrive at.
     pub link: f64,
+    /// Bytes a millisecond its weights come off its NFS drive at; 0: it has none, or has measured none.
+    pub drive: f64,
     pub card: String,
     pub nvlink: bool,
     /// Each function's newest runs there.
@@ -539,6 +541,41 @@ pub struct Machine<'r> {
     pub named: HashMap<String, String>,
 }
 
+/// Weights a machine has yet to land (cl-1282): all of them, and of them those its NFS drive holds, which it reads from there
+/// and not from their origin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fetch {
+    pub bytes: u64,
+    pub drive: u64,
+}
+
+impl Fetch {
+    pub fn of(bytes: u64, drive: u64) -> Self {
+        Fetch { bytes, drive: drive.min(bytes) }
+    }
+
+    /// No more than `most` bytes of it, its drive's share of them kept.
+    fn at_most(self, most: u64) -> Self {
+        match self.bytes > most {
+            true => Fetch { bytes: most, drive: (u128::from(self.drive) * u128::from(most) / u128::from(self.bytes)) as u64 },
+            false => self,
+        }
+    }
+}
+
+impl std::iter::Sum for Fetch {
+    fn sum<I: Iterator<Item = Fetch>>(each: I) -> Self {
+        each.fold(Fetch::default(), |all, one| Fetch { bytes: all.bytes + one.bytes, drive: all.drive + one.drive })
+    }
+}
+
+/// How long `fetch` takes to land on a machine whose weights arrive at `link` and come off its NFS drive at `drive` (bytes a
+/// millisecond; 0: none measured, read as fast as its link): each tier's bytes at its own rate (cl-1282).
+pub fn fetch_ms(fetch: Fetch, link: f64, drive: f64) -> f64 {
+    let drive = if drive > 0.0 { drive } else { link };
+    (fetch.bytes - fetch.drive) as f64 / link + fetch.drive as f64 / drive
+}
+
 /// The download line: when it ends, ms from now, and when each repository in it lands.
 #[derive(Clone, Debug, Default)]
 pub struct Line {
@@ -547,12 +584,12 @@ pub struct Line {
 }
 
 impl Line {
-    /// `bytes` of `models` fetched after what is in the line, from `from` at the soonest; and those already in it waited for:
-    /// when the last of them lands.
-    fn fetch(&mut self, models: &[String], bytes: u64, link: f64, from: f64) -> f64 {
+    /// What of `models` takes `ms` to land (`Machine::fetch_ms`) fetched after what is in the line, from `from` at the soonest; and
+    /// those already in it waited for: when the last of them lands.
+    fn fetch(&mut self, models: &[String], ms: f64, from: f64) -> f64 {
         let mut end = models.iter().filter_map(|model| self.lands.get(model).copied()).fold(0.0, f64::max);
-        if bytes > 0 {
-            self.end_ms = self.end_ms.max(from) + bytes as f64 / link;
+        if ms > 0.0 {
+            self.end_ms = self.end_ms.max(from) + ms;
             end = end.max(self.end_ms);
         }
         for model in models.iter().filter(|model| !model.is_empty()) {
@@ -573,6 +610,7 @@ impl<'r> Machine<'r> {
                 true => frame.link_bytes_per_s / 1e3,
                 false => LINK,
             },
+            drive: frame.drive_bytes_per_s.unwrap_or(0.0) / 1e3,
             card: frame.gpus.first().map(|gpu| gpu.name.clone()).unwrap_or_default(),
             nvlink: frame.nvlink,
             times,
@@ -587,6 +625,11 @@ impl<'r> Machine<'r> {
                 })
                 .collect(),
         }
+    }
+
+    /// How long `fetch` takes to land here (`fetch_ms`).
+    pub fn fetch_ms(&self, fetch: Fetch) -> f64 {
+        fetch_ms(fetch, self.link, self.drive)
     }
 
     /// The widths `KNOWN` or its benchmarks of this card at more GPUs prove for `function` (`named`, as a job names it), with
@@ -685,7 +728,7 @@ impl<'r> Machine<'r> {
                         if root.running && root.width > 0 && !root.chooses {
                             job.widths = vec![root.width];
                         }
-                        job.ready_ms = line.fetch(&root.models, root.bytes_left, self.link, 0.0);
+                        job.ready_ms = line.fetch(&root.models, self.fetch_ms(Fetch::of(root.bytes_left, root.drive_left)), 0.0);
                     }
                 }
                 job
@@ -740,11 +783,13 @@ fn held<'f>(frame: &'f StatusFrame, model: &v1::ModelRef) -> Option<&'f v1::Chec
 
 /// The bytes of `model` `frame`'s store lacks: what its held checkpoint lacks of its closure, no more than the call fetches of it; else all
 /// the call fetches of it (`ModelRef::bytes`).
-fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
+fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> Fetch {
     match held(frame, model) {
         // What the checkpoint lacks here, no more than the call fetches of it (cl-1071: its components, its objects no other slot reads).
-        Some(checkpoint) if checkpoint.bytes > 0 => checkpoint.bytes.saturating_sub(checkpoint.held_bytes).min(model.bytes),
-        _ => model.bytes,
+        Some(checkpoint) if checkpoint.bytes > 0 => {
+            Fetch::of(checkpoint.bytes.saturating_sub(checkpoint.held_bytes), checkpoint.drive_bytes).at_most(model.bytes)
+        }
+        _ => Fetch::of(model.bytes, 0),
     }
 }
 
@@ -752,20 +797,20 @@ fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
 /// of what its function's newest run here read of it, those not here now; else what its held checkpoint lacks, no more than a run of
 /// the function read of it elsewhere (`ModelRef::reads`). A lane's closure holds components a function never reads: counted whole,
 /// a machine that ran it was quoted their download every time.
-fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> u64 {
+fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> Fetch {
     let header = header(frame, model);
     if frame.resident.iter().any(|resident| resident.checkpoints.contains(&header)) {
-        return 0;
+        return Fetch::default();
     }
     let timed = frame.times.iter().flatten().find(|timed| !function.is_empty() && timed.function == function);
     let reads = timed.map_or(&[][..], |timed| timed.reads.as_slice());
     let here = (reads.iter().find(|read| read.checkpoint == header)).or_else(|| reads.iter().find(|read| !model.model.is_empty() && read.model == model.model));
     // Of what its runs here read of the checkpoint, what this slot reads (cl-1104: another box of the function reads other parts).
     match (here.map(|read| read.of(&model.components)), model.reads) {
-        (Some(Some((_, missing))), _) => missing,
+        (Some(Some((_, missing, drive))), _) => Fetch::of(missing, drive),
         // A part no run of it here read: what its held checkpoint lacks, no more than the slot reads.
         (Some(None), _) | (None, 0) => absent(frame, model),
-        (None, reads) => reads.min(absent(frame, model)),
+        (None, reads) => absent(frame, model).at_most(reads),
     }
 }
 
@@ -775,7 +820,7 @@ fn lands(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
     let header = header(frame, model);
     match frame.resident.iter().any(|resident| resident.checkpoints.contains(&header)) {
         true => 0,
-        false => absent(frame, model),
+        false => absent(frame, model).bytes,
     }
 }
 
@@ -789,7 +834,7 @@ pub fn learn_reads(frames: &[&StatusFrame], job: &mut EstimateJob) {
             .filter(|timed| timed.function == function)
             .flat_map(|timed| &timed.reads)
             .filter(|read| read.model == model.model)
-            .filter_map(|read| read.of(&model.components).map(|(bytes, _)| bytes))
+            .filter_map(|read| read.of(&model.components).map(|(bytes, ..)| bytes))
             .max()
             .unwrap_or(0);
     }
@@ -903,7 +948,7 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
             continue;
         }
         coming += lands;
-        let new: u64 = job.models.iter().filter(coming_here).map(|model| fetches(frame, &function, model)).sum();
+        let new: Fetch = job.models.iter().filter(coming_here).map(|model| fetches(frame, &function, model)).sum();
         quote.fits = true;
         // Its install after those ahead of it; its download after its install, as the machine resolves its weights once it is
         // built, and after those ahead of it.
@@ -915,8 +960,8 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
             }),
         };
         let models: Vec<String> = job.models.iter().map(|model| model.model.clone()).collect();
-        quote.fetch_bytes = new;
-        let fetched = line.fetch(&models, new, machine.link, install_end);
+        quote.fetch_bytes = new.bytes;
+        let fetched = line.fetch(&models, machine.fetch_ms(new), install_end);
         let load = match (!function.is_empty() && warm.contains(&function)) || resident(frame, &job.models) || job.models.is_empty() {
             true => 0.0,
             false => time.load_ms,

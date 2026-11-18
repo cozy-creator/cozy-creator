@@ -855,6 +855,9 @@ pub(crate) struct Counters {
     pub received: AtomicU64,
     pub receiving_ms: AtomicU64,
     pub unpaced: AtomicU64,
+    /// Bytes read off the volume into the store, and the pacing windows (in ms) any of them came in: what its tier moves.
+    pub volume_read: AtomicU64,
+    pub volume_reading_ms: AtomicU64,
     pub volume_written: AtomicU64,
     pub volume_skipped: AtomicU64,
     /// Answers that were not 2xx, by status.
@@ -1152,6 +1155,8 @@ struct Pace {
     /// The last window received something: this one, if it did too, was spent whole on the transfer and measures it.
     flowing: bool,
     seen: u64,
+    /// The bytes read off the volume when it last looked.
+    volume_seen: u64,
     /// When it last doubled, and where what it measures began (a window with demand and bytes) with the bytes received then:
     /// a doubling's own requests' first bytes, or the settled level's hold. A window without either begins it again.
     doubled: Option<Instant>,
@@ -1426,6 +1431,11 @@ impl Shared {
             self.stats.unpaced.fetch_add(arrived, Ordering::Relaxed);
         }
         pace.seen = received;
+        let read = self.stats.volume_read.load(Ordering::Relaxed);
+        if read > pace.volume_seen {
+            self.stats.volume_reading_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+        }
+        pace.volume_seen = read;
         if self.busy.load(Ordering::Acquire) == 0 {
             let gone = pace.level.saturating_sub(START.min(pace.max));
             self.shrink(&mut pace, gone);
@@ -2397,8 +2407,12 @@ impl Shared {
             file = back;
             // Ours on the link when the volume is across the network: never an install's download.
             SHARE.counted(task.priority.load(Ordering::Acquire), buffer.len());
+            let read = buffer.len() as u64;
             if let Err(refusal) = part.push(task, &buffer).await {
                 return FileRead::Failed(refusal);
+            }
+            if volume.is_some() {
+                self.stats.volume_read.fetch_add(read, Ordering::Relaxed);
             }
         }
         match part.flush().await {

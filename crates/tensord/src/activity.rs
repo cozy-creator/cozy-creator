@@ -50,6 +50,8 @@ struct Operation {
     here: Option<u64>,
     /// A download's objects, each once however many runs wait on it (cl-1205).
     objects: Objects,
+    /// Of those still coming, the bytes the machine's NFS drive holds (`Machine::near`, cl-1282), as last looked.
+    drive: u64,
     /// What its waits fetch of it: the release, and the components (none: the whole checkpoint).
     release: String,
     components: BTreeSet<String>,
@@ -150,6 +152,7 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         total: 0,
         here: None,
         objects: Objects::default(),
+        drive: 0,
         release: String::new(),
         components: BTreeSet::new(),
         started_at_ms: crate::machine::lifecycle::now_ms(),
@@ -262,6 +265,7 @@ impl Waiting {
             }
             (held.sources.iter().zip(by)).filter(|(_, objects)| !objects.is_empty()).map(|((machine, remote), objects)| (machine.clone(), remote.clone(), objects)).collect()
         };
+        let drive: u64 = looking.iter().map(|(machine, _, objects)| machine.near(objects)).sum();
         let mut seen: Vec<(String, Option<u64>)> = vec![];
         for (machine, remote, objects) in looking {
             for (object, state) in objects.iter().zip(machine.fetching(&remote, &objects)) {
@@ -286,7 +290,7 @@ impl Waiting {
                 None => held.land(&sha256),
             }
         }
-        (operation.done, operation.total) = (held.done(), held.total());
+        (operation.done, operation.total, operation.drive) = (held.done(), held.total(), drive);
         let done = operation.done;
         sample(&mut operation.seen, now, done);
     }
@@ -412,6 +416,16 @@ pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {
         }
     }
     waits
+}
+
+/// Each repository downloading now: its bytes still to come, and of them those the machine's NFS drive holds (cl-1282).
+pub(crate) fn drive_left() -> HashMap<String, (u64, u64)> {
+    (operations().values().filter(|operation| operation.kind == Kind::Download && operation.ended.is_none()))
+        .map(|operation| {
+            let left = operation.total.saturating_sub(operation.done);
+            (operation.subject.clone(), (left, operation.drive.min(left)))
+        })
+        .collect()
 }
 
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {

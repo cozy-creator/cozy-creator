@@ -257,6 +257,9 @@ pub struct Stats {
     pub receiving: std::time::Duration,
     /// Answers that were not 2xx, by status.
     pub statuses: std::collections::BTreeMap<u16, u64>,
+    /// Bytes read off the volume into the store, over the time any of them was coming: what its tier moves.
+    pub volume_read: u64,
+    pub volume_reading: std::time::Duration,
     pub volume_written: u64,
     pub volume_skipped: u64,
 }
@@ -302,6 +305,8 @@ impl Fetcher {
             received: counters.unpaced.load(Ordering::Relaxed),
             receiving: std::time::Duration::from_millis(counters.receiving_ms.load(Ordering::Relaxed)),
             statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            volume_read: counters.volume_read.load(Ordering::Relaxed),
+            volume_reading: std::time::Duration::from_millis(counters.volume_reading_ms.load(Ordering::Relaxed)),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),
         }

@@ -60,6 +60,15 @@ pub(crate) fn link(service: &Service) -> f64 {
     }
 }
 
+/// What its downloads read off its NFS drive (cl-1282), bytes a second, once 1 GiB came; 0 before. None: it has none.
+pub(crate) fn drive(service: &Service) -> Option<f64> {
+    let (bytes, time) = service.publisher()?.machine().volume_read()?;
+    Some(match bytes >= MEASURED_LINK && !time.is_zero() {
+        true => bytes as f64 / time.as_secs_f64(),
+        false => 0.0,
+    })
+}
+
 /// A root not ended: its id, its caller and its caller's id for it, and as Status lists it.
 pub(crate) struct Root {
     pub id: String,
@@ -132,6 +141,7 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     let engine = &service.engine;
     let gpus = service.pool().map_or(0, |pool| pool.serving_width());
     let downloading = crate::activity::downloading();
+    let on_drive = crate::activity::drive_left();
     let mut held: HashMap<String, Vec<Installation>> = HashMap::new();
     let mut roots = vec![];
     let records = engine.nonterminal(usize::MAX)?;
@@ -193,6 +203,13 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
                 models
             }
         };
+        let bytes_left = match running {
+            // Its own are here; what its calls not started wait for is still to come.
+            true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
+            false => fetching(record),
+        };
+        // Of them, the NFS drive's share of what the downloads it waits on have left (cl-1282).
+        let (left, drive) = models.iter().filter_map(|model| on_drive.get(model)).fold((0, 0), |all: (u64, u64), one| (all.0 + one.0, all.1 + one.1));
         let queued = v1::Queued {
             run: String::new(),
             function: match private || package.is_empty() {
@@ -208,11 +225,8 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             gpu_at_unix_ms: gpu_at as i64,
             gpu_waits: lane && gpu_at == 0,
             models,
-            bytes_left: match running {
-                // Its own are here; what its calls not started wait for is still to come.
-                true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
-                false => fetching(record),
-            },
+            bytes_left,
+            drive_left: (u128::from(bytes_left) * u128::from(drive.min(left)) / u128::from(left.max(1))) as u64,
             client: crate::clients::name(&actor),
             ..stepped(record, private)
         };
@@ -244,6 +258,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
     let machine = estimate::Machine {
         gpus: pool.serving_width(),
         link: if link > 0.0 { link / 1e3 } else { LINK },
+        drive: drive(service).unwrap_or(0.0) / 1e3,
         card,
         nvlink,
         times,
