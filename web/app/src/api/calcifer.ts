@@ -991,6 +991,12 @@ throttles: Array<string>, };
 export type GpuUse = { at_unix_ms: number, gpus: Array<GpuReading>, };
 
 /**
+ * A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how
+ * many, and about how long until they're free, as its machine times it (cl-1187); 0: it can't.
+ */
+export type GpuWait = { width: number, left_ms: number, };
+
+/**
  * What the machine holds of each object asked, in the order asked; a stored object is held
  * whole, and asking renews it, as a `HEAD` does.
  */
@@ -3163,7 +3169,7 @@ seed?: number | null, };
 /**
  * One event of a run's stream.
  */
-export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, } | { "type": "output_text.delta", output_index: number, item_id: string, delta: string, };
+export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, gpus?: GpuWait | null, } | { "type": "run.arriving", progress: Progress, } | { "type": "output_text.delta", output_index: number, item_id: string, delta: string, };
 
 /**
  * A run's id: the caller's id on the machine (`RunRequest.id`), the same in Calcifer, the CLI
