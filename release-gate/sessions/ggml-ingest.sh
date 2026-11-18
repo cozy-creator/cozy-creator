@@ -66,10 +66,12 @@ IFS=, read -ra pure <<<"$PURE"
 types=("${lanes[@]^^}")
 for t in "${pure[@]}"; do types+=("pure:$t"); done
 SCALE=$(param scale 1); [[ $SCALE =~ ^[1-9]$ ]] || fail "scale: 1 to 9"
-# In BG, so the trap stops it: left running, its ssh held the step's output open for its timeout after the pod had ended
-# (44392334657).
-there "SCALE=$SCALE bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" $((10800 * SCALE)) < /dev/null & LLAMA_PID=$!
-BG="$BG $LLAMA_PID"
+# Detached on the pod, its exit code in /w/out/pod.rc, and only polled from here, each poll its own short ssh: one long ssh
+# held 44392334657's step open after its pod ended, and 44408757934's dropped and took llama.cpp's side with it.
+there "rm -f /w/out/pod.rc; setsid nohup bash -c 'SCALE=$SCALE bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1; echo \$? > /w/out/pod.rc' \
+  > /dev/null 2>&1 < /dev/null &" 60 < /dev/null || fail "start llama.cpp's side on the pod"
+LLAMA_UNTIL=$(($(date +%s) + 10800 * SCALE))
+llama_rc() { there "cat /w/out/pod.rc 2> /dev/null" 60 < /dev/null; }  # its exit code once it ended, else nothing
 
 # 1. Ours. The package staged first: its lock and the candidates over it are settled before the model's download.
 pod_install stage "$PACKAGES/$TREE/$PACKAGE"
@@ -101,9 +103,9 @@ for lane in "${lanes[@]}"; do [ -z "${REF[$lane]:-}" ] || checks+=("$lane"); don
 for t in "${pure[@]}"; do checks+=("pure:$t"); done
 ready() {  # ready <check>: the pod.log line that says llama.cpp's side made its input
   case $1 in
-    source) there "grep -q '^[0-9:]* download .* took' /w/out/pod.log" < /dev/null ;;
-    pure:*) there "grep -q '^[0-9:]* llama-quantize --pure ${1#pure:} took' /w/out/pod.log" < /dev/null ;;
-    *) there "grep -q '^[0-9:]* llama-quantize ${1^^} took' /w/out/pod.log" < /dev/null ;;
+    source) there "grep -q '^[0-9:]* download .* took' /w/out/pod.log" 60 < /dev/null ;;
+    pure:*) there "grep -q '^[0-9:]* llama-quantize --pure ${1#pure:} took' /w/out/pod.log" 60 < /dev/null ;;
+    *) there "grep -q '^[0-9:]* llama-quantize ${1^^} took' /w/out/pod.log" 60 < /dev/null ;;
   esac
 }
 judge() {  # judge <check>: compare.py on it, its lines into the report
@@ -121,7 +123,7 @@ judge() {  # judge <check>: compare.py on it, its lines into the report
 }
 installed=''
 while [ "${#checks[@]}" -gt 0 ]; do
-  alive=1; kill -0 "$LLAMA_PID" 2> /dev/null || alive=0
+  alive=1; [ -z "$(llama_rc)" ] && [ "$(date +%s)" -lt "$LLAMA_UNTIL" ] || alive=0
   left=()
   for c in "${checks[@]}"; do
     if ready "$c"; then
@@ -140,7 +142,8 @@ while [ "${#checks[@]}" -gt 0 ]; do
   [ "$alive" = 1 ] || { say "FAILED: llama.cpp's side ended before ${checks[*]}"; BAD+=("${checks[@]}"); break; }
   sleep 60
 done
-wait "$LLAMA_PID"; code=$?
+until code=$(llama_rc) && [ -n "$code" ] || [ "$(date +%s)" -ge "$LLAMA_UNTIL" ]; do sleep 60; done
+[ -n "$code" ] || code="no exit by its deadline"
 there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
 [ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 2000 /w/out/convert.log" < /dev/null | tee -a "$R"; BAD+=("llama.cpp's side: exit $code"); }
 [ "${#BAD[@]}" = 0 ] || fail "${BAD[*]}"
