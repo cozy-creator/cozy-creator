@@ -23,8 +23,11 @@ SETTINGS: list[dict[str, float]] = [
 ]
 
 
+PROMPT = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <colour>'."
+
+
 class Order(msgspec.Struct):
-    prompt: str = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <colour>'."
+    prompt: str = PROMPT
     max_tokens: int = 160
     seed: int = 7
 
@@ -252,3 +255,74 @@ def order(payload: Order, model: VisionLM) -> Ordered:
             str(tokenizer.decode(tokens, skip_special_tokens=True)),
         ))  # fmt: skip
     return Ordered(calls)
+
+
+#: A checkpoint with a draft head (its multi-token-prediction layer), for `drafted`.
+DRAFTING = "qwen/qwen3.5-9b-mtp@0.2.0"
+
+
+class Drafted(msgspec.Struct):
+    prompt: str = PROMPT
+    max_tokens: int = 256
+    seed: int = 7
+
+
+class Pair(msgspec.Struct):
+    settings: dict[str, float]
+    plain: int
+    drafted: int
+    #: the drafted call's tokens are the undrafted one's
+    same: bool
+    first_difference: int
+    plain_text: str
+    drafted_text: str
+
+
+class Pairs(msgspec.Struct):
+    pairs: list[Pair]
+    #: the checkpoint has a draft head
+    head: bool
+
+
+@app.entrypoint(defaults={"model": DRAFTING})
+def drafted(payload: Drafted, model: VisionLM) -> Pairs:
+    """Each setting decoded twice at one seed: without the model's draft head (a fresh engine, the head set aside), then
+    with it. Their tokens must be the same; the run's notes say which call drafted and that its steps replayed graphs."""
+    processor = model.processor
+    tokenizer = processor.tokenizer  # type: ignore[attr-defined]
+    tokenizer.padding_side = "left"
+    hf = model.pipe.components[vlm.COMPONENT]
+    chat = processor.apply_chat_template(  # type: ignore[attr-defined]
+        [{"role": "user", "content": [{"type": "text", "text": payload.prompt}]}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False,
+    )
+    inputs = processor(text=[chat], return_tensors="pt").to(hf.device)  # type: ignore[operator]
+    stops = [t for t in (tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id) if t is not None]
+    head = lm.HEADS.get(hf)
+
+    def decode(settings: dict[str, float]) -> list[int]:
+        knobs = {k: int(v) if k == "top_k" else v for k, v in settings.items()}
+        made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0],
+                           seed=payload.seed, **knobs)[0].tolist()
+        end = next((i for i, t in enumerate(made) if t in stops), len(made) - 1)
+        return made[: end + 1]
+
+    pairs: list[Pair] = []
+    for settings in [{"temperature": 0.0, "presence_penalty": 1.5}, *SETTINGS]:
+        lm.release(hf)
+        lm.HEADS.pop(hf, None)
+        try:
+            plain = decode(settings)
+        finally:
+            lm.release(hf)
+            if head is not None:
+                lm.HEADS[hf] = head
+        drafts = decode(settings)
+        first = next((i for i, (a, b) in enumerate(zip(plain, drafts, strict=False)) if a != b), -1)
+        if first < 0 and len(plain) != len(drafts):
+            first = min(len(plain), len(drafts))
+        pairs.append(Pair(
+            settings, len(plain), len(drafts), plain == drafts, first,
+            str(tokenizer.decode(plain, skip_special_tokens=True)), str(tokenizer.decode(drafts, skip_special_tokens=True)),
+        ))  # fmt: skip
+    return Pairs(pairs, head is not None)
