@@ -126,6 +126,8 @@ pub(crate) struct Calcifer {
     staging: Mutex<()>,
     /// The object each machine is being written, one Write at a time.
     writing: Mutex<HashMap<(String, Digest), Turn>>,
+    /// What goes to machines ahead of the runs that will read it (`carry_ahead`), behind every run's carry.
+    ahead: Ahead,
     /// Told each time a machine's row or what Calcifer heard of it may have changed.
     machines_changed: watch::Sender<()>,
     exports: outputs::Exports,
@@ -253,6 +255,69 @@ struct Lacking {
     held: v1::Ranges,
 }
 
+/// How a carry lands what a machine lacks (`Calcifer::lacking_to`).
+#[derive(Clone, Copy)]
+struct Carry {
+    /// The most of an object that goes in one `PUT /v1/objects` with the rest: a larger one goes alone.
+    batched_each: u64,
+    /// A larger one's parts in flight side by side, and the most one carries (`Link::write`).
+    lanes: usize,
+    part: u64,
+}
+
+/// A run's carry: as fast as its link takes it.
+const RUN: Carry = Carry { batched_each: 64 << 20, lanes: link::UPLOAD_LANES, part: link::PART };
+/// A guess's carry: a part of 1 MiB at a time, in ranges the machine keeps as they land. What it has handed to its connections when a
+/// run's carry cuts it still goes, and what of that hasn't landed when it goes on is sent again: cut once with four 6 MB parts in
+/// flight, a 24.4 MB picture took 35.4 MB of a 16 Mbit/s uplink (44242484131). A part at a time bounds both by 1 MiB.
+const AHEAD: Carry = Carry { batched_each: 1 << 20, lanes: 1, part: 1 << 20 };
+
+/// A file a box's guess reads (cl-1123), carried ahead to the machine its render would go to (`Calcifer::carry_ahead`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AheadFile {
+    /// Its project's id and root: the execution scope it lands in there, as its run's inputs do (`private_io::execution_link`).
+    pub project: String,
+    pub root: PathBuf,
+    /// Its project's folder and the boxes whose guesses read it, as what's said of it names them.
+    pub folder: String,
+    pub boxes: Vec<String>,
+    /// Its project is encrypted.
+    pub encrypted: bool,
+    pub input: StagedInput,
+}
+
+/// What goes to machines ahead of the runs that will read it (cl-1123; Paul, 11-18: "if I open a node, and it has a video that is a
+/// reference video that is like 100MBs, uploading that to the remote machine will take a few minutes … so pre-loading files on the
+/// machine makes sense as well"): each machine's guesses' files, behind every run's carry, as they share this computer's uplink.
+struct Ahead {
+    /// Runs' carries going now, on any machine (`carrying`): a guess's carry waits while one goes, and stops when one begins.
+    runs: watch::Sender<usize>,
+    /// By machine: what its guesses read now, which its carrier lands there (`carry_ahead_to`).
+    wanted: Mutex<HashMap<String, watch::Sender<Vec<AheadFile>>>>,
+    /// Machines whose last carry ahead failed: carried again at the next word of their guesses, even an unchanged one.
+    failed: Mutex<HashSet<String>>,
+}
+
+impl Default for Ahead {
+    fn default() -> Self {
+        Self { runs: watch::channel(0).0, wanted: Mutex::default(), failed: Mutex::default() }
+    }
+}
+
+/// A run's carry going (`Calcifer::carrying`): a guess's waits until it ends.
+struct Carrying<'a>(&'a watch::Sender<usize>);
+
+impl Drop for Carrying<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|going| *going -= 1);
+    }
+}
+
+/// What a machine's guesses read, by project and file: what a change of it is.
+fn ahead_keys(files: &[AheadFile]) -> HashSet<(&str, Digest)> {
+    files.iter().map(|file| (file.project.as_str(), file.input.digest)).collect()
+}
+
 /// Whether `held` is all `length` bytes: an empty object's ranges can't say so, so it is always sent (one empty PUT).
 fn whole(held: &v1::Ranges, length: u64) -> bool {
     length > 0 && v1::held_bytes(held) >= length
@@ -368,6 +433,7 @@ impl Calcifer {
             tasks: Mutex::default(),
             staging: Mutex::default(),
             writing: Mutex::default(),
+            ahead: Ahead::default(),
             machines_changed: watch::channel(()).0,
             exports: outputs::Exports::default(),
             warm: Mutex::default(),
@@ -3049,6 +3115,8 @@ impl Calcifer {
         if run.inputs.is_empty() {
             return Ok(vec![]);
         }
+        // First on the uplink: what goes ahead of a guess waits (`behind_runs`).
+        let _carrying = self.carrying();
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
@@ -3104,8 +3172,14 @@ impl Calcifer {
                 Lacking { digest: *digest, length: *length, path: input_root.join(&hex), name, held }
             })
             .collect();
-        self.lacking_to(link, machine, lacking, run.number, &|reason| self.waiting(&run.id, reason)).await?;
+        self.lacking_to(link, machine, lacking, run.number, RUN, &|reason| self.waiting(&run.id, reason)).await?;
         Ok(carried)
+    }
+
+    /// A run's carry going, until what this answers is dropped: what goes ahead of a guess waits for it (`behind_runs`).
+    fn carrying(&self) -> Carrying<'_> {
+        self.ahead.runs.send_modify(|going| *going += 1);
+        Carrying(&self.ahead.runs)
     }
 
     /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).
@@ -3115,30 +3189,186 @@ impl Calcifer {
         length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
-    /// `inputs` written to `machine`, each it doesn't hold whole (`lacking_to`, as a run's inputs are): local code carried to the machine a
-    /// box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads (cl-1123), so its machine has
-    /// them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
-    pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
-        let machines = self.machines().ok_or("no machines yet")?;
-        let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
+    /// Local code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), so a fresh rental installs it too:
+    /// what `machine` lacks of it, landed as a guess's files are (`ahead_to`), behind every run's carry (`behind_runs`). `project`: the
+    /// encrypted project whose own code it is, which goes through that project's check as its files do (Paul, 11-18). The bytes moving
+    /// hold its idle clock as any upload's do.
+    pub(crate) async fn ship(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[StagedInput]) -> Result<(), String> {
+        let inputs: Vec<&StagedInput> = inputs.iter().collect();
+        let inputs = &inputs;
+        self.behind_runs(machine, move || async move { self.ahead_to(machine, project, inputs).await.map(drop) }).await
+    }
+
+    /// What `machine` lacks of `inputs`, landed there ahead of the run that reads them: the one way anything goes ahead (cl-1123), a
+    /// guess's files (`carried_ahead`) and its local code (`ship`) alike. By the link a run goes by, only to a machine a guess may
+    /// carry to (`trusted`); a `project`'s own goes through the check its run passes there (`private_io::execution_link`, as `step`
+    /// calls it), into that project's execution scope, the store its run's inputs land in (`write_inputs`). Answers the ones it sent,
+    /// each with the bytes the machine held of it before: what a carry cut earlier had landed.
+    async fn ahead_to<'a>(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[&'a StagedInput]) -> Result<Vec<(&'a StagedInput, u64)>, String> {
+        let base = self.trusted(machine)?;
+        let link = match project {
+            Some((id, root)) => private_io::execution_link(id, root, machine, &base).await.map_err(|e| e.message)?,
+            None => base,
+        };
         let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
         let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
-        let lacking: Vec<Lacking> = (inputs.iter().zip(held))
-            .filter(|(input, held)| !whole(held, input.length))
-            .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held })
+        let lacking: Vec<(&'a StagedInput, v1::Ranges)> = (inputs.iter().copied().zip(held)).filter(|(input, held)| !whole(held, input.length)).collect();
+        let sent: Vec<Lacking> = (lacking.iter())
+            .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held: held.clone() })
             .collect();
-        self.lacking_to(&link, machine, lacking, 0, &|_| {}).await.map_err(|e| e.to_string())
+        self.lacking_to(&link, machine, sent, 0, AHEAD, &|_| {}).await.map_err(|e| e.to_string())?;
+        Ok(lacking.into_iter().map(|(input, held)| (input, v1::held_bytes(&held))).collect())
+    }
+
+    /// The link a guess carries to `machine` by, where it may (cl-1123; Paul, 11-18: "What really matters is that we can trust the
+    /// remote machine as safe"): the one its runs go by (`machine`), pinned to the leaf its Hub recorded at rent (`rentals::endpoint`)
+    /// and signing every request with this computer's key (`Link::new`), and only to one of this account's own: this computer's, or one
+    /// it rented. Another computer's, added by address (`Machines::add`), is its owner's, so nothing is carried ahead to it, nor to one
+    /// ending.
+    fn trusted(&self, machine: &str) -> Result<Link, String> {
+        let (row, link, ..) = self.machine(machine)?;
+        if !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
+            return Err(format!("{machine} is another computer's, which this account doesn't own"));
+        }
+        if row.state == ::api::calcifer::MachineState::Ended || self.closing(machine).is_some() {
+            return Err(format!("{machine} is ending"));
+        }
+        link.ok_or_else(|| format!("{machine} has no address yet"))
+    }
+
+    /// `carry`, a guess's, behind every run's carry, which shares this computer's uplink with it (Paul, 11-18): it starts once none
+    /// goes, and stops at once when one begins. What it landed stays (a cut upload's ranges stay on the machine, as `PUT
+    /// /v1/objects/{digest}` keeps them), so it goes on from there once they end, and sends nothing twice.
+    async fn behind_runs<T, F: Future<Output = T>>(&self, machine: &str, mut carry: impl FnMut() -> F) -> T {
+        let mut ended = self.ahead.runs.subscribe();
+        loop {
+            let _ = ended.wait_for(|going| *going == 0).await;
+            let mut began = self.ahead.runs.subscribe();
+            tokio::select! {
+                biased;
+                () = async { let _ = began.wait_for(|going| *going > 0).await; } => {
+                    tracing::info!(target: prefetch::TARGET, "what goes ahead to {machine} waits: a run's inputs go first");
+                }
+                done = carry() => return done,
+            }
+        }
+    }
+
+    /// What each machine's guesses read now, by machine (`prefetch::Lists::send`): each one's carrier lands it there behind every run's
+    /// carry (`carry_ahead_to`), and stops carrying what is no longer read. An edit that doesn't change a file changes nothing of its
+    /// carry.
+    pub(crate) fn carry_ahead(self: &Arc<Self>, mut by_machine: HashMap<String, Vec<AheadFile>>) {
+        let mut wanted = lock(&self.ahead.wanted);
+        for (machine, files) in wanted.iter() {
+            if !by_machine.contains_key(machine) {
+                files.send_if_modified(|files| !std::mem::take(files).is_empty());
+            }
+        }
+        for (machine, files) in by_machine.drain() {
+            let again = lock(&self.ahead.failed).remove(&machine);
+            if let Some(held) = wanted.get(&machine) {
+                held.send_if_modified(|now| {
+                    let moved = again || ahead_keys(now) != ahead_keys(&files);
+                    *now = files;
+                    moved
+                });
+                continue;
+            }
+            if files.is_empty() || self.closed() {
+                continue;
+            }
+            let (sender, receiver) = watch::channel(files);
+            wanted.insert(machine.clone(), sender);
+            let me = self.clone();
+            let mut tasks = lock(&self.tasks);
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn(async move { me.carry_ahead_to(machine, receiver).await });
+        }
+    }
+
+    /// `machine`'s carrier: what its guesses read (`carry_ahead`), landed there behind every run's carry, again as that changes, until
+    /// nothing is.
+    async fn carry_ahead_to(self: Arc<Self>, machine: String, mut wanted: watch::Receiver<Vec<AheadFile>>) {
+        let mut said: Option<String> = None;
+        loop {
+            let files = wanted.borrow_and_update().clone();
+            if files.is_empty() {
+                let mut all = lock(&self.ahead.wanted);
+                if all.get(&machine).is_some_and(|held| held.borrow().is_empty()) {
+                    all.remove(&machine);
+                    return;
+                }
+                continue;
+            }
+            let carried = self.behind_runs(&machine, || self.carried_ahead(&machine, &files));
+            tokio::select! {
+                carried = carried => {
+                    match carried {
+                        Ok(()) => said = None,
+                        Err(why) => {
+                            lock(&self.ahead.failed).insert(machine.clone());
+                            if said.as_ref() != Some(&why) {
+                                tracing::info!(target: prefetch::TARGET, "nothing more goes ahead to {machine} for now: {why}");
+                                said = Some(why);
+                            }
+                        }
+                    }
+                    if wanted.changed().await.is_err() {
+                        return;
+                    }
+                }
+                // What's read changed: carried again from what landed.
+                changed = wanted.changed() => if changed.is_err() {
+                    return;
+                },
+            }
+        }
+    }
+
+    /// `files` landed on `machine`, each what it lacks of them, each project's through its own check (`ahead_to`), so its render
+    /// finds them held and sends nothing more. Said once for each box whose files landed, with what a carry cut earlier had landed
+    /// of them; an encrypted project's said so.
+    async fn carried_ahead(&self, machine: &str, files: &[AheadFile]) -> Result<(), String> {
+        let mut projects: Vec<(&str, &Path)> = vec![];
+        for file in files {
+            if !projects.iter().any(|(id, _)| *id == file.project) {
+                projects.push((file.project.as_str(), file.root.as_path()));
+            }
+        }
+        for (project, root) in projects {
+            let of: Vec<&AheadFile> = files.iter().filter(|file| file.project == project).collect();
+            let inputs: Vec<&StagedInput> = of.iter().copied().map(|file| &file.input).collect();
+            let began = Instant::now();
+            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await?;
+            let lacking: Vec<&AheadFile> = of.into_iter().filter(|file| sent.iter().any(|(input, _)| input.digest == file.input.digest)).collect();
+            let mut boxes: Vec<(&str, &str, bool)> = vec![];
+            for file in &lacking {
+                for name in &file.boxes {
+                    if !boxes.iter().any(|(held, ..)| held == name) {
+                        boxes.push((name.as_str(), file.folder.as_str(), file.encrypted));
+                    }
+                }
+            }
+            for (name, folder, encrypted) in boxes {
+                let theirs: Vec<&&AheadFile> = lacking.iter().filter(|file| file.boxes.iter().any(|held| held == name)).collect();
+                let size = bytes(theirs.iter().map(|file| file.input.length).sum::<u64>() as f64);
+                let there: u64 = (sent.iter().filter(|(input, _)| theirs.iter().any(|file| file.input.digest == input.digest))).map(|(_, held)| *held).sum();
+                let on = if there > 0 { format!(", going on from {} there", bytes(there as f64)) } else { String::new() };
+                let whose = if encrypted { ", an encrypted project's" } else { "" };
+                tracing::info!(target: prefetch::TARGET, "{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{on}{whose}", theirs.len(), began.elapsed().as_millis());
+            }
+        }
+        Ok(())
     }
 
     /// What `machine` lacks of the objects a run reads or a guess carries, landed there: the one way objects go to a machine (cl-1123).
-    /// Every one up to `BATCHED_EACH` goes in one `PUT /v1/objects` to a machine that takes it (`objects_batch`): one at a time, an
-    /// Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797). One larger, or to an older machine,
-    /// goes alone, in parts side by side, one write of an object at a time (`writing`, run `number`'s while it writes). `waiting`
-    /// hears what it does.
-    async fn lacking_to(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
-        const BATCHED_EACH: u64 = 64 << 20;
+    /// Every one up to `carry`'s `batched_each` goes in one `PUT /v1/objects` to a machine that takes it (`objects_batch`): one at a
+    /// time, an Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797). One larger, or to an older
+    /// machine, goes alone, in `carry`'s parts, one write of an object at a time (`writing`, run `number`'s while it writes).
+    /// `waiting` hears what it does.
+    async fn lacking_to(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, carry: Carry, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
         let batches = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.objects_batch);
-        let (batched, alone): (Vec<Lacking>, Vec<Lacking>) = lacking.into_iter().partition(|object| batches && object.length > 0 && object.length <= BATCHED_EACH);
+        let (batched, alone): (Vec<Lacking>, Vec<Lacking>) = lacking.into_iter().partition(|object| batches && object.length > 0 && object.length <= carry.batched_each);
         if !batched.is_empty() {
             let size = bytes(batched.iter().map(|object| object.length).sum::<u64>() as f64);
             waiting(match batched.as_slice() {
@@ -3170,7 +3400,7 @@ impl Calcifer {
             };
             *lock(&turn.1) = number;
             let written = link
-                .write(&digest, length, &path, held, |done, rate| {
+                .write(&digest, length, &path, held, (carry.lanes, carry.part), |done, rate| {
                     let mut reason = format!("uploading {name}, {} of {}", bytes(done as f64), bytes(length as f64));
                     if let Some(rate) = rate {
                         reason = format!("{reason} at {}/s", bytes(rate));
