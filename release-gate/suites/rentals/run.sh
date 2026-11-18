@@ -1,6 +1,6 @@
 #!/bin/bash
 # By hand, in the default home: release-gate/suites/rentals/run.sh <out dir> [--tensord BIN] [idle|stop]...
-# The idle cell rents its own `cpu` (any provider) and puts BIN on it first; the stop cell rents a vast `cpu`.
+# Each cell rents its own pod and puts BIN on it first: the idle cell a `cpu` (any provider), the stop cell a vast `cpu`.
 set -uo pipefail
 OUT=$1; shift; TD= CELLS=()
 while [ $# -gt 0 ]; do case $1 in --tensord) TD=$2; shift;; *) CELLS+=("$1");; esac; shift; done
@@ -11,7 +11,7 @@ expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> expect.tsv; log "$1: $2 $3"; 
 . "$HERE/suites/rentals/lib.sh"
 for c in "${CELLS[@]}"; do
   case $c in
-    stop) rental_stop_closes vast ;;
+    stop) TDF=$TD rental_stop_closes vast ;;
     idle)
       "$CLI" --json machine rent cpu --disk-gb 50 -y >idle-rent.out 2>&1
       r=$(grep -m1 '"type":"rental.accepted"' idle-rent.out | jq -r '.rental_id // empty') m=$(grep -o '"machine":{"name":"[^"]*"' idle-rent.out | head -1 | sed 's/.*"name":"//; s/"$//')

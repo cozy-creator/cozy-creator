@@ -51,10 +51,12 @@ rental_idle_through_updates() {
   fi
 }
 
-# rental_stop_closes [provider]: a rental whose provider stops its pod is ending at once and destroyed, never "offline": its
-# container's PID 1 ends (`cozy machine ssh`), which vast reads as `exited`, as its balance stop of hougetsu did. The Hub
-# confirms the stop with a second read and releases it (th-404); Calcifer says `ending: vast stopped it`. RunPod starts an
-# exited container again, so only vast stops it this way. Red before th-404: offline until 15 minutes after its last reach.
+# rental_stop_closes [provider]: a rental whose provider stops its pod is ending at once and destroyed, never "offline". The
+# pod stops itself at its provider, as vast stopped hougetsu for its balance: a dev machine (`dev = true` in its config.toml)
+# whose service takes SIGUSR2 asks its provider to stop it with the credential only it holds (`stop_when_asked`; an exited
+# container is started again by vast and RunPod alike). The Hub confirms the stop with a second read and releases it
+# (th-404); Calcifer says `ending: vast stopped it`. Red before th-404: offline until 15 minutes after its last reach. A
+# candidate TensorD ($TDF) goes on the pod first.
 rental_stop_closes() {
   local p=${1:-vast} m r t0 st seen=() offline= ending=
   [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
@@ -72,11 +74,18 @@ rental_stop_closes() {
     [ -z "$r" ] || "$CLI" machine end "$r" -y >>"$RT/end.out" 2>&1
     return
   fi
+  [ -z "${TDF:-}" ] || "$CLI" machine update "$m" --tensord "$TDF" -y >"$RT/tensord.out" 2>&1 || log "rental-stop-closes: $m's TensorD: $(tail -c 200 "$RT/tensord.out")"
   local agent SSH_AUTH_SOCK SSH_AGENT_PID; agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$RT/pod-ssh"
-  for _ in 1 2 3 4 5 6; do "$CLI" machine ssh "$m" -- 'kill -TERM 1' >"$RT/kill.out" 2>&1 && break; sleep 10; done
+  local ask="mkdir -p ~/.cozy && touch ~/.cozy/config.toml && { echo 'dev = true'; grep -v '^dev *=' ~/.cozy/config.toml || true; } > ~/.cozy/config.toml.new && mv ~/.cozy/config.toml.new ~/.cozy/config.toml && pkill -USR2 -P 1 -x tensord && echo asked"
+  for _ in 1 2 3 4 5 6; do "$CLI" machine ssh "$m" -- "$ask" </dev/null >"$RT/stop.out" 2>&1 && grep -q asked "$RT/stop.out" && break; sleep 10; done
   ssh-agent -k >/dev/null 2>&1
   t0=$(date +%s)
-  log "rental-stop-closes: $m ($r, $p): its PID 1 ended at $(date -u -d "@$t0" +%T)"
+  if ! grep -q asked "$RT/stop.out"; then
+    expect "rental-stop-closes" FAIL "could not ask $m to stop at $p: $(tail -c 200 "$RT/stop.out")"
+    "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
+    return
+  fi
+  log "rental-stop-closes: $m ($r, $p): asked to stop itself at its provider at $(date -u -d "@$t0" +%T)"
   while (( $(date +%s) - t0 < 600 )); do
     st=$(show "$m" state); [ -z "$(show "$m" offline)" ] || offline=$(show "$m" offline)
     [ "${seen[-1]:-}" = "$st" ] || seen+=("$st")

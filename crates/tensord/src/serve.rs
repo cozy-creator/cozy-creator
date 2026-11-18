@@ -389,6 +389,10 @@ fn run_machine(
                 Err(error) => tracing::error!("no runtime for the rental's check-ins ({error}): its Hub releases it once it hears nothing"),
             }
         })?;
+        #[cfg(unix)]
+        if let Some(own) = provider.clone() {
+            runtime.spawn(crate::machine::provider::stop_when_asked(own));
+        }
         std::thread::Builder::new()
             .name("rental-lifecycle".into())
             .spawn(move || {
