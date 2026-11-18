@@ -109,16 +109,24 @@ J --arg m "$move" '.runs[] | select(.name == $m) | .status == "canceled" and .re
 J --argjson at "$accepted" '[.runs[] | select(.kind == "update" and .created_at_ms < $at and .reason.code != "yielded")] | length == 0' "$d/runs.json" \
   || check "rc yields: stand-b moved before the render went: $(jq -c --argjson at "$accepted" '[.runs[] | select(.kind == "update" and .created_at_ms < $at) | {name, status, reason}]' "$d/runs.json")"
 
-# Idle again, it moves: the follower's next move goes, and stand-b runs the RC's cozy.
-for _ in $(seq 480); do
+# Idle again, it moves: once the render has ended, the follower makes its move again and sends it.
+local ended again
+ended=$(jq -r '[.runs[] | select(.kind != "update") | .settled_at_ms // 0] | max // 0' "$d/runs.json")
+for _ in $(seq 300); do
   rm_runs stand-b "$d/runs-after.json"
-  J '[.runs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and .status == "completed")] | length > 0' "$d/runs-after.json" && break
+  J --arg m "$move" '[.runs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and .name != $m and .accepted_at_ms != null)] | length > 0' "$d/runs-after.json" && break
   sleep 1
 done
-for _ in $(seq 120); do rm_show stand-b > "$d/show-after.json" && J '.status.phase == "ready" and (.status.version | test("-dev\\+g"))' "$d/show-after.json" && break; sleep 1; done
-echo "rc yields: then $(jq -c '[.runs | sort_by(.number)[] | select(.kind == "update") | {name, status, reason: .reason.code}]' "$d/runs-after.json"); stand-b runs $(jq -c '.status | {version, runtime}' "$d/show-after.json")"
-J '.status.version | test("-dev\\+g")' "$d/show-after.json" \
-  || check "rc yields: stand-b didn't move to the RC once idle: $(jq -c '{rc, status: (.status // {} | {phase, version})}' "$d/show-after.json") $(jq -c '[.runs[]? | select(.kind == "update") | {name, status, reason}]' "$d/runs-after.json")"
+again=$(jq -r --arg m "$move" '[.runs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and .name != $m)] | min_by(.created_at_ms) | .name // empty' "$d/runs-after.json")
+for _ in $(seq 240); do
+  rm_runs stand-b "$d/runs-after.json"
+  J --arg a "$again" '[.runs[]? | select(.name == $a and (.status == "queued" or .status == "in_progress"))] | length == 0' "$d/runs-after.json" && break
+  sleep 1
+done
+rm_show stand-b > "$d/show-after.json" || true
+echo "rc yields: the render ended $((ended - t0)) ms after it was asked; then $(jq -c '[.runs | sort_by(.number)[] | select(.kind == "update") | {name, status, reason: .reason.code, created: (.created_at_ms - '"$t0"'), accepted: ((.accepted_at_ms // 0) - '"$t0"')}]' "$d/runs-after.json"); stand-b runs $(jq -c '.status // {} | {version, runtime}' "$d/show-after.json")"
+J --arg a "$again" --argjson ended "$ended" '[.runs[]? | select(.name == $a and .created_at_ms >= $ended and .accepted_at_ms != null)] | length == 1' "$d/runs-after.json" \
+  || check "rc yields: stand-b wasn't moved to the RC once idle: $(jq -c '[.runs[]? | select(.kind == "update") | {name, status, reason, created_at_ms}]' "$d/runs-after.json") (the render ended at $ended)"
 rm_down stand-b
 }
 
