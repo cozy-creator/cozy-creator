@@ -156,6 +156,13 @@ pub struct WorkingStats {
     pub cache_pending_bytes: usize,
     pub cache_ready_bytes: usize,
     pub caches: usize,
+    /// Live working bytes on host pages now (`demote`, cr-305 rung 5), all moved since the process
+    /// began, and the times a refused allocation moved some.
+    pub demoted_bytes: usize,
+    pub demoted_total: u64,
+    pub demotions: u64,
+    /// This device's HOST_NATIVE_ATOMIC_SUPPORTED as read at the first move: 0 unread, 1 no, 2 yes.
+    pub host_atomics: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,15 +199,18 @@ struct Block {
     reusable_on: Option<u64>,
     // A live eager block's (birth pass, site) in `escape`'s tally.
     tally: Option<(u32, u32)>,
+    // The allocation count when it was taken: one taken before a graph was recorded (`capture_mark`)
+    // may be read by that graph, so it never moves to host pages.
+    born: u64,
 }
 
 impl Segment {
     fn new(bytes: usize, size_class: usize, pool: Option<PoolId>) -> Self {
         let chunk = if pool.is_none() { bytes.min(CHUNK) } else { bytes };
         let chunks = (0..bytes).step_by(chunk)
-            .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
+            .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None, host: false })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0 }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, demoted: false }
     }
 
     fn backed(&self) -> bool {
@@ -236,6 +246,7 @@ impl Block {
             life: Life::Ready,
             reusable_on: None,
             tally: None,
+            born: 0,
         }
     }
 
@@ -260,6 +271,8 @@ struct Chunk {
     bytes: usize,
     // None: its pages went back. The VA stays until the segment goes, or an idle pool maps again.
     handle: Option<u64>,
+    // Its handle is host pages its device pages moved to (`demote`).
+    host: bool,
 }
 
 struct Segment {
@@ -274,6 +287,8 @@ struct Segment {
     touched: u64,
     // Unmapped VA after it (`checks::guard`), which goes back with it.
     guard: usize,
+    // Its pages moved to host (`demote`): it takes no new block, and goes once its blocks are free.
+    demoted: bool,
 }
 
 #[derive(Default)]
@@ -343,6 +358,11 @@ pub(crate) struct State {
     escapes: escape::Escapes,
     /// The last allocation refused here, as it found the card (`refusal`).
     refusal: Option<Refusal>,
+    /// Small weight regions packed back to back, their pages shared (cr-317).
+    pub(crate) packs: crate::Packs,
+    /// The allocation count when the latest graph capture began: blocks taken by then may be read by
+    /// a graph, and never move to host pages (`demote`).
+    capture_mark: u64,
 }
 
 /// The room an allocation varena refused found, read as it was refused, its caller's pins still
@@ -389,6 +409,9 @@ pub fn refusal(device: i32) -> Result<Option<Refusal>> {
 impl State {
     /// A free block onto its list, and a run's onto the cut index too. The block is in the table.
     fn list(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        if self.blocks.get(&ptr).is_some_and(|block| self.segments[&block.segment].demoted) {
+            return; // on host pages: nothing new goes there
+        }
         self.free.entry(key).or_default().push(ptr);
         if key.0.is_none() && self.blocks.get(&ptr).is_some_and(|block| self.segments[&block.segment].size_class > LARGE) {
             self.runs.insert((key.1, ptr));
@@ -467,7 +490,7 @@ impl State {
     /// What of this segment could go back now.
     fn releasable(&self, base: u64, segment: &Segment) -> usize {
         segment.chunks.iter()
-            .filter(|chunk| chunk.handle.is_some() && self.chunk_free(base, chunk))
+            .filter(|chunk| chunk.handle.is_some() && !chunk.host && self.chunk_free(base, chunk))
             .map(|chunk| chunk.bytes)
             .sum()
     }
@@ -914,7 +937,8 @@ impl Device {
     /// A wholly free completed slab page of another class becomes this class's: it is one handle.
     fn reslab(state: &mut State, class: usize) -> Option<()> {
         let (base, bytes) = state.segments.iter()
-            .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
+            .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class
+                && segment.backed() && !segment.demoted)
             .find(|(base, segment)| state.blocks.range(**base..**base + segment.bytes as u64)
                 .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none()))
             .map(|(base, segment)| (*base, segment.bytes))?;
@@ -1025,6 +1049,8 @@ impl Device {
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
+        let born = state.stats.allocations;
+        state.blocks.get_mut(&ptr).expect("taken block").born = born;
         ptr
     }
 
@@ -1252,10 +1278,93 @@ impl Device {
         self.driver().unmap(at, chunk.bytes)?;
         self.driver().release(handle)?;
         segment.chunks[index].handle = None;
+        if chunk.host {
+            // Host pages: none of the card's.
+            segment.chunks[index].host = false;
+            state.stats.demoted_bytes -= chunk.bytes;
+            return Ok(0);
+        }
         self.working.fetch_sub(chunk.bytes, Ordering::AcqRel);
         self.released.fetch_add(chunk.bytes as u64, Ordering::AcqRel);
         state.stats.mapped_bytes -= chunk.bytes;
         Ok(chunk.bytes)
+    }
+
+    /// One live segment's device pages to host pages at the same addresses (`demote`): each handle's
+    /// bytes copied to host pages, the device pages unmapped, the host pages mapped in their place
+    /// and the device pages released. Its free blocks leave the lists. The bytes the card got back.
+    fn move_to_host(&self, state: &mut State, base: u64) -> Result<usize> {
+        let mut moved = 0;
+        for index in 0..state.segments[&base].chunks.len() {
+            let chunk = state.segments[&base].chunks[index];
+            let Some(device) = chunk.handle.filter(|_| !chunk.host) else { continue };
+            let at = base + chunk.offset as u64;
+            // Short of host pages or of a copy, nothing live has changed yet: what moved stays moved.
+            let Ok(host) = self.driver().create_host(chunk.bytes) else { break };
+            let Ok(staging) = self.driver().reserve(chunk.bytes) else {
+                self.driver().release(host)?;
+                break;
+            };
+            let mapped = self.driver().map(staging, chunk.bytes, host);
+            let copied = mapped.is_ok() && self.driver().copy_device(staging, at, chunk.bytes).is_ok();
+            if mapped.is_ok() {
+                self.driver().unmap(staging, chunk.bytes)?;
+            }
+            self.driver().free_address(staging, chunk.bytes)?;
+            if !copied {
+                self.driver().release(host)?;
+                break;
+            }
+            // The device pages stay until the host pages hold their place: a refused map puts
+            // them back, never leaving a live tensor's address unmapped.
+            self.driver().unmap(at, chunk.bytes)?;
+            if let Err(error) = self.driver().map(at, chunk.bytes, host) {
+                self.driver().map(at, chunk.bytes, device)?;
+                self.driver().release(host)?;
+                return Err(error);
+            }
+            self.driver().release(device)?;
+            let segment = state.segments.get_mut(&base).expect("owned segment");
+            segment.chunks[index].handle = Some(host);
+            segment.chunks[index].host = true;
+            segment.demoted = true;
+            self.working.fetch_sub(chunk.bytes, Ordering::AcqRel);
+            state.stats.mapped_bytes -= chunk.bytes;
+            state.stats.demoted_bytes += chunk.bytes;
+            moved += chunk.bytes;
+        }
+        if state.segments[&base].demoted {
+            let end = base + state.segments[&base].bytes as u64;
+            let free: Vec<_> = state.blocks.range(base..end)
+                .filter(|(_, block)| block.life != Life::Live)
+                .map(|(ptr, block)| (*ptr, block.capacity, block.reusable_on))
+                .collect();
+            for (ptr, capacity, origin) in free {
+                state.unlist((None, capacity, origin), ptr);
+            }
+        }
+        Ok(moved)
+    }
+
+    /// Moved segments whose blocks are all free and done: their host pages and address go.
+    fn release_moved(&self, state: &mut State) -> Result<()> {
+        let done: Vec<_> = state.segments.iter()
+            .filter(|(base, segment)| segment.demoted
+                && state.blocks.range(**base..**base + segment.bytes as u64)
+                    .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none()))
+            .map(|(base, _)| *base)
+            .collect();
+        for base in done {
+            self.unback(state, base)?;
+            let bytes = state.segments[&base].bytes;
+            let blocks: Vec<_> = state.blocks.range(base..base + bytes as u64).map(|(ptr, _)| *ptr).collect();
+            for ptr in blocks {
+                state.blocks.remove(&ptr);
+            }
+            let guard = state.segments.remove(&base).expect("owned segment").guard;
+            Self::return_address(state, base, bytes + guard);
+        }
+        Ok(())
     }
 
     /// This large segment's handles with only completed free blocks on them go back, last first
@@ -1293,11 +1402,12 @@ impl Device {
         &self, state: &mut State, limit: usize, exclude: Option<PoolId>,
         preserve: &BTreeSet<u64>, maximum: usize,
     ) -> Result<usize> {
+        self.release_moved(state)?;
         let mut released = 0usize;
         let mut candidates = Vec::new();
         let mut large = Vec::new();
         for (base, segment) in &state.segments {
-            if preserve.contains(base) {
+            if preserve.contains(base) || segment.demoted {
                 continue;
             }
             if exclude.is_some() && segment.pool == exclude {
@@ -1600,7 +1710,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let segment = rounded(class.max(SEGMENT), owner.page())?;
     // A loop's working allocation, like its weights, takes weights before its other pages: what one
     // step freed the next uses again.
-    let protect = Protect { reuse_working: true, keep_phase: looping, outside: true, ..Default::default() };
+    let demote = !FALLBACK.with(std::cell::Cell::get);
+    let protect = Protect { reuse_working: true, keep_phase: looping, outside: true, demote, ..Default::default() };
     let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
@@ -2049,6 +2160,100 @@ pub(crate) fn release_idle_pools(device: i32, want: usize, maximum: usize, keep:
     result.map_err(|error| owner.fail(&mut state, error))
 }
 
+/// The reclaim order's last step (cr-305 rung 5): with nothing else to give, a request's live working
+/// segments move to host pages at their own addresses, most live bytes first, until `want` bytes of
+/// the card are free. Their tensors keep their pointers and contents, and kernels reach them over the
+/// link: slower, and the run completes (Paul: a run fails on evidence of a hang, never for slowness).
+/// Never during a capture, never a graph pool, a library workspace, scratch, or a block taken before
+/// the latest capture began (a graph may read it). A moved segment takes no new block and goes, host
+/// pages and all, once its blocks are free (`release_moved`). The bytes the card got back.
+pub(crate) fn demote(device: i32, want: usize) -> Result<usize> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    let granularity = match owner.driver().host_pages() {
+        Ok(granularity) => granularity,
+        Err(why) => {
+            if !DEMOTE_OFF.swap(true, Ordering::AcqRel) {
+                eprintln!("varena: GPU {device}: live tensors can't move to host pages here ({why})");
+            }
+            return Ok(0);
+        }
+    };
+    {
+        // Every queued use of what may move completes first, waited with the gate released. The
+        // request's thread is the one asking, and a package's threads launch no device work, so
+        // nothing new reaches it until this returns.
+        let hold = crate::gate(device)?.hold()?;
+        let _context = owner.driver().enter()?;
+        owner.driver().synchronize()?;
+        drop(hold);
+    }
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver().enter()?;
+    let result = owner.poll(&mut state).and_then(|()| {
+        let mut found: Vec<(usize, u64)> = state.segments.iter()
+            .filter(|(_, segment)| segment.pool.is_none() && !segment.demoted && segment.backed()
+                && segment.chunks.iter().all(|chunk| chunk.bytes % granularity == 0))
+            .filter_map(|(base, segment)| {
+                let mut live = 0;
+                for (_, block) in state.blocks.range(*base..*base + segment.bytes as u64) {
+                    if block.workspace || block.scratch {
+                        return None;
+                    }
+                    if block.life == Life::Live {
+                        if block.born <= state.capture_mark {
+                            return None;
+                        }
+                        live += block.capacity;
+                    }
+                }
+                (live != 0).then_some((live, *base))
+            })
+            .collect();
+        found.sort_unstable_by(|a, b| b.cmp(a));
+        let mut moved = 0;
+        for (_, base) in found {
+            if moved >= want {
+                break;
+            }
+            moved += owner.move_to_host(&mut state, base)?;
+        }
+        if moved != 0 {
+            state.stats.demotions += 1;
+            state.stats.demoted_total += moved as u64;
+            if state.stats.host_atomics == 0 {
+                state.stats.host_atomics = match owner.driver().host_native_atomics() {
+                    Some(true) => 2,
+                    _ => 1,
+                };
+            }
+            eprintln!(
+                "varena: GPU {device}: {moved} bytes of live tensors moved to host pages for a {want}-byte \
+                 shortfall ({} bytes there now)", state.stats.demoted_bytes,
+            );
+        }
+        Ok(moved)
+    });
+    result.map_err(|error| owner.fail(&mut state, error))
+}
+
+std::thread_local! {
+    /// This thread's allocations have a cheaper way out than moving live tensors to host pages (a
+    /// finer split level, a split's whole on host): a refusal goes back to their caller.
+    static FALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Set whether this thread's allocations have a cheaper way out (`FALLBACK`); the previous setting.
+pub fn set_fallback(on: bool) -> bool {
+    FALLBACK.with(|fallback| fallback.replace(on))
+}
+
+/// Said once: this process's devices can't move live tensors to host pages.
+static DEMOTE_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Wait outside every lock for submitted work on memory already freed. False: nothing pending.
 pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>) -> Result<bool> {
     let Some(owner) = existing(device)? else {
@@ -2408,7 +2613,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .sum();
     stats.reclaimable_bytes = state.reusable_eager_pages();
     let unmapped: usize = state.segments.values().map(Segment::unbacked).sum();
-    stats.unassigned_bytes = (stats.mapped_bytes + unmapped)
+    stats.unassigned_bytes = (stats.mapped_bytes + stats.demoted_bytes + unmapped)
         .saturating_sub(stats.allocated_capacity + stats.pending_bytes + stats.free_bytes);
     stats.pools_bytes = state
         .segments
@@ -2685,6 +2890,7 @@ pub fn pool_begin(device: i32, pool: PoolId, stream: u64) -> Result<()> {
             "capture sessions on one device must be sequential",
         ));
     }
+    state.capture_mark = state.stats.allocations;
     let pool = state.pools.entry(pool).or_default();
     if pool.unmapped {
         return Err(Error::Invalid("map this graph pool before capture"));

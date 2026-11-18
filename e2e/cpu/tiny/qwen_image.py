@@ -101,7 +101,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(1)
     save(_transformer(edit=True), edit / "transformer")
     _index(edit, "QwenImageEditPlusPipeline")
-    return {BASE: base, EDIT: edit, LORAS[0]: _lora(store, 2), LORAS[1]: _lora(store, 3)}
+    return {BASE: base, EDIT: edit, "text_encoder": base, LORAS[0]: _lora(store, 2), LORAS[1]: _lora(store, 3)}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:

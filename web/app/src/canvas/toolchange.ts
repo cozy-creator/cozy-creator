@@ -1,6 +1,6 @@
 import type { Asset, Tool, ToolField } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
-import { mainText, OWN, startingFields, TEXT_TOOL } from "./controls"
+import { fromFields, mainText, OWN, startingFields, TEXT_TOOL } from "./controls"
 import { madeHere, toolName } from "./shown"
 import { toolFitsNode } from "./palette"
 
@@ -22,9 +22,19 @@ export interface ToolStep {
   lost: string[]
 }
 
-const WORDS = ["instructions", "summary"]
 const said = (value: unknown) => typeof value === "string" && value.trim() !== ""
-const wordsIn = (fields: Fields) => WORDS.find((field) => said(fields[field]))
+/** Where a box of `tool` holds its words, when it holds any: its main text (`mainText`), or with no tool the list knows, what its fields hold
+ *  says (`fieldsOf`). */
+function wordsIn(fields: Fields, tool: Tool | undefined): string | undefined {
+  const field = mainText(tool ? tool.fields : fromFields(fields))?.field
+  return field !== undefined && said(fields[field]) ? field : undefined
+}
+/** Its words moved from where a box of `from` holds them to where `tool` reads them: the fields that change. */
+function wordsTo(fields: Fields, from: Tool | undefined, tool: Tool): Fields {
+  const held = wordsIn(fields, from)
+  const reads = mainText(tool.fields)?.field ?? "instructions"
+  return held && held !== reads ? { [held]: null, [reads]: fields[held] } : {}
+}
 const nounOf = (kind: string) => (kind === "video" ? "take" : "version")
 
 /** Whether the container already holds a file or a version. A box of words is its words, whatever versions a tool wrote on it (xs-204). */
@@ -80,8 +90,10 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes), timeline: tool.id === "cozy/edit" ? { fps: 24, tracks: [{ clips: [] }] } : undefined }
   if (!asset.tool && !holdsPictures(asset)) {
     // Its words are the prompt.
-    const { text, ...rest } = fields
-    return { row: { ...row, standing: "missing", fields: { ...rest, ...initial, node_kind: tool.makes, instructions: rest.instructions ?? text ?? "" } }, tool: tool.id, fields: { ...initial, node_kind: tool.makes }, back, lost: [] }
+    const words = wordsTo(fields, undefined, tool)
+    back.fields = { ...back.fields, ...Object.fromEntries(Object.keys(words).map((field) => [field, fields[field] ?? null])) }
+    const shown = Object.fromEntries(Object.entries({ ...fields, ...words, ...initial, node_kind: tool.makes }).filter(([, value]) => value !== null))
+    return { row: { ...row, standing: "missing", fields: shown }, tool: tool.id, fields: { ...initial, ...words, node_kind: tool.makes }, back, lost: [] }
   }
   // On pictures: its prompt starts from the version shown, and what's approved stays as it was (Paul, 11-06). A lone file is its version 1.
   if (!asset.tool) {
@@ -96,14 +108,9 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   // A swap: what the new tool asks of keeps, and so do its words, in the field it reads them from.
   const asks = new Set(tool.fields.map((field) => field.field))
   const { kept: addOns, lost } = addOnsOn(fields, from, tool)
-  const words = wordsIn(fields)
-  const reads = mainText(tool.fields)?.field ?? "instructions"
   const send: Fields = { ...initial, node_kind: tool.makes }
   for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "instructions") send[field] = null
-  if (words && words !== reads) {
-    send[words] = null
-    send[reads] = fields[words]
-  }
+  Object.assign(send, wordsTo(fields, from, tool))
   if (JSON.stringify(addOns.lora ?? undefined) !== JSON.stringify(fields.lora)) send.lora = addOns.lora
   if (JSON.stringify(addOns.models ?? undefined) !== JSON.stringify(fields.models)) send.models = addOns.models
   const shown = Object.fromEntries(Object.entries({ ...fields, ...send }).filter(([, value]) => value !== null))
@@ -111,15 +118,18 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   return { row: { ...row, fields: shown }, tool: tool.id, fields: send, back, lost }
 }
 
-/** Removing a model leaves the node's media kind and its own words. */
-export function comingOff(asset: Asset, fields: Fields): ToolStep {
-  const own = { ...Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field) || (asset.kind !== "text" && WORDS.includes(field)))), node_kind: asset.kind }
+/** Its tool coming off leaves the box's kind and its words: where `from`, that tool, held them, or on a box of words as its text. */
+export function comingOff(asset: Asset, fields: Fields, from: Tool | undefined): ToolStep {
+  const words = wordsIn(fields, from)
+  // Named in what's sent, they stay as the rest of what the tool asked goes.
+  const kept: Fields = words && asset.kind !== "text" ? { [words]: fields[words] } : {}
+  const own = { ...Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field))), ...kept, node_kind: asset.kind }
   const gone = Object.keys(fields).filter((field) => !OWN.includes(field))
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { ...Object.fromEntries(gone.map((field) => [field, fields[field]])), node_kind: fields.node_kind ?? null } }
-  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own, timeline: undefined }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
-  const words = wordsIn(fields)
-  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: own, timeline: undefined }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
-  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
+  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own, timeline: undefined }, tool: "", fields: { ...kept, node_kind: asset.kind }, back, lost: [] }
+  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: own, timeline: undefined }, tool: "", fields: { ...kept, node_kind: asset.kind }, back, lost: [] }
+  const text: Fields = words ? { [words]: null, text: fields[words] } : {}
+  return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: text, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
 /** What a tool can't use, in words. */

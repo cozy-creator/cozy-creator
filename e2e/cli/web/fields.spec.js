@@ -1,9 +1,10 @@
 // fields (cl-973 core cell 10): a box's fields, drawn from what its tool declares. On the every-type tool (project/boxes.py's shot), in Focus:
 // each control has its field's role and shows its default; a slider, a menu, a switch, segments, a number and words each set go to the API
 // at once, a reset unsets its field and shows the default again, and `cozy render` sends them. A When field (project/when.py) dims as its
-// controller goes off, saying why, keeps its value, and `cozy run` ignores it. An image slot refuses a video, saying why; the corner pulled
-// to 1237:689 lands on 16:9. On H3, Models & LoRAs: its base model listed once, a LoRA added with its trigger appended once and drawn, its
-// strength kept as the model is replaced in place. Qwen Image 2's VAE slot lists the seeded VAE. No control lacks a declared field.
+// controller goes off, saying why, keeps its value, and `cozy run` ignores it. An image slot refuses a video take carried onto it from its
+// box's column, saying why; the corner pulled to 1237:689 lands on 16:9. On H3, Models & LoRAs: its base model listed once, a LoRA added
+// with its trigger appended once and drawn, its strength kept as the model is replaced in place. Qwen Image 2's VAE slot lists the seeded
+// VAE. No control lacks a declared field.
 // A box says its shape as film and media say it (cl-983): a take the shape its render asked, whatever size its model rounded to
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
@@ -11,6 +12,8 @@
 const { test, expect, themed, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
+const { mkdirSync } = require('fs');
+const { join } = require('path');
 
 const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
@@ -20,17 +23,6 @@ const RUN_MS = 120_000;
 // web/app/src/canvas/ratios.ts's.
 const STANDARD = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
 const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
-
-/** A point of `name`'s picture on the canvas a hand can press to carry it: not under what floats over it, nor on a button. */
-const reach = (page, name) => page.evaluate((name) => {
-  const root = document.querySelector('.canvas-root'), scene = root?.canvasInspection, at = scene?.card(name)?.body;
-  if (!at) return null;
-  for (let y = at.y + 4; y < Math.min(at.y + at.height, innerHeight); y += 8) for (let x = at.x + 4; x < Math.min(at.x + at.width, innerWidth); x += 8) {
-    const el = document.elementFromPoint(x, y);
-    if (el && root.contains(el) && scene.hitTest({ x, y })?.name === name && !el.closest('button')) return { x, y };
-  }
-  return null;
-}, name);
 
 /** Every control of the open box that isn't one of its tool's fields: each `[data-field]` by its first part, each control outside a group's
  *  rows by its label (a slot's typed name and a clip's in and out by their field's). [] when each is declared. */
@@ -61,6 +53,9 @@ test('fields', async ({ page, project, api, cli, guards }) => {
   await project.import(MP4, { name: 'walk', at: { x: 0, y: 0 } });
   await project.import(png(40), { name: 'coast', at: { x: 0, y: 260 } });
   await project.add({ name: 'every', tool: EVERY, kind: 'video', fields: { plate: '<walk>', aspect_ratio: '1:1' }, at: { x: 360, y: 0 } });
+  // A shot with a video take of its own, carried from its column onto its image slot.
+  await project.add({ name: 'played', tool: EVERY, kind: 'video', fields: { plate: '<walk>' }, at: { x: 1080, y: 0 } });
+  await api.post(project.at('/assets/played/versions'), { source: await project.upload(MP4) });
   await project.add({ name: 'when', tool: WHEN, kind: 'image', fields: { instructions: 'a lighthouse at dusk', creativity: 'wild' }, at: { x: 720, y: 0 } });
   await project.add({ name: 'scene', tool: 'minimax-h3/generate', kind: 'video', fields: { summary: 'A harbour at dusk.', beats: [{ description: 'Boats come in.', duration: 5 }] }, at: { x: 360, y: 460 } });
   await project.add({ name: 'still', tool: qwen.id, kind: 'image', fields: { [qwen.fields.find((field) => field.type === 'prompt').field]: 'A lighthouse.' }, at: { x: 720, y: 460 } });
@@ -70,7 +65,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
     return Boolean(every && when);
   }, { message: 'the project lists its local tools', timeout: 180_000 }).toBe(true);
-  for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  for (const name of ['walk', 'coast', 'every', 'played', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const fieldsOf = async (name) => (await project.asset(name))?.fields ?? {};
@@ -156,30 +151,18 @@ test('fields', async ({ page, project, api, cli, guards }) => {
 
   await test.step('an image slot refuses a video, saying why; the corner pulled to 1237:689 lands on 16:9', async () => {
     await leave(page);
-    await focus(page, 'every');
+    // In Focus the canvas's other boxes are gone (cl-1198, Paul 11-17: "fade away the other nodes"), so what's carried onto a slot there
+    // is a take from the box's own column: played's video, while its next take is written.
+    await focus(page, 'played');
+    await region.getByRole('button', { name: 'New video', exact: true }).click();
     const slot = region.locator('.slot-control[data-field="first_frame"]');
     await slot.scrollIntoViewIfNeeded();
-    // The canvas right of what Focus shows, where walk is carried from.
-    const { strip, right } = await page.evaluate(() => {
-      const root = document.querySelector('.canvas-root'), at = root.canvasInspection.camera(), pane = root.getBoundingClientRect();
-      const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
-      return { strip: { x: Math.round((right + 24 - pane.x - at.x) / at.zoom), y: Math.round((innerHeight / 2 - pane.y - at.y) / at.zoom) }, right };
-    });
-    await project.api.patch(project.at('/canvas'), { cards: { walk: strip } });
-    const stood = async () => {
-      const row = (await project.api.get(project.at('/canvas'))).cards.walk;
-      return { x: row?.x, y: row?.y };
-    };
-    await expect.poll(stood).toEqual(strip);
-    let from;
-    // Reached where the page draws it beside Focus, not where it was before the API's move landed in the page (44041520735: the carry
-    // began at walk's old place at the left edge, so nothing was held over the slot).
-    await expect.poll(async () => (from = await reach(page, 'walk'))?.x > right, { message: 'walk in reach beside Focus' }).toBe(true);
-    const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
+    const said = await carry(page, region.locator('.here-side .take[data-take="1"]'), await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
     expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes an image') });
     await expect.soft(page.locator('.notes .note .line', { hasText: 'takes an image' }), 'and said once let go').toHaveCount(1);
-    expect.soft(await fieldsOf('every'), 'refused').not.toHaveProperty('first_frame');
-    expect.soft(await stood(), 'refused, walk stays where it was: a drop is no move').toEqual(strip);
+    expect.soft(await fieldsOf('played'), 'refused').not.toHaveProperty('first_frame');
+    await leave(page);
+    await focus(page, 'every');
 
     const corner = region.locator('.corner').first();
     const media = await region.locator('.focus-image-transform > .media').first().boundingBox();
@@ -225,9 +208,16 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     }));
     expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
     // Every slot the tool declares is a row (Qwen shows one prompt helper: the one for words, as nothing here edits a picture), and each opens.
+    // Matte (a cutout's BiRefNet, se-154) is declared on every Qwen tool; nothing typed says a request is a cutout, so it is always a row.
     const rows = picker.locator('button[data-model-slot]');
-    await expect(rows, 'one row per slot').toHaveCount(5);
-    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander_t2i', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    await expect(rows, 'one row per slot').toHaveCount(6);
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot'))), 'its slots, in order').toEqual(['expander_t2i', 'model', 'text_encoder', 'vae', 'turbo_lora', 'matte']);
+    const shots = join(process.env.OUT, 'web', 'fields');
+    mkdirSync(shots, { recursive: true });
+    await page.screenshot({ path: join(shots, 'qwen-model-picker.png') });
+    await picker.locator('button[data-model-slot="matte"]').click();
+    await page.screenshot({ path: join(shots, 'qwen-model-picker-matte.png') });
+    await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
     for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
       const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
@@ -239,6 +229,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
+    await page.screenshot({ path: join(shots, 'qwen-model-picker-vae.png') });
     await page.keyboard.press('Escape');
     await expect(picker, 'Escape closes it').toHaveCount(0);
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();

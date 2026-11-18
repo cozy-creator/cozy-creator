@@ -29,8 +29,27 @@ use crate::{
 };
 
 /// Submits `ask` under `key`: one key names one run forever. A run that rents carries the quote
-/// its renter agreed to (`machine::agree`). What binding it said is shown, in order.
+/// its renter agreed to (`machine::agree`). What binding it said is shown, in order. One whose
+/// weights no machine here has room for is said once and, at a terminal, offered a new rental in
+/// its place (cl-1175): nothing of it downloaded, and nothing rented unless agreed.
 pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
+    match submit_once(ctx, ask, key).await {
+        Err(e) if e.code == "machine_disk_full" && !matches!(ask.on.as_slice(), [On::New(_)]) && asks_person(ctx) => {
+            output::warn(&e.message);
+            let rent = RunRequest { on: vec![On::New(None)], agreed: None, ..ask.clone() };
+            submit_once(ctx, &rent, &mint_key()).await
+        }
+        submitted => submitted,
+    }
+}
+
+/// A person at a terminal answers a question: not `--json`, nor `--yes`, which agrees to nothing it didn't ask for.
+fn asks_person(ctx: &Context) -> bool {
+    use std::io::IsTerminal as _;
+    !ctx.json && !ctx.yes && std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+async fn submit_once(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut ask = ask.clone();
     if matches!(ask.on.as_slice(), [On::New(_)]) && ask.agreed.is_none() {
@@ -726,7 +745,7 @@ impl View {
             {
                 self.status("saving its outputs")
             }
-            Event::Waiting { reason } => {
+            Event::Waiting { reason, .. } => {
                 self.waiting = Some(reason.clone()).filter(|r| !r.is_empty());
                 self.show();
             }

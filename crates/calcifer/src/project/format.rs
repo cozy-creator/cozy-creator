@@ -19,7 +19,7 @@ use super::{
     graph::{self, Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
 
-/// The name used to render every asset.
+/// The name that cancels every asset's work.
 pub(crate) const ALL: &str = "all";
 /// What the platform reads of an asset. Any other key is an input.
 const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION, STARRED];
@@ -32,7 +32,7 @@ pub(super) const TEXT: &str = "text";
 pub(super) const NODE_KIND: &str = "node_kind";
 /// The exact current media version, independently of whether two versions contain identical bytes.
 pub(super) const SELECTED_VERSION: &str = "selected_version";
-/// A person's star on an asset, to find it again (cl-892): no input, so it puts nothing out of date.
+/// A person's star on an asset, to find it again (cl-892): no input, so it's in no key.
 pub(super) const STARRED: &str = "starred";
 
 pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
@@ -144,7 +144,7 @@ pub(crate) struct Asset {
     pub own: BTreeSet<String>,
     /// The words for whatever mentions it.
     pub description: String,
-    /// `approved`: the sha256 it holds. Its tool and inputs stay in its box, and can show it out of date.
+    /// `approved`: the sha256 it holds. Its tool and inputs stay in its box.
     pub pin: Option<String>,
     /// `starred: true`.
     pub starred: bool,
@@ -158,7 +158,7 @@ pub(crate) struct Asset {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Reading {
     pub asset: usize,
-    /// One version of it, which nothing moves: `<abr.2>`, `<self.1>`. None: whatever it stands on, and what reads it waits for that.
+    /// One version of it, which nothing moves: `<abr.2>`, `<self.1>`. None: whatever it stands on, its approved version else its newest.
     pub number: Option<u32>,
     /// What the mention says, the name a function hears it by.
     pub said: String,
@@ -193,19 +193,17 @@ pub(crate) struct Doc {
     dotted: HashMap<String, usize>,
 }
 
-/// Why an asset has the state it has, or none.
+/// Why an asset has the state it has, or none. Nothing is out of date (cl-1192, Paul 11-18): a box stands on its approved version, else
+/// its newest, whatever changed since either was made.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum State {
-    /// A hash its box approves: the version it is, if one, with its whole file set, and what changed since it was made.
-    Pinned { version: Option<u32>, changed: Vec<String> },
-    /// This version has these inputs.
+    /// A hash its box approves: the version it is, if one, with its whole file set.
+    Pinned { version: Option<u32> },
+    /// Its newest version.
     Current(u32),
     /// Only words, for what mentions it: no file, and nothing to make.
     Words,
-    /// Something it reads has no state.
-    Waits,
-    /// It has versions, none with these inputs, and why.
-    Stale(String),
+    /// No version yet.
     #[default]
     Missing,
 }
@@ -216,7 +214,7 @@ pub(crate) struct Standing {
     pub state: State,
     /// Its files; None is no state.
     pub files: Option<Files>,
-    /// Its key; None while something it reads has no state.
+    /// Its key: what it would be made from now. None while something it reads has no state.
     pub inputs: Option<String>,
     pub reads: Vec<ReadNow>,
 }
@@ -225,7 +223,7 @@ impl Standing {
     /// The version that is its state, if one is.
     pub(crate) fn version(&self) -> Option<u32> {
         match self.state {
-            State::Pinned { version, .. } => version,
+            State::Pinned { version } => version,
             State::Current(version) => Some(version),
             _ => None,
         }
@@ -238,8 +236,6 @@ pub(crate) struct ReadNow {
     pub name: String,
     pub asset: usize,
     pub files: Files,
-    /// A tool reading a newest version out of date: its number.
-    pub newest: Option<u32>,
     /// The version a mention fixes: `<abr.2>`.
     pub number: Option<u32>,
 }
@@ -322,7 +318,7 @@ impl Doc {
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
         if key == ALL {
-            self.warn(name, format!("{name} is called `{ALL}`, which means every box when you render, so it renders along with everything else."));
+            self.warn(name, format!("{name} is called `{ALL}`, which means every box when you cancel, so canceling it cancels everything."));
         }
         let mut body = match written {
             Value::Object(body) => body.clone(),
@@ -777,89 +773,47 @@ impl Doc {
         done
     }
 
-    /// The hash its box approves, else its newest version for these inputs, else none. A hash that is a version's main file brings
-    /// the version's whole file set; one that is none's is just that file.
+    /// The hash its box approves, else its newest version, else none. A hash that is a version's main file brings the version's whole file
+    /// set; one that is none's is just that file.
     pub(crate) fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
-        let held = self.held(i, lock);
         let reads = self.reading(i, lock, done);
         let inputs = reads.as_ref().map(|reads| self.key(i, reads));
         let reads = reads.unwrap_or_default();
         let stand = |state, files| Standing { state, files, inputs: inputs.clone(), reads: reads.clone() };
-        let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
-        let stands = |version: &Version, now: &str| !version.inputs.is_empty() && self.moved(i, &version.inputs, now, &reads).is_empty();
+        let versions = self.held(i, lock).map(|held| held.versions.as_slice()).unwrap_or_default();
         if let Some(sha256) = &asset.pin {
             return match asset.selected_version.and_then(|number| versions.iter().find(|version| version.number == number && version.main() == Some(sha256)))
                 .or_else(|| versions.iter().rev().find(|version| version.main() == Some(sha256))) {
-                Some(version) => {
-                    let changed = match &inputs {
-                        Some(now) if !version.inputs.is_empty() && !asset.hollow => self.moved(i, &version.inputs, now, &reads),
-                        _ => vec![],
-                    };
-                    stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
-                }
-                None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([(asset.kind.clone(), sha256.clone())]))),
+                Some(version) => stand(State::Pinned { version: Some(version.number) }, Some(version.files.clone())),
+                None => stand(State::Pinned { version: None }, Some(Files::from([(asset.kind.clone(), sha256.clone())]))),
             };
         }
-        // With no tool nothing can put it out of date: it stands on its newest, else its words.
-        if asset.hollow {
-            if let Some(version) = versions.last() {
-                return stand(State::Current(version.number), Some(version.files.clone()));
-            }
-            if !asset.description.is_empty() || asset.text.is_some() {
-                return stand(State::Words, Some(Files::new()));
-            }
+        if let Some(version) = versions.last() {
+            return stand(State::Current(version.number), Some(version.files.clone()));
         }
-        let Some(now) = &inputs else { return stand(State::Waits, None) };
-        // A film short of its pieces, or that went without one now here, isn't its state, though the memo would say so: it cuts again.
-        let off = |version: &folder::Version| -> Option<String> {
-            if self.tool(i) != Some(Tool::Cut) {
-                return None;
-            }
-            let here = |piece: &str| {
-                let read = reads.iter().find(|read| name_key(&read.name) == name_key(piece));
-                read.and_then(|read| lock.files.get(folder::main_of(&read.files)?)).is_some_and(|file| self.dir.join(&file.path).is_file())
-            };
-            match version.without.iter().find(|left| left.absent && here(&left.piece)) {
-                Some(left) => Some(format!("{} is on this computer now", left.piece)),
-                None => super::tools::film_off(&asset.inputs, &reads, lock, version),
-            }
-        };
-        let holding = || versions.iter().rev().filter(|version| version.inputs == *now);
-        if let Some(why) = holding().next().filter(|_| holding().all(|version| off(version).is_some())).and_then(off) {
-            return stand(State::Stale(why), None);
+        if asset.hollow && (!asset.description.is_empty() || asset.text.is_some()) {
+            return stand(State::Words, Some(Files::new()));
         }
-        match (holding().find(|version| off(version).is_none()), versions.last()) {
-            (Some(version), _) => stand(State::Current(version.number), Some(version.files.clone())),
-            (None, None) => stand(State::Missing, None),
-            (None, Some(_)) => {
-                if let Some(version) = versions.iter().rev().find(|version| self.tool(i).is_none() && stands(version, now)) {
-                    return stand(State::Current(version.number), Some(version.files.clone()));
-                }
-                stand(State::Stale("its inputs changed".to_owned()), None)
-            }
-        }
+        stand(State::Missing, None)
     }
 
-    /// What asset `i` reads now; None while something has no state. A tool reads state, else the newest version: what has
-    /// neither it skips, and with nothing to read at all, it waits.
+    /// What asset `i` reads now: what each it reads stands on. None while one has nothing; a tool skips what has nothing, and with nothing
+    /// to read at all, it waits.
     fn reading(&self, i: usize, lock: &Lock, done: &[Standing]) -> Option<Vec<ReadNow>> {
         let tool = self.tool(i).is_some();
         let mut reads = vec![];
         for read in &self.assets[i].reads {
             let j = read.asset;
-            // A deleted one is still what was read, so nothing it made goes out of date; `versions_gone` stops a render.
+            // A deleted one is still what was read; `versions_gone` stops a render.
             if let Some(number) = read.number {
-                reads.extend(self.version_files(j, number, lock).map(|files| ReadNow { name: read.said.clone(), asset: j, files, newest: None, number: Some(number) }));
+                reads.extend(self.version_files(j, number, lock).map(|files| ReadNow { name: read.said.clone(), asset: j, files, number: Some(number) }));
                 continue;
             }
             let name = self.assets[j].name.clone();
             match &done[j].files {
-                Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None, number: None }),
-                None if tool => {
-                    let newest = self.held(j, lock).and_then(|held| held.versions.last());
-                    reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number), number: None }));
-                }
+                Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), number: None }),
+                None if tool => {}
                 None => return None,
             }
         }
@@ -885,7 +839,7 @@ impl Doc {
     }
 
     /// Its key, blind to names: eight hex digits of what makes it and its written fields, each box they mention numbered by first mention,
-    /// then twelve for each of those boxes in that order (`parts`). So a rename puts nothing out of date.
+    /// then twelve for each of those boxes in that order (`parts`). So a rename changes no key.
     fn key(&self, i: usize, reads: &[ReadNow]) -> String {
         let asset = &self.assets[i];
         let mut own = asset.made.clone();
@@ -971,25 +925,6 @@ impl Doc {
         parts
     }
 
-    /// What moved since a version was made at key `then`: its inputs, or each box it mentions whose part changed. One `then` holds that's gone
-    /// is no change, as nothing could make it again.
-    fn moved(&self, i: usize, then: &str, now: &str, reads: &[ReadNow]) -> Vec<String> {
-        if then == now {
-            return vec![];
-        }
-        if own_part(then) != own_part(now) {
-            return vec!["its inputs".to_owned()];
-        }
-        let held: Vec<&[u8]> = then.as_bytes().get(OWN_PART..).unwrap_or_default().chunks_exact(READ_PART).collect();
-        let mut order = vec![];
-        let mut inputs = Value::Object(self.assets[i].written.clone().unwrap_or_else(|| self.assets[i].inputs.clone()));
-        self.numbered(i, &mut inputs, &mut order);
-        let parts = self.parts(i, reads, &mut order);
-        // A read that's gone is no change: nothing could make it again.
-        let changed = |k: usize, part: &str| part != GONE && held.get(k).is_some_and(|was| *was != part.as_bytes());
-        parts.into_iter().enumerate().filter(|(k, (_, part))| changed(*k, part)).map(|(_, (name, _))| format!("<{name}>")).collect()
-    }
-
     /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
     pub(crate) fn text(&self, i: usize) -> Option<String> {
         if self.tool(i).is_some() {
@@ -1016,7 +951,7 @@ fn words_in<'a>(value: &'a Value, words: &mut Vec<&'a str>) {
 }
 
 /// `tool` as the key holds it: no release, no root namespace, and local code by its directory's name, with the function it names, so moving
-/// from a checkout to the published package puts nothing out of date.
+/// from a checkout to the published package changes no key.
 pub(crate) fn plain_tool(tool: &str, folder: &Folder) -> String {
     let with = tool.trim();
     if api::target::written_as_path(with) || with.ends_with(".py") {
@@ -1196,10 +1131,6 @@ fn each_text(value: &mut Value, with: &mut dyn FnMut(&mut String)) {
 fn one_name_twice(first: &str, second: &str) -> Error {
     let said = format!("{first} and {second} count as the same name, because names ignore case and treat `_` and `-` alike.");
     invalid("project_name_twice", said).remedy(format!("Rename {second}."))
-}
-
-fn own_part(key: &str) -> &str {
-    key.get(..OWN_PART).unwrap_or(key)
 }
 
 pub(super) fn invalid(code: &str, message: String) -> Error {

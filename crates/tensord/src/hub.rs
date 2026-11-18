@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tensorfs::{
     err::{refuse, Code},
-    fetch::{HeaderMap, Request, TokenProvider},
+    fetch::{Backoff, HeaderMap, Request, TokenProvider},
 };
+
+use crate::stop::Stop;
 
 pub(crate) use ::api::hub::types;
 
@@ -209,7 +211,28 @@ struct Token {
     renewing: bool,
     /// The Hub's last refusal of the capability.
     refused: Option<String>,
+    /// The renewal's last attempt the Hub didn't answer, as said (`…; attempt 2/5 in 3 s`).
+    failing: Option<String>,
+    /// Its attempts in a row ran out (`Backoff::call`, the rule for a call a person waits on): reads go anonymously until it
+    /// is redeemed, while the renewal goes on asking (cl-1189).
+    spent: Option<String>,
 }
+
+impl Token {
+    /// A token to present: not within 5 s of expiring.
+    fn live(&self) -> bool {
+        !self.access.is_empty() && self.expires_unix_ms > now_ms() + 5_000
+    }
+
+    /// No token is coming for a read to wait on: refused, its attempts ran out, or no run renews it.
+    fn settled(&self) -> bool {
+        self.refused.is_some() || self.spent.is_some() || !self.renewing
+    }
+}
+
+/// The longest a read waits for its capability's token: its renewal's attempts (`Backoff::call`, a minute) and the one in
+/// flight then (each Hub call ends after 30 s with nothing), and a margin. Past it the read goes anonymously.
+const GRANT_WAIT: Duration = Duration::from_secs(150);
 
 /// What a capability says of itself, unverified: the Hub checks its signature.
 struct Claims {
@@ -234,6 +257,11 @@ fn now_ms() -> i64 {
 }
 
 impl Capability {
+    /// What names this capability alone, for what is kept for it and never another's (`Publisher::resolve`'s answers).
+    pub(crate) fn identity(&self) -> String {
+        tensorfs::sha256::hex_digest(format!("{}\n{}\n{}", self.actor, self.origin, self.secret).as_bytes())
+    }
+
     /// `actor`'s at `hub`, given `hub.capability` unless the one held was signed later; one that
     /// grants more is redeemed before its runs read. None for a request that carries none. A
     /// capability signed for another workload key (this machine's TensorD started again since) is
@@ -298,7 +326,7 @@ impl Capability {
 
     /// The account its runs read as: the one the Hub named in the token it redeemed this
     /// capability for (never the capability's own claims), waited for while a renewal runs; none
-    /// once the Hub refused it or no run renews it.
+    /// once the Hub refused it, its attempts ran out or no run renews it.
     pub(crate) fn account(&self) -> Option<String> {
         token_account(&block(self.current())?)
     }
@@ -314,8 +342,8 @@ impl Capability {
             return accepting;
         }
         runs.renewing = true;
-        // A renewal asks the Hub again: its reads wait for that answer.
-        self.token.send_modify(|token| (token.renewing, token.refused) = (true, None));
+        // A renewal asks the Hub again: its reads wait for that answer, its attempts counted afresh.
+        self.token.send_modify(|token| (token.renewing, token.refused, token.failing, token.spent) = (true, None, None, None));
         let (capability, engine) = (self.clone(), Arc::downgrade(engine));
         let spawned = std::thread::Builder::new().name("capability-renewal".into()).spawn(move || capability.renew(engine));
         if let Err(error) = spawned {
@@ -328,9 +356,14 @@ impl Capability {
 
     /// Redeems the capability when a token is due, while a run it serves is not over: a refusal
     /// stands until a newer capability comes; a Hub that does not answer is asked again, backing
-    /// off to a minute. Its own lifetime is the token's: it renews two thirds into it.
+    /// off to a minute. Its own lifetime is the token's: it renews two thirds into it. The attempts in a
+    /// row the Hub doesn't answer go by the one rule for a call a person waits on (`Backoff::call`), each
+    /// said to the reads waiting on it; once they run out those reads go anonymously, and it goes on asking
+    /// (cl-1189: a Hub that never answered held a run's first read 43 minutes, saying nothing).
     fn renew(self: Arc<Self>, engine: std::sync::Weak<crate::execution::Engine>) {
-        let mut failing = Duration::ZERO;
+        // The last pause after an ask the Hub didn't answer and when the next may go (unix ms), and the attempts in a row it
+        // didn't answer for the capability `asked`.
+        let (mut failing, mut retry_at, mut streak, mut asked) = (Duration::ZERO, 0i64, None::<Backoff>, String::new());
         loop {
             {
                 let mut served = self.runs.lock().unwrap();
@@ -348,16 +381,23 @@ impl Capability {
                 }
             }
             let held = self.held.lock().unwrap();
-            let wait = Duration::from_millis(held.renew_at.saturating_sub(now_ms()).max(0) as u64).max(failing);
+            // A newer capability is asked at once, its attempts counted afresh.
+            if held.signed != asked {
+                (failing, retry_at, streak, asked) = (Duration::ZERO, 0, None, held.signed.clone());
+            }
+            // Due at its token's renewal, and not before its pause after an ask the Hub didn't answer is over. The pause was a
+            // floor on every wait: once the Hub missed one ask it was never asked again, and every read waited forever (cl-1189).
+            let wait = Duration::from_millis(held.renew_at.max(retry_at).saturating_sub(now_ms()).max(0) as u64);
             if !wait.is_zero() {
                 let _ = self.changed.wait_timeout(held, wait).unwrap();
                 continue;
             }
             let (signed, grants) = (held.signed.clone(), held.grants.clone());
             drop(held);
+            let backoff = streak.get_or_insert_with(Backoff::call);
             match self.redeem(&signed) {
                 Ok(token) => {
-                    failing = Duration::ZERO;
+                    (failing, retry_at, streak) = (Duration::ZERO, 0, None);
                     let mut held = self.held.lock().unwrap();
                     // A newer capability came meanwhile: its own redemption is due.
                     if held.signed != signed {
@@ -368,7 +408,10 @@ impl Capability {
                     held.redeemed = grants;
                     drop(held);
                     tracing::info!(origin = %self.origin, expires_in_s = life / 1000, "redeemed the run capability");
-                    self.token.send_modify(|held| (held.access, held.expires_unix_ms, held.refused) = (token.access, token.expires_unix_ms, None));
+                    self.token.send_modify(|held| {
+                        (held.access, held.expires_unix_ms) = (token.access, token.expires_unix_ms);
+                        (held.refused, held.failing, held.spent) = (None, None, None);
+                    });
                 }
                 // A refusal of one a newer capability replaced meanwhile is not that one's.
                 Err(_) if self.held.lock().unwrap().signed != signed => continue,
@@ -380,8 +423,21 @@ impl Capability {
                     return;
                 }
                 Err(error) => {
-                    failing = error.stated_wait().unwrap_or(failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
-                    tracing::warn!(origin = %self.origin, retry_s = failing.as_secs(), "redeeming the run capability: {error}");
+                    let why = format!("{} didn't redeem the run's capability: {error}", self.origin);
+                    match backoff.again(&why, false, error.stated_wait()) {
+                        Some((pause, said)) => {
+                            (failing, retry_at) = (pause, now_ms() + pause.as_millis() as i64);
+                            tracing::warn!(origin = %self.origin, "{said}");
+                            self.token.send_modify(|token| token.failing = Some(said));
+                        }
+                        None => {
+                            failing = error.stated_wait().unwrap_or(failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                            retry_at = now_ms() + failing.as_millis() as i64;
+                            let spent = backoff.spent(&why);
+                            tracing::warn!(origin = %self.origin, retry_s = failing.as_secs(), "{spent}: its reads go anonymously meanwhile");
+                            self.token.send_modify(|token| (token.failing, token.spent) = (None, Some(spent)));
+                        }
+                    }
                 }
             }
         }
@@ -408,31 +464,73 @@ impl Capability {
     }
 
     /// The token to present now: a live one, waited for while a renewal runs; none once the Hub
-    /// refused the capability or no run renews it, when the read goes anonymously (public releases).
+    /// refused the capability, its attempts ran out (`spent`) or no run renews it, when the read goes
+    /// anonymously (public releases). Never waited for longer than `GRANT_WAIT` (cl-1189).
     async fn current(&self) -> Option<String> {
         let mut token = self.token.subscribe();
+        let until = tokio::time::Instant::now() + GRANT_WAIT;
         loop {
             {
                 let held = token.borrow_and_update();
-                if !held.access.is_empty() && held.expires_unix_ms > now_ms() + 5_000 {
+                if held.live() {
                     return Some(held.access.clone());
                 }
-                if held.refused.is_some() || !held.renewing {
+                if held.settled() {
                     return None;
                 }
             }
-            token.changed().await.ok()?;
+            match tokio::time::timeout_at(until, token.changed()).await {
+                Ok(changed) => changed.ok()?,
+                Err(_) => {
+                    tracing::warn!(origin = %self.origin, "the run capability wasn't redeemed in {} s: this read goes anonymously", GRANT_WAIT.as_secs());
+                    return None;
+                }
+            }
         }
     }
 
-    /// Why a read under it was refused: the Hub's refusal, or a token no run renews.
+    /// Waits, as a read does (`current`), for the token its run's reads present, saying what it waits on as it changes:
+    /// the Hub's grant, then each attempt the Hub didn't answer (cl-1189). Its run's stop ends the wait.
+    pub(crate) fn granted(&self, stop: Option<&Stop>, say: &dyn Fn(String)) {
+        let mut token = self.token.subscribe();
+        let (until, mut said) = (tokio::time::Instant::now() + GRANT_WAIT, None::<String>);
+        loop {
+            let line = {
+                let held = token.borrow_and_update();
+                if held.live() || held.settled() {
+                    return;
+                }
+                held.failing.clone().unwrap_or_else(|| format!("waiting for {} to grant the run's reads", self.origin))
+            };
+            if said.as_ref() != Some(&line) {
+                say(line.clone());
+                said = Some(line);
+            }
+            let changed = block(async {
+                let changed = tokio::time::timeout_at(until, token.changed());
+                match stop {
+                    Some(stop) => tokio::select! {
+                        changed = changed => matches!(changed, Ok(Ok(()))),
+                        () = stop.cancelled() => false,
+                    },
+                    None => matches!(changed.await, Ok(Ok(()))),
+                }
+            });
+            if !changed {
+                return;
+            }
+        }
+    }
+
+    /// Why a read under it was refused: the Hub's refusal, attempts it didn't answer, or a token no run renews.
     fn why(&self) -> String {
         let held = self.token.borrow();
-        match (&held.refused, held.expires_unix_ms) {
-            (Some(refused), _) => format!("the Hub refused the run's capability: {refused}: `cozy login <email>` on the computer that sent it, then run it again"),
-            (None, 0) => "the run's capability was never redeemed: `cozy login <email>` on the computer that sent it, then run it again".into(),
-            (None, at) if at > now_ms() => "the Hub refused the run's live capability token (401): run it again".into(),
-            (None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it: run it again", utc(at)),
+        match (&held.refused, &held.spent, held.expires_unix_ms) {
+            (Some(refused), _, _) => format!("the Hub refused the run's capability: {refused}: `cozy login <email>` on the computer that sent it, then run it again"),
+            (None, Some(spent), _) => format!("{spent}, and this can't be read without it: run it again once the Hub answers"),
+            (None, None, 0) => "the run's capability was never redeemed: `cozy login <email>` on the computer that sent it, then run it again".into(),
+            (None, None, at) if at > now_ms() => "the Hub refused the run's live capability token (401): run it again".into(),
+            (None, None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it: run it again", utc(at)),
         }
     }
 

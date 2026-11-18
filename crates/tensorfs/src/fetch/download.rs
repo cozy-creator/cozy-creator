@@ -95,11 +95,13 @@ const TYPICAL: f64 = 2e6;
 /// 100-130 MB and 9% of the middle's speed (oberon, 11-17, 700 cuts a download).
 const SPLIT: f64 = 4.0;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
-/// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window, never
-/// below `START`, and the ramp probes again.
+/// received grow by `GAIN`, up to the cap. A doubling that hasn't shown is judged once its requests could deliver (from their
+/// median first byte, over a range at the median rate) and given back if it didn't pay; the level settles, and probes again
+/// after `REPROBE` such times. An error or a timeout halves them, once a window, never below `START`, and the ramp probes again.
 const START: usize = 8;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
+const REPROBE: u32 = 8;
 
 /// The job a queue order names: its high 32 bits.
 fn job(priority: u64) -> u64 {
@@ -290,6 +292,45 @@ impl Link {
 
 /// The weights' share of the link (cl-1007), across every downloader of the process.
 static SHARE: std::sync::LazyLock<Share> = std::sync::LazyLock::new(Share::default);
+
+/// What the link carried in the windows it set the pace, across every downloader of the process (th-405): each one's ramp
+/// window with every place taken and more to take, bytes arriving through it and the one before, the weights unpaced. A lone
+/// small request, a stall, a tail's last ranges and a download held to a share measure what is asked of the link, or its
+/// latency, and count nothing. [`sustained`] hears each window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sustained {
+    pub bytes: u64,
+    /// The windows' time; two downloaders' that overlap count once.
+    pub time: Duration,
+}
+
+struct Sustain {
+    told: watch::Sender<Sustained>,
+    /// When the last window counted ended.
+    last: Mutex<Option<Instant>>,
+}
+
+static SUSTAIN: std::sync::LazyLock<Sustain> =
+    std::sync::LazyLock::new(|| Sustain { told: watch::Sender::new(Sustained::default()), last: Mutex::default() });
+
+impl Sustain {
+    /// A downloader's window ending `now`, in which the link set the pace of `bytes`.
+    fn window(&self, bytes: u64, now: Instant) {
+        let mut last = lock(&self.last);
+        let from = now.checked_sub(WINDOW).unwrap_or(now);
+        let from = last.map_or(from, |last| last.max(from));
+        *last = Some(now);
+        self.told.send_modify(|sustained| {
+            sustained.bytes += bytes;
+            sustained.time += now.saturating_duration_since(from);
+        });
+    }
+}
+
+/// Every window the link set the pace in, as it ends: the bytes and time of them all since the process started.
+pub fn sustained() -> watch::Receiver<Sustained> {
+    SUSTAIN.told.subscribe()
+}
 
 /// An install under way on this computer, until it drops ([`installing`]).
 pub struct Installing(());
@@ -1104,15 +1145,17 @@ fn lacking(held: &[(u64, u64)], length: u64) -> Vec<(u64, u64)> {
 struct Pace {
     level: usize,
     max: usize,
-    /// The rate at the last doubling, and the bytes received when it last looked.
+    /// The rate the level must beat by `GAIN`: the one it doubled on. And the bytes received when it last looked.
     last: Option<f64>,
     /// The level before the last doubling: settling gives that doubling back when it didn't pay.
     before: usize,
     /// The last window received something: this one, if it did too, was spent whole on the transfer and measures it.
     flowing: bool,
     seen: u64,
-    /// Windows in a row since the last doubling that grew under `GAIN`.
-    flat: u32,
+    /// When it last doubled, and where what it measures began (a window with demand and bytes) with the bytes received then:
+    /// a doubling's own requests' first bytes, or the settled level's hold. A window without either begins it again.
+    doubled: Option<Instant>,
+    mark: Option<(Instant, u64)>,
     settled: bool,
     /// Nothing waits, and every place is taking from ranges in flight: a new probe.
     tail: bool,
@@ -1372,18 +1415,21 @@ impl Shared {
     fn window(&self) -> bool {
         SHARE.judge();
         let received = self.stats.received.load(Ordering::Relaxed);
+        let (median, first) = lock(&self.speeds).medians();
+        let now = Instant::now();
         let mut pace = lock(&self.pace);
-        let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+        let (arrived, unpaced) = (received - pace.seen, !SHARE.paced());
+        let rate = arrived as f64 / WINDOW.as_secs_f64();
         // What the link moves (th-364's report): a window the weights were paced in measures the share, not the link.
-        if received > pace.seen && !SHARE.paced() {
+        if arrived > 0 && unpaced {
             self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
-            self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed);
+            self.stats.unpaced.fetch_add(arrived, Ordering::Relaxed);
         }
         pace.seen = received;
         if self.busy.load(Ordering::Acquire) == 0 {
             let gone = pace.level.saturating_sub(START.min(pace.max));
             self.shrink(&mut pace, gone);
-            (pace.last, pace.settled, pace.flat, pace.flowing) = (None, false, 0, false);
+            (pace.last, pace.settled, pace.doubled, pace.mark, pace.flowing) = (None, false, None, None, false);
             return true;
         }
         // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
@@ -1391,34 +1437,63 @@ impl Shared {
         let (waiting, stealable) = (self.slots.full(), self.stealable());
         let tail = !waiting && stealable && self.slots.busy();
         if tail && !pace.tail {
-            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            (pace.last, pace.settled, pace.doubled, pace.mark) = (None, false, None, None);
         }
         pace.tail = tail;
         // Only a window spent whole on the transfer measures it: one that received nothing, or the first that did, is the requests'
         // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
         let measured = rate > 0.0 && pace.flowing;
         pace.flowing = rate > 0.0;
-        if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
+        // With demand besides, the link set this window's pace (`Sustained`).
+        if measured && unpaced && (waiting || tail) {
+            SUSTAIN.window(arrived, now);
+        }
+        if !(waiting || tail) || pace.level >= pace.max || !measured {
+            pace.mark = None;
             return false;
         }
-        // A doubling's new requests take more than a window to deliver: two flat windows settle it, giving it back, as it
-        // bought nothing.
-        if pace.last.is_some_and(|last| rate < last * GAIN) {
-            pace.flat += 1;
-            if pace.flat >= 2 {
-                pace.settled = true;
-                let gone = pace.level.saturating_sub(pace.before);
-                self.shrink(&mut pace, gone);
-                tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+        // One request's time for a range at the median rate, once its first byte came.
+        let range = Duration::from_secs_f64(PART as f64 / median).max(2 * WINDOW);
+        if pace.settled {
+            let (since, bytes) = *pace.mark.get_or_insert((now, received));
+            if now < since + REPROBE * (first + range) {
+                return false;
             }
+            let held = (received - bytes) as f64 / (now - since).as_secs_f64();
+            pace.settled = false;
+            self.double(&mut pace, held, now, true);
             return false;
         }
-        pace.flat = 0;
-        let grow = (pace.level * 2).min(pace.max) - pace.level;
-        (pace.before, pace.level, pace.last) = (pace.level, pace.level + grow, Some(rate));
-        self.slots.add(grow);
-        tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
+        let Some(last) = pace.last.filter(|&last| rate < last * GAIN) else {
+            self.double(&mut pace, rate, now, false);
+            return false;
+        };
+        // A doubling that hasn't shown yet is judged once its requests could deliver: from their median first byte on, over a
+        // range's time at the median rate. Two flat windows gave back kirill's 8 → 16 a second in, while its requests took
+        // 1-3 s; it pulled 47 GB on 8 streams at 72 MB/s (11-17).
+        if pace.mark.is_none() && now >= pace.doubled.unwrap_or(now) + first {
+            pace.mark = Some((now, received));
+        }
+        let Some((since, bytes)) = pace.mark.filter(|&(since, _)| now >= since + range) else { return false };
+        let judged = (received - bytes) as f64 / (now - since).as_secs_f64();
+        if judged >= last * GAIN {
+            self.double(&mut pace, judged, now, false);
+            return false;
+        }
+        // It bought nothing: given back.
+        let gone = pace.level.saturating_sub(pace.before);
+        self.shrink(&mut pace, gone);
+        (pace.settled, pace.mark) = (true, Some((now, received)));
+        tracing::info!(streams = pace.level, mb_s = judged / 1e6, over_s = (now - since).as_secs_f64(), "streams settled");
         false
+    }
+
+    /// Twice the requests in flight, up to the cap, against `rate`; `again` when a settled level probes again.
+    fn double(&self, pace: &mut Pace, rate: f64, now: Instant, again: bool) {
+        let grow = (pace.level * 2).min(pace.max) - pace.level;
+        (pace.before, pace.level, pace.last, pace.doubled, pace.mark) = (pace.level, pace.level + grow, Some(rate), Some(now), None);
+        self.slots.add(grow);
+        tracing::info!(streams = pace.level, mb_s = rate / 1e6, again, "more streams");
     }
 
     /// The end game, woken as a place comes free with nothing waiting for it and as a range in flight may fall behind:
@@ -1590,7 +1665,7 @@ impl Shared {
         }
         let gone = (pace.level / 2).min(pace.level - floor);
         self.shrink(&mut pace, gone);
-        (pace.halved, pace.last, pace.settled, pace.flat) = (Some(Instant::now()), None, false, 0);
+        (pace.halved, pace.last, pace.settled, pace.doubled, pace.mark) = (Some(Instant::now()), None, false, None, None);
         tracing::info!(streams = pace.level, "fewer streams: an error or a timeout");
     }
 

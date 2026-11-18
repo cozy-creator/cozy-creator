@@ -1,0 +1,1 @@
+`Region.use_ahead(stream)` (TensorFS varena) fills a Region ahead of demand on the caller's thread when the core's own fill-ahead rule admits it, and runs its derive there. The core's fill worker never runs a derive. The Runtime uses it to place and bake a LoRA'd model's blocks before its forward. It returns None where the core declines.

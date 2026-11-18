@@ -19,17 +19,20 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   what needs no machine and that every local verb refuses `local_unavailable`.
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
   a Runtime that moves what a published package imports fails here.
-- `cpu/run.sh`: the free CPU test. Every package, built from its own lock with CPU torch, runs its entry points through
-  the candidate Runtime's real executor (`python -I -m cozy_runtime.internal.executor`), driven over the seam with
-  TensorD's frames (`drive.py`), on tiny random weights its fixture builds from the package's own model classes
-  (`tiny/<package>.py`, ingested by TensorFS's import or writer). Each cell judges its output (present, finite, not
-  flat, thumbnails within tolerance of `refs/<package>.json`, or of `refs/<package>.<amd|intel>.json` where the two
-  vendors' CPUs sum bf16 differently); a two-rank cell runs a gloo group through the executor
-  and equals its one-rank twin sample by sample (0.5/255 allowed in the worst frame). An orchestrator's child calls run
-  on a child executor through the driver's stand-in for TensorD's call broker. With `--cozy`, each package also goes
-  through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface says,
-  Calcifer's private lock API leaving its lock as committed, and every cell's request bound by Calcifer's binder against the
-  published release (`--estimate`: nothing runs). Also a strict typecheck, `describe` (the static reader), and
+- `cpu/run.sh`: the free CPU test. Every package runs its entry points on tiny random weights its fixture builds from the
+  package's own model classes (`tiny/<package>.py`, ingested by TensorFS's import or writer). With `--cozy` (CI), as a
+  person runs them (`real.py`): each model a function names by default, a cell picks or a function stacks (a LoRA) is
+  mirrored on the suite's Hub under that ref (`cozy model|lora upload <checkpoint>.cozytensors … --mirror`, then
+  `publish`), and each cell is `cozy run <package dir>/<function> --on local` through Calcifer and real TensorD, its
+  outputs downloaded (`-o`); a quantize cell is `cozy model quantize`, judged by the lane its checkpoint holds. A fixture
+  that patches release geometry (`PATCH`, `WAIVE`: se-149) still runs in the stand-in (`drive.py`: the candidate
+  Runtime's real executor driven over the seam with TensorD's frames, a child executor for an orchestrator's calls), as
+  every package does without `--cozy`; a two-rank cell (a gloo group equal to its one-rank twin) runs there only. Each
+  cell judges its output (present, finite, not flat, thumbnails within tolerance of `refs/<package>.json`, or of
+  `refs/<package>.<amd|intel>.json` where the two vendors' CPUs sum bf16 differently). With `--cozy`, each package also
+  goes through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface
+  says, and Calcifer's private lock API leaving its lock as committed; a stand-in package's requests are bound by
+  Calcifer's binder (`--estimate`). Also a strict typecheck, `describe` (the static reader), and
   `surface.py` (static: every TensorFS name the Runtime reads exists). With `--cozy`, first `lanes.py` (cl-1076; alone:
   `--cells lanes`, e2e.yaml's `cpu_cells=lanes`): every slot that takes encoded weights and names a Hub default, resolved on
   each GPU family by `cozy model show <default> --gpu <cc> --components …` (dev-only) against tensorhub.com's releases, as

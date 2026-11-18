@@ -159,8 +159,9 @@ for name, target, number in cells:
         elif any(s in text for s in ('gemm.fallback', 'decoded_float')):
             fails.append(f'{name}: {text} {o.get("fields")}')
     for fmt, val in gemm:
-        if fmt.startswith('int8') and val != 'cozy-int8':
-            fails.append(f'{name}: int8 GEMM served by {val}, not cozy-int8')
+        # An int8 lane's linears are Cozy's int8 GEMM's; its convs Cozy's int8 conv's (cr-327). A decoded fallback fails.
+        if fmt.startswith('int8') and val not in ('cozy-int8', 'cozy-conv8'):
+            fails.append(f'{name}: int8 GEMM served by {val}, not cozy-int8 or cozy-conv8')
         if any(s in val for s in ('_int_mm', 'dense', 'decoded_float', 'fallback')):
             fails.append(f'{name}: GEMM {fmt} served by {val}')
     blocking: dict[str, int] = {}

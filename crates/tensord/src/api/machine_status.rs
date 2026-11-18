@@ -136,8 +136,9 @@ async fn look(watching: &Watching) -> Result<v1::StatusFrame, Error> {
                 .map_err(|_| Error::unavailable("private_storage_stopped", "private workspace verification stopped"))?
                 .map_err(|_| Error::forbidden("private_storage_locked", "the private project is locked"))?;
         }
-        // Read before the records: activity meanwhile is read again at the next look.
-        let epoch = runs.service.engine.activity_epoch();
+        // Read before the records: activity meanwhile is read again at the next look. Observations count: a queued root's
+        // `bytes_left` is its weights' progress (cl-1185).
+        let epoch = runs.service.engine.observed_epoch();
         let kept = read.lock().unwrap().clone();
         let held = match kept.filter(|(at, _)| *at == epoch) {
             Some((_, held)) => held,
@@ -155,7 +156,7 @@ async fn look(watching: &Watching) -> Result<v1::StatusFrame, Error> {
 /// Page accounting moves with every allocation: never news alone.
 fn changed(last: &v1::StatusFrame, next: &v1::StatusFrame) -> bool {
     let moved = match (&last.disk, &next.disk) {
-        (Some(a), Some(b)) => a.free_bytes.abs_diff(b.free_bytes) >= b.total_bytes / 100,
+        (Some(a), Some(b)) => (a.free_bytes.abs_diff(b.free_bytes)).max(a.reclaimable_bytes.abs_diff(b.reclaimable_bytes)) >= b.total_bytes / 100,
         (a, b) => a != b,
     };
     let still = |frame: &v1::StatusFrame| v1::StatusFrame {
@@ -176,6 +177,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         workload_key: crate::hub::workload_key().thumbprint().into(),
         receipt: identity.readiness.facts().unwrap_or_default(),
         carried_objects: true,
+        objects_batch: true,
         ..Default::default()
     }
 }
@@ -212,12 +214,16 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
         let roots = crate::estimate::roots(service).map_err(problem)?;
         let busy = roots.iter().any(|root| !crate::ahead::hidden(&root.caller_id));
         let queue = (roots.into_iter())
-            .map(|root| v1::Queued {
-                run: match actor.owner || root.actor == reader {
-                    true => root.caller_id,
-                    false => String::new(),
-                },
-                ..root.queued
+            .map(|root| {
+                let own = root.actor == reader;
+                v1::Queued {
+                    run: match actor.owner || own {
+                        true => root.caller_id,
+                        false => String::new(),
+                    },
+                    own,
+                    ..root.queued
+                }
             })
             .collect();
         let mut times = service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?;
@@ -316,6 +322,8 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
     crate::ahead::progress(&mut ahead, &activity);
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
+        kept_alive_unix_ms: lifecycle.kept_alive_ms(),
+        ssh_sessions: crate::machine::ssh::sessions(),
         runs,
         activity,
         update: updates.current().map(|update| super::machine_update::state(&update.operation, &update)),
@@ -410,15 +418,17 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
 }
 
 fn disk(path: &std::path::Path) -> Option<v1::Disk> {
-    let space = platform::durable::space(path).ok()?;
-    crate::reclaim::seen_free(space.free);
+    let disk = crate::reclaim::measure(path).ok()?;
+    crate::reclaim::seen_free(disk.available);
     let usage = crate::reclaim::usage().unwrap_or_default();
     Some(v1::Disk {
-        total_bytes: space.total,
-        free_bytes: space.free,
+        total_bytes: disk.capacity,
+        free_bytes: disk.available,
         models_bytes: usage.models,
         environments_bytes: usage.environments,
         runtime_bytes: usage.runtime,
         runs_bytes: usage.runs,
+        reserve_bytes: disk.reserve(),
+        reclaimable_bytes: usage.reclaimable,
     })
 }

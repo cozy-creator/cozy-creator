@@ -65,6 +65,15 @@ pub(crate) mod priority {
     }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
+    /// What a resolve or a plan reads of a checkpoint at `order` (its header and structure, a few KiB): a run's goes ahead of every
+    /// run's weights, as software does, so a cold run's resolve never waits behind another run's download (cl-1185, PRO6-37's 29 s
+    /// behind 52 GB of H3). A background order's (fetched ahead, a guess, a prepare, kept) stays in its band: it never jumps a run.
+    pub(crate) fn metadata(order: u64) -> u64 {
+        match order < tensorfs::fetch::BACKGROUND {
+            true => order.min(SOFTWARE),
+            false => order,
+        }
+    }
     /// Whether `order` is a caller's guess's (`prepare`, or kept for later): no run's, so it gives way to every run's, in the
     /// install line too (cl-1104).
     pub(crate) fn prefetch(order: u64) -> bool {
@@ -103,7 +112,6 @@ pub(crate) struct Machine {
     runtime: Arc<tokio::runtime::Runtime>,
     volume: Option<VolumeOrigin>,
     fetchers: Mutex<Vec<(Key, Arc<Fetcher>)>>,
-    returned: Arc<tokio::sync::Notify>,
 }
 
 impl Machine {
@@ -111,7 +119,7 @@ impl Machine {
     pub(crate) fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
         let runtime = tensorfs::fetch::runtime().map_err(io::Error::other)?;
         let volume = volume.and_then(|path| VolumeOrigin::mounted(path, VOLUME_TTL));
-        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default(), returned: Arc::default() }))
+        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default() }))
     }
 
     pub(crate) fn store(&self) -> &Arc<Store> {
@@ -142,11 +150,6 @@ impl Machine {
         Ok(fetcher)
     }
 
-    /// Told as each fetch returns: what `received` says may have moved.
-    pub(crate) fn returned(&self) -> Arc<tokio::sync::Notify> {
-        self.returned.clone()
-    }
-
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
     pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
@@ -168,13 +171,12 @@ impl Machine {
     /// Runs `work` on the fetch runtime and waits for it, or for `stop`.
     pub(crate) fn block<T: Send + 'static>(&self, stop: &Stop, work: impl Future<Output = Result<T>> + Send + 'static) -> Result<T> {
         let (sent, answer) = std::sync::mpsc::channel();
-        let (stop, returned) = (stop.clone(), self.returned.clone());
+        let stop = stop.clone();
         self.runtime.spawn(async move {
             let answered = tokio::select! {
                 answered = work => answered,
                 () = stop.cancelled() => refuse(Code::TRANSFER_FAILED, "stopped"),
             };
-            returned.notify_one();
             let _ = sent.send(answered);
         });
         answer.recv().unwrap_or_else(|_| refuse(Code::TRANSFER_FAILED, "the fetch runtime ended"))
@@ -196,7 +198,9 @@ impl Machine {
         let (header, components) = (header.clone(), components.map(<[String]>::to_vec));
         self.block(stop, async move {
             let want = |components| Want { components, priority, progress: progress.as_deref() };
-            let structure = fetcher.pull_header(&origin, &header, &want(Some(&[]))).await?;
+            // Its structure is what a resolve reads: ahead of the weights in line (`priority::metadata`).
+            let shape = Want { components: Some(&[]), priority: priority::metadata(priority), progress: progress.as_deref() };
+            let structure = fetcher.pull_header(&origin, &header, &shape).await?;
             if components.as_deref() == Some(&[]) {
                 return Ok(structure);
             }
@@ -258,12 +262,11 @@ impl Machine {
         &self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64,
         settled: impl FnOnce(&Result<Landed>) + Send + 'static,
     ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
-        let (fetcher, origin, returned) = (self.of(remote)?, remote.origin.clone(), self.returned.clone());
+        let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
         let completion = FetchCompletion(Some(settled));
         let mut wanted = Box::pin(async move {
             let mut completion = completion;
             let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
-            returned.notify_one();
             if let Some(settled) = completion.0.take() { settled(&result); }
             result
         });

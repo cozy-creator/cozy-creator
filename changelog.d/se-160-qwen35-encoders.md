@@ -1,0 +1,1 @@
+TensorFS converts a Qwen3.5-9B checkpoint in its own Transformers layout into MOSS-Image's or PAN2's text encoder at upload, when named: `--source-format moss.text_encoder` (`Qwen3_5Model`) or `pan2.text_encoder` (`Qwen3_5TextModel`), with `--base <model>:text_encoder`. Such tables are never chosen by detection, so a Qwen3.5 LLM still uploads as it is.

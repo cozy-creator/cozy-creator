@@ -55,8 +55,8 @@ export interface BufferedImageProps {
 const keyOf = (sha: string, path?: string) => JSON.stringify([sha, path ?? null])
 
 /** A picture in Focus (cl-1184; Paul, 11-17: "displaying full resolution right?"): its own file at its own pixels, never a thumbnail's
- *  copy, and once each of its pixels is drawn wider than a screen's, drawn as they are, not smoothed. Its thumbnail shows at once, until
- *  the file is decoded. Its neighbouring takes' files stay decoded, so a step to one swaps at once. */
+ *  copy (its frame draws them as they are past 1:1). Its thumbnail shows at once, until the file is decoded. Its neighbouring takes'
+ *  files stay decoded, so a step to one swaps at once. */
 export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, onSize, onShown }: BufferedImageProps) {
   const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
@@ -77,43 +77,6 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
   const all = standIn ? [sources[0], standIn, ...sources.slice(1)] : sources
   const wanted = all.map((source) => source.key)
   const windowKey = JSON.stringify(wanted)
-  /** Measures, in the next frame, whether its file's pixels are drawn wider than the screen's. */
-  const sharpen = useRef(() => {})
-
-  useLayoutEffect(() => {
-    const element = host.current
-    if (!element) return
-    const focus = element.closest<HTMLElement>(".focus-image-transform")
-    let frame = 0
-    const measure = () => {
-      frame = 0
-      const image = held.current?.displayed?.path ? held.current.displayed.image : null
-      let across = 0
-      if (image?.naturalWidth && image.naturalHeight) {
-        const drawn = element.getBoundingClientRect()
-        const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
-        across = Math.min(drawn.width / image.naturalWidth, drawn.height / image.naturalHeight) * density
-      }
-      element.toggleAttribute("data-pixelated", across > 1.001)
-    }
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure) }
-    sharpen.current = schedule
-    const resize = new ResizeObserver(schedule)
-    resize.observe(element)
-    // Focus zooms by its transform: no resize says so.
-    const zoom = focus ? new MutationObserver(schedule) : null
-    if (focus) zoom?.observe(focus, { attributes: true, attributeFilter: ["style"] })
-    window.addEventListener("resize", schedule)
-    window.visualViewport?.addEventListener("resize", schedule)
-    return () => {
-      if (frame) cancelAnimationFrame(frame)
-      sharpen.current = () => {}
-      resize.disconnect()
-      zoom?.disconnect()
-      window.removeEventListener("resize", schedule)
-      window.visualViewport?.removeEventListener("resize", schedule)
-    }
-  }, [])
 
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
@@ -133,7 +96,6 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
     host.current?.removeAttribute("data-displayed-sha")
     host.current?.removeAttribute("data-displayed-resolution")
     host.current?.removeAttribute("data-displayed-width")
-    host.current?.removeAttribute("data-pixelated")
   }
 
   const reveal = (buffer: Buffer, picture: Picture) => {
@@ -150,7 +112,6 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
     buffer.displayed = picture
     setFailed(false)
     setShown(true)
-    sharpen.current()
     const { naturalWidth: width, naturalHeight: height } = picture.image
     if (width && height) callbacks.current.onSize(width / height)
     callbacks.current.onShown()

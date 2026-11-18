@@ -68,6 +68,8 @@ type StreamContext = unsafe extern "system" fn(Object, *mut Context) -> Status;
 type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
 type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
+type CopyDevice = unsafe extern "system" fn(Pointer, Pointer, usize) -> Status;
+type Attribute = unsafe extern "system" fn(*mut c_int, c_int, c_int) -> Status;
 
 #[derive(Default)]
 pub(crate) struct Counters {
@@ -131,6 +133,8 @@ pub(crate) struct Driver {
     stream_wait_event: StreamWaitEvent,
     stream_context: StreamContext,
     memory_info: MemoryInfo,
+    copy_device: CopyDevice,
+    attribute: Attribute,
     pub(crate) granularity: usize,
 }
 
@@ -208,6 +212,8 @@ impl Driver {
             stream_wait_event: symbol!("cuStreamWaitEvent", StreamWaitEvent),
             stream_context: symbol!("cuStreamGetCtx", StreamContext),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
+            copy_device: symbol!("cuMemcpyDtoD_v2", CopyDevice),
+            attribute: symbol!("cuDeviceGetAttribute", Attribute),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -548,6 +554,68 @@ impl Driver {
         allocation.bytes = 0;
         Ok(())
     }
+    fn host_properties() -> AllocationProperties {
+        AllocationProperties {
+            kind: 1, // CU_MEM_ALLOCATION_TYPE_PINNED
+            handles: 0,
+            location: Location { kind: 2, id: 0 }, // CU_MEM_LOCATION_TYPE_HOST
+            windows_metadata: std::ptr::null_mut(),
+            flags: [0; 8],
+        }
+    }
+
+    /// What this device's working pages may move to (cr-305 rung 5): host pages mapped at their own
+    /// addresses, read and written by kernels over the link. The HOST VMM granularity, or why not:
+    /// no unified addressing, WSL (WDDM keeps HOST VMM from its devices), or a driver without it.
+    pub(crate) fn host_pages(&self) -> std::result::Result<usize, &'static str> {
+        const UNIFIED_ADDRESSING: c_int = 41;
+        if self.device_attribute(UNIFIED_ADDRESSING).is_none_or(|on| on == 0) {
+            return Err("no unified addressing");
+        }
+        if std::fs::read_to_string("/proc/version").is_ok_and(|text| text.to_lowercase().contains("microsoft")) {
+            return Err("WSL");
+        }
+        let mut granularity = 0;
+        // SAFETY: official HOST properties and writable output; no NUMA identity is guessed.
+        let code = unsafe { (self.host_granularity)(&mut granularity, &Self::host_properties(), 0) };
+        if code != 0 || granularity == 0 {
+            return Err("no HOST VMM in this driver");
+        }
+        Ok(granularity)
+    }
+
+    /// Whether this device's atomics on host memory are atomic to the host too (recorded beside a
+    /// demotion: one GPU's own atomics on its own demoted pages need only its own).
+    pub(crate) fn host_native_atomics(&self) -> Option<bool> {
+        const HOST_NATIVE_ATOMIC_SUPPORTED: c_int = 86;
+        self.device_attribute(HOST_NATIVE_ATOMIC_SUPPORTED).map(|on| on != 0)
+    }
+
+    fn device_attribute(&self, attribute: c_int) -> Option<c_int> {
+        let mut value = 0;
+        // SAFETY: writable output; `device` is the CUdevice this driver retained.
+        (unsafe { (self.attribute)(&mut value, attribute, self.device) } == 0).then_some(value)
+    }
+
+    /// Host pages of `bytes`, a multiple of the HOST granularity, for a device range to move to.
+    pub(crate) fn create_host(&self, bytes: usize) -> Result<u64> {
+        let mut handle = 0;
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: writable handle output and official HOST properties. Host failure is not a GPU
+        // shortage: the caller stops moving, never asks peers.
+        status("cuMemCreate(HOST)", self.timed(|| unsafe {
+            (self.create)(&mut handle, bytes, &Self::host_properties(), 0)
+        }))?;
+        Ok(handle)
+    }
+
+    /// `bytes` from `src` to `dst`, both device-addressable, after all work before it.
+    pub(crate) fn copy_device(&self, dst: u64, src: u64, bytes: usize) -> Result<()> {
+        // SAFETY: both ranges are owned, mapped and granted to this device; nothing else runs on
+        // them (the caller joined the context first).
+        status("cuMemcpyDtoD_v2", self.timed(|| unsafe { (self.copy_device)(dst, src, bytes) }))
+    }
+
     pub(crate) unsafe fn copy_pinned_async(&self, dst: u64, host: usize, bytes: usize, stream: usize) -> Result<()> {
         // SAFETY: caller retains the whole pinned source and exclusive destination spans.
         status("cuMemcpyHtoDAsync_v2", unsafe { (self.copy_host_async)(dst, host as *const c_void, bytes, stream as Object) })

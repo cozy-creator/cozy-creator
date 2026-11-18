@@ -94,10 +94,11 @@ impl Machines {
         };
         let own = this_release();
         // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
-        // said the last release (cl-976). A dev home's rental moves to the open RC first, when it is behind it and has no work
-        // going (cl-922).
+        // said the last release (cl-976). A dev home's rental moves to the RC's builds only from the follower, at idle; work waits
+        // only for a move already sent, and one not sent yet yields to it (cl-1201). Nothing moves, nor is fetched, from a send or a
+        // request (cl-1123).
         if same_minor(&frame.version, own) || rc_version() {
-            return Ok(self.follow_rc(name, true).await);
+            return Ok(self.rc_moving(name));
         }
         if !older_minor(&frame.version, own) {
             return Ok(None);
@@ -240,10 +241,14 @@ impl Machines {
         let settings = ask.gpu_memory_limit.is_some() || ask.mode.is_some();
         if asked.is_empty() && placed.is_none() && torch.is_none() && !settings {
             // Nothing to move, and nothing named: it lets go of a hold by hand all the same (cl-952).
-            if flagless {
-                self.mind_hold(&m.name, key, "", true);
+            if let Some(None) = crate::rc::hold_of(key, "", flagless) {
+                self.set_hold(&m.name, None);
             }
             return Ok((Updating { machine: m, run: None, target: String::new() }, true));
+        }
+        // A dev build's Runtime named alone takes the open RC's TensorFS build beside it when the machine's doesn't meet its floor (xs-216).
+        if let Some(tensorfs) = self.rc_tensorfs_beside(&m, &asked).await {
+            asked.push(("tensorfs", "tensorfs", Component::Version(tensorfs)));
         }
         rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
@@ -347,6 +352,11 @@ impl Machines {
             payload.insert("mode".into(), mode.name().into());
         }
         let target = named.join(", ");
+        // One of Calcifer's own moves (the RC's) that an update by hand pinned meanwhile, while it fetched the RC's `cozy`: the pin
+        // wins (cl-1203: a candidate TensorD replaced a minute later on mucheng and lucario).
+        if crate::rc::calcifers(key) && self.held_by_hand(&m.name).is_some() {
+            return Err(Error::new(Kind::Conflict, "machine_held", format!("{} was held by hand meanwhile; it stays as it is", m.name)));
+        }
         let submit = SubmitRun { project: None,
             agreed: None,
             stays: vec![],
@@ -365,13 +375,44 @@ impl Machines {
             out: None,
             warnings: vec![],
         };
-        let submitted = self.calcifer.submit(key, submit, crate::store::Task::Update).await.map_err(|e| Refusal::from(e).0)?;
-        // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952).
-        if !submitted.replay {
-            self.mind_hold(&m.name, key, &target, flagless);
-        }
+        // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952); held or let go before
+        // it is sent, it supersedes what Calcifer asked of the machine itself (cl-1196).
+        let was = self.hold_for(&m.name, key, &target, flagless);
+        let submitted = match self.calcifer.submit(key, submit, crate::store::Task::Update).await {
+            Ok(submitted) => submitted,
+            Err(e) => {
+                if let Some(was) = was {
+                    self.set_hold(&m.name, was.as_deref());
+                }
+                return Err(Refusal::from(e).0);
+            }
+        };
         let updating = Updating { machine: m, run: Some(submitted.run), target };
         Ok((updating, !submitted.replay))
+    }
+
+    /// The open RC's TensorFS build `m` takes beside a Runtime `asked` names alone (xs-216): a dev build's wheel, held here, whose
+    /// `tensorfs` requirement the machine's TensorFS doesn't meet and the RC's build for its platform does. An RC Runtime floors on a
+    /// TensorFS build no index has, so TensorD, which keeps the machine's or pairs one from the index, would find none. None: nothing
+    /// to add.
+    async fn rc_tensorfs_beside(&self, m: &Machine, asked: &[(&str, &str, Component)]) -> Option<String> {
+        if asked.iter().any(|(member, _, _)| *member == "tensorfs") {
+            return None;
+        }
+        let build = asked.iter().find_map(|(member, _, component)| match component {
+            Component::File(build) if *member == "runtime" => Some(build),
+            _ => None,
+        })?;
+        let status = m.status.as_ref()?;
+        let path = crate::runs::files::held(&build.sha256)?;
+        let requires = tokio::task::spawn_blocking(move || crate::floor::requires_dist(std::fs::File::open(path).ok()?)).await.ok()??;
+        let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs")?;
+        let admits = |version: &str| version.parse::<pep440_rs::Version>().is_ok_and(|version| needs.contains(&version.without_local()));
+        if admits(&status.tensorfs) {
+            return None;
+        }
+        let (rc, _) = self.rc.now().await.ok()?.build("tensorfs", &status.platform)?;
+        admits(&rc.version).then_some(rc.version)
     }
 
     /// The PyTorch `m` installs as its own base when `asked` (cl-1030): the version its Hub names (`named`, else read
@@ -462,7 +503,7 @@ impl Machines {
         {
             return outcome;
         }
-        let log = self.logs(name, wire::MachineLog::Tensord, 1000).await.unwrap_or_default();
+        let log = self.logs(name, wire::MachineLog::Tensord, 1000, None).await.unwrap_or_default();
         let log = String::from_utf8_lossy(&log);
         let line = m.unreachable.clone().or_else(|| log.lines().rfind(|l| l.contains(row.id.as_str())).map(str::to_owned));
         outcome.status = "failed".into();

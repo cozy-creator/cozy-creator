@@ -34,6 +34,8 @@
   --ink: #3f2f24;
   --mute: #5f4e3f;
   --faint: #625141;
+  /* Suggested text in a text box (cl-1188): lighter than what's typed, still 4.5:1 on every surface a box sits on. */
+  --hint: #705c4a;
   --ember: #40603d;
   --ember2: #33502f;
   --on-ember: #fbf6ea;
@@ -105,6 +107,7 @@
   --ink: #e8e6e1;
   --mute: #a3a5ac;
   --faint: #92949b;
+  --hint: #92959d;
   --ember: #ff8a3d;
   --ember2: #ffb37d;
   --on-ember: #1b1006;

@@ -429,7 +429,7 @@ impl Jobs {
                 }
             }
             RunEvent::Progress { progress } => live.progress(progress),
-            RunEvent::Waiting { reason } => live.job.why = Some(reason.clone()).filter(|reason| !reason.is_empty()),
+            RunEvent::Waiting { reason, .. } => live.job.why = Some(reason.clone()).filter(|reason| !reason.is_empty()),
             RunEvent::OutputLanded { item, .. } => {
                 let Some(path) = item.path.as_ref().filter(|_| !live.settled && !item.stays) else { return };
                 let path = path.strip_prefix(dir).unwrap_or(path).display().to_string();

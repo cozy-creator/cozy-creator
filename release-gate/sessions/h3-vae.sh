@@ -70,14 +70,17 @@ if [ "$(jq length <<<"$COMFY")" != 0 ]; then
   VV=$(jq -r '.torchvision // "0.29.1"' <<<"$COMFY") REV=$(jq -r .revision <<<"$COMFY") VAE=$(jq -r .vae <<<"$COMFY")
   [[ $C =~ ^[0-9a-f]{40}$ && $REV =~ ^[0-9a-f]{40}$ && $KV =~ ^[0-9.]+$ && $VAE =~ ^[a-z0-9_.]+$ ]] || fail "comfy params"
   rm -rf "$W" && mkdir -p "$W" || fail "$W"
-  ( set -e; cd "$W"; export UV_PYTHON_INSTALL_DIR=$W/python UV_PYTHON_PREFERENCE=only-managed UV_HTTP_TIMEOUT=300 UV_NO_CACHE=1
+  # Each step exits on its own failure: bash ignores `set -e` in a subshell whose status `|| fail` tests (cl-1204).
+  ( cd "$W" || exit
+    export UV_PYTHON_INSTALL_DIR=$W/python UV_PYTHON_PREFERENCE=only-managed UV_HTTP_TIMEOUT=300 UV_NO_CACHE=1
     P=(--python "$W/venv/bin/python" --python-platform x86_64-manylinux_2_28)
-    git init -q ComfyUI && git -C ComfyUI fetch -q --depth 1 https://github.com/Comfy-Org/ComfyUI.git "$C" && git -C ComfyUI checkout -q FETCH_HEAD
-    uv venv -q --python 3.12 venv
-    uv pip install -q "${P[@]}" "torch==$TV" "torchvision==$VV" --index-url https://download.pytorch.org/whl/cu130
-    uv pip install -q "${P[@]}" -r ComfyUI/requirements.txt "comfy-kitchen==$KV"
-    curl -fsSL --retry 5 -o vae.safetensors "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/$REV/vae/$VAE"
-    cp "$FX/comfy_vae.py" . && for n in "${COUNTS[@]}"; do cp "$OUT/clip$n.mp4" .; done
+    git init -q ComfyUI && git -C ComfyUI fetch -q --depth 1 https://github.com/Comfy-Org/ComfyUI.git "$C" && git -C ComfyUI checkout -q FETCH_HEAD || exit
+    uv venv -q --python 3.12 venv || exit
+    uv pip install -q "${P[@]}" "torch==$TV" "torchvision==$VV" --index-url https://download.pytorch.org/whl/cu130 || exit
+    uv pip install -q "${P[@]}" -r ComfyUI/requirements.txt "comfy-kitchen==$KV" || exit
+    curl -fsSL --retry 5 -o vae.safetensors "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/$REV/vae/$VAE" || exit
+    cp "$FX/comfy_vae.py" . || exit
+    for n in "${COUNTS[@]}"; do cp "$OUT/clip$n.mp4" . || exit; done
   ) > "$OUT/comfy-setup.log" 2>&1 || fail "ComfyUI's environment: $(tail -5 "$OUT/comfy-setup.log")"
   say "ComfyUI $C with comfy-kitchen $KV, torch $TV: $(du -sh "$W" | cut -f1) to ship"
 fi

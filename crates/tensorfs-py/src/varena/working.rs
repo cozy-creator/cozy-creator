@@ -441,6 +441,7 @@ fn _varena_working_stats(
         ("reclaim_owner_caches_ns", stats.reclaim_step_ns[7]),
         ("reclaim_peers_ns", stats.reclaim_step_ns[8]),
         ("reclaim_high_weights_ns", stats.reclaim_step_ns[9]),
+        ("reclaim_demote_working_ns", stats.reclaim_step_ns[10]),
         ("event_queries", stats.event_queries),
         ("event_records", stats.event_records),
         ("event_waits", stats.event_waits),
@@ -458,8 +459,19 @@ fn _varena_working_stats(
         ("cache_pending_bytes", stats.cache_pending_bytes as u64),
         ("cache_ready_bytes", stats.cache_ready_bytes as u64),
         ("caches", stats.caches as u64),
+        ("demoted_bytes", stats.demoted_bytes as u64),
+        ("demoted_total", stats.demoted_total),
+        ("demotions", stats.demotions),
+        ("host_atomics", stats.host_atomics),
     ]
     .into())
+}
+
+/// Whether this thread's allocations have a cheaper way out than moving live tensors to host pages;
+/// the previous setting.
+#[pyfunction]
+fn _varena_fallback(on: bool) -> bool {
+    varena::working::set_fallback(on)
 }
 
 #[pyfunction]
@@ -940,6 +952,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_ooms, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_fallback, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_site_id, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_site, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_pass_mark, module)?)?;

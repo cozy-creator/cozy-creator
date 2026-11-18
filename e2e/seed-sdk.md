@@ -7,7 +7,9 @@ packages at them before `cozy package publish`, and `seed_sdk.py verify` checks 
 those URLs, versions and hashes. Publication describes the completed lock's Runtime and TensorFS.
 
 A selected wheel must meet each package's declared range; no range is raised or loosened. A native wheel limits the
-copy's lock to the runner's OS and architecture, intersected with any authored environments. Old-floor and negative
+copy's lock to the runner's OS and architecture, intersected with any authored environments; so does a cohort with no
+TensorFS (macOS, Windows: no machine), since the RC Runtime's floor on a rental's platform is a TensorFS build only a
+Linux cohort holds (xs-216). Old-floor and negative
 fixtures keep their own selection, so their floor refusals stay meaningful.
 
 `seed-sdk.json` records each input's version, SHA256 and embedded Runtime commit; `cohort.json` adds the packages

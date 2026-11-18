@@ -801,6 +801,18 @@ macro_rules! journal_methods {
         })
     }
 
+    /// How many runs wait for `machine`, are being sent or go there, an update's aside: whether it is idle (cl-1201).
+    pub(crate) fn busy(&self, machine: &str) -> Result<u32> {
+        self.read(|conn| {
+            let busy = conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND (?2 IS NULL OR owner=?2)",
+                params![machine, self.owner_id()],
+                |r| r.get(0),
+            )?;
+            Ok(busy)
+        })
+    }
+
     /// Whether this journal is at rest: no run going or waiting but an update, and none ended in the last `quiet_ms` (xs-195:
     /// `local` moves to the RC only then, never between a render's steps).
     pub(crate) fn at_rest(&self, quiet_ms: i64) -> Result<bool> {
@@ -2288,6 +2300,61 @@ impl Store {
         })
     }
 
+    /// Cancels `machine`'s updates yet to end whose key `superseded` names (cl-1196): an unsent one ends here saying `why`, a sent one
+    /// keeps the intent until its machine's outcome, as any cancel. Each one's events.
+    pub(crate) fn supersede(&self, machine: &str, superseded: impl Fn(&str) -> bool, why: &str) -> Result<Vec<(RunId, Vec<Event>)>> {
+        self.write(|tx| {
+            let ids: Vec<(String, String)> = tx
+                .prepare(
+                    "SELECT id, idempotency_key FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled'
+                         AND (?2 IS NULL OR owner = ?2) ORDER BY number",
+                )?
+                .query_map(params![machine, self.owner_id()], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut ended = vec![];
+            for (id, _) in ids.into_iter().filter(|(_, key)| superseded(key)) {
+                let events = cancel_saying(tx, &id, why)?;
+                ended.push((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, events));
+            }
+            Ok(ended)
+        })
+    }
+
+    /// Ends `machine`'s moves to the open RC not sent yet, saying `why` (cl-1201): work came for it, which goes first, and the follower
+    /// moves it again once it is idle. One sent is under way and stays: its send (`mark_sent`) and this are one journal's writes, so a
+    /// move either yields or was sent. Each one ended, with its events.
+    pub(crate) fn yield_moves(&self, machine: &str, why: &str) -> Result<Vec<(RunId, Vec<Event>)>> {
+        self.write(|tx| {
+            let ids: Vec<String> = tx
+                .prepare(
+                    "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'queued' AND cancel_requested = 0
+                         AND idempotency_key LIKE ?2 AND (?3 IS NULL OR owner = ?3) ORDER BY number",
+                )?
+                .query_map(params![machine, format!("{}%", crate::rc::MOVE), self.owner_id()], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut ended = vec![];
+            for id in ids {
+                tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [&id])?;
+                let reason = Reason { code: crate::rc::YIELDED.into(), message: why.into(), ..Default::default() };
+                let events = end(tx, &id, Status::Canceled, Some(reason))?;
+                ended.push((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, events));
+            }
+            Ok(ended)
+        })
+    }
+
+    /// `machine`'s move to the open RC yet to end, if one is.
+    pub(crate) fn moving(&self, machine: &str) -> Result<Option<RunRow>> {
+        self.read(|db| {
+            let id = db.query_row(
+                "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled' AND idempotency_key LIKE ?2 ORDER BY number LIMIT 1",
+                params![machine, format!("{}%", crate::rc::MOVE)],
+                |r| r.get::<_, String>(0),
+            );
+            id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
+        })
+    }
+
     /// The name a renamed machine had before.
     pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
@@ -2779,6 +2846,11 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
 /// Records the intent to cancel run `id` in `tx`. Unsent work ends canceled here, in the transaction that the send boundary races;
 /// sent work keeps the intent until its machine's outcome arrives.
 pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
+    cancel_saying(tx, id, "canceled before it was sent")
+}
+
+/// `cancel_in`, an unsent run's reason saying `why`.
+fn cancel_saying(tx: &Transaction, id: &str, why: &str) -> Result<Vec<Event>> {
     let Some(row) = run_in(tx, id)? else {
         return Ok(vec![]);
     };
@@ -2787,7 +2859,7 @@ pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
         _ if row.cancel_requested => Ok(vec![]),
         State::Queued => {
             tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-            let reason = Reason { code: "canceled".into(), message: "canceled before it was sent".into(), ..Default::default() };
+            let reason = Reason { code: "canceled".into(), message: why.into(), ..Default::default() };
             end(tx, id, Status::Canceled, Some(reason))
         }
         State::Sent | State::Accepted => {
@@ -2979,7 +3051,6 @@ impl From<&MachineRow> for Machine {
             address: row.endpoint.as_ref().map(|e| e.address.clone()),
             fingerprint: row.endpoint.as_ref().map(|e| Digest::from_bytes(e.pin)),
             reason: row.reason.clone(),
-            offline: None,
             broken: None,
             rental: None,
             status: None,
@@ -2999,6 +3070,7 @@ impl From<&MachineRow> for Machine {
             end_unconfirmed: None,
             rc: None,
             held: None,
+            unheld: None,
         }
     }
 }

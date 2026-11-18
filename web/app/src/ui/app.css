@@ -261,12 +261,10 @@ code {
 }
 /* What only holds controls takes the pointer only on them: between them, a press is the canvas's. */
 .top > .history-controls,
-.top > .canvas-controls,
-.history,
-.render-all {
+.history {
   pointer-events: none;
 }
-:where(.history-controls, .canvas-controls, .history, .render-all) > * {
+:where(.history-controls, .history) > * {
   pointer-events: auto;
 }
 .icon {
@@ -294,11 +292,6 @@ code {
 }
 .sum.ood {
   color: var(--ood);
-}
-.canvas-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .tb {
   display: inline-flex;
@@ -987,6 +980,14 @@ code {
   flex: none;
   white-space: pre;
 }
+/* Waiting on a download, its words lead to it on its machine (cl-1205). */
+.run-face a.face-leads {
+  color: var(--ember2);
+  text-decoration: none;
+}
+.run-face a.face-leads:hover {
+  text-decoration: underline;
+}
 .run-face.failed .face-state b {
   color: var(--bad);
 }
@@ -1276,22 +1277,6 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tc {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #000a;
-  font: var(--tiny) var(--mono);
-  z-index: 1;
-}
-/* A video's poster, and its frames under the pointer. */
-.scrub {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
 .media img.strip {
   width: 800%;
   max-width: none;
@@ -1575,9 +1560,6 @@ video.preview.on {
 .card.here .stop {
   width: 40px;
   height: 40px;
-}
-.card.here .tc {
-  font-size: calc(var(--t-small) * var(--ui));
 }
 /* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
    them. --here-room comes with each fit, --here is how large it's drawn against its box, and --here-gap, in its own pixels, is between the
@@ -1937,9 +1919,6 @@ video.preview.on {
 }
 .status.bad {
   color: var(--bad);
-}
-.render-all {
-  position: relative;
 }
 .act {
   color: var(--ink);
@@ -3480,14 +3459,6 @@ a.tab:hover {
   margin-right: 24px;
 }
 
-/* The top bar: a name, Render all, the rest in a menu. */
-.render-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--small);
-  color: var(--mute);
-}
 /* Undo, Redo and the project's history, at the top bar's left. */
 .history-controls:empty {
   display: none;
@@ -3696,7 +3667,15 @@ a.tab:hover {
 }
 .mention-text:empty::before {
   content: attr(data-placeholder);
-  color: var(--faint);
+}
+/* Suggested text, in every text box alike (cl-1188; Paul, 11-17: "clearly ghosted in the UI, so it's obvious that's not something there"):
+   lighter than what's typed, in italics and never bold, and gone once there's a value. */
+::placeholder,
+.mention-text:empty::before {
+  color: var(--hint);
+  font-style: italic;
+  font-weight: 400;
+  opacity: 1;
 }
 .chip {
   display: inline-flex;
@@ -4246,13 +4225,16 @@ input[type="checkbox"] {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* Still ends, so what waits on an animation's end still hears it. */
+  /* An animation still ends, so what waits on its end (Card, Media) still hears it: only one an element declares runs. A transition is
+     none: a duration here would make every change of every property one (transition-property is `all` unless set), each drawn a frame
+     late, a pan, a carried box and the canvas moving too (cl-1208). Nothing waits on a transition's end. */
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
   }
 }
 
@@ -4283,12 +4265,6 @@ input[type="checkbox"] {
   padding: calc(3px * var(--ui)) calc(9px * var(--ui));
 }
 .top .sum {
-}
-.top .render-all label {
-}
-.top .render-all label input {
-  width: calc(13px * var(--ui));
-  height: calc(13px * var(--ui));
 }
 .top .main-menu nav .tb {
   height: calc(32px * var(--ui));
@@ -4564,6 +4540,35 @@ p.warn.slow {
 }
 .activity > p {
   margin: 8px 4px 2px;
+}
+
+/* A run waiting on downloads says so and leads to each, which alone shows how far it is (cl-1205): its words a link, the download's
+   row lit a moment. */
+.activity .doing a.said.waits,
+.qrow a.said.waits {
+  color: var(--ember2);
+  white-space: normal;
+}
+.activity .doing a.said.waits:hover,
+.qrow a.said.waits:hover {
+  text-decoration: underline;
+}
+[data-download].lit {
+  animation: download-lit 1.4s ease-out;
+}
+@keyframes download-lit {
+  from {
+    background: color-mix(in srgb, var(--ember2) 24%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-download].lit {
+    animation: none;
+    outline: 2px solid var(--ember2);
+  }
 }
 
 /* On the canvas a box shows its corner only under the pointer, with nothing else opening. */

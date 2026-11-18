@@ -1,0 +1,1 @@
+TensorD: a box's guess whose weights went to make room comes back once there is room for what its machine lacks. When a model's header was evicted, Cozy counted all of the model's bytes as missing, even when another model still held some of them (two fine-tunes sharing a VAE). The box then waited for room it didn't need.

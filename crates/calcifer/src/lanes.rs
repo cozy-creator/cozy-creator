@@ -126,7 +126,11 @@ where
                     Err(Ranged::Stop(e)) => return Err(Ranged::Stop(e)),
                     Err(Ranged::Again(message)) => {
                         fresh[flight.lane] = true;
-                        queue.push_front((at, flight.end));
+                        // Only what is left of it goes again. One whose every byte went and only its answer was lost leaves nothing:
+                        // the caller asks what landed (cl-1195: its empty rest, sent again, was refused `invalid_range`).
+                        if at < flight.end {
+                            queue.push_front((at, flight.end));
+                        }
                         if !flight.slow {
                             if moved > moved_then {
                                 (failures, moved_then) = (0, moved);

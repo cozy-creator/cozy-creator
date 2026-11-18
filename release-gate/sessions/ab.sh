@@ -20,7 +20,7 @@
 # - Two builds compared run in both orders (A B B A), checked before renting, unless params say `"order": "one-way"`
 #   (an output-only proof).
 # Each cell also keeps the pod's model listing before and after it (<cell>-models-before/after.json), its run's
-# has/needs/extras, and the pod's TensorD log after it (<cell>-tensord.log).
+# has/needs/extras, and the pod's TensorD log after it (<cell>-tensord.log); tensord-now.log is that log as it stood a minute ago.
 # params:
 #   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
 #              run from the packages directory: an unchanged release on a candidate Runtime), "target"
@@ -174,9 +174,12 @@ for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socke
 listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
-    # Every 5 min the pod's own GPU readings (gpu-pod.log: a stalled cell's other holder is named there); each minute its listeners.
+    # Every 5 min the pod's own GPU readings (gpu-pod.log: a stalled cell's other holder is named there); each minute its listeners,
+    # and its TensorD log as it stands (tensord-now.log): a cell cut by a cancel keeps no <cell>-tensord.log, and 44139328775's
+    # 42 minutes at 0 B left none to read (cl-1189).
     [ $((p % 20)) != 10 ] || readings
-    [ $((p++ % 4)) != 0 ] || { k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
+    [ $((p++ % 4)) != 0 ] || { k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"
+      [ -z "$NAME" ] || { timeout 60 cozy machine logs "$NAME" -n 0 > "$OUT/tensord-now.log.next" 2>&1 && mv "$OUT/tensord-now.log.next" "$OUT/tensord-now.log"; }; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''

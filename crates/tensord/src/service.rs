@@ -6,6 +6,7 @@ use crate::{
     execution::Engine,
     gpu_service::{Plan, Pool},
     journal::Execution,
+    others::{Others, Read},
 };
 use serde_json::Value;
 use std::{
@@ -293,6 +294,7 @@ impl Service {
         if !crate::private_io::is_private_path(&held.record.python) {
             crate::published::environment::compile_bytecode(&held.record.python);
         }
+        crate::reclaim::environments_changed();
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
         }
@@ -304,7 +306,7 @@ impl Service {
     /// (`Pool::import_recent`).
     pub(crate) fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
-        let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
+        let bound = self.engine.read_journal(|journal| journal.bound_generations())?;
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
@@ -364,8 +366,10 @@ impl Service {
             if let Err(error) = self.dispatch_ready() {
                 tracing::warn!("dispatch observation: {error}");
             }
-            // Dispatch wakes on events only: an arrival, an exit, a cancel, freed room.
-            self.engine.wait_activity(epoch, None);
+            // Dispatch wakes on events: an arrival, an exit, a cancel, freed room; and when a told GPU wait says its next minute
+            // (cl-1233), as nothing else does while the runs ahead only compute.
+            let due = self.pool().and_then(|pool| pool.told_due());
+            self.engine.wait_activity(epoch, due.map(|due| due.saturating_duration_since(std::time::Instant::now())));
         }
     }
     /// Sweep disk caches each `SWEEP_EVERY` (what each keeps goes once unused that long), the first once its packages are
@@ -382,6 +386,8 @@ impl Service {
                     if due {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
+                        // What no event says (a kernel compiled, an update's Runtime) is walked again each sweep.
+                        crate::reclaim::environments_changed();
                     }
                     if due || asked {
                         service.measure_usage();
@@ -395,7 +401,7 @@ impl Service {
         let publisher = self.publisher.lock().unwrap().clone();
         let generations = self.catalog.root();
         if let Some(publisher) = publisher {
-            crate::reclaim::measure_usage(publisher.store().root(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
+            crate::reclaim::measure_usage(publisher.store(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
         }
     }
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
@@ -419,7 +425,7 @@ impl Service {
         if let Some(gpu) = self.gpu() {
             gpu.drop_members(actor, &generations.difference(&kept).cloned().collect());
         }
-        let bound = self.engine.with_journal(|j| j.bound_generations())?;
+        let bound = self.engine.read_journal(|j| j.bound_generations())?;
         let (mut reclaimed, mut retained) = (0u64, vec![]);
         for generation in generations.iter().filter(|g| !bound.contains(*g)) {
             if let Some(gpu) = self.gpu() {
@@ -622,6 +628,7 @@ impl Service {
             Ok(swept) => {
                 if !swept.is_empty() {
                     tracing::info!("reclaimed {swept}");
+                    crate::reclaim::environments_changed();
                 }
                 swept
             }
@@ -696,8 +703,10 @@ impl Service {
             }
             source_ready.push(record);
         }
-        // The widths of roots the machine chooses for, from its packing of the whole queue (cl-816).
-        let choosing = pool.width() > 1 && source_ready.iter().any(crate::estimate::chooses);
+        // The widths of roots the machine chooses for, from its packing of the whole queue (cl-816): a root's as it starts, an
+        // orchestrator's as its first call goes (cl-1187).
+        let open = |record: &Execution| !record.invocation.parent.is_empty() && record.invocation.degree > 0 && pool.open(record.root_seq());
+        let choosing = pool.width() > 1 && source_ready.iter().any(|record| crate::estimate::chooses(record) || open(record));
         let widths = match choosing {
             true => crate::estimate::widths(self, &pool).unwrap_or_else(|error| {
                 tracing::warn!("the queue was not packed, so its roots run at their narrowest: {error}");
@@ -725,7 +734,10 @@ impl Service {
                 used < self.parallelism
             } else { used <= self.parallelism });
             let root = invocation.parent.is_empty();
-            let width = widths.get(&record.id).copied();
+            let width = widths.get(&record.id).map(|start| start.width);
+            if let Some(start) = widths.get(&invocation.root).filter(|_| open(&record)) {
+                pool.choose(record.root_seq(), start.width, start.wait_ms);
+            }
             if !(held && root || invocation.degree > 0 && gpu_fenced) && admit()?
                 && self.offer(&pool, &record, width, &mut claims, calls.clone(), admit)? {
                 if crate::queue::job(&record) {
@@ -761,7 +773,7 @@ impl Service {
                     } else if invocation.degree > 0 && gpu_fenced {
                         "waiting for an earlier process to let go of the GPUs".to_owned()
                     } else if cpu_full {
-                        self.cpu_wait(&holders)
+                        self.cpu_wait(&record, &holders)
                     } else if invocation.degree > 0 {
                         "waiting for a free GPU".to_owned()
                     } else {
@@ -789,14 +801,15 @@ impl Service {
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
     }
-    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them, by their callers' ids,
-    /// which each caller names as people know them (`waiting for LAB2-12 to finish with this machine's CPU`).
-    fn cpu_wait(&self, holders: &[Execution]) -> String {
-        let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
-        match named.as_slice() {
-            [] => "waiting for this machine's CPU to free up".to_owned(),
-            [one] => format!("waiting for {one} to finish with this machine's CPU"),
-            [rest @ .., last] => format!("waiting for {} or {last} to finish with this machine's CPU", rest.join(", ")),
+    /// What deviceless run `record` waits for while this machine's CPU slots are full: the runs holding them as its readers hear them
+    /// (`others`, cl-1223), by their callers' ids, which each caller names as people know them (`waiting for LAB2-12 to finish with
+    /// this machine's CPU`), and another project's only as that.
+    fn cpu_wait(&self, record: &Execution, holders: &[Execution]) -> String {
+        let ids: Vec<(String, &Execution)> = holders.iter().map(|holder| (self.engine.caller_id(&holder.id), holder)).collect();
+        let reads = |id: &str| ids.iter().find(|(held, _)| held == id).map_or(Read::No, |(_, holder)| crate::others::read_between(record, holder));
+        match Others::of(ids.iter().map(|(id, _)| id), reads).said("or") {
+            None => "waiting for this machine's CPU to free up".to_owned(),
+            Some(holders) => format!("waiting for {holders} to finish with this machine's CPU"),
         }
     }
     /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes. A project's run, or a
@@ -807,9 +820,11 @@ impl Service {
         let mut waits = self.waits.lock().unwrap();
         let (_, said) = waits.entry(record.id.clone()).or_insert_with(|| (std::time::Instant::now(), String::new()));
         if said.as_str() != why {
+            // Said again only when what it waits on changes, not its bytes so far (cl-1185: 134 lines a second while a download moved).
+            let moved = gist(said) != gist(why);
             why.clone_into(said);
             drop(waits);
-            if !why.is_empty() { tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}"); }
+            if moved && !why.is_empty() { tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}"); }
         }
     }
     /// Run `record` went: if it waited, this machine's log says how long, and for what last.
@@ -854,4 +869,9 @@ impl Service {
         let plan = self.plan(pool, record)?;
         pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, width, claims, calls, admit)
     }
+}
+
+/// What a waiting reason says without its counts (`52GB to download`, `215MB of 18GB`, `305 of 484 pieces`): its words.
+fn gist(why: &str) -> String {
+    why.chars().filter(|c| !c.is_ascii_digit() && *c != '.').collect()
 }

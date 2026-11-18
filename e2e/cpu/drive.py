@@ -1,4 +1,6 @@
-"""e2e/cpu: one package's cells through the Runtime's real executor on the CPU, with tiny random weights.
+"""e2e/cpu: one package's cells through the Runtime's real executor on the CPU, with tiny random weights, and this
+driver standing in for TensorD: for a fixture that patches release geometry (PATCH, WAIVE: se-149), and for every package
+run without a cozy. With one, every other package's cells run for real (real.py), judged here (`judged`).
 
 Runs in the package's own environment (run.sh). It stands where TensorD stands: the executor process is the
 Runtime's (`python -m cozy_runtime.internal.executor`), and this sends it TensorD's frames (`executor-protocol`) over
@@ -517,8 +519,9 @@ class Broker:
 
 
 def missed(interface: Path, function: str, request: dict[str, Json], reply: Reply, called: list[str]) -> list[str]:
-    """What a call read on demand or called that its function's needs rules say its request doesn't use (cl-1103): each a miss,
-    which a machine fetches only when it's read. The rules are answered by TensorD's evaluator (crates/needs' needs-answers)."""
+    """What a call read on demand (the models its own request built: the Runtime's `execution.on_demand`) or called that its
+    function's needs rules say its request doesn't use (cl-1103): each a miss, which a machine fetches only when it's read. The
+    rules are answered by TensorD's evaluator (crates/needs' needs-answers)."""
     answers = os.environ.get("NEEDS_ANSWERS", "")
     if not answers:
         return []
@@ -578,6 +581,15 @@ def same_model(manifests: Mapping[str, str], ref: str) -> str | None:
     name = ref.split("@", 1)[0]
     found = [manifest for key, manifest in manifests.items() if key.split("@", 1)[0] == name]
     return found[0] if len(found) == 1 else None
+
+
+def built(manifests: Mapping[str, str], slot: Slot) -> str | None:
+    """The fixture's build for a slot, keyed by its path, its default ref, or its name (`text_encoder`). Each slot of that
+    name binds a name-keyed build under the default its package declares, so a fixture keyed by name never has to repeat
+    the ref and still matches when the default moves to another model (se-160)."""
+    ref = slot_ref(slot)
+    return (manifests.get(slot["path"]) or manifests.get(ref) or manifests.get(slot["path"].rsplit(".", 1)[-1])
+            or same_model(manifests, ref))
 
 
 def held(manifest: str, store: Path) -> list[str]:
@@ -659,7 +671,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         if slot.get("weights"):
             continue
         ref = slot_ref(slot)
-        manifest = manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref)
+        manifest = built(manifests, slot)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
@@ -849,31 +861,38 @@ def graphs_off_cuda(reply: Reply) -> None:
 
 def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
           committed: Callable[[], dict[str, dict[str, int]]]) -> tuple[Seen, Files]:
-    """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
-    declared empty), the cell's own check, the stored reference's, and its graphs' fallback (`graphs_off_cuda`)."""
+    """The stand-in's reply judged (`judged`): it succeeded, its graphs fell back off CUDA (`graphs_off_cuda`), and each
+    declared output is its file in the spool."""
     outcome = reply.get("outcome", {})
     if not reply.get("ok") or outcome.get("terminal") != "succeeded":
         raise Failed(f"{outcome.get('code') or reply.get('code')}: {first_line(outcome.get('message') or reply.get('detail', ''))}")
     graphs_off_cuda(reply)
     result_file = spool / "result.canonical"
     result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
-    seen: Seen = {"result": plain(result), "outputs": []}
-    weights = committed()
-    if weights:
-        seen["weights"] = weights
-    empty = set(cell.get("empty", []))
-    files: list[Path] = []
     named: Files = {}
     for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
         output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
         path = spooled(spool, ref)
-        files.append(path)
         named[output] = (path, media_type)
         if path.suffix == ".raw" and media_type.startswith("video/"):
             registered = next((f for f in reply.get("frames", []) if f["handle"] == ref), None)
             if registered is None:
                 raise Failed(f"raw video {output} has no Runtime frame registration")
             path.with_suffix(path.suffix + ".json").write_text(json.dumps(registered["facts"]))
+    return judged(cell, result, named, reference, committed()), named
+
+
+def judged(cell: Cell, result: Json, named: Files, reference: Seen | None, weights: dict[str, dict[str, int]]) -> Seen:
+    """A call's output judged, never only its completion: every output (by output id, its file and media type) present,
+    finite and not flat (or declared empty), the cell's own check, and the stored reference's. The stand-in's (`judge`) and
+    a real run's (real.py) alike."""
+    seen: Seen = {"result": plain(result), "outputs": []}
+    if weights:
+        seen["weights"] = weights
+    empty = set(cell.get("empty", []))
+    files: list[Path] = []
+    for output, (path, media_type) in sorted(named.items()):
+        files.append(path)
         if not path.stat().st_size:
             if output not in empty:
                 raise Failed(f"output {output} is empty")
@@ -894,7 +913,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
         raise Failed(problem)
     if reference is not None:
         compare(seen, reference, tolerance(cell))
-    return seen, named
+    return seen
 
 
 def tolerance(cell: Cell) -> float:
@@ -1108,6 +1127,16 @@ def cpu() -> str:
     return ""
 
 
+def tiny(fixture: Fixture, package_dir: Path, out: Path, store: Path) -> dict[str, str]:
+    """The fixture's tiny models in `store`, each by the ref or slot path it builds for: a source folder imported by
+    TensorFS, or a checkpoint its writer committed there."""
+    import tensorfs
+
+    os.environ["CPU_E2E_PACKAGES"] = str(package_dir.parent)
+    return {ref: source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
+            for ref, source in fixture.models(out / "source", store).items()}
+
+
 def stored(folder: Path, package: str) -> tuple[Path, str]:
     """The file of `package`'s references for this CPU's vendor, and what each cell's line says of it. bf16 matmuls sum
     in another order on Intel than on AMD, alike on every CPU of one vendor: a tiny model's picture can move past a
@@ -1154,12 +1183,7 @@ def main() -> int:
 
     started = time.monotonic()
     try:
-        import tensorfs
-
-        manifests: dict[str, str] = {}
-        os.environ["CPU_E2E_PACKAGES"] = str(package_dir.parent)
-        for ref, source in fixture.models(out / "source", store).items():
-            manifests[ref] = source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
+        manifests = tiny(fixture, package_dir, out, store)
         line(True, "-", "tiny-weights", started)
     except Exception as exc:
         with open(out / "tiny-weights.err", "w") as err:
@@ -1244,7 +1268,9 @@ def main() -> int:
                 (out / "requests" / f"{request}.json").write_text(json.dumps({
                     "entry": entry, "payload": cell["payload"], "files": {f: g["local"] for f, g in granted.items()},
                     "models": bool(cell.get("models"))}))
-                # A cell may bind a slot to another of the fixture's models (`model=` on a request).
+                # A cell may bind a slot to another of the fixture's models, or an earlier cell's lane (`model=` on a request).
+                if absent := [ref for ref in cell.get("models", {}).values() if ref not in manifests]:
+                    raise Failed(f"nothing built or wrote {absent[0]}: run the cell that writes it first")
                 chosen = {**manifests, **{path: manifests[ref] for path, ref in cell.get("models", {}).items()}}
                 rows = bindings(interface, str(interface_path), row, chosen, store, f"{package}@{version}", package)
                 executor = executors.get(ranks)
@@ -1308,6 +1334,9 @@ def main() -> int:
                 items = executor.items
                 seen, named = judge(cell, reply, spool, against, lambda: written(cell, items, store))
                 ran[key], kept[key] = seen, named
+                # The checkpoint it wrote is a model a later cell binds by this cell's key (`Cell.models`).
+                for output in cell.get("weights", {}):
+                    manifests[key] = next(item["revision"] for item in reversed(items) if item["output"] == output)
                 if same_as is not None and same_as in kept:
                     where, gap = twin_gap(named, kept[same_as], seen["result"])
                     if gap > tolerance(cell):

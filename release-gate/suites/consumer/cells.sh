@@ -7,6 +7,10 @@
 #   recording freed memory inside its capture (900 from cuMemFree) and was refused, its idle retry met the same 900, and
 #   the idle path took that for a device fault: the executor was poisoned and every second warm call failed "did not
 #   settle quiescent" (cozy-runtime #1956).
+# - sdxl-fp8-float (a card over 8 GB without fp8 tensor cores, below sm89): SDXL 1024 in its fp8 lane, each fp8.rowwise
+#   weight decoded to 16-bit for torch's GEMM. Escaped in RC 0.27.0 (cr-338): cr-327 put int8.convrot's conv branch in the
+#   fp8 and mxfp8 decoders, which read a `rotation_size` neither carries, so every such call failed KeyError
+#   'rotation_size' (run FD8-2, RTX 3080 Ti). It must complete.
 # - h3-first-8gb (an 8 GB card): H3 15 s as the machine's first H3 call, with no weights step: its 52 GB land during the
 #   call, as on kushina (RTX 5060), whose executor died of SIGSEGV then (run 45627, cr-275). It must complete.
 GIB=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
@@ -37,6 +41,14 @@ if [ "${GIB:-0}" -gt 8 ] && { [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-12gb,"* || $
       and .eager.calls == 0 and .replays > 0' "sdxl-12gb-$t.json" > /dev/null 2>&1 || bad+=("$t unet ${unet:-none}: not a replay")
   done
   expect sdxl-12gb-warm "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-cold and four warm calls completed, each warm call a native replay}; ${ran[*]}"
+fi
+SM=$(grep -oE '· sm[0-9]+ ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
+if [ "${GIB:-0}" -gt 8 ] && [ "${SM:-89}" -lt 89 ] && { [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-fp8-float,"* || $ONLY == *",sdxl,"* ]]; }; then
+  cell sdxl-fp8-float "$(pkg sdxl generate)" --lane fp8 megapixels:=1.0 steps:=20 prompt="$OBJECT in $SCENE, fp8, photo" \
+    seed:=$((R + 630))
+  s=$(run_get "$OUT" sdxl-fp8-float .status)
+  expect sdxl-fp8-float "$([ "$s" = completed ] && echo PASS || echo FAIL)" "sm$SM run $(cat sdxl-fp8-float.number 2>/dev/null) $s \
+$(run_get "$OUT" sdxl-fp8-float '(.reason.code // "") + " " + (.reason.message // "")' | head -c 300)"
 fi
 if [ "${GIB:-99}" -le 8 ] && { [ -z "$ONLY" ] || [[ $ONLY == *",h3-first-8gb,"* ]]; }; then
   one_beat prompt="$MOTION Wide, steady." seed:=$((R + 620)) duration_s:=15

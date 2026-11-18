@@ -358,7 +358,10 @@ impl Runs {
         };
         spec.local_private.clone_from(&private);
         let this = self.clone();
+        let capability = spec.hub.as_ref().and_then(|hub| hub.capability.clone());
         let started = std::thread::Builder::new().name(format!("replan-{run}")).spawn(move || crate::private_io::within(private, || {
+            // Its capability is renewed while it plans, as an accepted run's is: its reads wait on that renewal (cl-1189).
+            let _serving = capability.map(|capability| capability.serves(&run, &this.service.engine));
             let stoppable = this.service.engine.stoppable(&run);
             if let Err(refused) = this.prepare(&signer, &run, spec, &stoppable) {
                 tracing::warn!(run = %run, "its item wasn't planned again: {}", refused.message);

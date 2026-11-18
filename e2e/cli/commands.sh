@@ -305,9 +305,11 @@ in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json
 before=$(envs_in "$HOME/.cozy")
 RUN_PROJECT=$other cell second-parts "$script" || return 0
 after=$(envs_in "$HOME/.cozy")
-# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none waited on the machine's download of a model
+# (`waiting_on`, cl-1205), none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or ((.waiting_on // []) | length > 0)
       or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
@@ -530,26 +532,32 @@ code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions
 
 # cl-1183 (pod-session 44176217146, H3 upscale's `video`: PRO-2 refused, PRO-4 ran): a file a run attaches to a box-shaped input
 # (Image, Video: the call reads its `file`) went under the input's own name while its project didn't hold it yet, so the Runtime,
-# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. Local
-# code installed here takes a picture no run has sent, twice: both runs complete and read its bytes.
+# reading `picture.file`, refused it `asset_ungranted`; once the project kept it, a later run sent it as `picture.file`. And
+# `--file video.file=<plate>`, the path the Runtime names, was left out and refused `tool_input_missing` (pod-session 44185299980).
+# Local code installed here takes a picture no run has sent, twice, then another as `--file picture.file=`: each run completes and
+# reads its bytes.
 given_file() {
-step "a run's own file at a box-shaped input, its first use and again (cl-1183)"
+step "a run's own file at a box-shaped input, its first use, again, and by its file's path (cl-1183)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/given-file want got n
 rm -rf "$dir"; mkdir -p "$dir"
-python3 -I - "$dir/picture.png" <<'PY'
+python3 -I - "$dir/picture.png" "$dir/member.png" <<'PY'
 import random, struct, sys, zlib
-w, h, rgb = 40, 24, random.randbytes(3)
 def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-rows = b"".join(b"\0" + rgb * w for _ in range(h))
-open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+for path in sys.argv[1:]:
+    w, h, rgb = 40, 24, random.randbytes(3)
+    rows = b"".join(b"\0" + rgb * w for _ in range(h))
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 PY
-want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1)
-for n in first again; do
-  cell "given-$n" "$here/project/given.py/read" "picture=$dir/picture.png" \
-    || { check "given file: the $n run of a new picture $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300)"; continue; }
+for n in first again member; do
+  case $n in
+    member) want=$(sha256sum "$dir/member.png" | cut -d' ' -f1); set -- --file "picture.file=$dir/member.png" ;;
+    *) want=$(sha256sum "$dir/picture.png" | cut -d' ' -f1); set -- "picture=$dir/picture.png" ;;
+  esac
+  cell "given-$n" "$here/project/given.py/read" "$@" \
+    || { check "given file: the $n run ($*) $(run_get "$OUT" "given-$n" .status): $(run_get "$OUT" "given-$n" .reason.message | head -c 300) $(tail -c 300 "$OUT/given-$n.err" 2> /dev/null)"; continue; }
   got=$(run_get "$OUT" "given-$n" '"\(.result.sha256) \(.result.width)"')
-  [ "$got" = "$want 40" ] || check "given file: the $n run read '$got', not '$want 40'"
+  [ "$got" = "$want 40" ] || check "given file: the $n run ($*) read '$got', not '$want 40'"
 done
 }
 
@@ -1045,7 +1053,8 @@ in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on lo
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   && grep -q 'cozy machine update local' "$OUT/held-prerelease.ndjson" "$OUT/held-prerelease.err" \
   || check "held prerelease: held on Runtime $released, a project's e2e-held run wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/held-prerelease.ndjson") $(tail -c 300 "$OUT/held-prerelease.err")"
-cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+# Its TensorFS too: the RC Runtime's floor is a TensorFS build only the candidate set holds (xs-216).
+cozy --json machine update local --runtime "$was" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
 }
@@ -1211,7 +1220,7 @@ cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
 # says why; and off the RC, an unversioned run never takes a prerelease (e2e-held 0.1.0, never 0.2.0rc1: se-128).
 local release
 release=$(minor_release) || { check "runtime floor: no release of the minor to hold local on: $release"; return; }
-cozy --json machine update local --runtime "$release" -y > "$OUT/floor-release.json" 2>&1 \
+cozy --json machine update local --runtime "$release" ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-release.json" 2>&1 \
   || { check "runtime floor: local refused the candidate's Runtime as a release ($release): $(tail -c 300 "$OUT/floor-release.json")"; return; }
 machine_ready
 jq -e '.status.runtime | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$OUT/machine.json" > /dev/null \

@@ -61,6 +61,20 @@ def silent(payload: Wait, tel: Telemetry) -> Waited:
     return Waited(seconds=payload.seconds)
 
 
+class Lines(msgspec.Struct, forbid_unknown_fields=True):
+    count: int
+    seconds: float
+
+
+@app.entrypoint(accelerator=False)
+def lines(payload: Lines, tel: Telemetry) -> Waited:
+    """`count` log lines, `seconds` apart: each a commit of the machine's journal (cl-1202)."""
+    for line in range(payload.count):
+        tel.log(f"line {line + 1} of {payload.count}", level="info")
+        time.sleep(payload.seconds)
+    return Waited(seconds=payload.count * payload.seconds)
+
+
 class Nothing(msgspec.Struct, forbid_unknown_fields=True):
     pass
 

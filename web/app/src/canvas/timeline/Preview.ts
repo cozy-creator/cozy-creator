@@ -1,12 +1,11 @@
-// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, under the same rations as any other, there only
-// while it holds its slot. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
+// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, its clip's file in the page's memory (cl-1215),
+// there only while it's played or scrubbed. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
 import type { Client } from "../../api/client"
-import { holdMedia, playingHere } from "../../api/events"
 import type { Playback } from "../../api/transport"
 import { signal } from "../../ui/signal"
 import { clipAt, isStill, type Layout, type Placed } from "./model"
 
-/** A pause or a scrub keeps its slot this long, for the next seek. */
+/** A pause or a scrub keeps its `<video>` and its file this long, for the next seek. */
 const LET_GO_MS = 1500
 
 /** A frame's middle: exact at the edit's rate, and nearest at any other. */
@@ -17,9 +16,9 @@ export class Preview {
   readonly playing = signal(false)
   /** Which clip is up, by its index. */
   readonly showing = signal<number | null>(null)
-  /** A `<video>` holds a slot. */
+  /** Its `<video>` is open. */
   readonly live = signal(false)
-  /** The selected clip has a decoded frame, rather than only a slot or metadata. */
+  /** The selected clip has a decoded frame, rather than only its `<video>` or metadata. */
   readonly ready = signal(false)
   /** What the canvas holds: which file, at which second. */
   readonly kept = signal<{ path: string; at: number } | null>(null)
@@ -33,10 +32,6 @@ export class Preview {
   private still: HTMLCanvasElement | null = null
   private playback: Playback | null = null
   private loaded: string | null = null
-  private release: (() => void) | null = null
-  private waiting: AbortController | null = null
-  /** The ask for a slot in line: a seek while it waits waits on it too. */
-  private holding: Promise<boolean> | null = null
   private wanted: number | null = null
   private turn = 0
   private raf = 0
@@ -183,14 +178,22 @@ export class Preview {
     this.pause()
   }
 
-  /** This file in the `<video>`, its slot held: false if it was let go while waiting, or can't be played. */
+  /** This file in the `<video>`, from the page's memory (cl-1215): false if it was let go while it came, or can't be played. */
   private async load(path: string): Promise<boolean> {
-    if (!this.holder || !this.projectId || !(await this.hold()) || !this.holder) return false
+    if (!this.holder || !this.projectId) return false
+    this.live.set(true)
     const video = this.open(this.holder)
     if (this.loaded !== path) {
       this.playback?.stop()
+      this.playback = null
       this.loaded = path
-      this.playback = this.client.transport.play(this.client.file(this.projectId, path), video)
+      const opened = await this.client.transport.play(this.client.file(this.projectId, path), video).catch(() => null)
+      if (!opened) return false
+      if (this.loaded !== path || this.video !== video) {
+        opened.stop()
+        return false
+      }
+      this.playback = opened
     }
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) return true
     return new Promise((done) => {
@@ -207,29 +210,6 @@ export class Preview {
       video.addEventListener("loadedmetadata", yes)
       video.addEventListener("error", no)
     })
-  }
-
-  private hold(): Promise<boolean> {
-    if (this.release) return Promise.resolve(true)
-    if (this.holding) return this.holding
-    const waiting = new AbortController()
-    this.waiting = waiting
-    if (playingHere.length >= 2) playingHere[0]()
-    playingHere.push(this.stop)
-    const holding: Promise<boolean> = holdMedia(waiting.signal).then((release) => {
-      if (waiting.signal.aborted) {
-        release()
-        return false
-      }
-      this.release = release
-      this.waiting = null
-      this.live.set(true)
-      return true
-    }, () => false).finally(() => {
-      if (this.holding === holding) this.holding = null
-    })
-    this.holding = holding
-    return holding
   }
 
   private seeked(video: HTMLVideoElement) {
@@ -272,10 +252,10 @@ export class Preview {
 
   private letGoSoon() {
     clearTimeout(this.letting)
-    if (this.release || this.waiting) this.letting = setTimeout(this.stop, LET_GO_MS)
+    if (this.video) this.letting = setTimeout(this.stop, LET_GO_MS)
   }
 
-  /** Lets go of the slot, whoever asks: another player, or the box leaving the screen. */
+  /** Lets go of its `<video>` and the file's bytes: idle a while, or the box leaving the screen. */
   stop = () => {
     clearTimeout(this.letting)
     if (this.playing.get()) {
@@ -284,9 +264,6 @@ export class Preview {
     }
     this.turn += 1
     cancelAnimationFrame(this.raf)
-    this.waiting?.abort()
-    this.waiting = null
-    this.holding = null
     this.gaveUp?.()
     this.playback?.stop()
     this.playback = null
@@ -294,11 +271,7 @@ export class Preview {
     this.video = null
     this.loaded = null
     this.wanted = null
-    this.release?.()
-    this.release = null
     this.live.set(false)
     this.ready.set(false)
-    const at = playingHere.indexOf(this.stop)
-    if (at >= 0) playingHere.splice(at, 1)
   }
 }

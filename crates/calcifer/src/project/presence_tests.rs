@@ -30,6 +30,9 @@ async fn board_handoff(api: &Arc<Api>, client: &reqwest::Client, base: &str, str
     let opened: Opened = client.post(format!("{base}/v1/projects")).bearer_auth("presence-fixture")
         .json(&serde_json::json!({"path": api.machines.user_home.join("board handoff"), "unencrypted": true})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
     let id = opened.id;
+    // A box of words: a render of it asks nothing of a machine.
+    client.post(format!("{base}/v1/projects/{id}/assets")).bearer_auth("presence-fixture")
+        .json(&serde_json::json!({"name": "words", "tool": "", "fields": {"text": "hello"}})).send().await.unwrap().error_for_status().unwrap();
     let shown: api::calcifer::ProjectShowReply = client.put(format!("{base}/v1/events/{stream}")).bearer_auth("presence-fixture")
         .json(&serde_json::json!({"projects": [&id]})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
     assert_eq!(shown.held, [id.clone()]);
@@ -62,7 +65,7 @@ async fn board_handoff(api: &Arc<Api>, client: &reqwest::Client, base: &str, str
         let url = format!("{base}/v1/projects/{id}/runs");
         async move {
             client.post(url).bearer_auth("presence-fixture")
-                .json(&serde_json::json!({"names": ["all"], "on": ["local"]})).send().await.unwrap().error_for_status().unwrap().json::<Asked>().await.unwrap()
+                .json(&serde_json::json!({"names": ["words"], "on": ["local"]})).send().await.unwrap().error_for_status().unwrap().json::<Asked>().await.unwrap()
         }
     });
     tokio::time::timeout(within, arrived.notified()).await.expect("next request did not reach Calcifer");

@@ -79,6 +79,7 @@ fn routes() -> Router<Machine> {
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
+        .route(path::OBJECTS, put(put_objects))
         .route(path::UPCOMING, put(upcoming))
         .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
@@ -276,7 +277,11 @@ impl Machine {
                 refusal => Error::credential("capability_invalid", refusal.to_string()),
             })?;
         let owner = authority.keys.granted(&signer);
-        Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes(), owner }, grant })
+        let actor = VerifiedActor { public_key: signer.to_bytes(), owner };
+        if let Some(said) = headers.get(v1::CLIENT).and_then(|value| value.to_str().ok()) {
+            crate::clients::heard(&crate::runs::actor_id(actor), said);
+        }
+        Ok(Caller { actor, grant })
     }
 
     /// A response stream lives until its key stops authorizing; a play link's also until its
@@ -360,35 +365,81 @@ async fn status(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     Ok(sse(m.authority(&caller), frames))
 }
 
-/// `GET /v1/gpus` as SSE (cl-1100): each NVIDIA GPU's busy share and memory in use, read once a second while the caller watches and
-/// never otherwise. One with none to read sends one empty reading. Watching is no activity: it holds no idle clock.
+/// `GET /v1/gpus` as SSE (cl-1100, cl-1191): each NVIDIA GPU's gauges (busy share, memory, power against its limit, temperature,
+/// clock and the limits on it), read once a second while the caller watches and never otherwise. One with none to read sends one
+/// empty reading. Watching is no activity: it holds no idle clock. Under `machine.gpu_samples` (tests) its recorded readings stand
+/// in for its GPUs', one a second by the clock, so every reader sees the same one at once.
 async fn gpus(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let gpus: Vec<(u32, String)> = m.identity.gpus.iter().map(|gpu| (gpu.device_index, gpu.device_uuid.clone())).collect();
-    let opened = m
-        .call(move |_| Ok(gpus.into_iter().filter_map(|(index, uuid)| Some((index, platform::gpu::Device::open(&uuid).ok()?))).collect::<Vec<_>>()))
-        .await?;
-    let devices = Arc::new(opened);
-    let readings = futures_util::stream::unfold((devices, true), |(devices, first)| async move {
+    let gauges = match m.identity.gpu_samples.as_deref().and_then(crate::slowed::samples) {
+        Some(samples) => {
+            let mut by: std::collections::BTreeMap<u32, Vec<platform::gpu::Sample>> = Default::default();
+            for sample in samples {
+                by.entry(sample.gpu).or_default().push(sample);
+            }
+            Gauges::Recorded(Arc::new(by.into_iter().collect()))
+        }
+        None => {
+            let gpus: Vec<(u32, String)> = m.identity.gpus.iter().map(|gpu| (gpu.device_index, gpu.device_uuid.clone())).collect();
+            let opened = m
+                .call(move |_| Ok(gpus.into_iter().filter_map(|(index, uuid)| Some((index, platform::gpu::Device::open(&uuid).ok()?))).collect::<Vec<_>>()))
+                .await?;
+            Gauges::Live(Arc::new(opened))
+        }
+    };
+    let readings = futures_util::stream::unfold((gauges, true), |(gauges, first)| async move {
         if !first {
-            if devices.is_empty() {
+            if gauges.is_empty() {
                 return std::future::pending().await;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        let read = devices.clone();
-        let gpus = tokio::task::spawn_blocking(move || {
-            (read.iter())
-                .filter_map(|(index, device)| device.busy().ok().map(|(busy, used)| v1::GpuReading { index: *index, busy_percent: busy, memory_used_bytes: used }))
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
         let at_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |at| at.as_millis() as i64);
-        Some((event("gpus", &v1::GpuUse { at_unix_ms, gpus }), (devices, false)))
+        let gpus = gauges.read(at_unix_ms as usize / 1000).await;
+        Some((event("gpus", &v1::GpuUse { at_unix_ms, gpus }), (gauges, false)))
     });
     Ok(sse(m.authority(&caller), readings))
+}
+
+/// Where `GET /v1/gpus` reads: the GPUs through NVML, or recorded readings by GPU, each GPU's in turn.
+enum Gauges {
+    Live(Arc<Vec<(u32, platform::gpu::Device)>>),
+    Recorded(Arc<Vec<(u32, Vec<platform::gpu::Sample>)>>),
+}
+
+impl Gauges {
+    fn is_empty(&self) -> bool {
+        match self {
+            Gauges::Live(devices) => devices.is_empty(),
+            Gauges::Recorded(gpus) => gpus.is_empty(),
+        }
+    }
+
+    /// Each GPU's reading now (recorded: its `second`th, round and round); one NVML can't read is left out.
+    async fn read(&self, second: usize) -> Vec<v1::GpuReading> {
+        let reading = |index: u32, gauge: platform::gpu::Gauge| v1::GpuReading {
+            index,
+            busy_percent: gauge.busy_percent,
+            memory_used_bytes: gauge.memory_used_bytes,
+            memory_total_bytes: gauge.memory_total_bytes,
+            power_w: gauge.power_w,
+            power_limit_w: gauge.power_limit_w,
+            temperature_c: gauge.temperature_c,
+            sm_mhz: gauge.sm_mhz,
+            sm_mhz_max: gauge.sm_mhz_max,
+            throttles: gauge.throttles.into_iter().map(str::to_owned).collect(),
+        };
+        match self {
+            Gauges::Live(devices) => {
+                let devices = devices.clone();
+                tokio::task::spawn_blocking(move || devices.iter().filter_map(|(index, device)| Some(reading(*index, device.gauge().ok()?))).collect())
+                    .await
+                    .unwrap_or_default()
+            }
+            Gauges::Recorded(gpus) => gpus.iter().map(|(index, samples)| reading(*index, samples[second % samples.len()].gauge())).collect(),
+        }
+    }
 }
 
 /// One SSE event named `name` whose data is `value`.
@@ -425,11 +476,17 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
         return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
     }
     let admitted = m.admit()?;
+    let asker = actor_id(caller.actor);
     let removed = m.call(move |runs| {
-        let reading = runs.reading(&model)?;
-        if let Some(first) = reading.first() {
-            let message = format!("{model} is being used by {}. Remove it once that finishes.", reading.join(" and "));
-            return Err(Error::conflict("model_in_use", message).next(format!("cozy run watch {first}")));
+        // Its asker's own runs by their ids, which its client names as people know them; any other's counted (cl-1223).
+        let reading = runs.reading(&model, &asker)?;
+        if !reading.none() {
+            let who = reading.said("and").unwrap_or_else(|| "another render".to_owned());
+            let refused = Error::conflict("model_in_use", format!("{model} is being used by {who}. Remove it once that finishes."));
+            return Err(match reading.first() {
+                Some(first) => refused.next(format!("cozy run watch {first}")),
+                None => refused,
+            });
         }
         let result = runs.service.engine.store.remove_cached_model(&model)
             .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
@@ -791,11 +848,13 @@ fn from_offset(parts: Parts, mut offset: u64) -> std::io::Result<Box<dyn Read + 
 struct Last {
     #[serde(default)]
     lines: u64,
+    /// Only lines from this instant on (unix ms).
+    since_ms: Option<i64>,
 }
 
-/// `GET /v1/logs/{name}?lines=N`: a machine log's newest N whole lines (0: all it keeps). As SSE,
-/// those and then each batch as it is appended, each event's id the place after it: a
-/// `Last-Event-ID` resumes there.
+/// `GET /v1/logs/{name}?lines=N&since_ms=T`: a machine log's newest N whole lines (0: all it keeps), of those the ones
+/// from T on, gzip to a caller whose `Accept-Encoding` takes it. As SSE, its newest N and then each batch as it is
+/// appended, each event's id the place after it: a `Last-Event-ID` resumes there.
 async fn log(
     State(m): State<Machine>,
     Path(name): Path<String>,
@@ -812,19 +871,36 @@ async fn log(
         "tensord" => logs::Log::daily(m.identity.logs.clone(), "tensord"),
         _ => return Err(Error::not_found("log_not_found", format!("this machine keeps no log {name}")).into()),
     };
-    let start = match headers.get("last-event-id") {
-        None => logs::Start::Last(query(last)?.lines),
-        Some(id) => logs::Start::After(
-            id.to_str()
-                .ok()
-                .and_then(|id| id.trim().parse().ok())
-                .ok_or_else(|| Error::validation("invalid_request", "Last-Event-ID is not a log cursor"))?,
+    let (start, since) = match headers.get("last-event-id") {
+        None => {
+            let last = query(last)?;
+            (logs::Start::Last(last.lines), last.since_ms)
+        }
+        Some(id) => (
+            logs::Start::After(
+                id.to_str()
+                    .ok()
+                    .and_then(|id| id.trim().parse().ok())
+                    .ok_or_else(|| Error::validation("invalid_request", "Last-Event-ID is not a log cursor"))?,
+            ),
+            None,
         ),
     };
     let unreadable = |e: std::io::Error| Error::internal("log_unreadable", e.to_string());
     if !wants_events(&headers) {
-        let text = m.call(move |_| log.read(start).map_err(unreadable)).await?;
-        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
+        let gzip = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(platform::gzip::accepted);
+        let body = m
+            .call(move |_| {
+                let text = log.read(start).map_err(unreadable)?;
+                let text = since.map_or(text.as_str(), |since| v1::log_since(&text, since));
+                Ok(if gzip { platform::gzip::pack(text.as_bytes()) } else { text.as_bytes().to_vec() })
+            })
+            .await?;
+        let mut answer = ([(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::VARY, "accept-encoding")], body).into_response();
+        if gzip {
+            answer.headers_mut().insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        }
+        return Ok(answer);
     }
     let follow = m
         .call(move |_| match log.follow(start) {
@@ -937,13 +1013,14 @@ async fn put_object(
     drop(m.admit()?);
     let (start, end, length) = span(&headers)?;
     let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
-    let objects = runs.clone();
+    let (objects, named) = (runs.clone(), digest.clone());
     let Some(upload) = blocking(&objects, move |runs| runs.objects.upload(&actor, &digest, length).map_err(Into::into)).await? else {
         return Ok((StatusCode::NO_CONTENT, [(v1::HELD, held(&[(0, length)]))]).into_response());
     };
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
     let private = crate::private_io::current();
+    let said = private.is_none();
     let writer = tokio::task::spawn_blocking(move || crate::private_io::within(private, || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
         let mut at = start;
         let mut writer = landing.writer()?;
@@ -963,7 +1040,12 @@ async fn put_object(
             at += data.len() as u64;
         }
         drop(receiver);
-        let held = runs.objects.settle(&landing)?;
+        let (held, stored) = runs.objects.settled(&landing)?;
+        // What a guess carries ahead lands as a run's inputs do (cl-1123): said where it lands whole. A project's own on this
+        // computer (`private`) leaves nothing of itself in this log, its digest and length least of all.
+        if stored && said {
+            tracing::info!("objects: {named} landed whole in parts, {length} bytes");
+        }
         wrote.map(|()| held)
     }));
     let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {
@@ -997,6 +1079,72 @@ async fn put_object(
     Ok((StatusCode::NO_CONTENT, [(v1::HELD, self::held(&held))]).into_response())
 }
 
+/// The largest object `PUT /v1/objects` takes: one larger goes by `PUT /v1/objects/{digest}`, in parts.
+const BATCHED_EACH: u64 = 64 << 20;
+/// The longest header line of an object in `PUT /v1/objects`.
+const HEADER_LINE: usize = 4096;
+
+/// `PUT /v1/objects` (`v1::OBJECTS_TYPE`): many whole objects in one body, each written as `PUT /v1/objects/{digest}` writes a whole
+/// one as it arrives, so a tree of small files (local code a guess carries, cl-1123) takes one round trip. Answers what is held of
+/// each, in their order. Uploads hold no admission; the bytes moving hold the idle clock.
+async fn put_objects(State(m): State<Machine>, headers: HeaderMap, body: Body) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    drop(m.admit()?);
+    let (runs, actor) = (m.runs.clone(), actor_id(caller.actor));
+    let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {
+        frame.map_err(|e| Error::validation("request_body_failed", e.to_string()))
+    })));
+    let truncated = || Error::validation("objects_truncated", "the body ended inside an object");
+    let (mut buffer, mut held, mut landed, began) = (Vec::<u8>::new(), vec![], 0_u64, std::time::Instant::now());
+    loop {
+        // Its header line, then its bytes.
+        let line = loop {
+            if let Some(at) = buffer.iter().position(|byte| *byte == b'\n') {
+                break Some(at);
+            }
+            if buffer.len() > HEADER_LINE {
+                return Err(Error::validation("invalid_request", "an object's header line is too long").into());
+            }
+            match frames.next().await {
+                Some(data) => {
+                    m.identity.lifecycle.transferred();
+                    buffer.extend_from_slice(&data?);
+                }
+                None => break None,
+            }
+        };
+        let Some(at) = line else {
+            match buffer.is_empty() {
+                true => break,
+                false => return Err(truncated().into()),
+            }
+        };
+        let header: v1::ObjectHeader = serde_json::from_slice(&buffer[..at])
+            .map_err(|e| Error::validation("invalid_request", format!("an object's header is not JSON: {e}")))?;
+        buffer.drain(..=at);
+        if header.length > BATCHED_EACH {
+            return Err(Error::validation("object_too_large", format!("{} is {} bytes: one this large goes by PUT /v1/objects/{{digest}}", header.digest, header.length)).into());
+        }
+        while (buffer.len() as u64) < header.length {
+            let data = frames.next().await.ok_or_else(truncated)??;
+            m.identity.lifecycle.transferred();
+            buffer.extend_from_slice(&data);
+        }
+        let data: Vec<u8> = buffer.drain(..header.length as usize).collect();
+        landed += header.length;
+        let (actor, digest) = (actor.clone(), header.digest.clone());
+        let ranges = blocking(&runs, move |runs| {
+            runs.objects.carried(&actor, &digest, &data)?;
+            runs.objects.held(&actor, &digest).map_err(Into::into)
+        })
+        .await?;
+        held.push(v1::HeldObject { digest: header.digest, ranges });
+    }
+    tracing::info!("objects: {} landed in one request, {landed} bytes in {} ms", held.len(), began.elapsed().as_millis());
+    Ok(json(StatusCode::OK, &v1::HeldAnswer { held }))
+}
+
 /// A PUT's `[start, end)` of an object of `length` bytes: its `Content-Range`, else the whole
 /// object its `Content-Length` measures.
 fn span(headers: &HeaderMap) -> Result<(u64, u64, u64), Error> {
@@ -1008,6 +1156,11 @@ fn span(headers: &HeaderMap) -> Result<(u64, u64, u64), Error> {
             let (first, last) = span.split_once('-').ok_or_else(invalid)?;
             let number = |n: &str| n.trim().parse::<u64>().map_err(|_| invalid());
             let (start, end, length) = (number(first)?, number(last)? + 1, number(length)?);
+            // An empty part writes nothing and answers what is held: a client before cl-1195 sent one, `bytes n-n/n`, as the rest of
+            // a part whose every byte had gone before its answer was lost.
+            if text(header::CONTENT_LENGTH).is_some_and(|l| l.trim() == "0") && start <= length {
+                return Ok((start, start, length));
+            }
             match start < end && end <= length {
                 true => Ok((start, end, length)),
                 false => Err(invalid()),

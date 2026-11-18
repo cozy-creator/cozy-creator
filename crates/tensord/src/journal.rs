@@ -532,8 +532,8 @@ pub(crate) struct ProgressSnapshot {
     /// What the run waits for, while it waits (`Execution::waiting`), and its place in line (`Execution::place`).
     pub waiting: Option<String>,
     pub place: Option<u32>,
-    /// The weights it waits on while they arrive, shown in `detail` over its own detail, kept here.
-    pub weights: Option<(Weights, String)>,
+    /// The downloads it waits on while they arrive, shown in `detail` over its own detail, kept here.
+    pub waits: Option<(Waits, String)>,
     pub revision: u64,
     /// When it last moved (Unix ms).
     pub at_ms: u64,
@@ -559,17 +559,43 @@ pub(crate) struct Weights {
     pub total: u64,
 }
 
-impl Weights {
-    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
-    /// stage is part of) and the download, never a step its weights have not reached.
+/// The downloads a run waits on (cl-1205; Paul, 11-17: "it should show the download occurring, and then it should also show the 3
+/// jobs that are like 'waiting for download...' and they don't need to independently report the progress in theirs as well"):
+/// their items in this machine's activity (`activity::Waiting::shown`), their repositories, and the bytes of its own still to come,
+/// which only its line's estimate reads (`estimate::fetching`).
+#[derive(Clone, Debug)]
+pub(crate) struct Waits {
+    pub on: Vec<String>,
+    pub models: Vec<String>,
+    pub left: u64,
+}
+
+impl Waits {
+    /// It waits on the same downloads as `other`, whatever bytes each has left.
+    pub(crate) fn same(&self, other: &Waits) -> bool {
+        self.on == other.on && self.models == other.models
+    }
+
+    /// The progress detail they show over the run's own `detail`: its enclosing scope (what the stage is part of) and that it waits
+    /// on them, by name, with no bytes of its own: they are the downloads'.
     pub(crate) fn over(&self, detail: &str) -> String {
         let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        let label = format!("downloading {} weights", self.models);
+        let label = format!("waiting for {} to download", said(&self.models));
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} / {label}"),
             None => label,
         };
-        serde_json::json!({"stage": stage, "bytes_done": self.done, "bytes_total": self.total, "step_ms": 0.0}).to_string()
+        serde_json::json!({"stage": stage, "waiting_on": self.on, "bytes_left": self.left, "step_ms": 0.0}).to_string()
+    }
+}
+
+/// Repositories as a run's stage names them: `minimax-h3`, `minimax-h3 and qwen3-vl`, `a, b and c`.
+fn said(models: &[String]) -> String {
+    let names: Vec<&str> = models.iter().map(|model| model.trim_end_matches('/').rsplit('/').next().unwrap_or(model)).collect();
+    match names.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => "its models".to_owned(),
     }
 }
 
@@ -593,6 +619,10 @@ impl ProgressSnapshot {
 pub(crate) struct Journal {
     connection: Connection,
     workspace_id: String,
+    /// Its commits' wait for the disk (`synchronous`): `FULL` on a durable disk; `OFF` on an ephemeral one (a pod's overlay, which
+    /// no host crash outlives), as its store flushes nothing there (tfs-122). A commit there waited behind the whole download's
+    /// writeback while it held the journal every request reads (cl-1202: 46 s on an A40, 44219244039).
+    synchronous: &'static str,
 }
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
@@ -819,10 +849,28 @@ impl Journal {
             )
             .map_err(db_error)?;
         platform::durable::sync_dir(root)?;
+        let synchronous = match platform::durable::DiskClass::of(root) {
+            platform::durable::DiskClass::Ephemeral => "OFF",
+            _ => "FULL",
+        };
+        connection.pragma_update(None, "synchronous", synchronous).map_err(db_error)?;
         Ok(Self {
             connection,
             workspace_id,
+            synchronous,
         })
+    }
+
+    /// A second connection on `root`'s journal for reads alone (cl-1202): in WAL mode it reads the last committed state while a
+    /// commit waits for the disk, so a reader (Status, a run's state) never waits on a writer. Opened after `open`, which made the
+    /// schema.
+    pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
+        let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
+        connection.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;").map_err(db_error)?;
+        let workspace_id: String = connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
+            .map_err(db_error)?;
+        Ok(Self { connection, workspace_id, synchronous: "OFF" })
     }
 
     /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
@@ -1489,7 +1537,7 @@ impl Journal {
         }
         let accepted = self.accept_now(actor, runs, synced);
         if !synced {
-            self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+            self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
         }
         accepted
     }
@@ -2642,6 +2690,18 @@ impl Journal {
         })
     }
 
+    /// The GPUs root `id` took as its first call bound its lane (cl-1187): what its later calls and its time count.
+    pub(crate) fn set_width(&mut self, id: &str, width: u32) -> io::Result<()> {
+        self.update(id, |record| {
+            let changed = !record.state.terminal() && record.width != width;
+            if changed {
+                record.width = width;
+            }
+            Ok(changed)
+        })
+        .map(drop)
+    }
+
     /// Its weights downloaded from `from` to `to` (Unix ms) while it waited on them (`access::meter`).
     pub(crate) fn fetched(&mut self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.update(id, |record| {
@@ -2778,6 +2838,15 @@ impl Journal {
             if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_cancelled"})) }
             else { Ok(()) }
         })
+    }
+
+    /// The machine ends speculative run `id` (cl-1123 D): its cancel recorded as `cancel_observed` records it, its commit not waiting
+    /// for the disk. A crash loses the run anyway, and its draft runs again.
+    pub(crate) fn cancel_unsynced(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
+        self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
+        let canceled = self.cancel_observed(id, actor, None);
+        self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
+        canceled
     }
 
     /// A run's children that have not finished.

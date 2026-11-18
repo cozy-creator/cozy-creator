@@ -100,9 +100,10 @@ class Device:
     def granularity(self) -> int:
         return self._native.granularity
 
-    def region(self, bytes: int, source: Source) -> Region:
-        """A Region of `bytes` from `source`: address space only, until it is used."""
-        return Region(self._native.region(bytes, source._native))
+    def region(self, bytes: int, source: Source, set: str | None = None) -> Region:
+        """A Region of `bytes` from `source`: address space only, until it is used. `set`: the
+        model component it belongs to; its small regions share pages (cr-317)."""
+        return Region(self._native.region(bytes, source._native, set))
 
     def stats(self) -> DeviceStats:
         return self._native.stats()
@@ -285,6 +286,13 @@ class Region:
         """Pinned for `stream`, a live ``torch.cuda.Stream.cuda_stream``. Absent, its Source fills
         it; the core makes room in its one reclaim order and alone chooses what else moves."""
         return Use(self._native.use_on(stream))
+
+    def use_ahead(self, stream: int) -> Use | None:
+        """`use` ahead of demand, by the rule the core's own fill worker follows: pinned for `stream`
+        once its Source ran here (a derive, which the worker never runs), else None where the core
+        declines (no room by that rule, already present or filling, a capture running). cr-330."""
+        native = self._native.use_ahead(stream)
+        return None if native is None else Use(native)
 
     def pin(self) -> Use | None:
         """Pin existing ready contents atomically, or return None for a residency miss.

@@ -197,6 +197,17 @@ impl std::fmt::Debug for Providers {
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
+/// How far a job's run's readers read another run, by its caller's id (`others::read_by`).
+pub(crate) type Reads = Box<dyn Fn(&str) -> crate::others::Read + Send + Sync>;
+
+/// How far the readers of `sender`'s run in this scope read another run: what the words its job says name (cl-1217, cl-1223).
+pub(crate) fn reads_of(engine: &Arc<crate::execution::Engine>, sender: &str) -> Option<Reads> {
+    let (engine, sender, project) = (engine.clone(), sender.to_owned(), crate::private_io::current());
+    Some(Box::new(move |id: &str| crate::others::read_by(&engine, &sender, project.as_ref(), id)))
+}
+
+/// How long a resolve's read of a checkpoint's structure goes before its run says what it waits behind (cl-1185).
+const SAY_AHEAD: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Default)]
 pub(crate) struct Job {
@@ -209,6 +220,8 @@ pub(crate) struct Job {
     /// (`Engine::waiting`).
     pub(crate) caller: String,
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
+    /// How far its run's own readers read run `id` (a caller's id): what it waits behind names no other project's run (cl-1217).
+    pub(crate) reads: Option<Reads>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
@@ -254,6 +267,9 @@ impl Job {
         if let Some(waiting) = &self.waiting {
             waiting(reason);
         }
+    }
+    fn reads(&self, id: &str) -> crate::others::Read {
+        self.reads.as_ref().map_or(crate::others::Read::No, |reads| reads(id))
     }
     pub(crate) fn stage(&self, stage: String) {
         self.set(stage, 0, 0);
@@ -376,9 +392,13 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 /// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
 const RESOLVE: &str = "resolve-v6";
 
+/// What a capability's reads resolved to (`Publisher::resolve`), by it and the name and hardware asked, and when: kept `ASKED_FOR`.
+static ASKED: std::sync::LazyLock<Mutex<HashMap<String, Arc<Mutex<Option<(Instant, Answer)>>>>>> = std::sync::LazyLock::new(Mutex::default);
+const ASKED_FOR: Duration = Duration::from_secs(300);
+
 /// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
 /// it was then (free VRAM moves; the first answer's stands).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Answer {
     release: String,
     lane: String,
@@ -569,6 +589,7 @@ impl Publisher {
                     }
                 }) as Box<dyn Fn(Option<String>) + Send + Sync>
             }),
+            reads: reads_of(&service.engine, actor),
             ..Default::default()
         };
         // A disk that can't hold it says what fills it and what would.
@@ -728,7 +749,7 @@ impl Publisher {
         // A header by hash is recorded under a tree naming it alone.
         let tree = match &named.tree {
             Some(tree) => {
-                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), order, &stop).map_err(failed)?;
+                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), origin::priority::metadata(order), &stop).map_err(failed)?;
                 (structure.landed.origin, structure.landed.volume) = (structure.landed.origin + landed.origin, structure.landed.volume + landed.volume);
                 structure.landed.local += landed.local;
                 tree.clone()
@@ -776,20 +797,60 @@ impl Publisher {
     /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
-        job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop)
+        let said = format!("resolving {}", named.shown());
+        job.stage(said.clone());
+        // One that waits says what it waits behind, another run's download or install, not a bare "Finding the model" (cl-1185:
+        // PRO6-37 said that for 31 s). It goes ahead of every run's weights (`priority::metadata`), so this is rare.
+        let (done, waited) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if waited.recv_timeout(SAY_AHEAD) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                    return;
+                }
+                if let Some(ahead) = crate::activity::ahead_of(&job.caller, |id| job.reads(id)) {
+                    job.waiting(Some(format!("waiting for {ahead}, then {said}")));
+                    let _ = waited.recv();
+                    job.waiting(None);
+                }
+            });
+            let pulled = self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), None, &|_, _| ()).map(drop);
+            drop(done);
+            pulled
+        })
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
     /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
+    /// `kept`: a list item's (`ahead::item`), whose capability's answer is kept a while for it (`ASKED`); a call's is asked fresh.
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64, kept: bool) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
-        let answer = if source.capability.is_some() {
+        let answer = if let Some(capability) = source.capability.as_ref().filter(|_| kept) {
+            // An account's earlier read does not authorize this capability's frozen root set: what this one read is kept a while for it
+            // alone, asked once however many plans want it at once (cl-1123: a list item's slots resolve while its code installs, and
+            // its plan after reads them here).
+            let key = json!([RESOLVE, capability.identity(), named.model, named.release, named.lane, hardware.gpus, hardware.plain,
+                hardware.components, hardware.free_vram.is_some()]).to_string();
+            let asked = {
+                let mut held = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // One being asked stays; one older than it is kept for goes.
+                held.retain(|_, answer| answer.try_lock().map_or(true, |answer| answer.as_ref().is_none_or(|(at, _)| at.elapsed() < ASKED_FOR)));
+                held.entry(key).or_default().clone()
+            };
+            let mut asked = asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match asked.as_ref().filter(|(at, _)| at.elapsed() < ASKED_FOR) {
+                Some((_, answer)) => answer.clone(),
+                None => {
+                    let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                    *asked = Some((Instant::now(), answer.clone()));
+                    answer
+                }
+            }
+        } else if source.capability.is_some() {
             // An account's earlier read does not authorize this capability's frozen root set.
             Answer::ask(&self.machine, source, &named, hardware)?
         } else {
@@ -799,7 +860,7 @@ impl Publisher {
             let key = json!([RESOLVE, origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain,
                 hardware.components, hardware.free_vram.is_some()]);
             let name = key.to_string();
-            let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
+            let held = service.engine.read_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
                 Some((answer, read)) => {
                     if stale(read) {
@@ -872,7 +933,7 @@ impl Publisher {
         }
         let tree = named.tree()?.clone();
         let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.model, tree.id()]).to_string();
-        let held: Option<Held> = service.engine.with_journal(|j| j.named(&key)).map_err(io_failure)?
+        let held: Option<Held> = service.engine.read_journal(|j| j.named(&key)).map_err(io_failure)?
             .and_then(|(held, _)| serde_json::from_str(&held).ok());
         let reader = match &source.capability {
             Some(capability) => capability.account(),
@@ -928,7 +989,7 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, order, false).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
@@ -1079,9 +1140,9 @@ impl Publisher {
         let Some(gpu) = service.pool() else {
             return Ok(None);
         };
-        let catalog = service.engine.with_journal(|j| j.catalog())?;
+        let catalog = service.engine.read_journal(|j| j.catalog())?;
         let key = Self::resolution_key(&installation, request, &machine_row(&gpu), catalog)?;
-        let Some(id) = service.engine.with_journal(|j| j.resolution(actor, &key))? else {
+        let Some(id) = service.engine.read_journal(|j| j.resolution(actor, &key))? else {
             return Ok(None);
         };
         let Some(preparation) = service.engine.preparation(actor, &id)? else {
@@ -1095,7 +1156,7 @@ impl Publisher {
         }
         // Made longer ago than `FRESH`, it is made again, reading its names again behind it, by a
         // run that reaches their Hub; one that reaches none keeps it.
-        let warnings = service.engine.with_journal(|j| j.named(&warnings_key(&key)))?;
+        let warnings = service.engine.read_journal(|j| j.named(&warnings_key(&key)))?;
         let warnings = match warnings {
             Some((said, made)) if !stale(made) || request.source.is_none() => said,
             None if request.source.is_none() => String::new(),
@@ -1251,7 +1312,7 @@ impl Publisher {
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
         // and with them what only they held.
-        let unsettled = service.engine.with_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
+        let unsettled = service.engine.read_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
         let earlier = |i: &Installation| {
             i.package == installed.package && i.release == installed.release && i.hub == installed.hub && i.alias != installed.alias
                 && !unsettled.contains(&i.generation)
@@ -1336,7 +1397,10 @@ impl Publisher {
         let lock = File::create(locks.join(format!("{identity}.lock"))).map_err(io_failure)?;
         if lock.try_lock().is_err() {
             let holder = self.building.lock().unwrap().get(identity).cloned();
-            job.waiting(Some(match holder {
+            // A guess building it goes at this run's place in line until it's built (`line::Line::raise`).
+            let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, job.order));
+            // The package is this run's own; the run building it as this run's readers hear it (cl-1223).
+            job.waiting(Some(match crate::others::Others::of(holder.as_deref(), |id| job.reads(id)).said("and") {
                 Some(run) => format!("waiting for {run} to install {package} {release}"),
                 None => format!("waiting for another render to install {package} {release}"),
             }));
@@ -1502,7 +1566,7 @@ impl Publisher {
         job: &Job,
     ) -> Result<(Plan, Vec<String>), Failure> {
         // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
-        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
+        let catalog = service.engine.read_journal(|j| j.catalog()).map_err(io_failure)?;
         let Granted { grants, warnings: said, unbound } = self.grants(service, gpu, installation, request, job)?;
         let warnings: Vec<String> = gpu.problems().into_iter().chain(said).collect();
         job.stage(match request.package.is_empty() {
@@ -1620,7 +1684,18 @@ impl Publisher {
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
             let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
+            let source = request.hub(&format!("the model for {path}"))?;
+            // What it waits on shows: the Hub's grant of the run's reads, each attempt it doesn't answer (cl-1189), then the Hub's answer.
+            let began = std::time::Instant::now();
+            if let Some(capability) = &source.capability {
+                capability.granted(job.stop.as_ref(), &|said| job.stage(said));
+            }
+            let granted = began.elapsed();
+            job.stage(format!("resolving {}", named.shown()));
+            let named = self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller))?;
+            if crate::ahead::item(&job.caller) {
+                tracing::info!("{}: {path}: the Hub granted its reads in {} ms, resolved {} in {} ms", job.caller, granted.as_millis(), named.model, (began.elapsed() - granted).as_millis());
+            }
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1640,7 +1715,11 @@ impl Publisher {
             let (mut grant, named, mut warnings) = pick(slot)?;
             // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
             if let Some(named) = named {
+                let began = std::time::Instant::now();
                 self.structure(request.hub("a Hub model")?, &named, job)?;
+                if crate::ahead::item(&job.caller) {
+                    tracing::info!("{}: {}: its structure landed in {} ms", job.caller, grant.slot, began.elapsed().as_millis());
+                }
             }
             if grant.components.is_empty() && !grant.model.is_empty() {
                 grant.components = self.components(&grant.manifest)?;
@@ -1648,7 +1727,7 @@ impl Publisher {
             let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
             if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller));
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
                 if !installation.generation.is_empty() {

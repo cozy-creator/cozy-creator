@@ -27,6 +27,7 @@ import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
+import { leadsTo } from "./RunFace"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bandOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { pressBeganOutside } from "../ui/press"
@@ -50,6 +51,8 @@ const fitOver = () => {
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 /** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
+/** Entering or leaving Focus: the camera's move and the other boxes' fade with it (cl-1198), at once for a reader who asks for less motion. */
+const focusMs = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : HERE_MS)
 /** How long the wheel stays still before the canvas takes it again after Focus: a trackpad's glide goes on after the hand has left. */
 const WHEEL_QUIET_MS = 200
 
@@ -168,11 +171,11 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
   const listed = data?.machines ?? []
-  // A chosen machine that ended leaves the project's machines at once; one that's offline or ending takes nothing now (cl-920).
-  const alive = pinned.filter((name) => name === "local" || listed.some((machine) => machine.name === name && (machine.state === "ready" || machine.state === "booting") && !machine.offline))
+  // A chosen machine that ended leaves the project's machines at once; one that's ending takes nothing now (cl-920).
+  const alive = pinned.filter((name) => name === "local" || listed.some((machine) => machine.name === name && (machine.state === "ready" || machine.state === "booting")))
   // A test pod, a rental whose GPU memory is capped, runs only what names it.
   const capped = (machine: (typeof listed)[number]) => (machine.status?.gpus ?? []).some((gpu) => (gpu.memory_limit_bytes ?? 0) > 0)
-  const held = listed.filter((machine) => machine.ordered !== false && !machine.offline)
+  const held = listed.filter((machine) => machine.ordered !== false)
   // One still booting takes what's sent to it, which waits for it there.
   const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting") && !capped(machine))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
@@ -186,21 +189,6 @@ function useMachines(store: CanvasStore, pinned: string[]) {
     if (names.length) store.machineUp()
   }, [store, key])
   return isPending ? null : names
-}
-
-/** Render all, and how many that is. Approved assets stay. */
-function RenderAll({ id }: { id: string }) {
-  const { client, stream } = useConnection()
-  const store = useCanvasStore()
-  const { data } = useQuery(projectQuery(client, stream, id))
-  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && (asset.kind === "image" || asset.tool === "cozy/edit" || (!madeHere(asset.tool) && !asset.pinned))).length
-  return (
-    <span className="render-all">
-      {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
-        Render all {fresh}
-      </button>}
-    </span>
-  )
 }
 
 /** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
@@ -252,13 +240,11 @@ function Empty({ choose }: { choose: () => void }) {
 function Canvas({
   projectId,
   active,
-  slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
   active: boolean
-  slot: HTMLElement | null
   history: HTMLElement | null
   onAdopt: (id: string, code: string) => void
 }) {
@@ -370,8 +356,10 @@ function Canvas({
     const travel = focusTravel.current
     if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get()) return
     const pane = stage.current?.querySelector(".canvas-root")?.getBoundingClientRect()
+    const others = (ms: number) => flow.fade.hide(flow.byName(travel.owner.name)?.id ?? null, ms)
     // No room to draw in on: Focus shows where it is, never held hidden.
     if (!room || room.width <= 0 || room.height <= 0 || !pane) {
+      others(0)
       store.focusEntering.set(false)
       return
     }
@@ -389,8 +377,11 @@ function Canvas({
       if (!sameView(flow.getViewport(), viewport)) void flow.setViewport(viewport)
       store.focusEntering.set(false)
     }
-    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
-    glide(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
+    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same. The other boxes fade out
+    // as it moves (Paul, 11-17), each from where it is.
+    const ms = focusMs()
+    others(ms)
+    glide(flow.setViewport(viewport, { duration: ms }), arrived)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
@@ -404,6 +395,7 @@ function Canvas({
       const frame = pose && bodyBox(view, pose)
       // Once a visit, at its first box: one opened from another, or again on the way back, keeps it.
       visit.current ??= flow.getViewport()
+      store.restZoom = visit.current.zoom
       transition.current += 1
       setHoming(false)
       if (store.inPlace) {
@@ -423,6 +415,8 @@ function Canvas({
       setShut(true)
       store.focusEntering.set(Boolean(focusTravel.current))
       store.focusedName.set(name)
+      // Nowhere to move to: the other boxes go with no move.
+      if (!focusTravel.current) flow.fade.hide(flow.byName(name)?.id ?? null, 0)
     },
     [store, flow, setHoming],
   )
@@ -448,7 +442,13 @@ function Canvas({
     store.focusEntering.set(false)
     store.focusedName.set(null)
     if (palette !== null) setShut(palette)
-    if (!back) return
+    // The other boxes come back as the canvas moves back, each from where it is.
+    const ms = back ? focusMs() : 0
+    flow.fade.show(ms)
+    if (!back) {
+      store.restZoom = null
+      return
+    }
     setHoming(true)
     if (store.projectId) saveViewport(store.projectId, back)
     // Exactly where it was, however the way back went: stopped by a key's zoom, or the canvas a moment late.
@@ -461,9 +461,10 @@ function Canvas({
         return
       }
       visit.current = null
+      store.restZoom = null
       setHoming(false)
     }
-    glide(flow.setViewport(back, { duration: HERE_MS }), home)
+    glide(flow.setViewport(back, { duration: ms }), home)
   }, [store, flow, setHoming, glide])
   const leaveHere = useCallback(() => {
     const name = store.inPlace?.name ?? store.focusedName.get()
@@ -518,6 +519,7 @@ function Canvas({
       if (store.projectId && saveMore(store.projectId, names)) keepView({ more: names })
     }
     store.askMachine = () => navigate(to("machines"))
+    store.showDownload = (machine, download) => navigate(to(leadsTo({ machine, download })))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
       navigate(`${to("machines")}${chosen}`)
@@ -1042,7 +1044,6 @@ function Canvas({
       {active && <AssetMenu />}
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
-      {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && createPortal(<HistoryControls onAddFiles={choose} />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
@@ -1050,7 +1051,7 @@ function Canvas({
 }
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
   const { client, stream } = useConnection()
   // A first drop adopts a newly created project without unmounting its in-flight placer.
   const [openedProject] = useState(props.projectId)

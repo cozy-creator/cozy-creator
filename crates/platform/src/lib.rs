@@ -21,6 +21,8 @@ pub mod durable;
 pub mod exe;
 #[cfg(feature = "seams")]
 pub mod gpu;
+#[cfg(feature = "fetch")]
+pub mod gzip;
 #[cfg(feature = "seams")]
 pub mod handles;
 #[cfg(feature = "seams")]

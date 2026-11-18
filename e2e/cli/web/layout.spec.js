@@ -142,7 +142,7 @@ function audit({ floor, focused }) {
     if (overlap) inspectFailure('boxes-overlap', a.name, overlap[0].part, `with <${b.name}>: ${round(overlap[0].rect)} on ${overlap[1].part} ${round(overlap[1].rect)}`);
   }
   // What floats over the canvas, on nothing else that floats; in Focus, its frame and heading under none of it.
-  const floats = ['.top .history', '.top .ptabs', '.top .mtabs', '.top .canvas-controls', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
+  const floats = ['.top .history', '.top .ptabs', '.top .mtabs', '.top .main-menu > summary', '.top .pill', '.tools', '.zoom', '.notes'].flatMap((s) => [...document.querySelectorAll(s)]).filter(visible);
   for (let i = 0; i < floats.length; i++) for (let j = i + 1; j < floats.length; j++) if (meet(R(floats[i]), R(floats[j]))) say('chrome-overlap', floats[i], `on ${where(floats[j])}`);
   if (focused) {
     for (const el of document.querySelectorAll('.focus-image-transform > .media, .focus-heading, .here-under, .here-side')) {

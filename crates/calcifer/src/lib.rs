@@ -32,6 +32,7 @@ mod loopback;
 mod local_code;
 mod tools;
 pub use tools::{Say, prefetch};
+mod gpu_use;
 mod machines;
 mod machine_client;
 mod old_outputs;
@@ -125,6 +126,8 @@ pub(crate) struct Calcifer {
     staging: Mutex<()>,
     /// The object each machine is being written, one Write at a time.
     writing: Mutex<HashMap<(String, Digest), Turn>>,
+    /// What goes to machines ahead of the runs that will read it (`carry_ahead`), behind every run's carry.
+    ahead: Ahead,
     /// Told each time a machine's row or what Calcifer heard of it may have changed.
     machines_changed: watch::Sender<()>,
     exports: outputs::Exports,
@@ -190,6 +193,8 @@ impl Drop for Canceling {
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
+    /// The GPUs it waits for, while `waiting` is that wait, as its machine said it (cl-1247).
+    gpus: Option<::api::calcifer::GpuWait>,
     /// Its place in its machine's line while it waits there, as the machine says it (1 next).
     place: Option<u32>,
     progress: Option<Progress>,
@@ -241,6 +246,84 @@ const RESAID: Duration = Duration::from_secs(5);
 /// The most of one input a run's admission carries, and of all it carries (cl-1172): a photo, not a video; under the machine's
 /// HTTP/2 stream window as base64, so it moves in the one round trip that admits the run.
 const CARRIED_EACH: u64 = 512 << 10;
+
+/// An object a machine lacks, as `Calcifer::lacking_to` sends it: its digest, length, the file it is, its name in what's said (a run's field,
+/// else its digest) and what the machine held of it.
+struct Lacking {
+    digest: Digest,
+    length: u64,
+    path: PathBuf,
+    name: String,
+    held: v1::Ranges,
+}
+
+/// How a carry lands what a machine lacks (`Calcifer::lacking_to`).
+#[derive(Clone, Copy)]
+struct Carry {
+    /// The most of an object that goes in one `PUT /v1/objects` with the rest: a larger one goes alone.
+    batched_each: u64,
+    /// A larger one's parts in flight side by side, and the most one carries (`Link::write`).
+    lanes: usize,
+    part: u64,
+}
+
+/// A run's carry: as fast as its link takes it.
+const RUN: Carry = Carry { batched_each: 64 << 20, lanes: link::UPLOAD_LANES, part: link::PART };
+/// A guess's carry: a part of 1 MiB at a time, in ranges the machine keeps as they land. What it has handed to its connections when a
+/// run's carry cuts it still goes, and what of that hasn't landed when it goes on is sent again: cut once with four 6 MB parts in
+/// flight, a 24.4 MB picture took 35.4 MB of a 16 Mbit/s uplink (44242484131). A part at a time bounds both by 1 MiB.
+const AHEAD: Carry = Carry { batched_each: 1 << 20, lanes: 1, part: 1 << 20 };
+
+/// A file a box's guess reads (cl-1123), carried ahead to the machine its render would go to (`Calcifer::carry_ahead`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AheadFile {
+    /// Its project's id and root: the execution scope it lands in there, as its run's inputs do (`private_io::execution_link`).
+    pub project: String,
+    pub root: PathBuf,
+    /// Its project's folder and the boxes whose guesses read it, as what's said of it names them.
+    pub folder: String,
+    pub boxes: Vec<String>,
+    /// Its project is encrypted.
+    pub encrypted: bool,
+    pub input: StagedInput,
+}
+
+/// What goes to machines ahead of the runs that will read it (cl-1123; Paul, 11-18: "if I open a node, and it has a video that is a
+/// reference video that is like 100MBs, uploading that to the remote machine will take a few minutes … so pre-loading files on the
+/// machine makes sense as well"): each machine's guesses' files, behind every run's carry, as they share this computer's uplink.
+struct Ahead {
+    /// Runs' carries going now, on any machine (`carrying`): a guess's carry waits while one goes, and stops when one begins.
+    runs: watch::Sender<usize>,
+    /// By machine: what its guesses read now, which its carrier lands there (`carry_ahead_to`).
+    wanted: Mutex<HashMap<String, watch::Sender<Vec<AheadFile>>>>,
+    /// Machines whose last carry ahead failed: carried again at the next word of their guesses, even an unchanged one.
+    failed: Mutex<HashSet<String>>,
+}
+
+impl Default for Ahead {
+    fn default() -> Self {
+        Self { runs: watch::channel(0).0, wanted: Mutex::default(), failed: Mutex::default() }
+    }
+}
+
+/// A run's carry going (`Calcifer::carrying`): a guess's waits until it ends.
+struct Carrying<'a>(&'a watch::Sender<usize>);
+
+impl Drop for Carrying<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|going| *going -= 1);
+    }
+}
+
+/// What a machine's guesses read, by project and file: what a change of it is.
+fn ahead_keys(files: &[AheadFile]) -> HashSet<(&str, Digest)> {
+    files.iter().map(|file| (file.project.as_str(), file.input.digest)).collect()
+}
+
+/// Whether `held` is all `length` bytes: an empty object's ranges can't say so, so it is always sent (one empty PUT).
+fn whole(held: &v1::Ranges, length: u64) -> bool {
+    length > 0 && v1::held_bytes(held) >= length
+}
 const CARRIED_TOTAL: u64 = 640 << 10;
 /// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
 const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
@@ -352,6 +435,7 @@ impl Calcifer {
             tasks: Mutex::default(),
             staging: Mutex::default(),
             writing: Mutex::default(),
+            ahead: Ahead::default(),
             machines_changed: watch::channel(()).0,
             exports: outputs::Exports::default(),
             warm: Mutex::default(),
@@ -877,9 +961,38 @@ impl Calcifer {
         Ok(load)
     }
 
-    /// How many runs `machine` was sent and hasn't settled, in every journal.
-    pub(crate) fn working(&self, machine: &str) -> store::Result<u32> {
-        Ok(self.each_store(|store| store.working(machine))?.into_iter().sum())
+    /// How many runs wait for `machine`, are being sent or go there, in every journal (`Store::busy`, cl-1201).
+    pub(crate) fn busy(&self, machine: &str) -> store::Result<u32> {
+        Ok(self.each_store(|store| store.busy(machine))?.into_iter().sum())
+    }
+
+    /// Ends `machine`'s moves to the open RC not sent yet (`Store::yield_moves`, cl-1201): work came for it, which goes first. Whether
+    /// one ended.
+    pub(crate) fn yield_moves(&self, machine: &str) -> bool {
+        let why = format!("work came for {machine} before this move was sent: it went first, and {machine} moves once it's idle");
+        match self.store.yield_moves(machine, &why) {
+            Ok(ended) => {
+                let yielded = !ended.is_empty();
+                for (id, events) in ended {
+                    tracing::info!(machine, run = %id, "a move to the open RC yields to work");
+                    self.publish(&id, events);
+                    self.wake(&id);
+                }
+                yielded
+            }
+            Err(e) => {
+                warn!(machine, "yielding its move to the open RC: {e}");
+                false
+            }
+        }
+    }
+
+    /// Whether `run`, an update not sent yet, is a move to the open RC while work waits for `machine` or goes there: it yields, ended
+    /// here (cl-1201).
+    fn yields(&self, run: &RunRow, machine: &str) -> bool {
+        self.store.key(run.id.as_str()).ok().flatten().is_some_and(|key| key.starts_with(rc::MOVE))
+            && self.busy(machine).is_ok_and(|busy| busy > 0)
+            && self.yield_moves(machine)
     }
 
     /// Whether every journal is at rest (`Store::at_rest`).
@@ -1201,6 +1314,20 @@ impl Calcifer {
         })
     }
 
+    /// Cancels `machine`'s updates yet to end whose key `superseded` names, as `cancel` does, an unsent one saying `why` (cl-1196). The
+    /// runs it ended or asked its machine to end.
+    pub(crate) fn supersede(&self, machine: &str, superseded: impl Fn(&str) -> bool, why: &str) -> store::Result<Vec<RunId>> {
+        let ended = self.store.supersede(machine, superseded, why)?;
+        Ok(ended
+            .into_iter()
+            .map(|(id, events)| {
+                self.publish(&id, events);
+                self.wake(&id);
+                id
+            })
+            .collect())
+    }
+
     /// Tells run `id`'s machine to cancel it now, on its own: `cancel` keeps the request.
     pub(crate) fn stop_at_machine(self: &Arc<Self>, id: &RunId) {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -1365,7 +1492,7 @@ impl Calcifer {
         let Some(live) = live.get(id) else {
             return vec![];
         };
-        let waiting = live.waiting.clone().map(|reason| Event::Waiting { reason });
+        let waiting = live.waiting.clone().map(|reason| Event::Waiting { reason, gpus: live.gpus });
         let progress = live
             .progress
             .clone()
@@ -1399,9 +1526,9 @@ impl Calcifer {
         self.granting.get().and_then(Weak::upgrade)
     }
 
-    /// Why the machine is offline by its Hub's word; None for one that answers or may.
-    pub(crate) fn offline(&self, name: &str) -> Option<String> {
-        self.machines()?.offline(name)
+    /// Why the machine is ending by its Hub's word; None for one that answers or may.
+    pub(crate) fn closing(&self, name: &str) -> Option<String> {
+        self.machines()?.closing(name)
     }
 
     /// Why nothing can run on the machine (cl-977).
@@ -1412,11 +1539,23 @@ impl Calcifer {
     /// Records the machine as gone for good: what it held returns to Calcifer's queue (`Store::requeue_machine`, cl-1132). A project's
     /// run held under a name it had before returns as its driver finds that name is this machine.
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
-        let mut events = self.store.machine_ended(name, reason)?;
-        let why = store::ended_why(name, reason);
+        let events = self.store.machine_ended(name, reason)?;
+        self.requeued(name, events, &store::ended_why(name, reason))
+    }
+
+    /// A rental its Hub is placing on another host (th-405): what its last host held returns to Calcifer's queue as from a machine
+    /// lost, saying `why`. The rental stays, booting.
+    pub(crate) fn machine_replaced(&self, name: &str, why: &str) -> Result<(), Error> {
+        let events = self.store.requeue_machine(name, why)?;
+        self.requeued(name, events, why)
+    }
+
+    /// `events` of the runs `name` held in Calcifer's own journal, and every project's the same (`why`): each is told and woken,
+    /// and nothing dials the address it had.
+    fn requeued(&self, name: &str, mut events: Vec<(RunId, Event)>, why: &str) -> Result<(), Error> {
         for owner in self.owners() {
             if let Ok(store) = owner.store() {
-                events.extend(store.requeue_machine(name, &why)?);
+                events.extend(store.requeue_machine(name, why)?);
             }
         }
         let mut woken = HashSet::new();
@@ -1524,6 +1663,13 @@ impl Calcifer {
         let moving = |op: &&v1::Operation| op.bytes_per_s >= 1.0;
         let left = |op: &&v1::Operation| op.bytes_total == 0 || op.bytes_done < op.bytes_total;
         let waiting: HashSet<&String> = downloads.iter().flat_map(|op| &op.runs).collect();
+        // A run waiting on a download that moves moves with it (cl-1205): it says no bytes of its own, so its progress moves as the
+        // download's do, at most every `LINE_MOVED_MS`, and it never reads stalled.
+        for run in waiting.iter().copied().filter(|run| downloads.iter().any(|op| op.runs.contains(*run) && moving(op))) {
+            if let Ok(id) = RunId::try_from(store::calcifer_id(run).to_owned()) {
+                self.line_moved(&id);
+            }
+        }
         let mut behind = HashMap::new();
         for run in waiting {
             let (own, others): (Vec<&v1::Operation>, Vec<&v1::Operation>) = downloads.iter().partition(|op| op.runs.contains(run));
@@ -1652,21 +1798,28 @@ impl Calcifer {
 
     /// The run waits no longer: its record says so, and its followers hear an empty reason.
     fn not_waiting(&self, id: &RunId) {
-        let cleared = lock(&self.live)
-            .get_mut(id)
-            .and_then(|live| live.waiting.take());
+        let cleared = lock(&self.live).get_mut(id).and_then(|live| {
+            live.gpus = None;
+            live.waiting.take()
+        });
         if cleared.is_some() {
             let reason = String::new();
-            let _ = self.events.send((id.clone(), Event::Waiting { reason }));
+            let _ = self.events.send((id.clone(), Event::Waiting { reason, gpus: None }));
         }
     }
 
     pub(crate) fn waiting(&self, id: &RunId, reason: String) {
+        self.waits(id, reason, None);
+    }
+
+    /// It waits `reason`, and for `gpus` when that's a wait for GPUs its machine said (cl-1247): followers hear both when either changes.
+    fn waits(&self, id: &RunId, reason: String, gpus: Option<::api::calcifer::GpuWait>) {
         let mut live = lock(&self.live);
         let entry = live.entry(id.clone()).or_default();
-        if entry.waiting.as_ref() != Some(&reason) {
+        if entry.waiting.as_ref() != Some(&reason) || entry.gpus != gpus {
             entry.waiting = Some(reason.clone());
-            let _ = self.events.send((id.clone(), Event::Waiting { reason }));
+            entry.gpus = gpus;
+            let _ = self.events.send((id.clone(), Event::Waiting { reason, gpus }));
         }
     }
 
@@ -1684,7 +1837,12 @@ impl Calcifer {
 
     /// Records the run's progress, with how far it is, at what rate its bytes move and its time
     /// left; whether it entered a stage it was not in.
-    fn progress(&self, id: &RunId, mut progress: Progress) -> bool {
+    fn progress(&self, id: &RunId, progress: Progress) -> bool {
+        self.progress_waiting(id, progress, None)
+    }
+
+    /// `progress`, its run waiting on downloads with `waited` ms left (cl-1205): its time left is at least theirs.
+    fn progress_waiting(&self, id: &RunId, mut progress: Progress, waited: Option<f64>) -> bool {
         let entered = {
             let mut live = lock(&self.live);
             let live = live.entry(id.clone()).or_default();
@@ -1698,6 +1856,9 @@ impl Calcifer {
                 let at = if progress.at_ms > 0 { progress.at_ms as f64 } else { received };
                 clock.moving(&progress, at);
                 clock.observe(&progress, at, received);
+                if let Some(ms) = waited {
+                    clock.waits(at, ms);
+                }
                 time_left(clock, &mut progress);
             }
             let was = live.progress.replace(progress.clone()).map(|p| p.stage);
@@ -2033,11 +2194,27 @@ impl Calcifer {
                 }
                 _ => {}
             }
+            // An update Calcifer asked itself never goes to a machine held by hand since: the hand's supersedes it (cl-1196).
+            if run.state == State::Queued
+                && run.kind == ::api::calcifer::Kind::Update
+                && let Some(machines) = self.machines()
+                && machines.superseded(id, &name)
+            {
+                continue;
+            }
+            // A move to the open RC goes only to an idle machine: work that waits for it or goes there meanwhile goes first (cl-1201).
+            if run.state == State::Queued && run.kind == ::api::calcifer::Kind::Update && self.yields(&run, &name) {
+                continue;
+            }
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
-            // finishes what it has first, and what's held here goes to what it became.
+            // finishes what it has first, and what's held here goes to what it became. A move to the open RC not sent yet yields to it
+            // instead (cl-1201): only one already sent is waited for.
             if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {
                 let mut settled = self.machine_watch(&name);
                 if self.store.updating(&name).unwrap_or_default() {
+                    if self.yield_moves(&name) {
+                        continue;
+                    }
                     self.waiting(id, format!("waiting for {name} to finish updating"));
                     tokio::select! {
                         _ = settled.changed() => {}
@@ -2090,21 +2267,21 @@ impl Calcifer {
                 }
                 continue;
             }
-            // Offline by its Hub's word: an unsent run leaves it now, back to Calcifer's queue (cl-1132), and a sent one waits for it
-            // to come back or end: it may be running there. Nothing dials it meanwhile.
-            if let Some(reason) = self.offline(&name) {
+            // Ending by its Hub's word: an unsent run leaves it now, back to Calcifer's queue (cl-1132), and a sent one waits for
+            // its end. Nothing dials it meanwhile.
+            if let Some(reason) = self.closing(&name) {
                 if run.state == State::Queued {
-                    self.left_unsent(&run, &format!("{name} is offline ({reason})"), "machine_offline");
+                    self.left_unsent(&run, &format!("{name} is ending ({reason})"), "machine_ending");
                     continue;
                 }
-                self.waiting(id, format!("{name} is offline ({reason})."));
+                self.waiting(id, format!("{name} is ending ({reason})."));
                 tokio::select! {
                     _ = changed.changed() => {}
                     _ = wake.notified() => {}
                 }
                 continue;
             }
-            // Broken (cl-977): an unsent run leaves it now, as from one offline. One it holds is followed on: it settles there (its
+            // Broken (cl-977): an unsent run leaves it now, as from one ending. One it holds is followed on: it settles there (its
             // GPUs out of service fail it, to be placed again) or with the machine's end.
             if run.state == State::Queued
                 && let Some(broken) = self.broken(&name)
@@ -2143,7 +2320,13 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
             {
                 let mut settled = self.machine_watch(&name);
-                match machines.current(&name).await {
+                // A move its package needs there that its request couldn't foresee (its machine booting then) goes first (cl-1201).
+                // Boxed: inline, the update's future grows every driver's.
+                let current = match machines.current(&name).await {
+                    Ok(None) => Ok(Box::pin(machines.floor_first(&run)).await),
+                    current => current,
+                };
+                match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
@@ -2269,7 +2452,7 @@ impl Calcifer {
                 }
                 // A rental's word that it released itself is not its end: its Hub's is (cl-977, as for a releasing Status). Until
                 // the Hub affirms it gone it is `ending`, and `machine ls` never says gone while it may bill. A run it was never sent
-                // leaves it now, as from one offline; one it holds settles with that end.
+                // leaves it now, as from one ending; one it holds settles with that end.
                 Err(Stop::Released(message)) if machine.kind == ::api::calcifer::MachineKind::Rental => {
                     if let Some(machines) = self.machines()
                         && let Err(e) = machines.released_itself(&name)
@@ -2368,8 +2551,31 @@ impl Calcifer {
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
             State::Queued => {
-                let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
+                let write = self.write_inputs(link, run, machine, CARRIED_TOTAL);
+                let carried = match run.kind {
+                    // A move to the open RC writes its `cozy` while work may come: one that yields meanwhile stops, leaving the link to
+                    // that work (cl-1201).
+                    ::api::calcifer::Kind::Update => {
+                        tokio::pin!(write);
+                        loop {
+                            tokio::select! {
+                                carried = &mut write => break carried?,
+                                () = wake.notified() => {
+                                    let ended = self.with_run_store(run.id.as_str(), |store| store.run(run.id.as_str()));
+                                    if ended.ok().flatten().is_none_or(|row| row.state == State::Settled) {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => write.await?,
+                };
                 let _turn = sending.lock().await;
+                // Looked at again as it goes: work that came while it was written goes first (cl-1201).
+                if run.kind == ::api::calcifer::Kind::Update && self.yields(run, machine) {
+                    return Ok(());
+                }
                 match self.deliver(run, machine, link, carried).await? {
                     Some(delivered) => delivered,
                     // Sent with another run of its batch, or canceled: as its row now says.
@@ -2663,25 +2869,45 @@ impl Calcifer {
                         machine_at_ms = frame.at_ms);
                     batch.products.push(product);
                 }
-                // Waiting for GPUs another run holds, named by its number; granted, it waits no more.
+                // Waiting for GPUs another run holds, named by its number, and about how long as its machine times it (cl-1187: Paul
+                // read a 96 s wait as a hang); granted, it waits no more. Its log says the wait once, its status each new minute.
                 Frame::Gpu(gpu) if gpu.state == "wait" => {
                     let gpus = match gpu.width {
                         1 => "a GPU".to_owned(),
                         n => format!("{n} GPUs"),
                     };
+                    // No run: the machine's own work holds them (a load ahead, which yields to it, or warming).
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
+                        _ if gpu.behind.is_empty() => "the machine's own work".to_owned(),
                         Ok(Some(holder)) => self.named_for(&holder, id.as_str()),
                         _ => "another run".to_owned(),
                     };
                     let reason = format!("waiting for {gpus}, held by {holder}");
+                    let left = match gpu.left_ms {
+                        0 => "how long isn't known yet".to_owned(),
+                        ms if ms < 60_000 => "under a minute".to_owned(),
+                        ms => format!("about {} min", (ms + 30_000) / 60_000),
+                    };
                     if self.wait_said(id, &reason) {
-                        batch.logs.push((frame.at_ms, "stage".into(), reason.clone()));
+                        batch.logs.push((frame.at_ms, "stage".into(), format!("{reason}, {left}")));
                     }
-                    self.waiting(id, reason);
+                    // Said typed too, from this frame alone: how many GPUs and its machine's time for them (cl-1247).
+                    self.waits(id, format!("{reason}, {left}"), Some(::api::calcifer::GpuWait { width: gpu.width, left_ms: gpu.left_ms }));
+                    // A wait its machine can't time leaves its time left not known: never the 0 s of a first phase held (cl-1247).
+                    if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
+                        clock.waits_for_gpus(gpu.left_ms > 0);
+                    }
                 }
                 Frame::Gpu(gpu) => {
-                    if gpu.state == "grant" {
-                        lock(&self.live).entry(id.clone()).or_default().width = gpu.width;
+                    {
+                        let mut live = lock(&self.live);
+                        let live = live.entry(id.clone()).or_default();
+                        if gpu.state == "grant" {
+                            live.width = gpu.width;
+                        }
+                        if let Some(clock) = live.clock.as_mut() {
+                            clock.has_gpus();
+                        }
                     }
                     self.not_waiting(id)
                 }
@@ -2697,7 +2923,10 @@ impl Calcifer {
                     // Each stage it enters is kept with the run, so a run whose machine is lost
                     // still says where it got to and when (run 14868, `encoding prompt`).
                     let stage = p.stage.clone();
-                    let entered = self.progress(id, progress_of(p, frame.at_ms));
+                    let progress = progress_of(p, frame.at_ms);
+                    // Waiting on downloads, its time left is at least theirs, as its machine says (cl-1205).
+                    let waited = self.machines().and_then(|machines| machines.downloads_left_ms(machine, &progress.waiting_on));
+                    let entered = self.progress_waiting(id, progress, waited);
                     if entered {
                         self.staged(id, &stage, frame.at_ms);
                         batch.logs.push((frame.at_ms, "stage".into(), stage));
@@ -2907,6 +3136,8 @@ impl Calcifer {
         if run.inputs.is_empty() {
             return Ok(vec![]);
         }
+        // First on the uplink: what goes ahead of a guess waits (`behind_runs`).
+        let _carrying = self.carrying();
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
@@ -2932,8 +3163,6 @@ impl Calcifer {
         }
         let digests: Vec<Digest> = inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
-        // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
-        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
         // The request's files the machine already holds are not sent again, and the run's log says
         // so: `run watch` and a follower that attaches late read it too.
         let reused: Vec<(&str, u64)> = (inputs.iter().zip(&held))
@@ -2953,53 +3182,25 @@ impl Calcifer {
             let events = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "inputs", &text))?;
             self.publish(&run.id, events);
         }
-        for ((digest, length), held) in inputs.iter().zip(held) {
-            if whole(&held, *length) {
-                continue;
-            }
-            let hex = hex::encode(digest.bytes());
-            let path = input_root.join(&hex);
-            let name = match names.get(digest.to_string().as_str()) {
-                Some(field) => field.to_string(),
-                None => format!("sha256:{}", &hex[..12]),
-            };
-            let key = (machine.to_owned(), *digest);
-            let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
-            let (mine, held) = match turn.0.try_lock() {
-                Ok(mine) => (mine, held),
-                Err(_) => {
-                    let holder = match *lock(&turn.1) {
-                        0 => "another run".to_owned(),
-                        n => format!("run {n}"),
-                    };
-                    self.waiting(&run.id, format!("waiting for {holder} to upload {name}"));
-                    let mine = turn.0.lock().await;
-                    let now = link.held_many(std::slice::from_ref(digest)).await?;
-                    (mine, now.into_iter().next().unwrap_or_default())
-                }
-            };
-            *lock(&turn.1) = run.number;
-            let written = link
-                .write(digest, *length, &path, held, |done, rate| {
-                    let mut reason = format!(
-                        "uploading {name}, {} of {}",
-                        bytes(done as f64),
-                        bytes(*length as f64)
-                    );
-                    if let Some(rate) = rate {
-                        reason = format!("{reason} at {}/s", bytes(rate));
-                    }
-                    self.waiting(&run.id, reason);
-                })
-                .await;
-            drop(mine);
-            let mut writing = lock(&self.writing);
-            if Arc::strong_count(&turn) <= 2 {
-                writing.remove(&key);
-            }
-            written?;
-        }
+        let lacking: Vec<Lacking> = (inputs.iter().zip(held))
+            .filter(|((_, length), held)| !whole(held, *length))
+            .map(|((digest, length), held)| {
+                let hex = hex::encode(digest.bytes());
+                let name = match names.get(digest.to_string().as_str()) {
+                    Some(field) => field.to_string(),
+                    None => format!("sha256:{}", &hex[..12]),
+                };
+                Lacking { digest: *digest, length: *length, path: input_root.join(&hex), name, held }
+            })
+            .collect();
+        self.lacking_to(link, machine, lacking, run.number, RUN, &|reason| self.waiting(&run.id, reason)).await?;
         Ok(carried)
+    }
+
+    /// A run's carry going, until what this answers is dropped: what goes ahead of a guess waits for it (`behind_runs`).
+    fn carrying(&self) -> Carrying<'_> {
+        self.ahead.runs.send_modify(|going| *going += 1);
+        Carrying(&self.ahead.runs)
     }
 
     /// Whether `machine` holds object `digest`, `length` bytes, whole: what a guess would carry, there already (a run of it carried it).
@@ -3009,27 +3210,225 @@ impl Calcifer {
         length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
-    /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
-    /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads
-    /// (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
-    pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
-        let machines = self.machines().ok_or("no machines yet")?;
-        let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
+    /// Local code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), so a fresh rental installs it too:
+    /// what `machine` lacks of it, landed as a guess's files are (`ahead_to`), behind every run's carry (`behind_runs`). `project`: the
+    /// encrypted project whose own code it is, which goes through that project's check as its files do (Paul, 11-18). The bytes moving
+    /// hold its idle clock as any upload's do.
+    pub(crate) async fn ship(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[StagedInput]) -> Result<(), String> {
+        let inputs: Vec<&StagedInput> = inputs.iter().collect();
+        let inputs = &inputs;
+        self.behind_runs(machine, move || async move { self.ahead_to(machine, project, inputs).await.map(drop) }).await
+    }
+
+    /// What `machine` lacks of `inputs`, landed there ahead of the run that reads them: the one way anything goes ahead (cl-1123), a
+    /// guess's files (`carried_ahead`) and its local code (`ship`) alike. By the link a run goes by, only to a machine a guess may
+    /// carry to (`trusted`); a `project`'s own goes through the check its run passes there (`private_io::execution_link`, as `step`
+    /// calls it), into that project's execution scope, the store its run's inputs land in (`write_inputs`). Answers the ones it sent,
+    /// each with the bytes the machine held of it before: what a carry cut earlier had landed.
+    async fn ahead_to<'a>(&self, machine: &str, project: Option<(&str, &Path)>, inputs: &[&'a StagedInput]) -> Result<Vec<(&'a StagedInput, u64)>, String> {
+        let base = self.trusted(machine)?;
+        let link = match project {
+            Some((id, root)) => private_io::execution_link(id, root, machine, &base).await.map_err(|e| e.message)?,
+            None => base,
+        };
         let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
         let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
-        let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
-        for (input, held) in inputs.iter().zip(held) {
-            if whole(&held, input.length) {
+        let lacking: Vec<(&'a StagedInput, v1::Ranges)> = (inputs.iter().copied().zip(held)).filter(|(input, held)| !whole(held, input.length)).collect();
+        let sent: Vec<Lacking> = (lacking.iter())
+            .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held: held.clone() })
+            .collect();
+        self.lacking_to(&link, machine, sent, 0, AHEAD, &|_| {}).await.map_err(|e| e.to_string())?;
+        Ok(lacking.into_iter().map(|(input, held)| (input, v1::held_bytes(&held))).collect())
+    }
+
+    /// The link a guess carries to `machine` by, where it may (cl-1123; Paul, 11-18: "What really matters is that we can trust the
+    /// remote machine as safe"): the one its runs go by (`machine`), pinned to the leaf its Hub recorded at rent (`rentals::endpoint`)
+    /// and signing every request with this computer's key (`Link::new`), and only to one of this account's own: this computer's, or one
+    /// it rented. Another computer's, added by address (`Machines::add`), is its owner's, so nothing is carried ahead to it, nor to one
+    /// ending.
+    fn trusted(&self, machine: &str) -> Result<Link, String> {
+        let (row, link, ..) = self.machine(machine)?;
+        if !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
+            return Err(format!("{machine} is another computer's, which this account doesn't own"));
+        }
+        if row.state == ::api::calcifer::MachineState::Ended || self.closing(machine).is_some() {
+            return Err(format!("{machine} is ending"));
+        }
+        link.ok_or_else(|| format!("{machine} has no address yet"))
+    }
+
+    /// `carry`, a guess's, behind every run's carry, which shares this computer's uplink with it (Paul, 11-18): it starts once none
+    /// goes, and stops at once when one begins. What it landed stays (a cut upload's ranges stay on the machine, as `PUT
+    /// /v1/objects/{digest}` keeps them), so it goes on from there once they end, and sends nothing twice.
+    async fn behind_runs<T, F: Future<Output = T>>(&self, machine: &str, mut carry: impl FnMut() -> F) -> T {
+        let mut ended = self.ahead.runs.subscribe();
+        loop {
+            let _ = ended.wait_for(|going| *going == 0).await;
+            let mut began = self.ahead.runs.subscribe();
+            tokio::select! {
+                biased;
+                () = async { let _ = began.wait_for(|going| *going > 0).await; } => {
+                    tracing::info!(target: prefetch::TARGET, "what goes ahead to {machine} waits: a run's inputs go first");
+                }
+                done = carry() => return done,
+            }
+        }
+    }
+
+    /// What each machine's guesses read now, by machine (`prefetch::Lists::send`): each one's carrier lands it there behind every run's
+    /// carry (`carry_ahead_to`), and stops carrying what is no longer read. An edit that doesn't change a file changes nothing of its
+    /// carry.
+    pub(crate) fn carry_ahead(self: &Arc<Self>, mut by_machine: HashMap<String, Vec<AheadFile>>) {
+        let mut wanted = lock(&self.ahead.wanted);
+        for (machine, files) in wanted.iter() {
+            if !by_machine.contains_key(machine) {
+                files.send_if_modified(|files| !std::mem::take(files).is_empty());
+            }
+        }
+        for (machine, files) in by_machine.drain() {
+            let again = lock(&self.ahead.failed).remove(&machine);
+            if let Some(held) = wanted.get(&machine) {
+                held.send_if_modified(|now| {
+                    let moved = again || ahead_keys(now) != ahead_keys(&files);
+                    *now = files;
+                    moved
+                });
                 continue;
             }
-            let key = (machine.to_owned(), input.digest);
+            if files.is_empty() || self.closed() {
+                continue;
+            }
+            let (sender, receiver) = watch::channel(files);
+            wanted.insert(machine.clone(), sender);
+            let me = self.clone();
+            let mut tasks = lock(&self.tasks);
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn(async move { me.carry_ahead_to(machine, receiver).await });
+        }
+    }
+
+    /// `machine`'s carrier: what its guesses read (`carry_ahead`), landed there behind every run's carry, again as that changes, until
+    /// nothing is.
+    async fn carry_ahead_to(self: Arc<Self>, machine: String, mut wanted: watch::Receiver<Vec<AheadFile>>) {
+        let mut said: Option<String> = None;
+        loop {
+            let files = wanted.borrow_and_update().clone();
+            if files.is_empty() {
+                let mut all = lock(&self.ahead.wanted);
+                if all.get(&machine).is_some_and(|held| held.borrow().is_empty()) {
+                    all.remove(&machine);
+                    return;
+                }
+                continue;
+            }
+            let carried = self.behind_runs(&machine, || self.carried_ahead(&machine, &files));
+            tokio::select! {
+                carried = carried => {
+                    match carried {
+                        Ok(()) => said = None,
+                        Err(why) => {
+                            lock(&self.ahead.failed).insert(machine.clone());
+                            if said.as_ref() != Some(&why) {
+                                tracing::info!(target: prefetch::TARGET, "nothing more goes ahead to {machine} for now: {why}");
+                                said = Some(why);
+                            }
+                        }
+                    }
+                    if wanted.changed().await.is_err() {
+                        return;
+                    }
+                }
+                // What's read changed: carried again from what landed.
+                changed = wanted.changed() => if changed.is_err() {
+                    return;
+                },
+            }
+        }
+    }
+
+    /// `files` landed on `machine`, each what it lacks of them, each project's through its own check (`ahead_to`), so its render
+    /// finds them held and sends nothing more. Said once for each box whose files landed, with what a carry cut earlier had landed
+    /// of them; an encrypted project's said so.
+    async fn carried_ahead(&self, machine: &str, files: &[AheadFile]) -> Result<(), String> {
+        let mut projects: Vec<(&str, &Path)> = vec![];
+        for file in files {
+            if !projects.iter().any(|(id, _)| *id == file.project) {
+                projects.push((file.project.as_str(), file.root.as_path()));
+            }
+        }
+        for (project, root) in projects {
+            let of: Vec<&AheadFile> = files.iter().filter(|file| file.project == project).collect();
+            let inputs: Vec<&StagedInput> = of.iter().copied().map(|file| &file.input).collect();
+            let began = Instant::now();
+            let sent = self.ahead_to(machine, Some((project, root)), &inputs).await?;
+            let lacking: Vec<&AheadFile> = of.into_iter().filter(|file| sent.iter().any(|(input, _)| input.digest == file.input.digest)).collect();
+            let mut boxes: Vec<(&str, &str, bool)> = vec![];
+            for file in &lacking {
+                for name in &file.boxes {
+                    if !boxes.iter().any(|(held, ..)| held == name) {
+                        boxes.push((name.as_str(), file.folder.as_str(), file.encrypted));
+                    }
+                }
+            }
+            for (name, folder, encrypted) in boxes {
+                let theirs: Vec<&&AheadFile> = lacking.iter().filter(|file| file.boxes.iter().any(|held| held == name)).collect();
+                let size = bytes(theirs.iter().map(|file| file.input.length).sum::<u64>() as f64);
+                let there: u64 = (sent.iter().filter(|(input, _)| theirs.iter().any(|file| file.input.digest == input.digest))).map(|(_, held)| *held).sum();
+                let on = if there > 0 { format!(", going on from {} there", bytes(there as f64)) } else { String::new() };
+                let whose = if encrypted { ", an encrypted project's" } else { "" };
+                tracing::info!(target: prefetch::TARGET, "{folder}: {name}'s guess carried {} files ({size}) ahead to {machine} in {} ms{on}{whose}", theirs.len(), began.elapsed().as_millis());
+            }
+        }
+        Ok(())
+    }
+
+    /// What `machine` lacks of the objects a run reads or a guess carries, landed there: the one way objects go to a machine (cl-1123).
+    /// Every one up to `carry`'s `batched_each` goes in one `PUT /v1/objects` to a machine that takes it (`objects_batch`): one at a
+    /// time, an Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797). One larger, or to an older
+    /// machine, goes alone, in `carry`'s parts, one write of an object at a time (`writing`, run `number`'s while it writes).
+    /// `waiting` hears what it does.
+    async fn lacking_to(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, carry: Carry, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
+        let batches = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.objects_batch);
+        let (batched, alone): (Vec<Lacking>, Vec<Lacking>) = lacking.into_iter().partition(|object| batches && object.length > 0 && object.length <= carry.batched_each);
+        if !batched.is_empty() {
+            let size = bytes(batched.iter().map(|object| object.length).sum::<u64>() as f64);
+            waiting(match batched.as_slice() {
+                [one] => format!("uploading {}, {size}", one.name),
+                many => format!("uploading {} files, {size}", many.len()),
+            });
+            let (sent, began) = (batched.iter().map(|object| (object.digest, object.length, object.path.clone())).collect(), std::time::Instant::now());
+            let landed = link.write_many(sent).await?;
+            tracing::info!(machine, "{} objects ({size}) landed in one request in {} ms", batched.len(), began.elapsed().as_millis());
+            if let Some((object, _)) = batched.iter().zip(&landed).find(|(object, held)| !whole(held, object.length)) {
+                return Err(LinkError::Unanswered(format!("{} didn't land whole on {machine}", object.name)));
+            }
+        }
+        for Lacking { digest, length, path, name, held } in alone {
+            let key = (machine.to_owned(), digest);
             let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
-            let mine = turn.0.lock().await;
-            let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
-            let written = match whole(&now, input.length) {
-                true => Ok(()),
-                false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
+            let (mine, held) = match turn.0.try_lock() {
+                Ok(mine) => (mine, held),
+                Err(_) => {
+                    let holder = match *lock(&turn.1) {
+                        0 => "another run".to_owned(),
+                        n => format!("run {n}"),
+                    };
+                    waiting(format!("waiting for {holder} to upload {name}"));
+                    let mine = turn.0.lock().await;
+                    let now = link.held_many(std::slice::from_ref(&digest)).await?;
+                    (mine, now.into_iter().next().unwrap_or_default())
+                }
             };
+            *lock(&turn.1) = number;
+            let written = link
+                .write(&digest, length, &path, held, (carry.lanes, carry.part), |done, rate| {
+                    let mut reason = format!("uploading {name}, {} of {}", bytes(done as f64), bytes(length as f64));
+                    if let Some(rate) = rate {
+                        reason = format!("{reason} at {}/s", bytes(rate));
+                    }
+                    waiting(reason);
+                })
+                .await;
             drop(mine);
             {
                 let mut writing = lock(&self.writing);
@@ -3174,6 +3573,7 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         step_steady_ms: p.step_steady_ms,
         at_ms,
         preview: (p.preview > 0).then_some(p.preview),
+        waiting_on: p.waiting_on,
         ..Default::default()
     };
     progress.done_fraction = done_fraction(&progress);
@@ -3185,7 +3585,12 @@ fn time_left(clock: &mut eta::Clock, progress: &mut Progress) {
     let shown = clock.shown(store::now_ms() as f64);
     progress.eta_s = shown.map(|(left, ..)| left);
     progress.eta_confidence = shown.map(|(_, confidence, _)| confidence);
-    progress.eta_basis = Some(shown.map_or(::api::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
+    // Not known while it waits for GPUs its machine can't time (cl-1247), which is no first run.
+    progress.eta_basis = match shown {
+        Some((.., basis)) => Some(basis),
+        None if clock.gpus_unknown() => None,
+        None => Some(::api::calcifer::EtaBasis::FirstRun),
+    };
 }
 
 /// A picture's size as a run's input asks it: its `megapixels`, else its `width` by its `height`.
@@ -3195,8 +3600,12 @@ fn megapixels(input: &serde_json::Map<String, serde_json::Value>) -> Option<f64>
 }
 
 /// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'; within a part of a whole its scope names
-/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap.
+/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap. Waiting on downloads, none: it
+/// says it waits, and their share is theirs, shown once (cl-1205).
 fn done_fraction(progress: &Progress) -> Option<f64> {
+    if !progress.waiting_on.is_empty() {
+        return None;
+    }
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
     let steps = (!progress.tokens()).then(|| of(progress.completed, progress.total)).flatten();
     let stage = (progress.stage_fraction)

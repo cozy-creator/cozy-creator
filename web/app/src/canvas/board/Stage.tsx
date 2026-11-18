@@ -6,7 +6,7 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../../app/Connection"
 import { machinesQuery, runFullQuery } from "../../api/queries"
-import { ownActivity, waitsOnOf } from "../../panels/machines/activity"
+import { downloadsOf, ownActivity, waitsOnOf } from "../../panels/machines/activity"
 import { useSignal, tabShown } from "../../ui/signal"
 import { theme } from "../../ui/theme"
 import type { CanvasStore, ElementNode, ElementView } from "../CanvasStore"
@@ -83,7 +83,7 @@ export function Stage(props: StageProps) {
   // Bumped when a lost GPU context comes back: the canvas starts over on a new renderer (cl-1043).
   const [generation, setGeneration] = useState(0)
   const [said, setSaid] = useState("")
-  const [overlays, setOverlays] = useState<{ name: string; draft?: string; box: { x: number; y: number; w: number; under: number } }[]>([])
+  const [overlays, setOverlays] = useState<{ id: string; name: string; draft?: string; box: { x: number; y: number; w: number; under: number } }[]>([])
   const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
@@ -203,16 +203,27 @@ export function Stage(props: StageProps) {
         }
       }
       const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
-      const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
+      const activity = ownActivity(machine, store.projectId)
+      const on = run ? waitsOnOf(activity, run) : undefined
+      const downloads = run ? downloadsOf(activity, run) : undefined
       const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
       const pkg = tool?.installs ?? tool?.package
       const installing = !run && pkg ? machines.flatMap((m) => ownActivity(m, store.projectId)).find((o) => o.kind === "install" && o.subject === pkg) : undefined
-      return run || installing ? { run, machine, on, installing } : undefined
+      return run || installing ? { run, machine, on, downloads, installing } : undefined
     }
 
     const placeWorld = () => {
       const view = board.camera.getViewport()
       if (world.current) world.current.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.zoom})`
+    }
+    // What's typed over a box (its name) fades with it as Focus opens and closes.
+    const fadeWorld = () => {
+      for (const over of world.current?.children ?? []) {
+        const element = over as HTMLElement, faded = board.fade.of(element.dataset.id ?? "")
+        element.style.opacity = faded < 1 ? String(faded) : ""
+        element.style.visibility = faded > 0 ? "" : "hidden"
+        element.inert = faded < 1
+      }
     }
 
     const tick = (delta: number, took = delta) => {
@@ -226,6 +237,8 @@ export function Stage(props: StageProps) {
         // A glide (a zoom step, a fit) runs in real time where frames are slow: the rest of a long frame moves it on, never stretching it
         // out. Coasting keeps the 100 ms step, so a flick never jumps.
         if (took > delta) (viewport.plugins.get("animate") as { update(elapsed: number): void } | null)?.update(took - delta)
+        // Focus's fade keeps the move's time: the same frames, the same milliseconds.
+        board.fade.advance(took)
         moving = board.camera.sync()
       } catch (error) { console.error("Camera:", error) }
       if (moving) placeWorld()
@@ -237,6 +250,7 @@ export function Stage(props: StageProps) {
           if (focus && !store.focusEntering.get()) hidden.add(store.resolveName(focus))
           const result = scene.update({ moving: board.camera.isMoving, camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, slow, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
           animating = result.animating
+          fadeWorld()
           clearTimeout(wakeTimer)
           if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)
         } catch (error) { console.error("Scene:", error) }
@@ -291,8 +305,8 @@ export function Stage(props: StageProps) {
       const layer = new Container({ eventMode: "passive" })
       viewport.addChild(layer)
       scene = new Scene({ world: layer, overlay, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
-      board.camera.wake = invalidate
-      stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
+      board.camera.wake = board.fade.wake = invalidate
+      stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = board.fade.wake = () => {} })
       // The held stream's events stop here; the page's own (Focus's zoom) go on.
       const wheel = (event: WheelEvent) => { if (wheelHeld) { event.stopImmediatePropagation(); event.preventDefault() } }
       addEventListener("wheel", followWheel, { capture: true, passive: true })
@@ -349,7 +363,7 @@ export function Stage(props: StageProps) {
         const view = store.get(node.data.name)
         if (!view || view.draft === undefined || node.data.name === focused) continue
         const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
-        next.push({ name: node.data.name, draft: view.draft, box: { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y } })
+        next.push({ id: node.id, name: node.data.name, draft: view.draft, box: { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y } })
       }
       setOverlays((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       const list = board.getNodes().map((node) => {
@@ -444,7 +458,7 @@ export function Stage(props: StageProps) {
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
     <div ref={world} className="canvas-world">
-      {overlays.map(({ name, draft, box }) => <div key={name} className="canvas-over" style={{ left: box.x, top: box.y, width: box.w }}>
+      {overlays.map(({ id, name, draft, box }) => <div key={name} className="canvas-over" data-id={id} style={{ left: box.x, top: box.y, width: box.w }}>
         {draft !== undefined && <div className="canvas-name card"><div className="head" style={{ height: HEAD }}>
           <NameField name={name} draft={draft} onCancel={() => { if (store.get(name)?.placing) store.cancel(store.resolveName(name)); else store.patch(name, { draft: undefined }) }} />
         </div></div>}

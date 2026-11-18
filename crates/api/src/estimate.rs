@@ -2,9 +2,11 @@
 //! could compute the quote on its end, if it has sufficient knowledge of each machine"): the one model its scheduler gives each root
 //! its width by, and Calcifer quotes every machine by from the state it pushes (`quote`), one on its way included (cl-915). Roots
 //! start in the order they are ready, acceptance breaking ties, on the GPUs free soonest; an older root waiting for GPUs keeps them
-//! from younger ones. Each takes every GPU its function declares it can use, up to the machine's (cl-1073, Paul 11-16: "yes, always use
-//! parallelism when possible"): a multi-GPU machine is never split into one-GPU runs of a function that can use more, and the next
-//! waits for them, or goes to another machine. A machine's downloads and installs each go one at a time in job order (Paul 11-12), so a job's weights come after
+//! from younger ones. Each takes the declared width that finishes it soonest (cl-1187, Paul 11-17: "if one long job is using a single
+//! GPU, and there's another free GPU, then minimax h3 should use that free GPU"): the widest that fits the GPUs free when it is ready,
+//! unless the times of both it and the runs holding the others say that waiting for them and running wider ends sooner. With all of
+//! its GPUs free it runs at its widest (cl-1073, Paul 11-16: "yes, always use parallelism when possible"). A machine's downloads and
+//! installs each go one at a time in job order (Paul 11-12), so a job's weights come after
 //! those of the jobs ahead of it. A function none of whose runs it knows is timed by the caller's prior, else by its release's
 //! benchmarks (`References`, cl-1024), else a minute.
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -53,6 +55,8 @@ pub struct Job {
     pub ready_ms: f64,
     /// It runs: its width and the ms it has left.
     pub running: Option<(u32, f64)>,
+    /// Its time stands on something (`Basis` other than `None`): only then does it wait for GPUs to run wider.
+    pub known: bool,
 }
 
 impl Job {
@@ -94,47 +98,76 @@ pub struct Placed {
     pub finish_ms: f64,
     /// Waiting jobs that start before it.
     pub position: usize,
+    /// Its start stands on times: it starts as soon as it is ready, or the jobs it waits for are timed.
+    pub known: bool,
+}
+
+/// When a GPU is free, ms from now, and whether that stands on the time of the job holding it.
+#[derive(Clone, Copy, Debug)]
+struct Gpu {
+    free_ms: f64,
+    known: bool,
 }
 
 /// `jobs` on `gpus` GPUs, in their order (running ones first, then by acceptance).
 pub fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
-    let mut free = vec![0.0; gpus];
+    let mut free = vec![Gpu { free_ms: 0.0, known: true }; gpus];
     let mut placed = vec![Placed::default(); jobs.len()];
     for (at, job) in jobs.iter().enumerate() {
         if let Some((width, left)) = job.running {
             let width = width.min(gpus as u32);
-            take(&mut free, width, 0.0, left);
-            placed[at] = Placed { width, start_ms: 0.0, finish_ms: left, position: 0 };
+            take(&mut free, width, 0.0, left, job.known);
+            placed[at] = Placed { width, start_ms: 0.0, finish_ms: left, position: 0, known: true };
         }
     }
     let mut waiting: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].running.is_none()).collect();
     waiting.sort_by(|&a, &b| jobs[a].ready_ms.total_cmp(&jobs[b].ready_ms).then(a.cmp(&b)));
     for (position, &at) in waiting.iter().enumerate() {
-        let (width, start_ms, finish_ms) = place(&mut free, &jobs[at]);
-        placed[at] = Placed { width, start_ms, finish_ms, position };
+        placed[at] = Placed { position, ..place(&mut free, &jobs[at]) };
     }
     placed
 }
 
-/// `job` at its widest that the machine has, on the GPUs of `free` free soonest: its width, start and end.
-fn place(free: &mut [f64], job: &Job) -> (u32, f64, f64) {
-    let Some(width) = job.widths.iter().copied().filter(|width| *width as usize <= free.len()).max() else {
-        return (0, job.ready_ms, job.ready_ms + job.ms(1));
+/// `job` on the GPUs of `free` free soonest, at the width `choose` gives it.
+fn place(free: &mut [Gpu], job: &Job) -> Placed {
+    let Some(width) = choose(free, job) else {
+        return Placed { width: 0, start_ms: job.ready_ms, finish_ms: job.ready_ms + job.ms(1), position: 0, known: true };
     };
     let ms = job.ms(width);
-    let start = take(free, width, job.ready_ms, ms);
-    (width, start, start + ms)
+    let known = free[..width as usize].iter().all(|gpu| gpu.known || gpu.free_ms <= job.ready_ms);
+    let start_ms = take(free, width, job.ready_ms, ms, job.known);
+    Placed { width, start_ms, finish_ms: start_ms + ms, position: 0, known }
 }
 
-/// Holds the `width` GPUs of `free` free soonest, from `ready` or once they are, for `ms`: when it starts.
-fn take(free: &mut [f64], width: u32, ready: f64, ms: f64) -> f64 {
+/// The width of `job`'s that ends it soonest on `free` (cl-1187): the widest that fits the GPUs free when it is ready, unless waiting
+/// for more and running wider ends sooner, which only its time and those of the jobs holding them can say; with none free, the one
+/// that ends soonest. A tie goes wider. None: it holds no GPU, or none of its widths fits the machine.
+fn choose(free: &mut [Gpu], job: &Job) -> Option<u32> {
+    free.sort_by(|a, b| a.free_ms.total_cmp(&b.free_ms));
+    let fits: Vec<u32> = job.widths.iter().copied().filter(|width| *width > 0 && *width as usize <= free.len()).collect();
+    let end = |width: u32| job.ready_ms.max(free[width as usize - 1].free_ms) + job.ms(width);
+    let soonest = |widths: &mut dyn Iterator<Item = u32>| widths.min_by(|a, b| end(*a).total_cmp(&end(*b)).then(b.cmp(a)));
+    let idle = free.iter().filter(|gpu| gpu.free_ms <= job.ready_ms).count();
+    match fits.iter().copied().filter(|width| *width as usize <= idle).max() {
+        Some(now) => {
+            let known = |width: u32| job.known && free[..width as usize].iter().all(|gpu| gpu.known || gpu.free_ms <= job.ready_ms);
+            soonest(&mut fits.iter().copied().filter(|width| *width == now || *width > now && known(*width)))
+        }
+        None => soonest(&mut fits.iter().copied()),
+    }
+}
+
+/// Holds the `width` GPUs of `free` free soonest, from `ready` or once they are, for `ms`: when it starts. Their times are known when
+/// its own is and those it waited for were.
+fn take(free: &mut [Gpu], width: u32, ready: f64, ms: f64, known: bool) -> f64 {
     let width = (width as usize).min(free.len());
     if width == 0 {
         return ready;
     }
-    free.sort_by(f64::total_cmp);
-    let start = ready.max(free[width - 1]);
-    free.iter_mut().take(width).for_each(|gpu| *gpu = start + ms);
+    free.sort_by(|a, b| a.free_ms.total_cmp(&b.free_ms));
+    let start = ready.max(free[width - 1].free_ms);
+    let known = known && free[..width].iter().all(|gpu| gpu.known || gpu.free_ms <= ready);
+    free.iter_mut().take(width).for_each(|gpu| *gpu = Gpu { free_ms: start + ms, known });
     start
 }
 
@@ -619,7 +652,7 @@ impl<'r> Machine<'r> {
                 // install names local code, not by the `sha256:` name its benchmarks are under, while the job asked was timed 230 s).
                 let named = self.named.get(&root.function).map_or("", String::as_str);
                 let (time, widths) = self.timed(&root.function, named, &root.size, 0.0, root.widths.clone(), warm);
-                let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
+                let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None, known: time.basis != Basis::None };
                 match root.running && !root.gpu_waits {
                     // On its GPUs: what it has left there, counted from when it took them (cl-1107); from its executor's start on a
                     // machine that doesn't say, where a root still fetching its weights counts all but done (cl-1073): its caller's
@@ -636,16 +669,20 @@ impl<'r> Machine<'r> {
                         let clock = self.references.filter(|_| !root.run.is_empty()).and_then(|references| references.left.get(&root.run));
                         let left = match clock {
                             Some(left) if left.weights_only => left.ms + whole,
-                            Some(left) if left.ms > 0.0 => left.ms,
+                            Some(left) if left.ms > 0.0 => {
+                                job.known = true;
+                                left.ms
+                            }
                             _ => (whole - ran).max(whole * OVERRUN),
                         };
                         job.running = Some((root.width, left));
                     }
                     // Queued, or on its CPU alone while its GPU work waits (an orchestrator whose call waits for its weights or a GPU;
                     // cl-1107, the user-flow: chocola's quote left 47 s for 425 s of runs ahead, each started minutes before it had
-                    // the GPU): all of it, once its weights are here, at the width it took.
+                    // the GPU): all of it, once its weights are here, at the width it took, or, choosing, at the one its GPUs take as
+                    // its first call goes (cl-1187).
                     false => {
-                        if root.running && root.width > 0 {
+                        if root.running && root.width > 0 && !root.chooses {
                             job.widths = vec![root.width];
                         }
                         job.ready_ms = line.fetch(&root.models, root.bytes_left, self.link, 0.0);
@@ -732,6 +769,16 @@ fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> u64 {
     }
 }
 
+/// The bytes of `model` its machine lands on its disk before a call of it runs (cl-1175): none while an idle executor holds it loaded; else
+/// what its held checkpoint lacks (`absent`), whatever a run of it read.
+fn lands(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
+    let header = header(frame, model);
+    match frame.resident.iter().any(|resident| resident.checkpoints.contains(&header)) {
+        true => 0,
+        false => absent(frame, model),
+    }
+}
+
 /// Each of `job`'s models' `reads` not known yet (cl-967): the most a run of its function read of it on any of `frames`' machines.
 /// Local code's function is known by its package only where it is installed: its machine's own reads count it.
 pub fn learn_reads(frames: &[&StatusFrame], job: &mut EstimateJob) {
@@ -796,7 +843,9 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
     let queue = frame.queue.as_deref().unwrap_or_default();
     let (mut packed, mut line) = machine.queue(queue);
     let mut warm: HashSet<String> = queue.iter().map(|root| root.function.clone()).filter(|function| !function.is_empty()).collect();
-    let free = frame.disk.as_ref().map_or(u64::MAX, |disk| disk.free_bytes);
+    // What a download may take on its disk, and what its queue still brings into it.
+    let room = frame.disk.as_ref().map_or(u64::MAX, v1::Disk::room);
+    let mut coming: u64 = queue.iter().map(|root| root.bytes_left).sum();
     let lost = frame.gpus.iter().any(|gpu| !gpu.out_of_service.is_empty());
     // Each code's install, once, after those ahead of it.
     let (mut installs, mut installing) = (0.0, HashMap::<&str, f64>::new());
@@ -842,15 +891,22 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
             asked.push((None, quote));
             continue;
         }
-        let fetch: u64 = job.models.iter().map(|model| fetches(frame, &function, model)).sum();
-        if fetch > free {
-            quote.refusal = refused("does_not_fit", format!("its weights' {fetch} bytes don't fit in this machine's {free} free"));
+        // What a run ahead brings is not fetched twice. Its weights where the disk has no room for them beside what comes ahead of
+        // them, after all the store could free (cl-1175, Paul 11-17: "stop them from trying to download models they cannot fit"): never
+        // sent there, so none of them starts to download. Judged by what the machine lands before the run, never by what a run read.
+        let coming_here = |model: &&v1::ModelRef| !line.lands.contains_key(&model.model);
+        let lands: u64 = job.models.iter().filter(coming_here).map(|model| lands(frame, model)).sum();
+        if lands.saturating_add(coming) > room {
+            quote.short_bytes = lands.saturating_add(coming) - room;
+            quote.refusal = refused("machine_disk_full", "its disk has no room for its models".into());
             asked.push((None, quote));
             continue;
         }
+        coming += lands;
+        let new: u64 = job.models.iter().filter(coming_here).map(|model| fetches(frame, &function, model)).sum();
         quote.fits = true;
         // Its install after those ahead of it; its download after its install, as the machine resolves its weights once it is
-        // built, and after those ahead of it; what a run ahead brings is not fetched twice.
+        // built, and after those ahead of it.
         let install_end = match held {
             true => 0.0,
             false => *installing.entry(code).or_insert_with(|| {
@@ -858,7 +914,6 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
                 installs
             }),
         };
-        let new: u64 = job.models.iter().filter(|model| !line.lands.contains_key(&model.model)).map(|model| fetches(frame, &function, model)).sum();
         let models: Vec<String> = job.models.iter().map(|model| model.model.clone()).collect();
         quote.fetch_bytes = new;
         let fetched = line.fetch(&models, new, machine.link, install_end);
@@ -869,7 +924,7 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
         warm.insert(function);
         let ready = install_end.max(fetched).max(job.after_ms as f64) + load;
         quote.prepare_ms = ready as u64;
-        packed.push(Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: ready, running: None });
+        packed.push(Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: ready, running: None, known: time.basis != Basis::None });
         asked.push((Some(packed.len() - 1), quote));
     }
     let placed = pack(machine.gpus, &packed);

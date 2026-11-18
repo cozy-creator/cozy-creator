@@ -162,6 +162,8 @@ export class Media {
     const element = document.createElement("video")
     Object.assign(element, { muted: true, loop: true, playsInline: true, disablePictureInPicture: true, preload: "auto" })
     let texture: Texture | undefined, frame = 0, tries = 0, stopped = false, retry: ReturnType<typeof setTimeout> | undefined
+    // Its bytes in the page's memory while it's held: looping, it holds no connection (cl-1215).
+    let bytes: { release(): void } | undefined
     // Each decoded frame where the browser says so (requestVideoFrameCallback), else each animation frame while it's held.
     const framed = "requestVideoFrameCallback" in element
     const next = () => { frame = framed ? element.requestVideoFrameCallback(shown) : requestAnimationFrame(shown) }
@@ -179,9 +181,11 @@ export class Media {
     const load = async () => {
       if (stopped || (this.unpreviewable.get(sha256) ?? 0) > Date.now()) return
       const path = this.o.client.preview(this.o.project, sha256)
-      const url = await this.o.client.transport.src(tries ? `${path}&try=${tries}` : path).catch(() => undefined)
-      if (stopped || !url) return
-      element.src = url
+      const held = await this.o.client.transport.media(tries ? `${path}&try=${tries}` : path).catch(() => undefined)
+      if (stopped || !held) return held?.release()
+      bytes?.release()
+      bytes = held
+      element.src = held.url
       next()
       if (this.visible) element.play().catch(() => {})
     }
@@ -200,6 +204,8 @@ export class Media {
         element.pause()
         element.removeAttribute("src")
         element.load()
+        bytes?.release()
+        bytes = undefined
         texture?.destroy(true)
         texture = undefined
         this.videos.delete(control)

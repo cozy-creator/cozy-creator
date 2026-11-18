@@ -66,8 +66,8 @@ impl Store {
     }
 
     /// Keeps each `(slot, page, bytes)` as that page of its slot, made from the checkpoint whose
-    /// header is `of`: cached in that checkpoint's lane. One sync covers them all before any is
-    /// named. Each one's object, or None where the disk had no room for it (nothing kept).
+    /// header is `of`: cached in that checkpoint's lane. Each one's object, or None where the disk had no room for it (nothing
+    /// kept).
     pub fn keep_derived(&self, of: &ObjectRef, pages: &[(&str, &str, &[u8])]) -> Result<Vec<Option<ObjectRef>>> {
         let mut kept = Vec::with_capacity(pages.len());
         for &(slot, page, bytes) in pages {
@@ -83,8 +83,7 @@ impl Store {
             self.used(&of.sha256, [&object])?;
             kept.push(Some(object));
         }
-        // A record never names an object a crash could tear (an ephemeral store syncs here).
-        self.sync()?;
+        // A durable store flushed each object as it landed; an ephemeral one flushes nothing (`Durability`).
         for (&(slot, page, _), object) in pages.iter().zip(&kept) {
             let Some(object) = object else { continue };
             let path = self.root.join("derived").join(slot).join(page);

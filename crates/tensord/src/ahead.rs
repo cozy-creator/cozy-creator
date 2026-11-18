@@ -60,6 +60,15 @@ const LET_GO: Duration = Duration::from_secs(5);
 /// What each prepare item's run needs here, by its caller's id (`needs`): what its Status weighs it by once it ended (`standing`).
 static NEEDS: LazyLock<Mutex<HashMap<String, Vec<crate::journal::FunctionRead>>>> = LazyLock::new(Mutex::default);
 
+/// Each listed item's local code's interface as its caller read it, by its run's id (`v1::Predicted::interface`): what its slots are
+/// resolved by while its code installs (cl-1123).
+static INTERFACES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> = LazyLock::new(Mutex::default);
+
+/// List item `id`'s local code's interface as its caller read it, if it said one.
+pub(crate) fn interface(id: &str) -> Option<Vec<u8>> {
+    lock(&INTERFACES).get(id).cloned()
+}
+
 /// Each listed item's request, by its run's id: its identity as a call of it would have it (`runs::identity`).
 static PREDICTED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
@@ -208,8 +217,11 @@ pub(crate) fn put(
     let mut identities = vec![];
     let mut sent = vec![];
     let requests: Vec<v1::RunRequest> = (items.into_iter())
-        .map(|v1::Predicted { key, spec }| {
+        .map(|v1::Predicted { key, spec, interface }| {
             let id = format!("{prefix}{key}");
+            if let Some(interface) = interface {
+                lock(&INTERFACES).insert(id.clone(), interface.get().as_bytes().to_vec());
+            }
             identities.push((id.clone(), crate::runs::identity(spec.clone()).unwrap_or_default()));
             if let Some(value) = crate::runs::identity_value(spec.clone()) {
                 lock(&IDENTIFIED).insert(id.clone(), value);
@@ -271,6 +283,7 @@ pub(crate) fn put(
         predicted.retain(|id, _| named.contains(id) || kept.contains(id));
     }
     lock(&IDENTIFIED).retain(|id, _| named.contains(id) || kept.contains(id));
+    lock(&INTERFACES).retain(|id, _| named.contains(id));
     lock(&EXTRAS).retain(|id, stop| {
         let named = named.contains(id);
         if !named {
@@ -451,7 +464,8 @@ pub(crate) fn make_way() {
 /// Run `caller` lines what it needs (`needed`): for a prepare item, what its Status weighs it by (`standing`).
 pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate::access::Selected) {
     if guess(caller) {
-        lock(&NEEDS).insert(caller.to_owned(), crate::access::reads(store, needed));
+        let reads = crate::access::reads(store, needed);
+        lock(&NEEDS).insert(caller.to_owned(), reads);
     }
 }
 
@@ -461,7 +475,8 @@ pub(crate) fn needs(store: &crate::storage::Store, caller: &str, needed: &crate:
 /// what it lacks doesn't fit on the disk past its reserve, as a guess never makes room. Empty: it may come again now. One that failed
 /// keeps its `reason`, and its caller counts each try.
 pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
-    let needs = lock(&NEEDS);
+    // Read off the lock: what a list put or a guess's planning takes waits on no disk (cl-1202).
+    let needs = lock(&NEEDS).clone();
     let free = || crate::reclaim::Disk::measure(store.root()).map_or(u64::MAX, |disk| disk.free());
     let lost = |state: &v1::RunState| match state.state.as_str() {
         "succeeded" | "canceled" => true,

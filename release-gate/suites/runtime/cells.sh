@@ -20,6 +20,8 @@ if [ -f vlm-gemma4.json ]; then
 fi
 # H3's video VAE at least as fast as ComfyUI's (cr-306).
 source "$HERE/suites/runtime/h3-vae.sh"
+# H3's latent upscaler on its int8 lane at its measured speed (cr-327).
+source "$HERE/suites/runtime/h3-upscaler.sh"
 # Second executor process: a GPU memory limit write restarts the machine, so every executor is new.
 if [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-p2,"* || $ONLY == *",sdxl,"* ]]; then
   "$CLI" machine update "$M" --gpu-memory-limit off -y >restart.log 2>&1; log "restarted $M: $(grep -E '^status' restart.log)"

@@ -1,0 +1,2 @@
+sku	upscale_s	bf16_s	sm_mhz	source
+rtx-5090	1.55	5.45	2439	pod-session 44213250853 (otabek), minimax-h3 d19c2e89 + Runtime 1fa34d33, int8 commit e4d231f2, 107 latent frames 768p to 1440p, warm median; sm_mhz its int8 calls

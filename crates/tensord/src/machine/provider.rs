@@ -155,7 +155,27 @@ impl ProviderSelf {
 
     /// Ends this pod at its provider, so billing stops.
     pub(crate) async fn end(&self) -> io::Result<()> {
+        self.ask(false).await
+    }
+
+    /// Stops this pod at its provider, as its provider stops one itself (vast's balance stop of hougetsu, 11-17): a dev
+    /// machine's test of how its Hub closes a stopped rental (`stop_when_asked`, cl-1203). Its own instance only.
+    pub(crate) async fn stop(&self) -> io::Result<()> {
+        self.ask(true).await
+    }
+
+    /// Ends this pod at its provider, or (`stop`) stops it.
+    async fn ask(&self, stop: bool) -> io::Result<()> {
         let (origin, method, path, key, body) = match self {
+            Self::RunPod { pod, key, origin } if stop => {
+                let query = format!("mutation {{ podStop(input: {{podId: {pod:?}}}) {{ id }} }}");
+                let body = serde_json::to_vec(&serde_json::json!({ "query": query }))?;
+                (origin, Method::POST, "/graphql".to_owned(), key, body)
+            }
+            Self::Vast { instance, key, origin } if stop => {
+                let body = serde_json::to_vec(&serde_json::json!({ "state": "stopped" }))?;
+                (origin, Method::PUT, format!("/api/v0/instances/{instance}/"), key, body)
+            }
             Self::RunPod { pod, key, origin } => {
                 let query = format!("mutation {{ podTerminate(input: {{podId: {pod:?}}}) }}");
                 let body = serde_json::to_vec(&serde_json::json!({ "query": query }))?;
@@ -192,6 +212,25 @@ impl ProviderSelf {
             (false, None) => Err(io::Error::other(format!(
                 "the provider answered HTTP {status}"
             ))),
+        }
+    }
+}
+
+/// A dev machine's own stop at its provider (`dev = true` in its config.toml when asked, else nothing): root on the pod sends
+/// its service SIGUSR2, and the release-gate cell `rental-stop-closes` (cl-1203, th-404) watches its Hub close and destroy it.
+/// Nothing but this process holds the key, and it stops nothing but this pod.
+#[cfg(unix)]
+pub(crate) async fn stop_when_asked(own: ProviderSelf) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let Ok(mut asked) = signal(SignalKind::user_defined2()) else { return };
+    while asked.recv().await.is_some() {
+        if !api::config::load().is_ok_and(|loaded| loaded.config.dev) {
+            tracing::warn!(target: crate::config::MACHINE, "asked to stop at its provider, but this is no dev machine (`dev = true`): nothing done");
+            continue;
+        }
+        match own.stop().await {
+            Ok(()) => tracing::warn!(target: crate::config::MACHINE, "dev: stopped at its provider, as asked"),
+            Err(error) => tracing::warn!(target: crate::config::MACHINE, "dev: its provider did not stop it: {error}"),
         }
     }
 }

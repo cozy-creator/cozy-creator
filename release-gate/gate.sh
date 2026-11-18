@@ -5,7 +5,9 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--models org/name@version,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
-#           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated] [--skip-unchanged]
+#           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated] [--skip-unchanged] [--preflight]
+# --preflight: the $0 checks alone (the candidates fetch, and the set resolves on the machine it would rent: resolve.py); nothing is
+# built or rented.
 # --skip-unchanged: a cell whose last PASS on <SKU> in the benchmark ledger asked the same (ledger.py ask: its arguments, files
 # by content) of the same cozy, Runtime, TensorFS, attention table, held models and package code is not run; the log and the
 # verdict name the row it stands on (ledger.py skip; tracker design/benchmark-ledger.md §4). It pins the scenario, seeds and
@@ -44,12 +46,13 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= MODELS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated SKIP_UNCHANGED=
+BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated SKIP_UNCHANGED= PREFLIGHT=
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
     --publish) PUBLISH=1; shift; continue;;
     --skip-unchanged) SKIP_UNCHANGED=1; shift; continue;;
+    --preflight) PREFLIGHT=1; shift; continue;;
     --out) OUT=$2;;
     --only) ONLY=",$2,";;
     --cells) EXTRA+=("$2");;
@@ -87,26 +90,6 @@ mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
 # The chosen suites' own packages: described on the machine's Runtime once it reports one (`gate-packages`, below).
 mapfile -t GATE_PKGS < <(for s in ${SUITES//,/ }; do find "$HERE/suites/$s" -name pyproject.toml -not -path '*/.venv/*' -printf '%h\n'; done | sort -u)
-# Local code, a --packages checkout's or the suites' own, warms through this helper (e2e/warm.py --stage-code).
-if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
-    || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
-  RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
-fi
-# The --packages checkout's packages that declare Triton sets: built into it while the rental boots (`pkg` waits for one).
-if [ -n "$PKGS" ] && [ -x "$PKGS/scripts/triton.sh" ]; then
-  for d in "$PKGS"/*/; do
-    d=${d%/}
-    [ -f "$d/pyproject.toml" ] && grep -rqs --include='*.py' 'TritonKernels(' "$d" || continue
-    # Building or built already (a gate started again on another host): left to it.
-    st=$(cat "kernels-${d##*/}.status" 2>/dev/null) || st=
-    if [ -f "kernels-${d##*/}.log" ] && { [ -z "$st" ] || [ "$st" = 0 ]; }; then continue; fi
-    rm -f "kernels-${d##*/}.status"
-    ( "$PKGS/scripts/triton.sh" "$d" > "kernels-${d##*/}.log" 2>&1; echo $? > "kernels-${d##*/}.status" ) &
-  done
-fi
-# expect <check> PASS|FAIL|SKIP <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
-expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
 fetch() {
   local f
@@ -127,6 +110,55 @@ for c in "cozy_runtime:$RWF" "tensorfs:$TWF"; do
   v=${c#*:}; [ -n "$v" ] && [ ! -f "$v" ] || continue
   why=$(tag_built "${c%%:*}" "$v") || { log "$why"; exit 1; }
 done
+# The candidate set resolves before any rental, and before anything is built here (resolve.py; 44195951427 rented a 4090 for
+# 10 min to learn that its Runtime refused its TensorFS; 44238862903 ran an RC Runtime on the Hub's TensorFS, xs-216): the
+# Runtime takes the TensorFS the machine will run, a candidate's or its Hub's target, and every package of the checkout and
+# the suites the Runtime. An RC Runtime build given with no TensorFS takes the RC's TensorFS build beside it: the RC is its
+# URL's (`…/rc-<x.y.z>/…`), else this checkout's (`<x.y.z>-dev`). A conflict ends the gate here, at $0. --on: the machine as
+# it is, so only what was given is held together.
+RESOLVE=("${GATE_PKGS[@]}")
+[ -z "$PKGS" ] || for d in "$PKGS"/*/; do grep -qs cozy.application "$d/pyproject.toml" && RESOLVE+=("${d%/}"); done
+RC=$(sed -n 's|.*/releases/download/rc-\([0-9][0-9.]*\)/.*|\1|p' <<< "$RW")
+[ -n "$RC" ] || RC=$(sed -n 's/^version = "\([0-9.]*\)-dev"$/\1/p' "$HERE/../Cargo.toml" | head -1)
+HUB_URL=https://tensorhub.com
+[ "$HUB_TARGET" = prod ] || HUB_URL=${COZY_HUB_URL:-}
+[ -z "$ON" ] || HUB_URL=
+if ! said=$(uv run -q --no-project --with packaging python -I "$HERE/resolve.py" --hub "$HUB_URL" --rc "$RC" "${RWF:-}" "${TWF:-}" "${RESOLVE[@]}" 2>&1); then
+  log "the candidate set does not resolve: $(paste -sd';' <<< "$said")"
+  printf 'FAIL candidate set: %s\nVERDICT FAIL (candidate set does not resolve)\n' "$(paste -sd';' <<< "$said")" | tee verdict.txt
+  exit 1
+fi
+if [[ $said == tensorfs=* ]]; then
+  # Named from here on: a gate started again on another host takes the same build (`again`).
+  TW=${said#tensorfs=}; TWF=$(fetch "$TW") || exit 1; ARGS+=(--tensorfs "$TW")
+  log "TensorFS $(basename "$TWF" | cut -d- -f2): rc-$RC's build, beside the RC Runtime $(basename "$RWF" | cut -d- -f2)"
+fi
+# --preflight (release-gate.yml's rent=false): the $0 checks alone.
+if [ -n "$PREFLIGHT" ]; then
+  log "pre-flight: the candidate set resolves${RWF:+, Runtime $(basename "$RWF" | cut -d- -f2)}${TWF:+, TensorFS $(basename "$TWF" | cut -d- -f2)}; nothing rented"
+  echo "VERDICT PASS (pre-flight: the candidate set resolves; nothing rented)" | tee verdict.txt
+  exit 0
+fi
+# Local code, a --packages checkout's or the suites' own, warms through this helper (e2e/warm.py --stage-code).
+if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
+  cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
+    || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
+  RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
+fi
+# The --packages checkout's packages that declare Triton sets: built into it while the rental boots (`pkg` waits for one).
+if [ -n "$PKGS" ] && [ -x "$PKGS/scripts/triton.sh" ]; then
+  for d in "$PKGS"/*/; do
+    d=${d%/}
+    [ -f "$d/pyproject.toml" ] && grep -rqs --include='*.py' 'TritonKernels(' "$d" || continue
+    # Building or built already (a gate started again on another host): left to it.
+    st=$(cat "kernels-${d##*/}.status" 2>/dev/null) || st=
+    if [ -f "kernels-${d##*/}.log" ] && { [ -z "$st" ] || [ "$st" = 0 ]; }; then continue; fi
+    rm -f "kernels-${d##*/}.status"
+    ( "$PKGS/scripts/triton.sh" "$d" > "kernels-${d##*/}.log" 2>&1; echo $? > "kernels-${d##*/}.status" ) &
+  done
+fi
+# expect <check> PASS|FAIL|SKIP <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
+expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
@@ -330,8 +362,10 @@ whole() { ! grep -q "^$1"$'\t' stopped.tsv 2> /dev/null; }
 # name, in SKIP_ORDER. A cell that runs runs its group's skipped cells first, so it starts from the state it always did.
 declare -A SKIPPED=()
 SKIP_ORDER=()
+# `caption=<text>` among a cell's inputs is quality.py's, never the run's: what the output should show, judged in place of the
+# prompt. An empty one says the prompt is an instruction (an edit, a question) and nothing here describes the output.
 cell() {
-  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0 asked said s call; shift 2
+  local base=$1 name=$1${TWIN:-} target=$2 p issue n code=0 asked said s call caption='' captioned='' inputs=(); shift 2
   p=${target%/*}; p=${p##*/}
   [ -z "${TWIN:-}" ] || [[ ,${TWINS:-}, == *",$base,"* ]] || return 0
   [ -z "$ONLY" ] || [[ $ONLY == *",$base,"* || $ONLY == *",$p,"* ]] || return 0
@@ -340,7 +374,8 @@ cell() {
   issue=$(jq -r --arg s "$SKU" --arg c "$base" '.[] | select((.sku == $s or .sku == "*") and ((.cells // []) | index($c))) | .issue' \
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
-  asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "$@")
+  for s in "$@"; do case $s in caption=*) caption=${s#caption=} captioned=1 ;; *) inputs+=("$s") ;; esac; done
+  asked=$(python3 -I "$HERE/ledger.py" ask ${STOP:+--stop "$STOP"} --harness "${HARNESS:-}" "$target" "${inputs[@]}")
   if [ -n "$SKIP_UNCHANGED" ] && [ -z "${REPLAY:-}" ] && [[ " kernels gemm execution " != *" ${SUITE:-} "* ]]; then
     said=$(python3 -I "$HERE/ledger.py" skip "$OUT" ledger-recorded.jsonl "$name" "$target" "$asked" ${PKGS:+--packages "$PKGS"}) && s=1 || s=
     log "$said"
@@ -358,12 +393,20 @@ cell() {
     log "$s: runs after all, before $name of its group"
     eval "REPLAY=1 $call"
   done
+  set -- "${inputs[@]}"
   for p in "$@"; do  # quality.py
     case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
   done
+  [ -z "$captioned" ] || printf '%s\t%s\n' "$name" "$caption" >> captions.tsv
   [[ $target != *minimax-h3*/generate* ]] || { one_beat "$@"; set -- "${BEAT[@]}"; }
   ahead "$name" "$target" "$@"
+  # Its machine's downloads while it runs, each once (cl-1205): a run waiting on one names it (`progress.waiting_on`) and says no bytes
+  # of its own, so the progress suite reads the download's bytes here.
+  ( while :; do "$CLI" --json machine show "$M" 2>/dev/null | jq -c --argjson at "$(date +%s%3N)" 'select((.status.activity // []) | length > 0)
+      | {at: $at, activity: .status.activity}'; sleep 1; done ) > "$name.machine.ndjson" 2>/dev/null &
+  local downloads=$!
   if [ -n "${STOP:-}" ]; then stop_cell "$name" "$target" --on "$M" "$@" || code=$?; else run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?; fi
+  kill "$downloads" 2>/dev/null; wait "$downloads" 2>/dev/null
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
   printf '%s\t%s\n' "$name" "$asked" >> asks.tsv
@@ -382,7 +425,10 @@ pkg() {
         expect "kernels-${d##*/}" FAIL "its Triton sets did not build: $(tail -c 300 "kernels-${d##*/}.log")" >&2
       fi
     fi
-    ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
+    # One that takes another package of the checkout from the Hub (`{ index = "tensorhub" }`) takes it from the checkout by path:
+    # cozy stages a package's first-party siblings itself (cl-1211, `api::code::siblings`).
+    ln -sfn "$d" "$OUT/${d##*/}"
+    echo "./${d##*/}/$2"
   else echo "$1/$2"; fi
 }
 output() { run_output "$OUT" "$1" "$2"; }
@@ -465,12 +511,13 @@ if [ -z "$ON" ]; then
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
   # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
-  # (cl-913), suite graphs makes the pod a dev machine there (`dev = true`: its replays are audited), and an A/B hook
+  # (cl-913), suites graphs and varena's differential make the pod a dev machine there (`dev = true`: replays audited,
+  # the differential arms on), and an A/B hook
   # (*-ab.sh) and suite multi-gpu's 1-against-2 pair clear derived state there (machines.sh `pod_derived`), with this computer's
   # key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* || ,$SUITES, == *,multi-gpu,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
-     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* || $ONLY == *,differential,* || $ONLY == *,diff-* ]]; }; } ||
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* || ,$SUITES, == *,graphs,* ]] ||
      [[ " ${EXTRA[*]:-} " == *-ab.sh* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519

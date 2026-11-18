@@ -1,5 +1,5 @@
-//! Local code as it travels (cl-819): a package folder or a PEP 723 script, with the path dependencies its sources name,
-//! under their common folder, as one tree (`api::tree`). Whoever holds the folder reads it here, the CLI its own and
+//! Local code as it travels (cl-819): a package folder or a PEP 723 script, with the path dependencies its sources name and the
+//! first-party siblings it takes from a Hub (`siblings`), under their common folder, as one tree (`api::tree`). Whoever holds the folder reads it here, the CLI its own and
 //! Calcifer a project's `with: ./dir`, and Calcifer works from its copy of the tree, by its digest: it reads no client's disk.
 use std::{
     collections::BTreeMap,
@@ -114,7 +114,17 @@ pub fn plan(path: &Path) -> Result<SourcePlan, Error> {
     let beside = if script { package.parent().unwrap_or(&package).to_owned() } else { package.clone() };
     let locals = match script {
         true => script_dependencies(&package)?,
-        false => path_dependencies(&package)?,
+        false => {
+            // Its first-party siblings come along, with their own path dependencies: its lock takes them by path (cl-1211).
+            let mut locals = path_dependencies(&package)?;
+            for sibling in siblings(&package).into_values() {
+                locals.extend(path_dependencies(&sibling)?);
+                locals.push(sibling);
+            }
+            locals.sort();
+            locals.dedup();
+            locals
+        }
     };
     let root = common(&beside, locals.iter().map(|l| if l.is_file() { l.parent().unwrap_or(l) } else { l.as_path() }));
     let mut roots = vec![package.clone()];
@@ -229,6 +239,65 @@ pub fn path_dependencies(project: &Path) -> Result<Vec<PathBuf>, Error> {
     })?;
     let pyproject: toml::Table = toml::from_str(&text).map_err(|e| refuse("project_file_invalid", format!("pyproject.toml: {e}")))?;
     sourced(project, pyproject.get("tool"))
+}
+
+/// The uv index a package's sources name for a cozy package on a Hub (`{ index = "tensorhub" }`).
+pub const HUB_INDEX: &str = "tensorhub";
+
+/// A distribution name as uv and a Hub's index compare it (PEP 503): `Qwen_Image.2` is `qwen-image-2`.
+pub fn distribution(name: &str) -> String {
+    name.split(['-', '_', '.']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-").to_ascii_lowercase()
+}
+
+/// The keys of the `[tool.uv.sources]` of the package in `folder` that take a cozy package from a Hub (`{ index = "tensorhub" }`).
+pub fn hub_sources(folder: &Path) -> Vec<String> {
+    let Some(table) = fs::read_to_string(folder.join("pyproject.toml")).ok().and_then(|text| toml::from_str::<toml::Table>(&text).ok()) else {
+        return vec![];
+    };
+    let sources = table.get("tool").and_then(|tool| tool.get("uv")).and_then(|uv| uv.get("sources")).and_then(toml::Value::as_table);
+    let hub = |source: &toml::Value| source.get("index").and_then(toml::Value::as_str) == Some(HUB_INDEX);
+    (sources.into_iter().flatten())
+        .filter(|(_, source)| match source {
+            toml::Value::Array(alternatives) => alternatives.iter().any(hub),
+            source => hub(source),
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The first-party packages the package in `package` takes from a Hub (`hub_sources`) that the folder it is in holds beside it,
+/// by distribution, and theirs in turn: each a folder there whose pyproject.toml names that package. A checkout's package carries
+/// them in its tree wherever it runs, and its lock takes them by path (Calcifer's `local_code::locked`), as a gate's copy does
+/// (#3808's `local-sources.sh`, cl-1211): an unpublished release of one is never asked of a Hub.
+pub fn siblings(package: &Path) -> BTreeMap<String, PathBuf> {
+    let mut found = BTreeMap::new();
+    let Some(parent) = package.parent() else { return found };
+    let mut beside: Option<BTreeMap<String, PathBuf>> = None;
+    let mut next = vec![package.to_path_buf()];
+    while let Some(folder) = next.pop() {
+        for key in hub_sources(&folder) {
+            let wanted = distribution(&key);
+            let named = beside.get_or_insert_with(|| named_folders(parent));
+            let Some(dir) = named.get(&wanted).filter(|dir| dir.as_path() != package) else { continue };
+            if found.insert(wanted, dir.clone()).is_none() {
+                next.push(dir.clone());
+            }
+        }
+    }
+    found
+}
+
+/// Each folder in `parent` holding a package, by its pyproject.toml's `[project] name` as a distribution.
+fn named_folders(parent: &Path) -> BTreeMap<String, PathBuf> {
+    let name = |dir: &Path| -> Option<String> {
+        let table: toml::Table = toml::from_str(&fs::read_to_string(dir.join("pyproject.toml")).ok()?).ok()?;
+        Some(distribution(table.get("project")?.get("name")?.as_str()?))
+    };
+    (fs::read_dir(parent).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .filter(|dir| dir.is_dir())
+        .filter_map(|dir| Some((name(&dir)?, dir)))
+        .collect()
 }
 
 /// The local path dependencies a script's `# /// script` block names, beside it.

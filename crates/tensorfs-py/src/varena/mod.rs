@@ -213,13 +213,15 @@ impl PyDevice {
     fn granularity(&self) -> PyResult<usize> {
         Ok(self.owner()?.granularity())
     }
-    /// A Region of `bytes` from `source`: address space only, until it is used.
+    /// A Region of `bytes` from `source`: address space only, until it is used. `set`: the model
+    /// component it belongs to, whose small regions share pages (cr-317).
     #[cfg(feature = "store")]
-    fn region(&self, py: Python<'_>, bytes: usize, source: PyRef<'_, source::PySource>) -> PyResult<PyRegion> {
+    #[pyo3(signature = (bytes, source, set = None))]
+    fn region(&self, py: Python<'_>, bytes: usize, source: PyRef<'_, source::PySource>, set: Option<String>) -> PyResult<PyRegion> {
         let device = self.owner()?;
         let inner = source.inner.clone();
         let bound = inner.clone();
-        let region = py.detach(|| device.region(bytes, Arc::new(source::PageSource(inner))))
+        let region = py.detach(|| device.region_in(bytes, Arc::new(source::PageSource(inner)), set.as_deref()))
             .map_err(|e| raise(py, e))?;
         source::bind(&bound, &region);
         Ok(PyRegion { region: Deferred::new(region) })
@@ -298,6 +300,21 @@ impl PyRegion {
     #[pyo3(name = "use_on")]
     fn use_on(&self, py: Python<'_>, stream: u64) -> PyResult<PyUse> {
         use_region(py, &self.region, stream)
+    }
+    /// Pinned for `stream` when the core admits a fill ahead of demand by its own rule
+    /// (`Region::use_ahead`), its Source run here, a derive with it; None where it declines.
+    #[cfg(feature = "store")]
+    fn use_ahead(&self, py: Python<'_>, stream: u64) -> PyResult<Option<PyUse>> {
+        // SAFETY: the caller's live stream, which reads nothing before this returns.
+        let pin = py.detach(|| unsafe { self.region.use_ahead(stream) })
+            .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+        let Some(pin) = pin else { return Ok(None) };
+        let consumers = Consumers::new(self.region.device());
+        consumers.declare(stream).map_err(|error| raise(py, error))?;
+        Ok(Some(PyUse {
+            preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+            device: self.region.device(), pid: std::process::id(), consumers,
+        }))
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py

@@ -10,10 +10,16 @@ xs-154 Q1); a 4-bit-floor slot (`min_bits: 4`) may still go lower on a card shor
 EXPECTED's, or OTHERWISE's for that default, fails: a default lane moves only with its line here changed on purpose, named in
 the PR.
 
-    lanes.py --cozy BIN --project DIR --packages DIR --out DIR PACKAGE...
+Two modes (xs-217). An RC holds some defaults private until promotion (packages publish only at promotion, xs-194), so on an RC
+it reads them signed in as the CI account (`--key`, its device key): every default must exist and resolve its lanes, and each
+one not public yet is a NOTE. Without a key (a task branch's run: the key reaches rc/*, release/*, master and proof/* runs),
+a default it can't read is a SKIP, not judged. `--public` (the release, after the held models are published and before any
+package final) reads as anyone does and fails every default that isn't public.
 
-One line per slot, as run.sh's: PASS|FAIL <package> <entry> lanes/<slot> <seconds>s: <default> <lane per family>; the known
-gaps last.
+    lanes.py --cozy BIN --project DIR --packages DIR --out DIR [--key FILE | --public] PACKAGE...
+
+One line per slot, as run.sh's: PASS|FAIL|SKIP <package> <entry> lanes/<slot> <seconds>s: <default> <lane per family>; then a
+NOTE per default not public yet, and the known gaps last.
 """
 
 import argparse
@@ -34,9 +40,10 @@ EXPECTED = "int8 int8 int8 int8 int8 fp8|bf16 int8"
 # family in FAMILIES' order, and why. A default that moves fails until its line here changes.
 OTHERWISE = {
     "kopper/relayvsr@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
-    "lbh-123-ai/h3-latent-upscaler@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "qwen/qwen3.5-9b-mtp@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "tencent/hunyuan-image-3-instruct@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane (its distil has int8)"),
+    # se-155, a label and not a precision: the VAE is 238 tensors, 1,350,961,616 bytes in qwen's bf16 lane, its int8 lane and here; qwen-image-2's int8 recipe leaves its source bytes; the Runtime decodes it in bf16 whatever the lane.
+    "madebyollin/texture-fix-vae@0.3.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-155: bf16 its only lane, as the stock VAE's int8 lane was unquantized"),
 }
 PRODUCTION = "https://tensorhub.com"
 EIGHT = ("int8", "fp8")
@@ -100,6 +107,9 @@ def main() -> int:
     ap.add_argument("--project", required=True)
     ap.add_argument("--packages", required=True)
     ap.add_argument("--out", required=True)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--key", help="the CI account's device key: read tensorhub.com signed in (an RC's run)")
+    mode.add_argument("--public", action="store_true", help="read as anyone: a default that isn't public fails (the release)")
     ap.add_argument("package", nargs="+")
     args = ap.parse_args()
     # `--gpu` is dev-only (crates/cli/DEV.md): `dev = true` at the config's top while the cell runs, its config as it was after.
@@ -121,6 +131,13 @@ def lanes_of(args: argparse.Namespace) -> int:
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     began = time.monotonic()
+    if args.key:
+        # The CI account, for tensorhub.com alone (`cozy login --key` keys its credential to that Hub): the suite's Hub keeps its own.
+        _, said = cozy(args.cozy, ["login", "--key", args.key], args.project, PRODUCTION)
+        if said:
+            print(f"FAIL - - lanes 0s: the CI key didn't sign in to {PRODUCTION}: {said}", flush=True)
+            return 1
+    reader = "anyone (--public)" if args.public else "the CI account" if args.key else "anyone: no CI key on this run"
 
     # Each package's interface as Calcifer reads its source.
     def describe(package: str) -> tuple[str, dict | None, str]:
@@ -144,11 +161,17 @@ def lanes_of(args: argparse.Namespace) -> int:
     # Each default's release: its lanes, and whether it is a LoRA, whose factors go on its base model's lane (passed over).
     lanes: dict[str, list[str]] = {}
     loras: set[str] = set()
+    unread: dict[str, str] = {}
+    private: set[str] = set()
 
     def release_lanes(default: str) -> None:
         answer, said = cozy(args.cozy, ["model", "show", default], args.project, PRODUCTION)
         held = (answer or {}).get("lanes", [])
         lanes[default] = [lane["lane"] for lane in held] if answer else [f"unread: {said}"]
+        if answer is None:
+            unread[default] = said
+        elif answer.get("visibility") == "private":
+            private.add(default)
         if held and all(lane.get("kind") == "lora" for lane in held):
             loras.add(default)
 
@@ -179,11 +202,22 @@ def lanes_of(args: argparse.Namespace) -> int:
         indent=1))
 
     failed, known, used = 0, {}, set()
+    held: dict[str, set[str]] = {}
     for package, entry, slot in work:
         default, path = slot["default"], slot.get("path", "-")
         key = (default, tuple(slot.get("components") or []))
         slot_key = f"{package}:{path}"
         used.update({default, slot_key})
+        if default in unread or (args.public and default in private):
+            why = f"private on {PRODUCTION}" if default in private else f"unread ({unread[default]})"
+            if args.key or args.public:
+                failed += 1
+                print(f"FAIL {package} {entry} lanes/{path} 0s: {default} is {why}, read as {reader}", flush=True)
+            else:
+                print(f"SKIP {package} {entry} lanes/{path} 0s: {default} is {why}, read as {reader}", flush=True)
+            continue
+        if default in private:
+            held.setdefault(default, set()).add(f"{package} {entry} {path}")
         want, why = expected(default, slot_key, lanes[default])
         got = resolved[key]
         moved = [f"{g} on sm{f.replace('.', '')} ({FAMILIES[f]}), expected {w}" for f, g, w in zip(FAMILIES, got, want) if g != w]
@@ -198,12 +232,15 @@ def lanes_of(args: argparse.Namespace) -> int:
             known.setdefault(default, (why, got, set()))[2].add(f"{package} {path}")
     for stale in sorted(set(OTHERWISE) - used):
         print(f"SKIP - - lanes/{stale} 0s: no slot defaults to it any more: drop its line in e2e/cpu/lanes.py", flush=True)
+    for default, where in sorted(held.items()):
+        print(f"NOTE - - lanes/{default} 0s: private on {PRODUCTION}, held until promotion: the release's --public run fails it "
+              f"until it is published ({', '.join(sorted(where))})", flush=True)
 
     defaults = sorted({default for default, _ in asks})
     no_fp8 = [default for default in defaults if "fp8" not in lanes[default] and any(lane in EIGHT for lane in lanes[default])]
     said = [f"lanes: {len(work)} slots of {len(described)} packages ({passed} with no Hub default, plain weights or a LoRA passed over), "
             f"{len(defaults)} defaults on {len(FAMILIES)} GPU families ({', '.join('sm' + f.replace('.', '') for f in FAMILIES)}) "
-            f"resolved at {PRODUCTION} in {time.monotonic() - began:.0f} s; {failed} moved"]
+            f"resolved at {PRODUCTION} as {reader} in {time.monotonic() - began:.0f} s; {failed} failed, {len(held)} not public yet"]
     for default, (why, got, where) in sorted(known.items()):
         said.append(f"  known gap: {default}: {' '.join(got)} ({why}); {', '.join(sorted(where))}")
     if no_fp8:

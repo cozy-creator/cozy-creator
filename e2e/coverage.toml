@@ -235,10 +235,8 @@ test = "pr: a run followed, a snapshot, a cancel"
 ["run retry"]
 test = "pr: retry_elsewhere, a run its stand-in's end cut short completed on local as its second attempt: nothing to retry"
 ["render"]
-test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
+test = "pr: agent_render, only the named render (cl-1192): one with no take read says to render it first, a chain named in order, -n 2 as --json, an input changed and not rendered read as it stands, a joined render, a killed CLI, a failure stopping its readers"
 "--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"
-"--new" = "pr: agent_render, -n 2 new takes of a current shot, as --json"
-"--outdated" = "pr: agent_render, an approved shot out of date rendered again, its approval kept"
 "--pickup" = "pr: agent_render, a take kept to its seam and the rest rendered; refused for two nodes"
 
 [get]

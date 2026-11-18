@@ -2,11 +2,11 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
+    calcifer::{ClientRun, GpuReading, GpuUse, LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Operation, Rental},
     error::Error,
 };
 
-use super::{Notices, clock, machine, now_ms, usd};
+use super::{Notices, clock, now_ms, reader, usd};
 use crate::{Context, output, run, tui};
 
 const IDLE_RULE: &str = "Rentals end themselves after 15 minutes idle (no queued or running work).";
@@ -19,11 +19,12 @@ pub(crate) const HEADERS: [&str; 11] = [
 /// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "rentals", "unanswered", "signed_out", "machines.name", "machines.placeholder", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
-    "machines.ordered", "machines.unverified", "machines.offline", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
+    "machines.ordered", "machines.unverified", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
-    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held",
+    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms", "machines.held", "machines.unheld",
+    "machines.status.others", "machines.status.ssh_sessions", "machines.status.kept_alive_ms",
 ];
 /// The columns of `HEADERS` a view shows without `--full`.
 const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
@@ -34,11 +35,9 @@ pub(crate) async fn list(ctx: &Context) -> Result<ExitCode, Error> {
         crate::tui::show(ctx, crate::tui::Screen::Machines(view)).await?;
         return Ok(ExitCode::SUCCESS);
     }
-    let list: MachineList = ctx
-        .calcifer()
-        .await?
-        .get("/v1/machines?refresh=true")
-        .await?;
+    let mut query = reader(ctx).await;
+    query.push(("refresh", "true".into()));
+    let list: MachineList = ctx.calcifer().await?.get_query("/v1/machines", &query).await?;
     let code = if list.unanswered.is_empty() {
         ExitCode::SUCCESS
     } else {
@@ -90,7 +89,7 @@ pub(crate) fn print(ctx: &Context, list: &MachineList) {
     if let Some(note) = super::local_note() {
         println!("{note}");
     }
-    for note in live().filter_map(offline) {
+    for note in live().filter_map(closing) {
         println!("{note}");
     }
     for note in live().filter_map(end_failed) {
@@ -136,24 +135,79 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
     .collect()
 }
 
-/// One machine: a live view on a terminal while it lives, else its record once (or JSON).
+/// One machine: a live view on a terminal while it lives, else its record once (or JSON), with its GPUs' use now (cl-1191).
 pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
-    let m = machine(ctx, name).await?;
+    let m: Machine = ctx.calcifer().await?.get_query(&super::route(name)?, &reader(ctx).await).await?;
     if !ctx.json && ctx.term.stdout && m.state != MachineState::Ended {
         let view = super::live::Shown::open(ctx, name).await?;
         tui::show(ctx, tui::Screen::Machine(Box::new(view))).await?;
         return Ok(ExitCode::SUCCESS);
     }
+    let gpus = gpu_use_now(ctx, &m).await;
     if ctx.json {
-        output::json(&m);
+        let mut document = serde_json::to_value(&m).expect("a machine serializes");
+        if let (Some(gpus), Some(fields)) = (&gpus, document.as_object_mut()) {
+            fields.insert("gpu_use".into(), serde_json::to_value(gpus).expect("a reading serializes"));
+        }
+        output::json(&document);
         return Ok(ExitCode::SUCCESS);
     }
-    record(ctx, &m).print(ctx);
+    record(ctx, &m, gpus.as_ref()).print(ctx);
     Ok(ExitCode::SUCCESS)
 }
 
-/// `cozy machine show`'s record of `m`, printed once or drawn live.
-pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
+/// Its GPUs' use now, as the machine reads it; none from a machine not up, one whose Cozy (or this computer's Calcifer) is from
+/// before it reported it, or one that didn't answer.
+async fn gpu_use_now(ctx: &Context, m: &Machine) -> Option<GpuUse> {
+    if m.state != MachineState::Ready {
+        return None;
+    }
+    let path = format!("{}/gpus/now", super::route(&m.name).ok()?);
+    ctx.calcifer().await.ok()?.get(&path).await.ok()
+}
+
+/// One GPU's reading as a line: busy, memory, power, heat, clock and what holds it back, each where the machine said it.
+pub(crate) fn gpu_now(gpu: &GpuReading) -> String {
+    let mut parts = vec![format!("{}% busy", gpu.busy_percent)];
+    parts.push(match gpu.memory_total_bytes {
+        0 => format!("{} in use", output::bytes(gpu.memory_used_bytes)),
+        total => format!("{} of {}", output::bytes(gpu.memory_used_bytes), output::bytes(total)),
+    });
+    match (gpu.power_w, gpu.power_limit_w) {
+        (Some(w), Some(limit)) => parts.push(format!("{w} of {limit} W")),
+        (Some(w), None) => parts.push(format!("{w} W")),
+        _ => {}
+    }
+    if let Some(c) = gpu.temperature_c {
+        parts.push(format!("{c} °C"));
+    }
+    match (gpu.sm_mhz, gpu.sm_mhz_max) {
+        (Some(mhz), Some(max)) => parts.push(format!("{mhz} of {max} MHz")),
+        (Some(mhz), None) => parts.push(format!("{mhz} MHz")),
+        _ => {}
+    }
+    parts.extend(throttle_words(&gpu.throttles).into_iter().map(str::to_owned));
+    parts.join(" · ")
+}
+
+/// What holds a GPU back now, in plain words, each once.
+pub(crate) fn throttle_words(throttles: &[String]) -> Vec<&'static str> {
+    let mut words: Vec<&'static str> = throttles
+        .iter()
+        .filter_map(|name| match name.as_str() {
+            "power_cap" => Some("power-limited"),
+            "sw_thermal" | "hw_thermal" => Some("thermal: slowed to cool"),
+            "hw_slowdown" => Some("hardware slowdown"),
+            "power_brake" => Some("power brake"),
+            _ => None,
+        })
+        .collect();
+    words.dedup();
+    words
+}
+
+/// `cozy machine show`'s record of `m`, printed once or drawn live, with its GPUs' use where it's known.
+pub(crate) fn record(ctx: &Context, m: &Machine, gpus: Option<&GpuUse>) -> output::Record {
     let mut record = output::Record::new()
         .field("machine", m.called())
         .field("kind", kind(m))
@@ -247,13 +301,25 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
             for line in status.slowed() {
                 record = record.alarm("slow", line);
             }
+            let readings = gpus.map_or(&[][..], |gpus| &gpus.gpus[..]);
+            let now = |gpu: &GpuReading| (format!("GPU {} now", gpu.index), gpu_now(gpu));
             for (key, value) in status_fields(status) {
                 let versions = key == "tensorfs";
+                // Each GPU's use now under its own line (cl-1191).
+                let reading = readings.iter().find(|gpu| key == format!("GPU {}", gpu.index));
                 record = record.field(&key, value);
+                if let Some((key, value)) = reading.map(now) {
+                    record = record.field(&key, value);
+                }
                 // A dev home's rental and the open RC (cl-922), beside its versions.
                 if let Some(rc) = m.rc.as_ref().filter(|_| versions) {
                     record = record.field("rc", format!("{} {}: {}", rc.rc, rc.state, rc.detail));
                 }
+            }
+            // Read but not listed: recorded readings a test replays on a machine with none.
+            for gpu in readings.iter().filter(|gpu| status.gpus.iter().all(|listed| listed.index != gpu.index)) {
+                let (key, value) = now(gpu);
+                record = record.field(&key, value);
             }
             // How long its GPUs stay busy with the runs it holds, as placement counts them (cl-1107).
             if let Some(until) = status.busy_until_ms.filter(|_| m.state != MachineState::Ended) {
@@ -286,7 +352,7 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if let Some(broken) = broken(m) {
         record = record.alarm("broken", broken);
     }
-    if let Some(note) = offline(m) {
+    if let Some(note) = closing(m) {
         record = record.note(note);
     }
     if let Some(note) = end_failed(m) {
@@ -296,6 +362,44 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         record = record.note(format!("{} is not confirmed gone: {why}", m.called()));
     }
     record
+}
+
+/// A download or install the machine does for runs, once however many wait on it (cl-1205): what it fetches, how far it is, at what
+/// rate and how long it has left, and the runs waiting on it.
+fn operation_line(operation: &Operation) -> (String, String) {
+    let mut cells = vec![];
+    let what = match (operation.release.is_empty(), operation.components.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => operation.release.clone(),
+        (true, false) => operation.components.join(", "),
+        (false, false) => format!("{}: {}", operation.release, operation.components.join(", ")),
+    };
+    cells.extend(Some(what).filter(|what| !what.is_empty()));
+    cells.extend(Some(operation.stage.clone()).filter(|stage| !stage.is_empty()));
+    if operation.bytes_total > 0 {
+        cells.push(format!("{} of {}", output::bytes(operation.bytes_done), output::bytes(operation.bytes_total)));
+    }
+    if let Some(rate) = operation.bytes_per_s {
+        cells.push(format!("{}/s", output::bytes(rate as u64)));
+    }
+    if let Some(left) = operation.eta_s {
+        cells.push(format!("{} left", output::span(left)));
+    }
+    if operation.bytes_here > 0 {
+        cells.push(format!("{} already on this machine", output::bytes(operation.bytes_here)));
+    }
+    // Which runs wait, as this reader may name them; the others counted (another project's, another client's).
+    let runs = match operation.names.is_empty() {
+        true => operation.runs.iter().map(u64::to_string).collect::<Vec<_>>(),
+        false => operation.names.clone(),
+    };
+    let jobs = |n: u32| format!("{n} job{}", if n == 1 { "" } else { "s" });
+    cells.push(match (runs.is_empty(), operation.unnamed) {
+        (true, others) => format!("for {}", jobs(others)),
+        (false, 0) => format!("for {}", runs.join(", ")),
+        (false, others) => format!("for {} and {} more", runs.join(", "), jobs(others)),
+    });
+    (format!("{} {}", operation.kind, operation.subject), cells.join(" · "))
 }
 
 /// A run the machine holds: its state there, target, stage and why it waits. One whose record
@@ -314,6 +418,31 @@ fn live_run(held: &LiveRun) -> (String, String) {
         cell += &format!("; {} here, left behind on the machine", run::list::status(run));
     }
     (format!("run {}", run::handle(run)), cell)
+}
+
+/// A run another computer sent there, as the machine says it (cl-1193): what it runs, for which computer, how far it is.
+fn other_run(other: &ClientRun) -> (String, String) {
+    let from = match other.client.as_str() {
+        "" => "another computer",
+        client => client,
+    };
+    let function = match other.function.as_str() {
+        "" => "an encrypted project's run",
+        function => function,
+    };
+    let mut cells = vec![if other.running { "running" } else { "queued" }.to_owned(), function.to_owned()];
+    match other.steps {
+        0 if !other.stage.is_empty() => cells.push(other.stage.clone()),
+        0 => {}
+        steps => cells.push(format!("{} {}/{steps}", other.stage, other.step).trim_start().to_owned()),
+    }
+    if let Some(at) = other.started_at_ms.filter(|_| other.running) {
+        cells.push(format!("{} in", clock(now_ms() - at)));
+    }
+    if other.bytes_left > 0 {
+        cells.push(format!("{} of {} to download", crate::output::bytes(other.bytes_left), other.models.join(", ")));
+    }
+    (format!("run from {from}"), cells.join(" · "))
 }
 
 /// What a machine reports of itself, one fact per line, GPUs by number.
@@ -404,7 +533,16 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
             fields.push(("disk use".into(), parts.join(" · ")));
         }
     }
+    // Each download and install once, then the runs, a run waiting on one saying so (cl-1205).
+    fields.extend(status.activity.iter().map(operation_line));
     fields.extend(status.runs.iter().map(live_run));
+    fields.extend(status.others.iter().map(other_run));
+    if status.ssh_sessions > 0 {
+        fields.push(("ssh sessions".into(), format!("{} open", status.ssh_sessions)));
+    }
+    if let Some(at) = status.kept_alive_ms {
+        fields.push(("kept alive".into(), format!("by a keepalive {} ago", clock(now_ms() - at))));
+    }
     if !status.mode.is_empty() {
         fields.push(("mode".into(), status.mode.clone()));
     }
@@ -479,7 +617,6 @@ fn kind(m: &Machine) -> &'static str {
 
 pub(crate) fn state_cell(m: &Machine) -> String {
     let mut cell = match m.state {
-        _ if m.offline.is_some() => format!("offline: {}", m.offline.as_deref().unwrap_or_default()),
         MachineState::Ready | MachineState::Booting if m.broken.is_some() => format!("broken: {}", m.broken.as_ref().map_or("", |b| b.code.as_str())),
         MachineState::Booting => match &m.boot {
             Some(boot) => format!("booting · {boot}"),
@@ -492,7 +629,10 @@ pub(crate) fn state_cell(m: &Machine) -> String {
             ),
             None => "ready".into(),
         },
-        MachineState::Ending => "ending".into(),
+        MachineState::Ending => match &m.reason {
+            Some(reason) => format!("ending: {reason}"),
+            None => "ending".into(),
+        },
         MachineState::Ended => "ended".into(),
         MachineState::Stopped => "stopped · starts when used".into(),
         MachineState::Unknown => "unknown".into(),
@@ -507,25 +647,31 @@ pub(crate) fn state_cell(m: &Machine) -> String {
         cell += &format!(" · {stuck} stuck");
     }
     match m.unreachable_since_ms {
-        Some(at) if m.state == MachineState::Ready && m.offline.is_none() && unreachable_since(m).is_none() => {
+        Some(at) if m.state == MachineState::Ready && unreachable_since(m).is_none() => {
             cell += &format!(" (unreachable for {})", clock(now_ms() - at))
         }
         _ => {}
     }
-    if m.held.is_some() && m.state != MachineState::Ended {
-        cell += " · held";
+    match (&m.held, &m.unheld) {
+        _ if m.state == MachineState::Ended => {}
+        (Some(_), Some(_)) => cell += " · held, runs other software",
+        (Some(_), None) => cell += " · held",
+        _ => {}
     }
     cell
 }
 
-/// What a machine an update by hand pinned keeps, and the command that lets it follow again (cl-952, cl-1029).
+/// What a machine an update by hand pinned keeps, or what it runs instead (cl-1196), and the command that lets it follow again
+/// (cl-952, cl-1029).
 fn held(m: &Machine) -> Option<String> {
     let held = m.held.as_deref()?;
-    Some(format!(
-        "{}: held by hand on {held}: it moves to neither the open RC nor a package's floor; `cozy machine update {}` lets it follow again",
-        m.called(),
-        m.handle()
-    ))
+    let (called, handle) = (m.called(), m.handle());
+    Some(match &m.unheld {
+        Some(runs) => format!("{called}: runs {runs}, though held by hand on {held}; `cozy machine update {handle}` lets it follow again"),
+        None => format!(
+            "{called}: held by hand on {held}: it moves to neither the open RC nor a package's floor; `cozy machine update {handle}` lets it follow again"
+        ),
+    })
 }
 
 /// The GPUs as the machine reports them, else as the rental was bought.
@@ -596,11 +742,19 @@ fn uptime(m: &Machine) -> String {
 /// When an idle machine ends itself: a rental with work names no deadline and ends after it.
 fn ends_cell(m: &Machine) -> String {
     match (m.status.as_ref().map(|s| s.idle_deadline_ms), m.kind) {
-        (Some(Some(at)), _) if at > now_ms() => format!("in {}", clock(at - now_ms())),
+        (Some(Some(at)), _) if at > now_ms() => format!("in {}{}", clock(at - now_ms()), holds(m)),
         (Some(Some(_)), _) => "now".into(),
         (Some(None), MachineKind::Rental) => "after its jobs".into(),
         _ => "—".into(),
     }
+}
+
+/// What keeps an idle machine up that is no job (cl-1193): a keepalive, an SSH session.
+fn holds(m: &Machine) -> String {
+    let Some(status) = &m.status else { return String::new() };
+    let kept = status.kept_alive_ms.map(|_| " · kept alive");
+    let ssh = (status.ssh_sessions > 0).then_some(" · ssh open");
+    [kept, ssh].into_iter().flatten().collect()
 }
 
 /// Since when the Hub cannot reach a live rental its provider reports running.
@@ -628,12 +782,13 @@ fn broken(m: &Machine) -> Option<String> {
     Some(format!("{} ({}); {then}", broken.message, broken.code))
 }
 
-/// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.
-fn offline(m: &Machine) -> Option<String> {
-    let r = m.rental.as_ref().filter(|_| m.offline.is_some())?;
+/// What the owner of a rental its Hub is ending can do (its provider stopped it: cl-1203): it takes no runs and is destroyed.
+fn closing(m: &Machine) -> Option<String> {
+    let reason = m.reason.as_deref().filter(|_| m.state == MachineState::Ending)?;
+    let r = m.rental.as_ref()?;
     Some(format!(
-        "{} is offline and refuses runs: it returns if its provider resumes it, and ends after 15 \
-         minutes idle. To keep working: `cozy machine rent {}`, or `cozy run … --on new`.",
+        "{} is ending ({reason}): it takes no runs, and its Hub destroys it. To keep working: `cozy machine rent {}`, or \
+         `cozy run … --on new`.",
         m.name, r.sku
     ))
 }

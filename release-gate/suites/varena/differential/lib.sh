@@ -7,7 +7,8 @@ diff_copy() {
   local copy=$ARMS/$2/$1 module to
   rm -rf "$copy"; mkdir -p "$copy"
   tar -C "$PKGS/$1" --exclude=.venv --exclude=__pycache__ -cf - . | tar -C "$copy" -xf - || return 1
-  grep -rlE --include='*.py' '^ *memoize=' "$copy" | xargs -r sed -i -E '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d'
+  { grep -rlE --include='*.py' 'memoize=' "$copy" || true; } |
+    xargs -r sed -i -E -e '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d' -e 's/, *memoize=True//; s/memoize=True, *//'
   module=$(sed -n 's/^object = "\([a-z0-9_]*\):.*/\1/p' "$copy/package.toml")
   if [ -d "$copy/$module" ]; then
     to=$copy/$module/gate_hook.py; printf '\nfrom . import gate_hook  # noqa: E402, F401\n' >> "$copy/$module/__init__.py"
@@ -45,7 +46,7 @@ diff_eager() {  # diff_eager <name> <package> <function> <args...>: graphs off a
   fi
   diff_copy "$package" eager "" eager || { expect "diff-$name-eager" FAIL "no copy of $package with the hook in it"; return; }
   diff_run "diff-$name-eager" eager "$package" "$function" "$@"
-  native=$(jq '[.. | .native_steps? // 0] | add' "diff-$name-base-1.json" 2>/dev/null)
-  log "diff-$name-eager: base's first call ran ${native:-no} steps natively"
+  native=$(jq '[.. | objects | .graphs? // empty | objects | .[] | .replays? // 0] | add // 0' "diff-$name-base-1.json" 2>/dev/null)
+  log "diff-$name-eager: base's first call replayed ${native:-no} region calls"
   diff_expect "diff-$name-eager" "diff-$name-base-1" "diff-$name-eager"
 }

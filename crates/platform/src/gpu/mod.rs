@@ -236,12 +236,26 @@ impl Device {
         memory(device.memory_info()).map(|(_, free)| free)
     }
 
-    /// How busy it is now (cl-1100): the share of its last sample period a kernel ran, as `nvidia-smi`'s GPU-Util, and its bytes in
-    /// use, as [`Self::used`].
-    pub fn busy(&self) -> Result<(u32, u64)> {
+    /// Its gauges now (cl-1100, cl-1191). What the driver doesn't say is left out: a laptop's power limit, say.
+    pub fn gauge(&self) -> Result<Gauge> {
         let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
         let busy = device.utilization_rates().map_err(failed("utilization"))?.gpu;
-        Ok((busy.min(100), self.used()?))
+        let (memory_used_bytes, memory_total_bytes) = match device.memory_info() {
+            Ok(info) => (info.used, info.total),
+            answer => memory(answer).map(|(total, free)| (total.saturating_sub(free), total))?,
+        };
+        let watts = |mw: u32| (mw + 500) / 1000;
+        Ok(Gauge {
+            busy_percent: busy.min(100),
+            memory_used_bytes,
+            memory_total_bytes,
+            power_w: device.power_usage().ok().map(watts),
+            power_limit_w: device.enforced_power_limit().ok().map(watts).filter(|w| *w > 0),
+            temperature_c: device.temperature(TemperatureSensor::Gpu).ok(),
+            sm_mhz: device.clock_info(Clock::SM).ok(),
+            sm_mhz_max: device.max_clock_info(Clock::SM).ok().filter(|mhz| *mhz > 0),
+            throttles: limiting(device.current_throttle_reasons().unwrap_or(ThrottleReasons::empty())),
+        })
     }
 
     /// Its bytes in use now, every process's, as `nvidia-smi` shows them (not the driver's reserve;
@@ -359,6 +373,28 @@ const THROTTLES: [(ThrottleReasons, &str); 6] = [
     (ThrottleReasons::APPLICATIONS_CLOCKS_SETTING, "app_clocks"),
 ];
 
+/// One GPU's gauges at an instant, as a machine's page and `cozy machine show` give them (cl-1191, Paul 11-17: "like what runpod has"):
+/// the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), its memory in use of its total, its power draw against
+/// the limit its driver enforces, its temperature, its SM clock against its most, and the limits holding that clock back now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gauge {
+    pub busy_percent: u32,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    pub power_w: Option<u32>,
+    pub power_limit_w: Option<u32>,
+    pub temperature_c: Option<u32>,
+    pub sm_mhz: Option<u32>,
+    pub sm_mhz_max: Option<u32>,
+    /// By [`THROTTLES`]' names, but for `app_clocks`: a clock its owner set, not a limit it hit.
+    pub throttles: Vec<&'static str>,
+}
+
+/// The limits in `reasons` that hold a GPU back now.
+fn limiting(reasons: ThrottleReasons) -> Vec<&'static str> {
+    THROTTLES.iter().filter(|(r, name)| *name != "app_clocks" && reasons.contains(*r)).map(|(_, name)| *name).collect()
+}
+
 /// The limits that are heat's: the driver slowing the card to cool it, and the hardware slowdown that heat raises. A power cap
 /// is heat's only where the host set the limit under the card's rating ([`POWER_FLOOR`]), which [`Used::capped`] counts apart.
 fn heat() -> ThrottleReasons {
@@ -446,9 +482,28 @@ pub struct Sample {
     pub power_w: u32,
     pub power_limit_w: u32,
     pub power_default_w: u32,
+    /// What a machine's live gauges show of it (cl-1191): its busy share and its card's memory.
+    pub busy_percent: u32,
+    pub total_bytes: u64,
 }
 
 impl Sample {
+    /// This reading as the GPU's own gauges would give it ([`Device::gauge`]).
+    pub fn gauge(&self) -> Gauge {
+        let known = |n: u32| (n > 0).then_some(n);
+        Gauge {
+            busy_percent: self.busy_percent.min(100),
+            memory_used_bytes: self.used_bytes,
+            memory_total_bytes: self.total_bytes,
+            power_w: Some(self.power_w),
+            power_limit_w: known(self.power_limit_w),
+            temperature_c: Some(self.temperature_c),
+            sm_mhz: Some(self.sm_mhz),
+            sm_mhz_max: known(self.sm_mhz_limit),
+            throttles: limiting(self.reasons()),
+        }
+    }
+
     fn reasons(&self) -> ThrottleReasons {
         self.reasons.iter().fold(ThrottleReasons::empty(), |all, name| match name.as_str() {
             "idle" => all | ThrottleReasons::GPU_IDLE,

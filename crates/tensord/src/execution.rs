@@ -3,7 +3,7 @@
 use platform::process::Birth;
 use crate::journal::{
     Artifact, CallMemo, Execution, Invocation, Journal, Outcome, ProgressSnapshot,
-    ResultRecord, State, Weights,
+    ResultRecord, State, Waits,
 };
 use serde_json::Value;
 use std::{
@@ -100,13 +100,19 @@ pub(crate) struct Engine {
     /// Projects whose folders are gone, going as their last runs settle (cl-1031).
     gone: Mutex<HashSet<String>>,
     journal: Mutex<Journal>,
+    /// The journal's read connection (cl-1202): what only reads takes it, never the writer's lock, so a commit waiting for the
+    /// disk delays only other writers.
+    reader: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
     /// Each supervised attempt's stop.
     active: Mutex<HashMap<String, Halt>>,
-    owned: Mutex<HashSet<String>>,
-    progress: Mutex<HashMap<String, ProgressSnapshot>>,
-    activity: Mutex<u64>,
+    owned: Watched<HashSet<String>>,
+    progress: Watched<HashMap<String, ProgressSnapshot>>,
+    /// Wake cursors: what dispatch and other schedulers wait on (a run's state, a fetch settled, room freed), and anything a
+    /// follower reads, observations too (progress, waiting reasons, words). An observation moves only the second (cl-1185): a
+    /// progress tick never wakes dispatch, which logged and re-planned on each byte.
+    activity: Mutex<(u64, u64)>,
     activity_changed: Condvar,
     /// What holds a memoizable run's success for its signer (`call_memo`), once configured.
     memo: OnceLock<Weak<crate::objects::Objects>>,
@@ -236,6 +242,7 @@ impl Engine {
         platform::durable::sync_dir(root)?;
         let mut journal = Journal::open(root)?;
         journal.interrupt_preparations()?;
+        let reader = Journal::open_reader(root)?;
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
             store,
@@ -243,11 +250,12 @@ impl Engine {
             private_roots: Mutex::default(),
             gone: Mutex::default(),
             journal: Mutex::new(journal),
+            reader: Mutex::new(reader),
             object_custody: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
-            owned: Mutex::new(HashSet::new()),
-            progress: Mutex::new(HashMap::new()),
-            activity: Mutex::new(0),
+            owned: Watched::default(),
+            progress: Watched::default(),
+            activity: Mutex::new((0, 0)),
             activity_changed: Condvar::new(),
             memo: OnceLock::new(),
             settled: OnceLock::new(),
@@ -285,18 +293,18 @@ impl Engine {
     }
 
     pub(crate) fn get(&self, id: &str) -> io::Result<Execution> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut record = self.journal.lock().unwrap().get(id)?;
+        let owned = self.owned.shown();
+        let progress = self.progress.shown();
+        let mut record = self.reader.lock().unwrap().get(id)?;
         overlay_observation(&mut record, &owned, &progress);
         Ok(record)
     }
     pub(crate) fn workspace_id(&self) -> String {
-        self.journal.lock().unwrap().workspace_id().into()
+        self.reader.lock().unwrap().workspace_id().into()
     }
 
     pub(crate) fn private_storage(&self, id: &str) -> io::Result<Option<api::machine::LocalPrivateStorage>> {
-        let scope = self.journal.lock().unwrap().private_descriptor(id)?;
+        let scope = self.reader.lock().unwrap().private_descriptor(id)?;
         scope.map(|scope| crate::private_io::resolve(&scope)).transpose()
     }
     pub(crate) fn private_root(&self, id: &str) -> io::Result<Option<PathBuf>> {
@@ -322,7 +330,7 @@ impl Engine {
         }
     }
     pub(crate) fn assert_private_idle(&self, project_id: &str) -> io::Result<()> {
-        if self.journal.lock().unwrap().private_active(project_id)? {
+        if self.reader.lock().unwrap().private_active(project_id)? {
             return Err(io::Error::new(io::ErrorKind::ResourceBusy, "private executions must finish or cancel before closing their storage"));
         }
         Ok(())
@@ -341,12 +349,12 @@ impl Engine {
     /// [`Engine::forget_project`], `ended` (a view a lock ended without this machine, cl-1064) not counted as holding it: its
     /// sealed mount point refuses every read, which reads as held.
     fn forget_project_but(&self, project_id: &str, actor: &str, ended: Option<&std::path::Path>) -> io::Result<bool> {
-        let roots = self.journal.lock().unwrap().project_roots()?.remove(project_id);
+        let roots = self.reader.lock().unwrap().project_roots()?.remove(project_id);
         if roots.is_some_and(|roots| roots.iter().any(|root| ended != Some(root.as_ref()) && holds_project(root, project_id))) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a folder this project ran in still holds it"));
         }
         self.gone.lock().unwrap().insert(project_id.to_owned());
-        let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
+        let active = self.reader.lock().unwrap().private_active_ids(project_id)?;
         for id in active {
             if let Err(error) = self.cancel(&id, actor) { tracing::warn!("run {id} of a project whose folder is gone: {error}"); }
         }
@@ -361,7 +369,7 @@ impl Engine {
         if self.forget_project_but(project_id, actor, Some(view))? {
             return Ok(());
         }
-        let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
+        let active = self.reader.lock().unwrap().private_active_ids(project_id)?;
         let mut stopped = 0;
         for id in &active {
             let stop = self.active.lock().unwrap().get(id).cloned();
@@ -370,7 +378,7 @@ impl Engine {
             }
         }
         let began = std::time::Instant::now();
-        while active.iter().any(|id| self.owned.lock().unwrap().contains(id)) {
+        while active.iter().any(|id| self.owned.lock().contains(id)) {
             if began.elapsed() >= ENDED_WAIT {
                 tracing::warn!("a view a lock ended: {} run(s) still going there, {stopped} stopped, not yet ended; asked again", active.len());
                 return Err(io::Error::new(io::ErrorKind::WouldBlock, "the project's runs there are still stopping"));
@@ -378,7 +386,7 @@ impl Engine {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         for id in &active {
-            self.progress.lock().unwrap().remove(id);
+            self.progress.lock().remove(id);
             self.active.lock().unwrap().remove(id);
         }
         self.private_roots.lock().unwrap().remove(project_id);
@@ -390,12 +398,12 @@ impl Engine {
     }
     /// The projects journaled here as having run in vault view `view` (cl-1064).
     pub(crate) fn projects_at(&self, view: &std::path::Path) -> io::Result<Vec<String>> {
-        let projects = self.journal.lock().unwrap().project_roots()?;
+        let projects = self.reader.lock().unwrap().project_roots()?;
         Ok(projects.into_iter().filter(|(_, roots)| roots.iter().any(|root| root == view)).map(|(project, _)| project).collect())
     }
     /// A project `forget_project` was told is gone goes once none of its runs is active. Answers whether it went.
     fn retire_if_gone(&self, project_id: &str) -> io::Result<bool> {
-        if !self.gone.lock().unwrap().contains(project_id) || self.journal.lock().unwrap().private_active(project_id)? {
+        if !self.gone.lock().unwrap().contains(project_id) || self.reader.lock().unwrap().private_active(project_id)? {
             return Ok(false);
         }
         self.private_roots.lock().unwrap().remove(project_id);
@@ -407,7 +415,7 @@ impl Engine {
     /// At start: every project journaled here none of whose folders holds it any more is forgotten (cl-1031), as Calcifer
     /// asks when it finds a folder gone and this machine wasn't running to hear it.
     pub(crate) fn forget_gone_projects(&self) {
-        let projects = match self.journal.lock().unwrap().project_roots() {
+        let projects = match self.reader.lock().unwrap().project_roots() {
             Ok(projects) => projects,
             Err(error) => return tracing::warn!("the projects journaled here could not be read: {error}"),
         };
@@ -442,23 +450,23 @@ impl Engine {
         actor: &str,
         alias: &str,
     ) -> io::Result<Option<crate::journal::Installation>> {
-        self.journal.lock().unwrap().installation(actor, alias)
+        self.reader.lock().unwrap().installation(actor, alias)
     }
     pub(crate) fn installation_for_generation(
         &self,
         actor: &str,
         generation: &str,
     ) -> io::Result<Option<crate::journal::Installation>> {
-        self.journal
+        self.reader
             .lock()
             .unwrap()
             .installation_for_generation(actor, generation)
     }
     pub(crate) fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
-        self.journal.lock().unwrap().bound_generations()
+        self.reader.lock().unwrap().bound_generations()
     }
     pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<crate::journal::Installation>> {
-        self.journal.lock().unwrap().installations(actor)
+        self.reader.lock().unwrap().installations(actor)
     }
     /// The legacy hard cut on this machine (cl-1003, cl-1035), once, on a journal an earlier version kept (`Journal::legacy_runs`):
     /// on this computer's (`local`), each ended run no project owns that retains nothing goes, with its result copies, spools, own logs
@@ -469,7 +477,7 @@ impl Engine {
     /// earlier format kept beside it go. The format is written last: a stop anywhere before finds the cut due again at the next start,
     /// files first, so none outlives its rows.
     pub(crate) fn cut_legacy(&self, local: bool, logs: &Path, store_logs: &Path) {
-        let from = match self.journal.lock().unwrap().legacy_cut_due() {
+        let from = match self.reader.lock().unwrap().legacy_cut_due() {
             Ok(Some(from)) => from,
             Ok(None) => return,
             Err(error) => return tracing::warn!("the machine journal's format couldn't be read; its legacy cut waits for the next start: {error}"),
@@ -479,7 +487,7 @@ impl Engine {
             if local {
                 // What projects' clients hold for them in this machine's store (Calcifer's holds of what their boxes show).
                 let rooted = self.store.file_rooted().map_err(crate::storage::io_error)?;
-                let runs = self.journal.lock().unwrap().legacy_runs(&rooted)?;
+                let runs = self.reader.lock().unwrap().legacy_runs(&rooted)?;
                 // Files first: a stop before the rows go leaves them for the next start to find again.
                 for id in runs.gone.iter().chain(&runs.kept) {
                     let dirs: &[&str] = if runs.gone.contains(id) { &["results", "staging"] } else { &["staging"] };
@@ -496,9 +504,9 @@ impl Engine {
                 self.journal.lock().unwrap().delete_legacy(&runs.gone)?;
                 self.journal.lock().unwrap().scrub_legacy(&runs.kept)?;
                 // The retained outputs of the runs that went: one no kept run names, by its owner or by the files of its tree.
-                let (owners, objects) = self.journal.lock().unwrap().kept_retention()?;
+                let (owners, objects) = self.reader.lock().unwrap().kept_retention()?;
                 let mut released = vec![];
-                for (actor, owner, source) in self.journal.lock().unwrap().unscoped_native_outputs()? {
+                for (actor, owner, source) in self.reader.lock().unwrap().unscoped_native_outputs()? {
                     if owners.contains(&owner) { continue; }
                     let manifest = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&source).ok()
                         .and_then(|native| native.source?.manifest)
@@ -547,6 +555,10 @@ impl Engine {
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
+    /// `f` on the journal's read connection: the last committed state, never waiting on a writer (cl-1202).
+    pub(crate) fn read_journal<T>(&self, f: impl FnOnce(&Journal) -> io::Result<T>) -> io::Result<T> {
+        f(&self.reader.lock().unwrap())
+    }
     pub(crate) fn bind_installation(
         &self,
         record: crate::journal::Installation,
@@ -559,7 +571,7 @@ impl Engine {
         actor: &str,
         id: &str,
     ) -> io::Result<Option<crate::journal::Preparation>> {
-        self.journal.lock().unwrap().preparation(actor, id)
+        self.reader.lock().unwrap().preparation(actor, id)
     }
 
     pub(crate) fn bind_preparation(
@@ -577,7 +589,7 @@ impl Engine {
         Ok(record.state == State::Starting)
     }
     pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
-        self.journal.lock().unwrap().public_terminal(id)
+        self.reader.lock().unwrap().public_terminal(id)
     }
     pub(crate) fn bind_native_output(&self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
         self.journal
@@ -592,7 +604,7 @@ impl Engine {
         id: &str,
         decide: impl FnOnce(&[crate::journal::StoredProduct]) -> io::Result<Option<Vec<u8>>>,
     ) -> io::Result<u64> {
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let mut journal = self.journal.lock().unwrap();
         let Some(product) = decide(&journal.products(id)?)? else {
             return Ok(0);
@@ -604,12 +616,12 @@ impl Engine {
         Ok(sequence)
     }
     pub(crate) fn products(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
-        self.journal.lock().unwrap().products(id)
+        self.reader.lock().unwrap().products(id)
     }
     /// A line the machine writes to the run's log (`{"level", "text"}`).
     pub(crate) fn append_log(&self, id: &str, level: &str, text: &str) -> io::Result<u64> {
         let line = serde_json::to_vec(&serde_json::json!({"level": level, "text": text}))?;
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let sequence = self
             .journal
             .lock()
@@ -623,7 +635,7 @@ impl Engine {
     /// run's warnings.
     pub(crate) fn append_coded_warning(&self, id: &str, code: &str, text: &str) -> io::Result<u64> {
         let line = serde_json::to_vec(&serde_json::json!({"level": "warning", "text": text, "code": code}))?;
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let sequence = self.journal.lock().unwrap().append_log(id, progress.get(id), &line)?;
         drop(progress);
         self.notify_activity();
@@ -655,7 +667,7 @@ impl Engine {
     /// `PACKAGE_LOG_LINE` bytes of text; past the root log's bound the first line becomes one
     /// notice and later ones are dropped (`Journal::append_package_log`).
     pub(crate) fn append_package_log(&self, id: &str, level: &str, text: &str) -> io::Result<()> {
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let mut journal = self.journal.lock().unwrap();
         let record = journal.get(id)?;
         let (root, text) = match record.invocation.root.as_str() {
@@ -677,13 +689,17 @@ impl Engine {
     pub(crate) fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.journal.lock().unwrap().fetched(id, from, to)
     }
+    /// See `Journal::set_width`.
+    pub(crate) fn set_width(&self, id: &str, width: u32) -> io::Result<()> {
+        self.journal.lock().unwrap().set_width(id, width)
+    }
     /// See `Journal::needs`.
     pub(crate) fn needs(&self, id: &str, account: crate::journal::Account) -> io::Result<()> {
         self.journal.lock().unwrap().needs(id, account)
     }
     pub(crate) fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let sequence = self.journal.lock().unwrap().append_log(id, progress.get(id), &line)?;
         drop(progress);
         self.notify_activity();
@@ -694,11 +710,11 @@ impl Engine {
         self.journal.lock().unwrap().apply_attention(id)
     }
     pub(crate) fn logs(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
-        self.journal.lock().unwrap().logs(id)
+        self.reader.lock().unwrap().logs(id)
     }
     /// A settled call of the run (`call` names it), recorded in the run's log once.
     pub(crate) fn append_call(&self, id: &str, call: &str, body: &[u8]) -> io::Result<Option<u64>> {
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         let sequence = self
             .journal
             .lock()
@@ -711,7 +727,7 @@ impl Engine {
         Ok(sequence)
     }
     pub(crate) fn calls(&self, id: &str) -> io::Result<Vec<crate::journal::StoredProduct>> {
-        self.journal.lock().unwrap().calls(id)
+        self.reader.lock().unwrap().calls(id)
     }
     pub(crate) fn commit_public_terminal(
         &self,
@@ -727,7 +743,7 @@ impl Engine {
     /// See `Journal::accept_runs`: one admission, which the dispatcher sees whole.
     pub(crate) fn accept_runs(&self, actor: &str, runs: Vec<crate::journal::Accepting<'_>>, synced: bool) -> io::Result<Vec<io::Result<(Execution, bool)>>> {
         let began = std::time::Instant::now();
-        let mut owned = self.owned.lock().unwrap();
+        let mut owned = self.owned.lock();
         let mut journal = self.journal.lock().unwrap();
         // What an acceptance waited for, said when it was long (cl-1123): another's hold of the journal, or the disk (`Journal`).
         if began.elapsed() > std::time::Duration::from_millis(100) {
@@ -745,7 +761,7 @@ impl Engine {
     /// the memoized result that answered it (`answer`). Its observation ends under the lock a
     /// dispatcher claims under: a claim made the moment the run is queued keeps its ownership
     /// (else `reconcile` takes the attempt for an orphan). Weights it still waits on stay shown
-    /// over its own progress: its meter goes on observing them (`observe_weights`).
+    /// over its own progress: its meter goes on observing them (`observe_waits`).
     pub(crate) fn bind_prepared(
         &self,
         id: &str,
@@ -754,22 +770,22 @@ impl Engine {
         memo: CallMemo,
         answer: Option<ResultRecord>,
     ) -> io::Result<Execution> {
-        let mut owned = self.owned.lock().unwrap();
-        let mut progress = self.progress.lock().unwrap();
+        let mut owned = self.owned.lock();
+        let mut progress = self.progress.lock();
         let record = self
             .journal
             .lock()
             .unwrap()
             .bind_prepared(id, invocation, preparation, memo, answer);
         let held = progress.remove(id);
-        if let (Ok(bound), Some(ProgressSnapshot { weights: Some((arriving, own)), .. })) = (&record, held) {
+        if let (Ok(bound), Some(ProgressSnapshot { waits: Some((arriving, own)), .. })) = (&record, held) {
             if bound.state == State::Queued {
                 progress.insert(id.into(), ProgressSnapshot {
                     completed_units: bound.completed_units,
                     detail: arriving.over(&own),
                     waiting: bound.waiting.clone(),
                     place: bound.place,
-                    weights: Some((arriving, own)),
+                    waits: Some((arriving, own)),
                     revision: bound.revision.saturating_add(1),
                     at_ms: crate::machine::lifecycle::now_ms() as u64,
                 });
@@ -790,8 +806,8 @@ impl Engine {
     /// Reserve only this workspace's interrupted preparations. Selection and reservation share
     /// one lock so concurrent registration probes cannot start duplicate preparation threads.
     pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
-        let mut owned = self.owned.lock().unwrap();
-        let mut runs = self.journal.lock().unwrap().interrupted_for(project_id)?;
+        let mut owned = self.owned.lock();
+        let mut runs = self.reader.lock().unwrap().interrupted_for(project_id)?;
         runs.retain(|(id, _, _)| !owned.contains(id));
         owned.extend(runs.iter().map(|(id, _, _)| id.clone()));
         Ok(runs)
@@ -807,7 +823,7 @@ impl Engine {
 
     /// Run `id` prepares again if it waited `needs_access` (one sender of its access wins).
     pub(crate) fn unpark(&self, id: &str) -> io::Result<bool> {
-        let mut owned = self.owned.lock().unwrap();
+        let mut owned = self.owned.lock();
         let unparked = self.journal.lock().unwrap().unpark(id)?;
         if unparked {
             owned.insert(id.to_string());
@@ -825,16 +841,16 @@ impl Engine {
     }
 
     fn end_observation(&self, id: &str) {
-        self.progress.lock().unwrap().remove(id);
-        self.owned.lock().unwrap().remove(id);
+        self.progress.lock().remove(id);
+        self.owned.lock().remove(id);
         crate::held_models::changed();
         self.notify_activity();
     }
 
     pub(crate) fn get_public(&self, actor: Option<&str>, request_id: &str) -> io::Result<Execution> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut record = self.journal.lock().unwrap().get_public(actor, request_id)?;
+        let owned = self.owned.shown();
+        let progress = self.progress.shown();
+        let mut record = self.reader.lock().unwrap().get_public(actor, request_id)?;
         overlay_observation(&mut record, &owned, &progress);
         Ok(record)
     }
@@ -852,11 +868,11 @@ impl Engine {
     }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
-        self.journal.lock().unwrap().jobs(since)
+        self.reader.lock().unwrap().jobs(since)
     }
     /// Whether this machine run supervises `id`.
     pub(crate) fn owns(&self, id: &str) -> bool {
-        self.owned.lock().unwrap().contains(id)
+        self.owned.lock().contains(id)
     }
 
     /// See `Journal::fail_unstarted`.
@@ -869,27 +885,27 @@ impl Engine {
 
     /// Every run ready to dispatch, by its root's acceptance, then its own.
     pub(crate) fn ready(&self) -> io::Result<Vec<Execution>> {
-        self.journal.lock().unwrap().ready()
+        self.reader.lock().unwrap().ready()
     }
     pub(crate) fn gpu_births_after(
         &self,
         after: u64,
         limit: usize,
     ) -> io::Result<Vec<(u64, Birth)>> {
-        self.journal.lock().unwrap().gpu_births_after(after, limit)
+        self.reader.lock().unwrap().gpu_births_after(after, limit)
     }
     /// See `Journal::run_times`.
     pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
-        self.journal.lock().unwrap().run_times(function, limit)
+        self.reader.lock().unwrap().run_times(function, limit)
     }
     pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
-        self.journal.lock().unwrap().all_run_times(limit)
+        self.reader.lock().unwrap().all_run_times(limit)
     }
     pub(crate) fn record_reads(&self, function: &str, reads: &[crate::journal::FunctionRead]) -> io::Result<()> {
         self.journal.lock().unwrap().record_reads(function, reads)
     }
     pub(crate) fn function_reads(&self) -> io::Result<Vec<(String, crate::journal::FunctionRead)>> {
-        self.journal.lock().unwrap().function_reads()
+        self.reader.lock().unwrap().function_reads()
     }
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
@@ -901,9 +917,9 @@ impl Engine {
         &self,
         query: impl FnOnce(&Journal) -> io::Result<Vec<Execution>>,
     ) -> io::Result<Vec<Execution>> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut records = query(&self.journal.lock().unwrap())?;
+        let owned = self.owned.shown();
+        let progress = self.progress.shown();
+        let mut records = query(&self.reader.lock().unwrap())?;
         for record in &mut records {
             overlay_observation(record, &owned, &progress);
         }
@@ -912,33 +928,58 @@ impl Engine {
 
     /// In-process wake cursor, separate from durable execution/status revisions.
     pub(crate) fn activity_epoch(&self) -> u64 {
-        *self.activity.lock().unwrap()
+        self.activity.lock().unwrap().0
     }
 
     /// Optional duration bounds observation only; it never changes execution state.
     pub(crate) fn wait_activity(&self, observed: u64, wait: Option<Duration>) -> u64 {
+        self.wait_epoch(observed, wait, |(activity, _)| activity)
+    }
+
+    /// The cursor a follower waits on: every activity, and every observation (`notify_observed`).
+    pub(crate) fn observed_epoch(&self) -> u64 {
+        self.activity.lock().unwrap().1
+    }
+
+    /// `wait_activity` for a follower: woken by observations too.
+    pub(crate) fn wait_observed(&self, observed: u64, wait: Option<Duration>) -> u64 {
+        self.wait_epoch(observed, wait, |(_, any)| any)
+    }
+
+    fn wait_epoch(&self, observed: u64, wait: Option<Duration>, of: fn((u64, u64)) -> u64) -> u64 {
         let epoch = self.activity.lock().unwrap();
-        if *epoch != observed || *epoch == u64::MAX {
-            return *epoch;
+        if of(*epoch) != observed || of(*epoch) == u64::MAX {
+            return of(*epoch);
         }
         let epoch = match wait {
             Some(wait) => {
                 self.activity_changed
-                    .wait_timeout_while(epoch, wait, |epoch| *epoch == observed)
+                    .wait_timeout_while(epoch, wait, |epoch| of(*epoch) == observed)
                     .unwrap()
                     .0
             }
             None => self
                 .activity_changed
-                .wait_while(epoch, |epoch| *epoch == observed)
+                .wait_while(epoch, |epoch| of(*epoch) == observed)
                 .unwrap(),
         };
-        *epoch
+        of(*epoch)
     }
 
     pub(crate) fn notify_activity(&self) {
         let mut epoch = self.activity.lock().unwrap();
-        *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
+        // Never wrap or reuse a wake cursor.
+        *epoch = (epoch.0.saturating_add(1), epoch.1.saturating_add(1));
+        self.activity_changed.notify_all();
+        drop(epoch);
+        crate::activity::status_changed();
+    }
+
+    /// What a follower reads changed, nothing a scheduler waits on (progress, a waiting reason, words): its followers and the
+    /// Status hear it; dispatch sleeps on (cl-1185).
+    pub(crate) fn notify_observed(&self) {
+        let mut epoch = self.activity.lock().unwrap();
+        epoch.1 = epoch.1.saturating_add(1);
         self.activity_changed.notify_all();
         drop(epoch);
         crate::activity::status_changed();
@@ -947,7 +988,7 @@ impl Engine {
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
     /// Each lane hold and call slot such an attempt takes ends before its thread does.
     pub(crate) fn root_in_flight(&self, root: u64) -> bool {
-        let owned: Vec<String> = self.owned.lock().unwrap().iter().cloned().collect();
+        let owned: Vec<String> = self.owned.lock().iter().cloned().collect();
         owned.iter().any(|id| self.get(id).is_ok_and(|record| record.root_seq() == root))
     }
 
@@ -957,11 +998,13 @@ impl Engine {
     where
         F: FnOnce(Arc<Self>, String) -> io::Result<()> + Send + 'static,
     {
-        let mut owned = self.owned.lock().unwrap();
+        let mut owned = self.owned.lock();
         if owned.contains(id) || !self.journal.lock().unwrap().claim(id, width)? {
             return Ok(false);
         }
         owned.insert(id.into());
+        // Shown supervised before its attempt can run: a reader never sees it running unowned.
+        drop(owned);
         self.notify_activity();
         let engine = self.clone();
         let id = id.to_owned();
@@ -983,19 +1026,18 @@ impl Engine {
                     engine.active.lock().unwrap().remove(&thread_id);
                 }
                 // A run its preparation left queued may already be told what it waits for.
-                let mut progress = engine.progress.lock().unwrap();
+                let mut progress = engine.progress.lock();
                 if progress.get(&thread_id).is_none_or(|held| held.waiting.is_none()) {
                     progress.remove(&thread_id);
                 }
                 drop(progress);
                 engine.previews.lock().unwrap().remove(&thread_id);
                 engine.texts.lock().unwrap().remove(&thread_id);
-                engine.owned.lock().unwrap().remove(&thread_id);
+                engine.owned.lock().remove(&thread_id);
                 engine.notify_activity();
             });
         if let Err(error) = launched {
-            owned.remove(&id);
-            drop(owned);
+            self.owned.lock().remove(&id);
             self.fail_unstarted(&id, "executor_launch_failed", format!("Couldn't start the process that runs this ({error})."))?;
             return Err(error);
         }
@@ -1006,8 +1048,8 @@ impl Engine {
     pub(crate) fn cancel(&self, id: &str, actor: &str) -> io::Result<Execution> {
         let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
-            let owned = self.owned.lock().unwrap();
-            let mut progress = self.progress.lock().unwrap();
+            let owned = self.owned.lock();
+            let mut progress = self.progress.lock();
             let (mut record, halt) = stop_preparation(&preparations, id, || {
                 self.journal.lock().unwrap().cancel_observed(id, actor, progress.get(id))
             })?;
@@ -1024,8 +1066,8 @@ impl Engine {
     pub(crate) fn cancel_run(&self, actor: &str, id: &str) -> io::Result<Execution> {
         let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
-            let owned = self.owned.lock().unwrap();
-            let mut progress = self.progress.lock().unwrap();
+            let owned = self.owned.lock();
+            let mut progress = self.progress.lock();
             let mut journal = self.journal.lock().unwrap();
             let prior = journal.reserve_run_cancellation(actor, id)?;
             let (mut record, halt) = stop_preparation(&preparations, &prior.id, || {
@@ -1062,12 +1104,12 @@ impl Engine {
     }
 
     pub(crate) fn children(&self, parent: &str) -> io::Result<Vec<Execution>> {
-        self.journal.lock().unwrap().children(parent)
+        self.reader.lock().unwrap().children(parent)
     }
 
     /// When root `root`'s first call on a GPU took it, ended or not; 0: none has yet (cl-1107).
     pub(crate) fn first_gpu_claim(&self, root: &str) -> io::Result<u64> {
-        self.journal.lock().unwrap().first_gpu_claim(root)
+        self.reader.lock().unwrap().first_gpu_claim(root)
     }
 
     /// Run `id` as its caller names it (the id it was submitted under), else as this machine does.
@@ -1092,7 +1134,7 @@ impl Engine {
     }
 
     fn set_waiting(&self, id: &str, reason: Option<String>, place: Option<u32>) -> io::Result<()> {
-        let mut progress = self.progress.lock().unwrap();
+        let mut progress = self.progress.lock();
         if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason && held.place == place) {
             return Ok(());
         }
@@ -1107,7 +1149,7 @@ impl Engine {
         if record.revision >= record.revision_ceiling {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
-        let weights = progress.get(id).and_then(|held| held.weights.clone());
+        let waits = progress.get(id).and_then(|held| held.waits.clone());
         progress.insert(
             id.into(),
             ProgressSnapshot {
@@ -1115,7 +1157,7 @@ impl Engine {
                 detail: record.progress.clone().unwrap_or_default(),
                 waiting: reason,
                 place,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
@@ -1124,7 +1166,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity();
+        self.notify_observed();
         Ok(())
     }
 
@@ -1135,7 +1177,7 @@ impl Engine {
         mut detail: String,
     ) -> io::Result<()> {
         // This map has at most one entry per supervised execution, never an event history.
-        if !self.owned.lock().unwrap().contains(id) {
+        if !self.owned.lock().contains(id) {
             return Ok(());
         }
         const MAX_DETAIL_BYTES: usize = 2048;
@@ -1146,17 +1188,17 @@ impl Engine {
             }
             detail.truncate(end);
         }
-        let mut progress = self.progress.lock().unwrap();
+        let mut progress = self.progress.lock();
         let mut journal = self.journal.lock().unwrap();
         let mut record = journal.get(id)?;
         if record.state.terminal() {
             return Ok(());
         }
-        let weights = progress.get(id).and_then(|snapshot| snapshot.weights.clone());
+        let waits = progress.get(id).and_then(|snapshot| snapshot.waits.clone());
         if let Some(snapshot) = progress.get(id) {
             snapshot.overlay(&mut record);
         }
-        let own = weights.as_ref().map_or(record.progress.as_deref(), |(_, own)| Some(own.as_str()));
+        let own = waits.as_ref().map_or(record.progress.as_deref(), |(_, own)| Some(own.as_str()));
         // Units never regress; a stage or position change without new units still shows.
         if completed_units < record.completed_units
             || completed_units == record.completed_units && own == Some(detail.as_str())
@@ -1167,7 +1209,7 @@ impl Engine {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
         // Weights still arriving show over it; it shows once they are here.
-        let (detail, weights) = match weights {
+        let (detail, waits) = match waits {
             Some((arriving, _)) => (arriving.over(&detail), Some((arriving, detail))),
             None => (detail, None),
         };
@@ -1178,7 +1220,7 @@ impl Engine {
                 detail,
                 waiting: None,
                 place: None,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
@@ -1187,7 +1229,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity(); // wakes event long-polls; nothing durable is written
+        self.notify_observed(); // wakes event long-polls; nothing durable is written
         Ok(())
     }
 
@@ -1247,7 +1289,7 @@ impl Engine {
     /// Run `id`'s executor sent a preview: its root's newest now, and the root's progress says so
     /// (`preview`), so a client following it fetches this one.
     pub(crate) fn observe_preview(&self, id: &str, frame: &executor_api::PreviewFrame) -> io::Result<()> {
-        if frame.data.is_empty() || frame.data.len() > PREVIEW_BYTES || !self.owned.lock().unwrap().contains(id) {
+        if frame.data.is_empty() || frame.data.len() > PREVIEW_BYTES || !self.owned.lock().contains(id) {
             return Ok(());
         }
         let id = &self.preview_root(id);
@@ -1267,8 +1309,8 @@ impl Engine {
             }));
             n
         };
-        let held = self.progress.lock().unwrap().get(id).map(|snapshot| {
-            let own = snapshot.weights.as_ref().map_or(&snapshot.detail, |(_, own)| own);
+        let held = self.progress.lock().get(id).map(|snapshot| {
+            let own = snapshot.waits.as_ref().map_or(&snapshot.detail, |(_, own)| own);
             (snapshot.completed_units, own.clone())
         });
         let Some((units, own)) = held else { return Ok(()) };
@@ -1281,7 +1323,7 @@ impl Engine {
     /// Run `id`'s executor sent words of a text output (`kind: text`): appended to what it said of
     /// it, for its followers to hear. Memory only, and only while it runs.
     pub(crate) fn observe_text(&self, id: &str, frame: &executor_api::TextFrame) {
-        if frame.delta.is_empty() || frame.output.is_empty() || !self.owned.lock().unwrap().contains(id) {
+        if frame.delta.is_empty() || frame.output.is_empty() || !self.owned.lock().contains(id) {
             return;
         }
         {
@@ -1292,7 +1334,7 @@ impl Engine {
             }
             outputs.entry((frame.output.clone(), frame.index)).or_default().push_str(&frame.delta);
         }
-        self.notify_activity();
+        self.notify_observed();
     }
 
     /// Run `id`'s text outputs past what a follower has heard of each (`heard`, bytes): each
@@ -1317,25 +1359,35 @@ impl Engine {
         texts.get(id).is_some_and(|outputs| outputs.iter().any(|(key, text)| text.len() > heard.get(key).copied().unwrap_or(0)))
     }
 
-    /// The weights run `id` waits on while they arrive (`access::meter`), shown over its own
-    /// progress; `None` once they are here, when its own shows again. A queued run keeps why it
-    /// waits. A dispatchable run waits for its weights queued and owned by no dispatcher yet, so
-    /// a queued run is observed whoever owns it (cl-691: its bytes froze at their first value).
-    pub(crate) fn observe_weights(&self, id: &str, weights: Option<Weights>) -> io::Result<()> {
-        let owned = self.owned.lock().unwrap().contains(id);
-        let mut progress = self.progress.lock().unwrap();
-        let held = progress.get(id);
-        if held.and_then(|snapshot| snapshot.weights.as_ref().map(|(w, _)| w)) == weights.as_ref() {
+    /// The downloads run `id` waits on while they arrive (`access::meter`, cl-1205), shown over its own progress with no bytes of its
+    /// own; `None` once they are here, when its own shows again. Their bytes left change it quietly: only its line's estimate reads
+    /// them, and a client hears it once it waits on others. A queued run keeps why it waits. A dispatchable run waits for its
+    /// weights queued and owned by no dispatcher yet, so a queued run is observed whoever owns it (cl-691: its bytes froze at their
+    /// first value).
+    pub(crate) fn observe_waits(&self, id: &str, waits: Option<Waits>) -> io::Result<()> {
+        let owned = self.owned.lock().contains(id);
+        let mut progress = self.progress.lock();
+        if let (Some(snapshot), Some(now)) = (progress.get_mut(id), &waits) {
+            if let Some((held, own)) = snapshot.waits.as_mut().filter(|pair| pair.0.same(now)) {
+                if held.left != now.left {
+                    held.left = now.left;
+                    snapshot.detail = now.over(own);
+                }
+                return Ok(());
+            }
+        }
+        if waits.is_none() && progress.get(id).is_none_or(|snapshot| snapshot.waits.is_none()) {
             return Ok(());
         }
+        let held = progress.get(id);
         let mut journal = self.journal.lock().unwrap();
         let mut record = journal.get(id)?;
         if !record.observed() || (!owned && record.state != State::Queued) {
-            // Weights that landed as the run left the queue (it is starting) stop showing over
+            // Downloads that landed as the run left the queue (it is starting) stop showing over
             // its own progress, though it is not observed now: the meter's last word is this.
-            if weights.is_none() {
+            if waits.is_none() {
                 if let Some(held) = progress.get_mut(id) {
-                    if let Some((_, own)) = held.weights.take() {
+                    if let Some((_, own)) = held.waits.take() {
                         held.detail = own;
                     }
                 }
@@ -1345,14 +1397,14 @@ impl Engine {
         if let Some(snapshot) = held {
             snapshot.overlay(&mut record);
         }
-        let own = match held.and_then(|snapshot| snapshot.weights.as_ref()) {
+        let own = match held.and_then(|snapshot| snapshot.waits.as_ref()) {
             Some((_, own)) => own.clone(),
             None => record.progress.clone().unwrap_or_default(),
         };
         if record.revision >= record.revision_ceiling {
             record = journal.reserve_observations(id, progress.get(id))?;
         }
-        let (detail, weights) = match weights {
+        let (detail, waits) = match waits {
             Some(arriving) => (arriving.over(&own), Some((arriving, own))),
             None => (own, None),
         };
@@ -1363,7 +1415,7 @@ impl Engine {
                 detail,
                 waiting: record.waiting.clone(),
                 place: record.place,
-                weights,
+                waits,
                 revision: record
                     .revision
                     .checked_add(1)
@@ -1372,7 +1424,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity();
+        self.notify_observed();
         Ok(())
     }
 
@@ -1403,7 +1455,7 @@ impl Engine {
     pub(crate) fn finish(&self, id: &str, outcome: Outcome) -> io::Result<Execution> {
         let outcome = self.faulted(id, outcome);
         let held = self.held_memo(id, &outcome);
-        let mut progress = self.progress.lock().unwrap();
+        let mut progress = self.progress.lock();
         let mut journal = self.journal.lock().unwrap();
         if matches!(outcome, Outcome::Completed(_)) {
             // A warning never stands between a run and its result.
@@ -1443,7 +1495,7 @@ impl Engine {
         self: &Arc<Self>, id: &str, outcome: Outcome, processes: Vec<Birth>,
     ) -> io::Result<()> {
         let outcome = self.faulted(id, outcome);
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         self.journal.lock().unwrap().defer_completion(id, outcome, processes, progress.get(id))?;
         Ok(())
     }
@@ -1555,7 +1607,7 @@ impl Engine {
     /// A quiescent invocation no longer owns its pooled executor. Its CPU output work remains
     /// owned by the same managed worker; restart reconciliation must not wait on a later borrower.
     pub(crate) fn returned_managed(&self, id: &str, birth: &Birth) -> io::Result<()> {
-        let progress = self.progress.lock().unwrap();
+        let progress = self.progress.lock();
         self.journal.lock().unwrap().returned_process(id, birth, progress.get(id))?;
         drop(progress);
         self.notify_activity();
@@ -1603,7 +1655,7 @@ impl Engine {
     }
     /// The run's triage bundle bytes and their reference, if it kept one.
     pub(crate) fn triage(&self, id: &str) -> io::Result<Option<(crate::triage::TriageRef, Vec<u8>)>> {
-        let Some(triage) = self.journal.lock().unwrap().triage(id)? else {
+        let Some(triage) = self.reader.lock().unwrap().triage(id)? else {
             return Ok(None);
         };
         let bytes = crate::triage::read(&self.custody_root(id)?, &triage)?;
@@ -1656,7 +1708,7 @@ impl Engine {
     /// Reconcile a previous service incarnation without adopting or repeating authored work.
     /// A live/unknown process birth keeps its obligation charged and nonterminal.
     pub(crate) fn reconcile(&self) -> io::Result<Vec<Execution>> {
-        let owned = self.owned.lock().unwrap();
+        let owned = self.owned.lock();
         let mut journal = self.journal.lock().unwrap();
         let mut changed = false;
         for record in journal.active(usize::MAX)? {
@@ -1851,6 +1903,53 @@ fn overlay_observation(
     }
 }
 
+
+/// What the machine's runs show besides their journal (who supervises them, their progress), for readers that never wait on a
+/// writer (cl-1202): a writer changes it under `lock`, which it may hold across a journal commit waiting for the disk; the
+/// change is shown as the lock is let go, and a reader takes the last shown, waiting on nothing but a pointer's copy. Readers
+/// take it before the journal row, so a row read after a change is never older than what it overlays.
+#[derive(Default)]
+struct Watched<T> {
+    live: Mutex<T>,
+    shown: Mutex<Arc<T>>,
+}
+
+impl<T: Clone> Watched<T> {
+    fn lock(&self) -> Writing<'_, T> {
+        Writing { live: self.live.lock().unwrap(), shown: &self.shown, changed: false }
+    }
+    fn shown(&self) -> Arc<T> {
+        self.shown.lock().unwrap().clone()
+    }
+}
+
+struct Writing<'a, T: Clone> {
+    live: std::sync::MutexGuard<'a, T>,
+    shown: &'a Mutex<Arc<T>>,
+    changed: bool,
+}
+
+impl<T: Clone> std::ops::Deref for Writing<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.live
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Writing<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.changed = true;
+        &mut self.live
+    }
+}
+
+impl<T: Clone> Drop for Writing<'_, T> {
+    fn drop(&mut self) {
+        if self.changed {
+            *self.shown.lock().unwrap() = Arc::new((*self.live).clone());
+        }
+    }
+}
 
 /// A run's spool: removed once the run is settled, whatever the outcome. Its outputs are in
 /// custody by then (results and the store), so the spool would be a third copy.

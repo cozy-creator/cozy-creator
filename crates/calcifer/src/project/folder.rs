@@ -246,7 +246,7 @@ pub(crate) struct Version {
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
-    /// Its key, 16 hex digits: what says it is out of date. Empty for one whose inputs can't be known: it never reads as current.
+    /// Its key, 16 hex digits: what made it, blind to names. Empty for one whose inputs can't be known.
     #[serde(default)]
     pub inputs: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -358,9 +358,6 @@ pub(crate) struct Pending {
     /// Approved when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unpin: Option<String>,
     /// A box of words: the field of its result they're in, which it lands as its version's file (xs-204).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
@@ -669,18 +666,6 @@ pub(crate) struct Ask {
     pub digest: String,
     /// Where what it brings up goes.
     pub target: Target,
-    /// `render all --missing`: every asset with no state.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all: bool,
-    /// `render all --outdated`: each pin out of date when its turn comes, as that is judged then.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub outdated: bool,
-    /// Asked of `all`, with or without `--missing`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub whole: bool,
-    /// Not of `all`, with `outdated`: the pins it judges, by name key, those its names read and themselves.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub judges: BTreeSet<String>,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -716,6 +701,10 @@ pub(crate) struct Coming {
 pub(crate) struct Target {
     pub on: Vec<On>,
     pub hub: String,
+    /// It named no machine (cl-1175): `on` is where a render naming none went when it was asked, and a machine added or rented since may
+    /// take it too, as one with room takes what this computer's disk can't hold (`Walk::wider`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any: bool,
 }
 
 /// One new version of `asset`, sent under `key`.
@@ -728,15 +717,9 @@ pub(crate) struct Take {
     /// Pinned when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// A new seed even with a state, as every render but `--missing` asks: no such take is a run a state already answers.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub new: bool,
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<api::calcifer::project::Pickup>,
-    /// What it reads with no state renders first, a cut's too (`cozy render`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub covers: bool,
 }
 
 impl Lock {

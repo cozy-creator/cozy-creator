@@ -31,7 +31,7 @@ use api::{
 };
 use serde_json::{Map, Value};
 
-use super::{ALL, Doc, Stand, find, host::Host, name_key};
+use super::{Doc, find, host::Host};
 use crate::{
     api::{Api, Refusal, parse},
     placement,
@@ -102,20 +102,15 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal
 
 async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal> {
     let project = api.projects.get(api, id)?;
-    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let (targets, boxes, dir) = {
         let doc = Doc::load(&project.folder).map_err(Refusal)?;
-        let lock = project.folder.lock().map_err(Refusal)?;
-        let stand = doc.stand(&lock);
         let mut targets: BTreeMap<String, Vec<(String, String, Map<String, Value>)>> = BTreeMap::new();
         let mut boxes = vec![];
-        for i in rendered(&doc, &stand, asked) {
+        for i in rendered(&doc, asked) {
             let asset = &doc.assets[i];
             let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
             targets.entry(asset.target.clone()).or_default().push((tool, asset.name.clone(), asset.made.clone()));
-            if !all {
-                boxes.push(Boxed { name: asset.name.clone(), with: doc.target(i), made: asset.made.clone(), media: doc.media_read(i) });
-            }
+            boxes.push(Boxed { name: asset.name.clone(), with: doc.target(i), made: asset.made.clone(), media: doc.media_read(i) });
         }
         (targets, boxes, project.folder.dir.clone())
     };
@@ -229,21 +224,9 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     Some(Faster { run_ms: away as u64, line, rent })
 }
 
-/// What a render of `asked` makes, as the render reads it: `all` is everything with an operation not approved, and with `outdated` what's
-/// approved and out of date. Nothing Calcifer makes itself needs a machine.
-fn rendered(doc: &Doc, stand: &[super::Standing], asked: &FitAsk) -> Vec<usize> {
-    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
-    let named: Vec<usize> = match all {
-        true => (doc.order.iter().copied())
-            .filter(|&i| match &stand[i].state {
-                _ if doc.assets[i].pin.is_none() => true,
-                Stand::Pinned { version: Some(_), changed } => asked.outdated && !changed.is_empty(),
-                _ => false,
-            })
-            .collect(),
-        false => asked.names.iter().filter_map(|name| find(doc, name).ok()).collect(),
-    };
-    named.into_iter().filter(|&i| doc.makes(i) && doc.tool(i).is_none()).collect()
+/// What a render of `asked` makes, as the render reads it. Nothing Calcifer makes itself needs a machine.
+fn rendered(doc: &Doc, asked: &FitAsk) -> Vec<usize> {
+    asked.names.iter().filter_map(|name| find(doc, name).ok()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()).collect()
 }
 
 /// This computer's GPUs as its machine last said: each one's name, the memory it may use, and whether it draws a screen. None: it hasn't
@@ -658,27 +641,37 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
         .flat_map(|callable| callable.models.iter().chain(interface.call_slots(callable)))
         .map(|slot| (slot.path.as_str(), slot))
         .collect();
-    // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components.
-    let mut held: HashMap<&str, (Lane, String, Vec<String>)> = HashMap::new();
+    // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components: the cards read together, as are the
+    // headers below (cl-1123: read one after another, a package's first guess in a fresh project took up to 2.75 s, 44199938129).
+    let mut asked: Vec<(&str, &Slot, &String, Option<String>)> = vec![];
     for path in wanted.needed.iter().chain(wanted.either.iter().flatten()) {
-        let Some(slot) = slots.get(path.as_str()).filter(|_| !held.contains_key(path.as_str())) else { continue };
+        let Some(slot) = slots.get(path.as_str()).filter(|_| !asked.iter().any(|(held, ..)| *held == path.as_str())) else { continue };
         let param = Weights::param(slot);
         let Some(written) = on_box.get(param).or(slot.default.as_ref()) else { continue };
         let lane = (placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)))
             .map(|(_, lane, _)| lane.clone())
             .or_else(|| slot.lane.clone());
-        let Some(checkpoint) = checkpoint(api, hub, written, lane.as_deref()).await else { continue };
-        held.insert(path.as_str(), (checkpoint, written.clone(), slot.fetched_components()));
+        asked.push((path.as_str(), *slot, written, lane));
     }
+    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane)| checkpoint(api, hub, written, lane.as_deref())))).await;
+    let held: HashMap<&str, (Lane, String, Vec<String>)> = (asked.into_iter().zip(cards))
+        .filter_map(|((path, slot, written, _), card)| Some((path, (card?, written.clone(), slot.fetched_components()))))
+        .collect();
     let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components)| (lane.checkpoint.clone(), components.clone())));
+    let lanes: Vec<(&Lane, &String, Vec<String>)> = (resolved.needed.into_iter())
+        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _)| (lane, written, components)))
+        .collect();
+    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components)| async move {
+        match &lane.header {
+            Some(header) => crate::hub::headers::wanted(api, hub, header, components).await,
+            None => None,
+        }
+    })))
+    .await;
     let mut counted: HashSet<String> = HashSet::new();
     let mut models = vec![];
-    for (checkpoint, components) in resolved.needed {
-        let Some((lane, written, _)) = held.values().find(|(lane, ..)| lane.checkpoint == checkpoint) else { continue };
-        let chunks = match &lane.header {
-            Some(header) => crate::hub::headers::wanted(api, hub, header, &components).await,
-            None => None,
-        };
+    for ((lane, written, components), chunks) in lanes.into_iter().zip(headers) {
+        let checkpoint = lane.checkpoint.clone();
         let bytes = match chunks {
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => lane.bytes,

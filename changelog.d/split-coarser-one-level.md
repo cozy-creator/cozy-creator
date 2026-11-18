@@ -1,0 +1,1 @@
+A memory-cut operation goes coarser one measured level at a time: a second MiniMax-H3-Image edit no longer jumps its picture encoder from the level it measured to one estimated at 13 GiB that takes 17 GiB, which at 16 GiB ran into 41 refused allocations and a 2.4x slower encode (cr-328).

@@ -11,7 +11,7 @@ export interface Shown extends MainFile {
 }
 
 /**
- * What a card shows: the version being looked at, else its state, else, out of date or with nothing else, its newest. A constant's
+ * What a card shows: the version being looked at, else its state (its approved version, else its newest), else its newest. A constant's
  * state may be no version at all.
  */
 export function shownOf(view: ElementView, selectedOnly = false): Shown | null {

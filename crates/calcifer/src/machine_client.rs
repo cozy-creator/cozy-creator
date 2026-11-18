@@ -326,10 +326,18 @@ impl Machine {
         json(send(self.request(Method::POST, path::CANCEL, &[id])).await?).await
     }
 
-    /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub(crate) async fn log(&self, name: &str, lines: u64) -> Result<Bytes, Error> {
-        let request = self.request(Method::GET, path::LOG, &[name]);
-        bytes(send(request.query(&[("lines", lines)])).await?).await
+    /// The newest `lines` whole lines (0: all) of a log the machine keeps, of those the ones from `since_ms` on, asked for
+    /// as gzip: a machine that knows no gzip answers them plain, and one that knows no `since_ms` answers them all.
+    pub(crate) async fn log(&self, name: &str, lines: u64, since_ms: Option<i64>) -> Result<Bytes, Error> {
+        let request = self.request(Method::GET, path::LOG, &[name]).header(header::ACCEPT_ENCODING, "gzip").query(&[("lines", lines)]);
+        let answer = send(match since_ms { Some(since) => request.query(&[("since_ms", since)]), None => request }).await?;
+        let gzip = answer.headers().get(header::CONTENT_ENCODING).is_some_and(|coding| coding.as_bytes().eq_ignore_ascii_case(b"gzip"));
+        let body = bytes(answer).await?;
+        if !gzip {
+            return Ok(body);
+        }
+        let text = tokio::task::spawn_blocking(move || platform::gzip::unpack(&body)).await.unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        text.map(Bytes::from).map_err(|e| Error::Answer(format!("the machine's log doesn't unpack: {e}")))
     }
 
     /// A log's lines as [`Self::log`] reads them, or those after `after` (a batch's place), then
@@ -457,6 +465,18 @@ pub(crate) struct Bulk {
 }
 
 impl Bulk {
+    /// Lands many whole objects in one request (`PUT /v1/objects`, cl-1123): `body`, `length` bytes of `OBJECTS_TYPE`. Answers
+    /// what the machine holds of each, in their order.
+    pub(crate) async fn put_objects(&self, length: u64, body: impl Into<reqwest::Body>) -> Result<Vec<HeldObject>, Error> {
+        let request = self
+            .request(Method::PUT, path::OBJECTS, &[])
+            .header(header::CONTENT_LENGTH, length)
+            .header(header::CONTENT_TYPE, api::machine::OBJECTS_TYPE)
+            .body(body);
+        let answer: HeldAnswer = json(send(request).await?).await?;
+        Ok(answer.held)
+    }
+
     /// Lands `[first, first + length)` of the object (`sha256:<hex>`, `total` bytes) from `body`;
     /// answers the ranges held after it.
     pub(crate) async fn put(
@@ -554,10 +574,23 @@ fn content_range(value: &str) -> Option<((u64, u64), u64)> {
 }
 
 fn authorized(request: RequestBuilder, auth: &Auth) -> RequestBuilder {
+    let request = request.header(api::machine::CLIENT, client_name());
     match auth.header() {
         Some(value) => request.header(header::AUTHORIZATION, value),
         None => request,
     }
+}
+
+/// This computer as its machines say it sent each run (`api::machine::CLIENT`, cl-1193): its host name.
+fn client_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(unix)]
+        let name = rustix::system::uname().nodename().to_string_lossy().into_owned();
+        #[cfg(not(unix))]
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+        name.chars().filter(|c| c.is_ascii_alphanumeric() || " .-_".contains(*c)).take(64).collect()
+    })
 }
 
 fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {

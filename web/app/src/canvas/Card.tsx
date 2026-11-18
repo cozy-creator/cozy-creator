@@ -161,7 +161,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   // Each take on its way by its id, from the click to its version (cl-945); a run no take names, and what's asked with no take named
-  // (Render all, before Calcifer lists it), as they come.
+  // (what a box reads, before Calcifer lists it), as they come.
   const pending = takingOf(view)
   const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
   const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
@@ -342,6 +342,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       <div className="status bad">
         Stalled {since} on {stalled.machine}
         {stalled.usd_micros_per_hour != null && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
+      </div>
+    )
+  }
+  // Its models fit on none of its machines' disks (cl-1175): how much room it lacks, and where to get a machine with room.
+  if (view.noRoom) {
+    return (
+      <div className="status mak">
+        {view.noRoom.line} <Act label="Machines" onClick={store.askMachine} />
       </div>
     )
   }
@@ -629,7 +637,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </div>
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
-      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} pixels={shown?.field === "image" ? shown.width ?? undefined : undefined} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
+      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} pixels={(shown?.field === "image" || shown?.field === "video") && shown.width && shown.height ? { width: shown.width, height: shown.height } : undefined} fitted={asset?.kind !== "text"} full={plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}

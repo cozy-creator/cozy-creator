@@ -461,10 +461,10 @@ impl Calcifer {
                     }
                 }
             }
-            let offline = (run.machine.as_deref()).is_some_and(|m| self.offline(m).is_some());
+            let closing = (run.machine.as_deref()).is_some_and(|m| self.closing(m).is_some());
             match again {
-                // Its machine is offline: tried again once it comes back or ends.
-                true if offline => tokio::select! {
+                // Its machine is ending: tried again once it ends.
+                true if closing => tokio::select! {
                     () = machine_changed(&mut changed) => {}
                     () = wake.notified() => {}
                 },

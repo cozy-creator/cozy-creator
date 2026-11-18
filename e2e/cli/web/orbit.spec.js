@@ -123,7 +123,8 @@ test('orbit', async ({ page, project, api, cli }) => {
 
 // cl-1131's GPU proof, release-gate/sessions/orbit.sh: the same hands on a real Orbit, rendered on a rental. ORBIT_MACHINE is where the
 // project's renders go (`local` in the session's $0 pre-flight); ORBIT_TOOL the tool (`orbit/orbit`, the dev home's checkout's; the local
-// fixture's path in the pre-flight); ORBIT_FIELDS its fields (JSON; `<photo>` names ORBIT_PICTURE's box). Its version says it's an orbit;
+// fixture's path in the pre-flight); ORBIT_FIELDS its fields (JSON; `<photo>` names ORBIT_PICTURE's box); ORBIT_OLD, an unrendered box of the
+// same tool with these fields, to look at. Its version says it's an orbit;
 // at rest it carries the mark; in Focus a drag turns it, there and in full screen, with no play button. The run, its file and the angles
 // in $OUT/web/orbit-gpu/result.json, with the page at rest and in Focus at 1440×900 and 1920×1080, paper and dark.
 test('orbit: a real Orbit on a GPU', { tag: '@gpu' }, async ({ page, project, api }) => {
@@ -145,10 +146,38 @@ test('orbit: a real Orbit on a GPU', { tag: '@gpu' }, async ({ page, project, ap
   }
   kept.tool = tool;
   await project.add({ name: 'turned', tool, kind: 'video', fields: JSON.parse(process.env.ORBIT_FIELDS ?? '{}'), at: { x: 0, y: 0 } });
+  // se-152: an Orbit box as the tool's fields were before it took its picture by mention (picture, subject, duration), never rendered.
+  if (process.env.ORBIT_OLD) await project.add({ name: 'old', tool, kind: 'video', fields: JSON.parse(process.env.ORBIT_OLD), at: { x: 0, y: 700 } });
   await page.reload();
   await expect(page.locator('.stage')).toBeVisible();
   await expect.poll(() => canvasVisible(page, 'turned')).toBe(true);
   await fit(page);
+
+  await test.step('before Render, to look at: the box and the picture it mentions, and an old box, at rest and in Focus, paper and dark', async () => {
+    for (const theme of ['paper', 'dark']) {
+      await project.look(theme);
+      await page.reload();
+      await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
+      for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+        if (await region.count()) await leave(page);
+        await page.setViewportSize({ width, height });
+        await canvasIdle(page);
+        await fit(page);
+        await page.screenshot({ path: join(shots, `before-rest-${width}x${height}-${theme}.png`) });
+        for (const name of ['turned', ...(process.env.ORBIT_OLD ? ['old'] : [])]) {
+          await focus(page, name);
+          await page.screenshot({ path: join(shots, `before-focus-${name}-${width}x${height}-${theme}.png`) });
+          await leave(page);
+        }
+      }
+    }
+    await project.look('paper');
+    await page.reload();
+    await expect(page.locator('.stage')).toBeVisible();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await fit(page);
+  });
 
   await test.step(`${tool} rendered on ${machine} by Focus's Render: its version says it's an orbit`, async () => {
     await focus(page, 'turned');

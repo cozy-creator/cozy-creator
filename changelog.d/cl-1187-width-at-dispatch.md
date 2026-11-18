@@ -1,0 +1,1 @@
+- A run that can use several GPUs no longer waits for a GPU another run holds when one is free and starting there ends it sooner: the machine gives it the width that finishes it soonest as its first GPU call goes, and with no time to go on, starts it on what's free. A run waiting for GPUs says about how long: `waiting for 2 GPUs, held by run PRO6-60, about 2 min` (cl-1187).

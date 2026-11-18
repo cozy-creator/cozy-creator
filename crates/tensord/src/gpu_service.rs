@@ -127,6 +127,9 @@ pub(crate) struct GpuConfig {
     /// graphs' replays.
     #[serde(default)]
     pub dev: bool,
+    /// A dev machine's `machine.speculate` (cl-1123 D): a dedicated one runs a loaded prediction ahead (`crate::speculate`).
+    #[serde(default)]
+    pub speculate: bool,
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
@@ -353,22 +356,22 @@ impl Plan {
 }
 
 /// The precision lane the header of checkpoint `manifest` holds (`int8`, `bf16`, …); empty when
-/// it holds none of the table's or is not here.
+/// it holds none of the table's or is not here. Read off disk: planning opens no checkpoint (cl-1202).
 fn precision(store: &Store, manifest: &str) -> String {
-    crate::storage::checkpoint(store, manifest).map(|c| crate::precision::Profile::of(c.header()).family).unwrap_or_default()
+    crate::storage::structure(store, manifest).map(|(_, header)| crate::precision::Profile::of(&header).family).unwrap_or_default()
 }
 
-/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length.
+/// `components` of the checkpoint `manifest`: their encoded bytes, and its header's length. Read off disk (cl-1202).
 fn selected_bytes(store: &Store, manifest: &str, components: &[String]) -> io::Result<(u64, u64)> {
-    let checkpoint = crate::storage::checkpoint(store, manifest)?;
+    let (object, header) = crate::storage::structure(store, manifest)?;
     let mut encoded = 0;
     for name in components {
-        let component = checkpoint.header().component(name).ok_or_else(|| {
+        let component = header.component(name).ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, format!("selected component {name} is absent"))
         })?;
         encoded += (component.tensors.iter()).flat_map(|t| t.locations().into_iter().map(|(_, at)| at.length)).sum::<u64>();
     }
-    Ok((encoded, checkpoint.id().length))
+    Ok((encoded, object.length))
 }
 
 /// A checkpoint a plan reads, and the components of it its slots read.
@@ -2321,6 +2324,20 @@ impl Pool {
     pub(crate) fn downloaded(&self, plan: &Plan) -> bool {
         plan.read().iter().all(|(manifest, components)| crate::access::whole(&self.store, manifest, components))
     }
+    /// `downloaded` for `preparation`, as Status reads it (cl-1202): from the store's files, composing no adapter view. One this
+    /// process doesn't keep is judged by what composes it, its base and its LoRAs.
+    pub(crate) fn downloaded_now(&self, preparation: &Preparation) -> bool {
+        let Ok(plan) = Plan::of(preparation) else { return false };
+        let whole = |id: &str, components: &[String]| crate::access::whole(&self.store, id, components);
+        plan.slots.iter().all(|slot| match (&slot.view, crate::storage::view(&slot.binding.snapshot)) {
+            (Some(recipe), None) => whole(recipe.base.as_str(), slot.binding.components.as_slice())
+                && recipe.selections.iter().all(|chosen| match chosen.source_component.is_empty() {
+                    true => whole(chosen.checkpoint.as_str(), &[]),
+                    false => whole(chosen.checkpoint.as_str(), std::slice::from_ref(&chosen.source_component)),
+                }),
+            _ => whole(slot.binding.snapshot.as_str(), slot.binding.components.as_slice()),
+        })
+    }
     /// The highest level each App of each generation holds now (keyed `(generation,
     /// application)`): an import-only parent, or an executor. A callee's executors in a
     /// caller's environment are its own, never the caller's.
@@ -2675,6 +2692,19 @@ impl Pool {
             engine: Arc::downgrade(engine),
         })
     }
+    /// Whether root `root` holds GPUs whose width is still to be chosen: it never bound a lane (`Allocations::open`).
+    pub(crate) fn open(&self, root: u64) -> bool {
+        self.allocations.open(root)
+    }
+    /// Root `root`'s width as the machine packs its queue now, while it is open, and about how long it waits for it
+    /// (`Allocations::choose`).
+    pub(crate) fn choose(&self, root: u64, width: u32, wait_ms: Option<u64>) {
+        self.allocations.choose(root, width as usize, wait_ms);
+    }
+    /// When dispatch next re-plans an open root's told GPU wait, absent events (`Allocations::told_due`).
+    pub(crate) fn told_due(&self) -> Option<std::time::Instant> {
+        self.allocations.told_due()
+    }
     /// `Context.release_gpus()` of a root: its lane ends now; its next step queues again at
     /// its original place.
     pub(crate) fn release(&self, engine: &Engine, root: u64) {
@@ -2704,6 +2734,10 @@ impl Pool {
             crate::gpu_allocation::Lane::Held { lane, new } => {
                 if new {
                     self.note_gpus(engine, root, "grant", lane.clone(), None);
+                    // Its width, chosen as this call went (cl-1187): what its later calls are prepared at and its time is counted at.
+                    if let Err(error) = engine.set_width(&root.to_string(), lane.len() as u32) {
+                        tracing::warn!(root, "its width was not kept: {error}");
+                    }
                 }
                 Ok(lane)
             }
@@ -2744,8 +2778,11 @@ impl Pool {
         let request = |seq: u64| engine.get(&seq.to_string()).ok()
             .and_then(|record| record.submission.map(|s| s.request_id)).unwrap_or_default();
         let width = self.allocations.width(root);
-        let body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
+        let mut body = serde_json::json!({"gpu": {"state": state, "gpus": gpus.collect::<Vec<_>>(),
             "width": width, "behind": behind.map(request).unwrap_or_default()}});
+        if let Some(left) = self.allocations.wait_ms(root).filter(|_| state == "wait") {
+            body["gpu"]["left_ms"] = left.max(1).into();
+        }
         if let Err(error) = engine.append_gpu(&root.to_string(), &body) {
             tracing::warn!("gpu allocation entry: {error}");
         }
@@ -2877,9 +2914,13 @@ impl Pool {
         let root = record.root_seq();
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
+            // Its widest in service, until its first call binds its lane at the width the machine's packing then gives it (cl-1187):
+            // what its calls prepared before that fit within. A speculative run (cl-1123 D) isn't packed: its narrowest, as before.
+            let widths = &record.invocation.widths;
+            let widest = widths.iter().copied().filter(|width| *width as usize <= self.serving_width()).max();
             let width = match record.invocation.gpus {
-                // Unpacked (its queue's packing failed), its narrowest width.
-                0 => width.or_else(|| record.invocation.widths.first().copied())
+                0 => (widest.filter(|_| !record.invocation.background))
+                    .or_else(|| widths.first().copied())
                     .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
@@ -2919,6 +2960,14 @@ impl Pool {
         let plan = match width.filter(|_| record.invocation.parent.is_empty() && record.invocation.gpus == 0) {
             Some(width) => plan.at(width)?,
             None => plan,
+        };
+        // A call prepared before its root's lane was bound narrower (cl-1187) takes the widest group it declares there.
+        let plan = match &lane {
+            Some(lane) if plan.degree as usize > lane.len() && !plan.slots.is_empty() => {
+                let entry = api::interface::entrypoint(&held.record.interface, &record.invocation.entrypoint);
+                plan.at(entry.map_or(1, |entry| self.degree(entry, lane.len() as u32)))?
+            }
+            _ => plan,
         };
         if let Some(why) = self.unservable(lane.clone(), plan.degree as usize) {
             engine.fail_unstarted(&record.id, "gpu_lost", why)?;

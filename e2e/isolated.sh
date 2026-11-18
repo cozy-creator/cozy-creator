@@ -47,7 +47,7 @@ fi
 # sources take the selected SDK; deliberate old-floor/negative fixtures keep their own requirements and source selection.
 publish() {
   local copy=$seed/packages/${1##*/}
-  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy" || return 1
   [ -f "$copy/benchmarks.json" ] \
     || jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
   if [ "${2:-}" = cohort ]; then
@@ -306,9 +306,11 @@ case $key in
   cli:ondemand) needs='packages birefnet downloads calls enhancer' ;;
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
-  cli:ondemand-ramp) needs='packages spare' ;;
+  cli:ondemand-ramp | cli:slow-link) needs='packages spare' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
+  # A tool whose model a small disk has no room for (cl-1175).
+  cli:disk-room) needs='packages room' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
@@ -350,8 +352,33 @@ print(" ".join(sorted(folders.get(name, name) for name in named)))
 PY
 }
 
-# CPU's author/binder cells use the already-installed candidate and authenticated fixture.
-# Its ordinary executor cells remain unchanged and use the package checkout and its locks.
+# trust_hub: Calcifer's uv (its locks) trusts this Hub's own CA as it trusts tensorhub.com's: from the system's bundle, which systemd's
+# user manager hands Calcifer once restarted. Once.
+TRUSTED=''
+trust_hub() {
+  [ -z "$TRUSTED" ] || return 0
+  sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+  systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+  systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+  TRUSTED=1
+}
+
+# seed_packages <package folder>...: each of the checkout's packages published at the root, cohort-pinned, once; the first-party packages it
+# takes from the Hub first, as its lock reads them there (qwen-image-2's birefnet), under the Hub's own CA.
+SEEDED=' '
+seed_packages() {
+  local p deps
+  for p in "$@"; do
+    [[ $SEEDED != *" $p "* ]] || continue
+    SEEDED+="$p "
+    deps=$(for d in $(hub_dependencies "$p"); do [ ! -d "$packages/$d" ] || echo "$d"; done)
+    if [ -n "$deps" ]; then seed_packages $deps || return 1; trust_hub; fi
+    publish "$packages/$p" cohort || return 1
+  done
+}
+
+# CPU's cells run through the installed candidate, signed in as this Hub's admin: each package's tiny models are mirrored
+# here under its default refs and its functions run on the local machine (cpu/real.py).
 if [ "$suite" = cpu ]; then
   project=$seed/project
   mkdir -p "$project"
@@ -437,24 +464,23 @@ if [ -n "$needs" ]; then
   # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
   publish "$tools"
   # run_overhead (cl-1172) runs only echo and the LLM Write tool.
-  [ "$key" = cli:overhead ] || for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
+  [ "$key" = cli:overhead ] || seed_packages qwen-image-2 minimax-h3 sdxl birefnet || exit 1
   # The LLM Write tool the page's stream and the Responses API run by name (xs-209): qwen3's, or qwen3.5's before it.
   case $key in
     cli:runs | cli:overhead | cli:) for p in qwen3 qwen3.5; do [ ! -d "$packages/$p" ] || { publish "$packages/$p" cohort; break; }; done ;;
   esac
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944). Qwen Image 1, named apart from Qwen Image 2.1 (cl-1182).
-  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort ;; esac
+  # LTX-2.5, whose words are its `prompt`: a tool swap carries them (cl-1200).
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort && publish "$packages/qwen-image" cohort && publish "$packages/ltx-2.5" cohort ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
-    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
-    systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-    systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+    trust_hub
     for dir in "$packages"/*/; do
-      dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
+      dir=${dir%/}
       grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
-      publish "$dir" cohort || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
+      seed_packages "${dir##*/}" || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
     done
   fi
   case $shard in
@@ -470,7 +496,7 @@ if [ -n "$needs" ]; then
       oldcall ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" qwen "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* \
-    || " $needs " == *" disk "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
+    || " $needs " == *" disk "* || " $needs " == *" room "* || " $needs " == *" lorabase "* || " $needs " == *" ltxlora "* || " $needs " == *" enhancer "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -480,7 +506,7 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" birefnet "* ]]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
-  case $shard in local-code | '') final_model ;; esac
+  case $shard in local-code | grants | '') final_model ;; esac
   # The real Qwen3.5 0.8B, abliterated (huihui-ai's, as qwen3's models are: se-145), which an LLM tool runs on the CPU (xs-204).
   if [[ " $needs " == *" qwen "* ]]; then
     mirror hf://huihui-ai/Huihui-Qwen3.5-0.8B-abliterated@4813135658fe51b2e535b8e77927d2f23909ce42 huihui-ai/huihui-qwen3.5-0.8b-abliterated \
@@ -500,16 +526,20 @@ if [ -n "$needs" ]; then
       mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
       rm -f "$seed/disk.safetensors"
     done
-    # And one bigger than the disk can make free, refused with the sizes.
-    random_weights "$seed/disk.safetensors" 2048 disk-big
-    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
-    rm -f "$seed/disk.safetensors"
     # And disk_run_object's (cl-1076): its asset is a file the package that runs it carries too (cli/tokenizer), as H3 holds
     # the Qwen3-VL processor files minimax-h3 carries.
     random_weights "$seed/disk.safetensors" 384 disk-tokenizer
     mirror "$seed/disk.safetensors" e2e/disk-tokenizer bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is \
       --add "processor/vocab.json=$here/cli/tokenizer/e2e_tokenizer/processor/vocab.json"
     rm -f "$seed/disk.safetensors"
+  fi
+  if [[ " $needs " == *" disk "* || " $needs " == *" room "* ]]; then
+    # One bigger than a 2.5 GiB disk can make free (disk_full refuses it with the sizes), and disk_room's tool (cl-1175): a still built
+    # from it, published so its quote knows what it fetches.
+    random_weights "$seed/disk.safetensors" 2048 disk-big
+    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/disk.safetensors"
+    publish "$here/cli/project/roomless"
   fi
   if [[ " $needs " == *" calls "* ]]; then
     # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and

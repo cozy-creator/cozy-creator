@@ -21,10 +21,9 @@ export const gpusWords = (machine: Machine) => {
   return `${rental.gpus}× ${rental.accelerator}`
 }
 
-/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Offline (its provider stopped
- *  it)`. */
+/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Ending (vast stopped
+ *  it)`. A rental is up, ending or ended, never offline in between (Paul 11-17). */
 export function stateWords(machine: Machine, now: number): string {
-  if (machine.offline) return `Offline (${machine.offline})`
   if (machine.broken && machine.state !== "ended") return `Not working (${machine.broken.message.replace(/\.$/, "")})`
   const unverified = machine.unverified ? " (may be out of date)" : ""
   switch (machine.state) {
@@ -37,7 +36,7 @@ export function stateWords(machine: Machine, now: number): string {
       return `Ready${unverified}`
     }
     case "ending":
-      return "Ending"
+      return machine.reason ? `Ending (${machine.reason})` : "Ending"
     case "ended":
       return "Ended"
     case "stopped":
@@ -90,7 +89,7 @@ export function slowWords(machine: Machine): string[] {
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
+  machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"
@@ -108,6 +107,15 @@ export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
   if (deadline != null) return deadline > now ? `Ends in ${span((deadline - now) / 1000)} if it stays idle` : "Ending now"
   return machine.status && machine.kind === "rental" ? "Ends 15 minutes after its last run" : ""
+}
+
+/** What keeps it up that is no job, as it says (cl-1193): `An SSH session is open`, `Kept up by a keepalive 2m ago`. */
+export function holdWords(machine: Machine, now: number): string[] {
+  const status = machine.status
+  if (!status || machine.state === "ended") return []
+  const ssh = status.ssh_sessions ? [status.ssh_sessions === 1 ? "An SSH session is open" : `${status.ssh_sessions} SSH sessions are open`] : []
+  const kept = status.kept_alive_ms != null ? [`Kept up by a keepalive ${span((now - status.kept_alive_ms) / 1000)} ago`] : []
+  return [...ssh, ...kept]
 }
 
 /** What it has cost so far: `$1.20 so far`, `About $1.20 so far` while that's an estimate. */

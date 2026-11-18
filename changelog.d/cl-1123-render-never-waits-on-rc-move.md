@@ -1,0 +1,3 @@
+A render goes at once to a rental on the open RC's builds; the rental moves to a newer build only while it has no work. A render to one behind the RC's newest build moved it first and waited: the RC's `cozy` downloaded here, sent to the machine and the machine restarted, 92 s in one case.
+- A run's package install takes the machine's install line from a guess's install at once. It waited for the guess's build to finish its short steps.
+- A run waiting for a guess that builds the same environment, or installs the same package, raises that guess to the run's place in the install line. It waited behind every other guess too.

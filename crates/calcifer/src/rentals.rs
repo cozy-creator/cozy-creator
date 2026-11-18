@@ -182,9 +182,9 @@ impl Hubs {
             .and_then(|listing| listing.rentals.get(id).cloned())
     }
 
-    /// Why a rental cannot be reached, by its Hub's last word.
-    pub(crate) fn offline(&self, row: &MachineRow) -> Option<String> {
-        offline(&self.rental(&row.hub, row.rental_id.as_deref()?)?)
+    /// Why a rental is ending, by its Hub's last word.
+    pub(crate) fn closing(&self, row: &MachineRow) -> Option<String> {
+        closing(&self.rental(&row.hub, row.rental_id.as_deref()?)?)
     }
 
     /// A rental's price an hour as its Hub last said it.
@@ -596,6 +596,8 @@ impl Machines {
                     }
                     self.follow_boot(row.clone());
                     self.placing.notify_one();
+                    // A dev home's RC `cozy` is fetched while it boots (cl-1201).
+                    self.rc_ready.notify_one();
                     tell(&Ok(row.clone()));
                     return Ok(row);
                 }
@@ -1137,10 +1139,10 @@ impl Machines {
             self.ended(name, &cause);
             return Some(Word::Gone(cause));
         }
-        if let Some(reason) = offline(&rental) {
+        if let Some(reason) = closing(&rental) {
             // Its runs hear it now rather than at their next try.
             self.calcifer.touch(name);
-            return Some(Word::Offline(reason));
+            return Some(Word::Closing(reason));
         }
         match endpoint(&rental) {
             Some(endpoint) if row.endpoint.as_ref() != Some(&endpoint) => {
@@ -1153,7 +1155,22 @@ impl Machines {
                 Some(Word::Moved)
             }
             Some(_) => Some(Word::Up),
-            None if matches!(rental.state.as_str(), "ready" | "degraded") => Some(Word::Up),
+            None if rental.state == "ready" => Some(Word::Up),
+            // Its Hub is placing it on another host (th-405: its host's link measured under the floor). The address it had is no
+            // machine's now: what that host held returns to Calcifer's queue, and its new boot is followed to its new address.
+            None if row.endpoint.is_some() && rental.boot.as_ref().is_some_and(|boot| boot.replanned_from.is_some()) => {
+                (row.endpoint, row.state) = (None, MachineState::Booting);
+                if let Err(e) = self.calcifer.put_machine(&row) {
+                    warn!(machine = name, "recording that its Hub is placing it on another host: {e}");
+                    return Some(Word::Booting);
+                }
+                self.rebooting(name, boot_phase(&rental), attempt(&rental));
+                if let Err(e) = self.calcifer.machine_replaced(name, &replaced_why(name, &rental)) {
+                    warn!(machine = name, "returning what its last host held to the queue: {e}");
+                }
+                self.follow_boot(row);
+                Some(Word::Replaced)
+            }
             None => Some(Word::Booting),
         }
     }
@@ -1775,26 +1792,38 @@ pub(crate) fn reason(error: Error) -> Reason {
 pub(crate) enum Word {
     /// It ended here, for this cause.
     Gone(String),
-    /// Its provider stopped it, or its Hub is ending it: why.
-    Offline(String),
+    /// Its Hub is ending it (its provider stopped it, or it was released): why.
+    Closing(String),
     /// It serves at a new address, now recorded and followed.
     Moved,
     /// Its Hub says its provider has not stopped it.
     Up,
     /// Its Hub says it is on its way, with no address yet.
     Booting,
+    /// Its Hub is placing it on another host: the address it had is forgotten, its runs are back in the queue, and its boot is
+    /// followed (th-405).
+    Replaced,
 }
 
-/// Why a rental cannot be reached, by its Hub's word: its provider stopped it (the Hub keeps it,
-/// and it returns if the provider resumes it), or its Hub is ending it.
-fn offline(rental: &types::Rental) -> Option<String> {
-    let provider = rental.provider.as_deref().filter(|p| !p.is_empty());
-    let who = provider.unwrap_or("its provider");
-    let code = rental.failure.as_ref().map_or("", |f| f.code.as_str());
+/// Why a rental's runs left the host its Hub replaced, as their logs say it (`Store::requeue_machine`).
+fn replaced_why(name: &str, rental: &types::Rental) -> String {
+    match rental.boot.as_ref().and_then(|boot| boot.replanned_from.as_ref()).map(|from| from.failure_code.as_str()) {
+        Some(SLOW_LINK) => format!("{name}'s host downloaded too slowly, so its Hub is moving it to another"),
+        Some(code) => format!("{name}'s Hub is moving it to another host ({code})"),
+        None => format!("{name}'s Hub is moving it to another host"),
+    }
+}
+
+/// The Hub's code for an attempt whose machine measured its first download under the floor (th-405).
+const SLOW_LINK: &str = "host_link_slow";
+
+/// Why a rental is ending, by its Hub's word (Paul 11-17: a rental is up, ending or ended, never offline in between): its
+/// provider stopped it, and the Hub destroys it (cl-1203; `degraded` is an older Hub's stopped rental), or its Hub is ending it.
+fn closing(rental: &types::Rental) -> Option<String> {
     match rental.state.as_str() {
-        "degraded" if code.starts_with("readiness.provider_stopped") => {
-            Some(format!("{who} stopped it"))
-        }
+        // An older Hub's stopped rental (before th-404), which the Hub now releases.
+        "degraded" => Some(format!("{} stopped it", rental.provider.as_deref().filter(|p| !p.is_empty()).unwrap_or("its provider"))),
+        "release_requested" if rental.release_cause.as_deref() == Some("provider_stopped") => Some(cause(rental)),
         "release_requested" => Some(format!("the Hub is ending it ({})", cause(rental))),
         _ => None,
     }
@@ -1805,7 +1834,7 @@ fn offline(rental: &types::Rental) -> Option<String> {
 /// can end. One past that is expected to take as long again as it's overdue. None: it ended or was stopped, or its Hub has had no pod for
 /// it a minute (no stock): not coming by any time known.
 fn ready_at(rental: &types::Rental, now: i64) -> Option<i64> {
-    if gone(&rental.state) || offline(rental).is_some() {
+    if gone(&rental.state) || closing(rental).is_some() {
         return None;
     }
     let ordered = ms(&rental.created_at).unwrap_or(now);
@@ -1838,6 +1867,9 @@ fn gone(state: &str) -> bool {
 /// (rent-3856416f's attempt found no capacity; the order then found no offer at its price).
 fn cause(rental: &types::Rental) -> String {
     let given = |text: &Option<String>| text.clone().filter(|t| !t.is_empty());
+    if rental.release_cause.as_deref() == Some("provider_stopped") {
+        return format!("{} stopped it", rental.provider.as_deref().filter(|p| !p.is_empty()).unwrap_or("its provider"));
+    }
     given(&rental.release_cause)
         .or_else(|| given(&rental.detail))
         .or_else(|| rental.failure.as_ref().map(|f| f.code.clone()))
@@ -1905,8 +1937,11 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
     let pending = rental.detail.as_deref().filter(|d| {
         rental.state == "pending_acquisition" && !d.is_empty() && replaced.is_none_or(|r| r.failure_code != *d)
     });
-    if let Some(boot) = boot.filter(|_| replaced.is_some()) {
-        let again = format!("finding another machine (attempt {})", boot.attempt);
+    if let (Some(boot), Some(replaced)) = (boot, replaced) {
+        let again = match replaced.failure_code == SLOW_LINK {
+            true => format!("moving to a faster host (attempt {})", boot.attempt),
+            false => format!("finding another machine (attempt {})", boot.attempt),
+        };
         return Some(match pending {
             Some(why) => format!("{again}: {why}"),
             None => again,

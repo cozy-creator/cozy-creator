@@ -47,10 +47,9 @@ impl Store {
         lock::dir(&path).map_err(platform("lock", path))
     }
 
-    /// Makes every object the new `roots` reach young, then everything this handle admitted
-    /// durable, so a record never names what GC or a crash could take: each root and what it
-    /// reaches. A root must be here; what it reaches need not be (a pull may take some
-    /// components only).
+    /// Makes every object the new `roots` reach young, so a record never names what GC could take: each root and what it
+    /// reaches. A root must be here; what it reaches need not be (a pull may take some components only). A durable store flushed
+    /// each as it landed; an ephemeral one flushes nothing (`Durability`).
     fn retain<'a>(&self, roots: impl IntoIterator<Item = &'a ObjectRef>) -> Result<Vec<(String, Vec<ObjectRef>)>> {
         let mut reached = Vec::new();
         for root in roots {
@@ -63,7 +62,6 @@ impl Store {
             }
             reached.push((root.sha256.clone(), closure));
         }
-        self.sync()?;
         Ok(reached)
     }
 

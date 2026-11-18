@@ -321,7 +321,7 @@ impl Host {
             let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let Some(found) = local_code::target(with, Some(folder), &home) else { return self.read_published(hub, with, &first).await };
             let (path, named) = found?;
-            let code = local_code::own(&self.api, &path)?;
+            let code = crate::stages::stage("staged", async { local_code::own(&self.api, &path) }).await?;
             let read = local_code::foreseen(&self.api, &code, &first, hub).await?;
             // Its estimate names it by its manifest (`Package::estimated`): without it, no machine quotes it.
             let manifest = read.source.manifest;
@@ -492,11 +492,11 @@ impl Host {
         None
     }
 
-    /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub doesn't call it offline, and it hasn't evicted them.
+    /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub isn't ending it, and it hasn't evicted them.
     pub(crate) async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
         let machines = &self.api.machines;
         machines.named(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
-            && machines.offline(machine).is_none()
+            && machines.closing(machine).is_none()
             && self.api.calcifer.still_holds(sha256, machine).await
     }
 
@@ -539,10 +539,9 @@ impl Host {
         platform::paths::cache().unwrap_or_else(|| self.api.machines.hubs.home().root().join("cache"))
     }
 
-    /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
+    /// cozy's ffmpeg and ffprobe: the pinned build its install (or Calcifer's start) fetched, else PATH's; never fetched here.
     pub(crate) async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
-        let home = self.api.machines.hubs.home();
-        let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
+        let found = crate::tools::ready_ffmpeg(self.api.machines.hubs.home()).await?;
         Ok((found.ffmpeg, found.ffprobe))
     }
 }

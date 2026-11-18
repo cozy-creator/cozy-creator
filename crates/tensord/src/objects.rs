@@ -311,7 +311,7 @@ impl Objects {
         let Some(hex) = hex(digest) else {
             return Ok(None);
         };
-        let Some(length) = self.engine.with_journal(|j| j.object(actor, &hex))? else {
+        let Some(length) = self.engine.read_journal(|j| j.object(actor, &hex))? else {
             return Ok(None);
         };
         let path = self.store()?.path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
@@ -330,7 +330,7 @@ impl Objects {
         let key = resource_actor(actor);
         let actor = key.as_str();
         let _custody = self.guard();
-        let Some(raw) = self.engine.with_journal(|j| j.held_memo(actor, computation))? else {
+        let Some(raw) = self.engine.read_journal(|j| j.held_memo(actor, computation))? else {
             return Ok(None);
         };
         let Ok(mut record) = serde_json::from_slice::<ResultRecord>(&raw) else {
@@ -538,18 +538,23 @@ impl Objects {
     /// Once `upload` holds every byte, the object is verified against its digest and stored for
     /// its signer; bytes that differ are dropped. Answers the ranges held.
     pub(crate) fn settle(&self, upload: &Upload) -> Result<Ranges, Refused> {
+        self.settled(upload).map(|(held, _)| held)
+    }
+
+    /// `settle`, and whether this settle stored the object.
+    pub(crate) fn settled(&self, upload: &Upload) -> Result<(Ranges, bool), Refused> {
         crate::private_io::within(upload.private.clone(), || self.settle_in(upload))
     }
 
-    fn settle_in(&self, upload: &Upload) -> Result<Ranges, Refused> {
+    fn settle_in(&self, upload: &Upload) -> Result<(Ranges, bool), Refused> {
         let digest = format!("sha256:{}", upload.object.sha256);
         let _settling = upload.settling.lock().unwrap();
         if upload.ended.load(Ordering::Acquire) {
-            return self.held(&upload.actor, &digest);
+            return Ok((self.held(&upload.actor, &digest)?, false));
         }
         let held = upload.held();
         if held != whole(upload.object.length) {
-            return Ok(held);
+            return Ok((held, false));
         }
         let _custody = self.guard();
         upload.ended.store(true, Ordering::Release);
@@ -561,7 +566,7 @@ impl Objects {
         self.engine
             .with_journal(|j| j.bind_object(&upload.actor, &upload.object))?;
         self.root_current(std::slice::from_ref(&upload.object))?;
-        Ok(held)
+        Ok((held, true))
     }
 }
 

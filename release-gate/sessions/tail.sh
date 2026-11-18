@@ -37,8 +37,13 @@ printf 'trial\tarm\tversion\tseconds\tgb\tmiddle_mb_s\tlast_1pct_s\textra_mb\tre
 for i in "${!trials[@]}"; do
   ARM=${trials[$i]} n=$((i + 1)); D=$OUT/trial-$n-$ARM; mkdir -p "$D"
   step "uninstall-$n" model uninstall "$MODEL" --on "$NAME" -y || say "trial $n: $MODEL wasn't uninstalled: $(tail -c 200 "$OUT/uninstall-$n.txt")"
-  T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" < "$(dirname "$0")/empty-store.py" > "$D/reset.json" 2>&1 ||
-    fail "trial $n: the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
+  # A connect that times out is asked again: RunPod's SSH port dropped one between trials (gekkouga, 44218058209).
+  for a in 1 2 3; do
+    T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" < "$(dirname "$0")/empty-store.py" > "$D/reset.json" 2>&1 && break
+    grep -qE '^ssh: connect to host .*(timed out|refused)' "$D/reset.json" && [ "$a" -lt 3 ] ||
+      fail "trial $n: the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
+    say "trial $n: $(head -c 200 "$D/reset.json") (attempt $a/3): asking again in 15s"; sleep 15
+  done
   step "tensord-$n" machine update "$NAME" --tensord "${TENSORD[$ARM]}" -y || fail "trial $n: the pod refused arm $ARM's TensorD"
   v=$(cozy machine show "$NAME" --json | jq -r .status.version)
   [ "$v" = "${VERSION[$ARM]}" ] || fail "trial $n: the pod runs TensorD $v, not arm $ARM's ${VERSION[$ARM]}"

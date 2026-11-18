@@ -108,11 +108,23 @@ fn claimed(record: &Execution) -> u64 {
     }
 }
 
-/// The bytes of weights a queued run still waits on, as its progress says.
+/// The bytes of weights a queued run still waits on, as its progress says: of the downloads it waits on, its own still to come
+/// (`journal::Waits`, cl-1205), and what its own preparation transfers.
 fn fetching(record: &Execution) -> u64 {
     let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
     let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
-    count("bytes_total").saturating_sub(count("bytes_done"))
+    count("bytes_left") + count("bytes_total").saturating_sub(count("bytes_done"))
+}
+
+/// How far a run is, as its latest progress says: its stage (none for a private run's), and its step of its steps.
+fn stepped(record: &Execution, private: bool) -> v1::Queued {
+    let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let stage = match private {
+        true => String::new(),
+        false => progress.get("stage").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(120).collect(),
+    };
+    v1::Queued { stage, step: count("position"), steps: count("total"), ..Default::default() }
 }
 
 /// Every root here not ended, every caller's, by acceptance.
@@ -153,7 +165,9 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             (false, false) => (invocation.widths.clone(), invocation.package.clone()),
         };
         let running = matches!(record.state, State::Starting | State::Running);
-        let private = invocation.local_private.is_some();
+        // An encrypted project's: its function, models and stage are its project's, as `api::calcifer::Run::outsider` rules for every
+        // outsider (cl-1242). A plaintext project's are said, as `times` says them.
+        let private = invocation.local_private.as_ref().is_some_and(|scope| !scope.ordinary);
         let caller = |record: &Execution| {
             (record.submission.as_ref().map(|s| s.request_id.clone()))
                 .filter(|request| !request.is_empty())
@@ -199,15 +213,25 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
                 true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
                 false => fetching(record),
             },
+            client: crate::clients::name(&actor),
+            ..stepped(record, private)
         };
         roots.push(Root { id: record.id.clone(), actor, caller_id, queued });
     }
     Ok(roots)
 }
 
-/// Each waiting root's width as it would start, of those the machine chooses for (`chooses`), from the same picture Calcifer
-/// quotes by.
-pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, u32>> {
+/// A waiting root's width as the machine packs its queue now, and about how long until it starts, ms; None: not known, as a run it
+/// waits for has never been timed here.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Start {
+    pub width: u32,
+    pub wait_ms: Option<u64>,
+}
+
+/// Each waiting root's start, of those the machine chooses for (`chooses`), from the same picture Calcifer quotes by: a root queued,
+/// or an orchestrator whose calls have yet to take its GPUs (cl-1187).
+pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, Start>> {
     let roots = roots(service)?;
     let mut times = HashMap::new();
     for root in roots.iter().filter(|root| !root.queued.function.is_empty()) {
@@ -232,7 +256,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
     let (jobs, _) = machine.queue(&queued);
     let placed = estimate::pack(machine.gpus, &jobs);
     Ok((roots.into_iter().zip(jobs).zip(placed))
-        .filter(|((root, job), place)| job.running.is_none() && !root.queued.running && root.queued.chooses && place.width > 0)
-        .map(|((root, _), place)| (root.id, place.width))
+        .filter(|((root, job), place)| job.running.is_none() && root.queued.chooses && place.width > 0)
+        .map(|((root, _), place)| (root.id, Start { width: place.width, wait_ms: place.known.then_some(place.start_ms.max(0.0) as u64) }))
         .collect())
 }

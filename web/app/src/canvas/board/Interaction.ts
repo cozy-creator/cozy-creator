@@ -12,7 +12,7 @@ import type { Board } from "./Board"
 import type { Camera } from "./Camera"
 import type { StageProps } from "./Stage"
 
-export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot"
+export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot" | "waits"
 export interface Hit { name: string; part: Part }
 
 export interface InteractionOptions {
@@ -131,7 +131,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
       const picked = board.getNodes().filter((held) => held.selected)
       // A finger on a card not selected pans; on a selected one it carries it. Returning from Focus, cards don't move.
       const pans = touch && !node.selected
-      const drags = !modified(e) && hit.part !== "delete" && hit.part !== "cancel" && hit.part !== "untool" && !locked() && !pans
+      const drags = !modified(e) && hit.part !== "delete" && hit.part !== "cancel" && hit.part !== "untool" && hit.part !== "waits" && !locked() && !pans
       press = { kind: "card", id: e.pointerId, hit, node, at, from: camera.screenToWorld(at), drags, pans, begun: false,
         nodes: picked.map((held) => ({ ...held, position: { ...held.position }, bounds: { ...held.bounds } })) }
       if (drags) capture(e)
@@ -266,6 +266,12 @@ export function createInteraction(o: InteractionOptions): Interaction {
     props.onNodeClick(event, node)
     if (part === "delete") { store.remove([name]); return }
     if (part === "untool") { store.takeToolOff(name); return }
+    // A box waiting on a download: its words lead to it on its machine (cl-1205).
+    if (part === "waits") {
+      const run = store.get(name)?.run, download = run?.progress?.waiting_on?.[0]
+      if (run?.machine && download) store.showDownload(run.machine, download)
+      return
+    }
     if (part === "cancel") {
       const view = store.get(name), take = view && watched(view)
       if (view?.placing) store.cancel(name)

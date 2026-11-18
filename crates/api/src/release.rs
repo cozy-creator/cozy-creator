@@ -121,6 +121,39 @@ pub fn runs(requirement: &VersionSpecifiers, version: &str) -> bool {
     requirement.iter().all(|specifier| specifier.contains(&version) || (rc && cap(specifier)))
 }
 
+/// A release's series: its major, or before 1.0 its minor, within which a release only fixes.
+pub fn series(version: &Version) -> Vec<u64> {
+    let release = version.release();
+    let parts = if release.first().is_some_and(|major| *major > 0) { 1 } else { 2 };
+    (0..parts).map(|at| release.get(at).copied().unwrap_or(0)).collect()
+}
+
+/// How a requirement bounds a version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bound {
+    /// `==0.48.0.dev2316+ge1ab5640`: that build alone.
+    Exactly,
+    /// `>=0.48.0.dev2316`: it or a later one.
+    AtLeast,
+    /// `>=0.48.0.dev2316,==0.48.*`: the newest release of its series ([`series`]) that is no older.
+    NewestPatch,
+}
+
+/// `name` bounded at `version`, as uv reads it (PEP 440): what writes every Runtime or TensorFS requirement made from a version
+/// (a lock's, a wheel's, a build's; cl-1219). A local segment (an RC build's `+ge1ab5640`, a source build's `+dev.g…`) is valid
+/// after `==` alone, so only `Exactly` keeps it: a floor names the public version, which that build meets. A version that
+/// doesn't read is named exactly.
+pub fn requirement(name: &str, bound: Bound, version: &str) -> String {
+    match (bound, Version::from_str(version).map(Version::without_local)) {
+        (Bound::AtLeast, Ok(public)) => format!("{name}>={public}"),
+        (Bound::NewestPatch, Ok(public)) => {
+            let series: Vec<String> = series(&public).iter().map(u64::to_string).collect();
+            format!("{name}>={public},=={}.*", series.join("."))
+        }
+        _ => format!("{name}=={version}"),
+    }
+}
+
 /// Whether a machine moves its Runtime for a release its own doesn't run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Moves {

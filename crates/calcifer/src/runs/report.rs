@@ -323,14 +323,21 @@ struct Measured {
 
 type Span = Option<(i64, i64)>;
 
+/// The run's measurements and each call's, by where it sits (`0`, `0/1`): what each made covers its
+/// own calls' time.
 fn measured(own: Option<(&serde_json::Value, Span)>, calls: &[Call]) -> Vec<Measured> {
-    let read = |who: String, m: &serde_json::Value, span: Span, calls: Vec<(i64, i64)>| {
+    let read = |who: String, m: &serde_json::Value, span: Span, within: Vec<(i64, i64)>| {
         let m = Measurements::deserialize(m).ok()?;
-        Some(Measured { who, span, calls, m })
+        Some(Measured { who, span, calls: within, m })
     };
     let span = |c: &Call| (c.finished_at_ms >= c.called_at_ms).then_some((c.called_at_ms, c.finished_at_ms));
-    let own = own.and_then(|(m, own)| read("run".into(), m, own, calls.iter().filter_map(span).collect()));
-    let calls = calls.iter().filter_map(|c| read(c.index.to_string(), c.measurements.as_ref()?, span(c), vec![]));
+    let paths: Vec<String> = calls.iter().map(Call::path).collect();
+    let under = |of: Option<&str>| -> Vec<(i64, i64)> {
+        let within = calls.iter().zip(&paths).filter(|(_, path)| path.rsplit_once('/').map(|(parent, _)| parent) == of);
+        within.filter_map(|(c, _)| span(c)).collect()
+    };
+    let own = own.and_then(|(m, own)| read("run".into(), m, own, under(None)));
+    let calls = calls.iter().zip(&paths).filter_map(|(c, path)| read(path.clone(), c.measurements.as_ref()?, span(c), under(Some(path.as_str()))));
     own.into_iter().chain(calls).collect()
 }
 

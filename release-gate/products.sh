@@ -3,7 +3,7 @@
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
 PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3 fibo-2 hidream-o1 moss-image qwen-image
-  flux-2 ideogram-4 krea-2 p-h3-image ltx-2.5 relayvsr orbit pan2 hunyuan-image-3)
+  flux-2 ideogram-4 krea-2 p-h3-image minimax-h3-image ltx-2.5 relayvsr orbit pan2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
 product() {
@@ -159,7 +159,7 @@ product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best q
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
 # The describer on Qwen3.5-9B; the writer on Qwen3.6-35B-A3B, qwen3.6's default before qwen3 replaced it (xs-208).
 product_qwen3() {
-  cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
+  cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." caption= --file images="$HERE/ref/seed.jpg"
   cell writer "$(pkg qwen3 ask)" --model model=qwen/qwen3.6-35b-a3b@0.1.0 prompt="Describe this picture: who is in it, where, and the light." --file images="$HERE/ref/seed.jpg"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
@@ -201,6 +201,42 @@ product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon
 # xs-208: the first-party packages the 0.26.0 gate logged as "has no product cells", each by its default call (Qwen3.6's is
 # product_qwen3's writer).
 product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 30)); }
+# MiniMax-H3-Image (se-146): text to image, then its default edit: two pictures, its prompt expander on. cr-331, Paul 11-17
+# ("inference-fits-any-memory"): a refusal to fit is a bug; the Runtime pages and tries, and never refuses a call that can
+# run. Runtime 0.47.0 failed that edit `does_not_fit` on a 4090 (SP146-6/7/9): the expander prefilled with its whole decode
+# set leased (21.4 GiB) beside 1.2 GiB of decode slots, its vision tower's split found no room, and that refusal ended the
+# call where a refused allocation streams it. Red on a card with 22.7-23.6 GiB of room (a 4090 with 22.8); with less
+# (22.5), the slots were refused first and it ran.
+# cr-332: where the expander decodes streamed (Transformers' loop), its embedding table gathers its rows on the host
+# once it leaves the device. The rc/0.27.0 head refilled the 2.37 GiB table whole 685 times in 1,573 tokens on a 4090
+# (2.90 tokens/s against 4.77, pod-session 44223589609). A cell whose expander filled one block over 8 times fails.
+# The bar comes from the 4090 runs of the default edit, seed 42. With the fix no block is filled over 4 times, all
+# before the decode (44241298913: one 2.37 GiB block 4 times, the table twice); in 44223589609's arms every block but
+# the table was filled at most 3 times. The half-broken efadd597 filled the table 11 times and the regression 685, so
+# 8 fails both. The bar was 4, chosen before any green run existed; the first green stood at exactly 4, and a cell
+# with no margin is a flaky one (the coordinator's call, 11-18).
+h3i_table() {
+  local c=$1${TWIN:-} n
+  judged "$c" || return 0
+  n=$(run_get "$OUT" "$c" '[.measurements.memory.stats.varena[]?.stats.trace[]? | select(.set | endswith("/model")) | .block]
+    | group_by(.) | map(length) | max // 0')
+  expect "$c-table" "$([ "${n:-x}" -le 8 ] 2>/dev/null && echo PASS || echo FAIL)" "the expander's most-filled block: ${n:-no record} fills"
+}
+product_minimax_h3_image() {
+  cell h3i "$(pkg minimax-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 35))
+  h3i_table h3i
+  cell h3i-edit "$(pkg minimax-h3-image generate)" seed:=$((R + 36)) \
+    instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+  h3i_table h3i-edit
+  # se-166 (cr-328): "two edits in a row on a 24 GB card must both complete" (the coordinator, 11-18). On a 3090 the
+  # second of two edits in a row ran out of memory in the picture encoder with 0.3 GiB live (pod-session 44183324285,
+  # PRO-4/PRO-6): varena scaled an unmeasured split level from the first edit's measure and chose one too coarse. This
+  # second edit runs at once on the warm executor, prompt as written: the path that failed, about a minute.
+  cell h3i-edit-again "$(pkg minimax-h3-image generate)" seed:=$((R + 37)) prompt_upsampling:=false \
+    instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+}
 product_ltx_2_5() {
   cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
   av ltx 1080
@@ -209,9 +245,9 @@ product_relayvsr() {
   [ -f clip-1s.mp4 ] || nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
   cell relayvsr "$(pkg relayvsr upscale)" --file video="$OUT/clip-1s.mp4"
 }
-product_orbit() { cell orbit "$(pkg orbit orbit)" --file picture="${K:-$REF}" subject="character" seed:=$((R + 33)); }
+product_orbit() { cell orbit "$(pkg orbit orbit)" instructions='<character>' "references:=$(jq -cn --arg f "${K:-$REF}" '[{name: "character", image: $f}]')" seed:=$((R + 33)); }
 product_pan2() {
-  cell pan2 "$(pkg pan2 generate)" prompt="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
+  cell pan2 "$(pkg pan2 generate)" instructions="$SCENE. $CHAR walks in from the left, stops at the centre and looks around. One continuous wide shot." \
     seed:=$((R + 34))
 }
 # HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only

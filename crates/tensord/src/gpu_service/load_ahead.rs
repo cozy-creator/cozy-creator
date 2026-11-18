@@ -155,10 +155,10 @@ impl Pool {
         self.ahead.loading.lock().unwrap().is_some()
     }
 
-    /// A machine whose idle GPU loads and runs predicted requests ahead: a dedicated one (a rental, or a computer its owner gave to
-    /// Cozy: `machine.mode`).
-    pub(crate) fn dedicated(&self) -> bool {
-        self.config.host.mode == HostMode::Dedicated
+    /// A machine whose idle GPU runs a loaded prediction ahead (cl-1123 D, `crate::speculate`): a dedicated one whose config turns it
+    /// on (`dev = true` and `machine.speculate`). None by default (Paul 11-18): a prediction is downloaded and loaded, never run.
+    pub(crate) fn speculates(&self) -> bool {
+        self.config.host.mode == HostMode::Dedicated && self.config.speculate
     }
 
     /// `actor`'s item `caller` is on a GPU now, its on-demand models built: a speculative run of it builds and loads nothing.
@@ -225,21 +225,26 @@ impl Pool {
             (speculating.id.clone(), speculating.line.take(), other.then(|| speculating.permit.lock().unwrap().take()).flatten())
         };
         let began = Instant::now();
+        let gave = permit.is_some();
+        drop(permit);
+        let given = began.elapsed();
         let engine = self.engine.get().and_then(Weak::upgrade);
-        // The machine's cancel, durable before its executor hears it, so the run ends canceled (44185654441's stayed running: "an
-        // attempt cannot cancel without durable authority").
-        if let Some(Err(error)) = engine.as_ref().map(|engine| engine.with_journal(|journal| journal.cancel_observed(&run, SPECULATION, None))) {
+        if let Some(engine) = &engine {
+            engine.notify_activity();
+        }
+        // The machine's cancel, recorded before its executor hears it, so the run ends canceled (44185654441's stayed running: "an
+        // attempt cannot cancel without durable authority"). Its GPU went first: 44189566886's synced record took 885 ms.
+        if let Some(Err(error)) = engine.as_ref().map(|engine| engine.with_journal(|journal| journal.cancel_unsynced(&run, SPECULATION))) {
             tracing::warn!(run = %run, "speculative run's cancel not recorded: {error}");
         }
         let told = line.is_some_and(|line| line.send(&Command::Cancel(executor_api::Cancel { request_id: run.clone() })));
-        let gave = permit.is_some();
-        drop(permit);
         if let Some(engine) = engine {
             crate::speculate::stopped(&run, &engine);
             engine.notify_activity();
         }
-        tracing::info!(run = %run, "speculative run ended for {by}: {} its GPU {} in {} µs", if told { "told to stop at its next step," } else { "stopped as its executor starts," },
-            if gave { "given back" } else { "kept for the run of its model, which takes its executor once it stopped" }, began.elapsed().as_micros());
+        tracing::info!(run = %run, "speculative run ended for {by}: its GPU {} in {} µs; {} in {} µs",
+            if gave { "given back" } else { "kept for the run of its model, which takes its executor once it stopped" }, given.as_micros(),
+            if told { "told to stop at its next step" } else { "stopped as its executor starts" }, began.elapsed().as_micros());
         true
     }
 

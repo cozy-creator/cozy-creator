@@ -5,8 +5,8 @@ info:
   description: |
     One machine's API on its pinned-TLS port (design/machine-http-api.md), served by TensorD
     (`crates/tensord/src/api/http.rs`) with the types of `api::machine`. Every request carries
-    `authorization: Cozy-Cap <token>`; refusals are the error envelope. Unknown fields are ignored and a
-    missing field reads as its empty value.
+    `authorization: Cozy-Cap <token>`, and a client names its computer in `cozy-client` (its host name, what Status says sent
+    each run). Refusals are the error envelope. Unknown fields are ignored and a missing field reads as its empty value.
 
     This file follows the server: a change to a route or a body lands here in the same PR.
     `scripts/machine-routes.sh` (the build check) holds TensorD's router and this file to the same
@@ -89,8 +89,9 @@ paths:
   /v1/logs/{name}:
     get:
       summary: >-
-        A log the machine keeps (`tensorfs-transport`, `memory`, `tensord`): its whole lines. With `Accept:
-        text/event-stream`, those and then each batch as it is appended, across rotations.
+        A log the machine keeps (`tensorfs-transport`, `memory`, `tensord`): its whole lines, gzip to a caller whose
+        `Accept-Encoding` takes it. With `Accept: text/event-stream`, those and then each batch as it is appended, across
+        rotations.
       operationId: log
       parameters:
         - {name: name, in: path, description: The log's name, required: true, schema: {type: string}}
@@ -98,6 +99,10 @@ paths:
           in: query
           description: 'Its newest N whole lines; absent or 0: all'
           schema: {type: integer, format: int64, minimum: 0}
+        - name: since_ms
+          in: query
+          description: 'Of those, the lines from the first stamped at or after this instant on (unix ms); a follow ignores it'
+          schema: {type: integer, format: int64}
         - name: Last-Event-ID
           in: header
           description: Follow on from this event's place
@@ -117,14 +122,35 @@ paths:
   /v1/gpus:
     get:
       summary: >-
-        Its NVIDIA GPUs' use (cl-1100), as SSE: a `gpus` event each second while the caller stays, read only then. One with none to
-        read sends one empty reading. It holds no idle clock.
+        Its NVIDIA GPUs' use (cl-1100, cl-1191), as SSE: a `gpus` event each second while the caller stays, read only then: busy
+        share, memory, power against its limit, temperature, clock and the limits on it. One with none to read sends one empty
+        reading. It holds no idle clock.
       operationId: gpus
       responses:
         '200':
           description: 'SSE `event: gpus`'
           content:
             text/event-stream: {schema: {$ref: '#/components/schemas/GpuUse'}}
+  /v1/objects:
+    put:
+      summary: >-
+        Many whole objects in one body (`application/x-cozy-objects`): each an `ObjectHeader` as one JSON line, then its
+        `length` bytes, written as `PUT /v1/objects/{digest}` writes a whole one (cl-1123). The caller sends what
+        `POST /v1/objects/held` said the machine lacks; one larger than 64 MiB goes by `PUT /v1/objects/{digest}`.
+      operationId: put_objects
+      requestBody:
+        content: {application/x-cozy-objects: {schema: {type: string, format: binary}}}
+        required: true
+      responses:
+        '200':
+          description: Each object's held ranges, in the body's order
+          content: {application/json: {schema: {$ref: '#/components/schemas/HeldAnswer'}}}
+        '400':
+          description: A header that is not JSON, an object past its body or too large, or bytes that are not their digest
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '507':
+          description: '`machine_disk_full`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/objects/held:
     post:
       summary: >-
@@ -536,11 +562,15 @@ components:
       description: >-
         The filesystem holding the machine's store. What fills it, as the machine's last sweep measured (0 before
         one): its store, its package environments with what they added to uv's cache, its Runtime (pair, kernels,
-        toolchain); the rest is other.
+        toolchain); the rest is other. `reserve_bytes`, what no download writes into, and `reclaimable_bytes`, the
+        models no process holds that the store could free: a call's weights fit when they are within free past the
+        reserve plus reclaimable (cl-1175).
       properties:
         environments_bytes: {type: integer, format: int64, minimum: 0}
         free_bytes: {type: integer, format: int64, minimum: 0}
         models_bytes: {type: integer, format: int64, minimum: 0}
+        reclaimable_bytes: {type: integer, format: int64, minimum: 0}
+        reserve_bytes: {type: integer, format: int64, minimum: 0}
         runs_bytes: {type: integer, format: int64, minimum: 0}
         runtime_bytes: {type: integer, format: int64, minimum: 0}
         total_bytes: {type: integer, format: int64, minimum: 0}
@@ -820,6 +850,16 @@ components:
               index: {type: integer, format: int32}
               busy_percent: {type: integer, format: int32, description: "The share of its last sample period a kernel ran, as nvidia-smi's GPU-Util."}
               memory_used_bytes: {type: integer, format: int64, description: Its memory in use, every process's.}
+              memory_total_bytes: {type: integer, format: int64, description: Its memory in all (cl-1191; 0 from an older machine).}
+              power_w: {type: integer, format: int32, description: Its power draw now; absent where the driver doesn't say.}
+              power_limit_w: {type: integer, format: int32, description: The power limit its driver enforces; absent where it doesn't say.}
+              temperature_c: {type: integer, format: int32}
+              sm_mhz: {type: integer, format: int32, description: Its SM clock now.}
+              sm_mhz_max: {type: integer, format: int32, description: Its SM clock's most.}
+              throttles:
+                type: array
+                description: 'What holds its clock back now: `power_cap`, `sw_thermal`, `hw_thermal`, `hw_slowdown`, `power_brake`.'
+                items: {type: string}
     RemoveModel:
       type: object
       required: [model]
@@ -1251,7 +1291,7 @@ components:
       type: object
       properties:
         run: {type: string, description: "The caller's id for it; empty: another caller's."}
-        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: a private run's."}
+        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: an encrypted project's run."}
         size: {$ref: '#/components/schemas/JobSize'}
         widths: {type: array, items: {type: integer, format: int32, minimum: 0}}
         chooses: {type: boolean, description: "It gives the machine its width: no count asked, more than one width."}
@@ -1262,6 +1302,11 @@ components:
         gpu_waits: {type: boolean, description: "It runs on its CPU alone while its GPU work waits to begin: all its work is still ahead of it."}
         models: {type: array, items: {type: string}, description: "The repositories it waits to download, its calls' included."}
         bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come, its calls' included."}
+        own: {type: boolean, description: "The caller sent it (cl-1193)."}
+        client: {type: string, description: "The computer that sent it, as it named itself (the `cozy-client` header); absent: unnamed since this machine started (cl-1193)."}
+        stage: {type: string, description: "Its latest progress' stage; absent for an encrypted project's run."}
+        step: {type: integer, format: int64, minimum: 0, description: "Its step of `steps`, as its latest progress says."}
+        steps: {type: integer, format: int64, minimum: 0}
     Timed:
       type: object
       properties:
@@ -1325,6 +1370,7 @@ components:
           description: >-
             An idle rental's release, 15 min after its last job; 0: none (a job is queued or running, or it
             never releases).
+        kept_alive_unix_ms: {type: integer, format: int64, description: "When a keepalive last restarted the idle clock, while it counts from it; absent: none (cl-1193)."}
         kernels:
           type: array
           items: {$ref: '#/components/schemas/KernelVerdict'}
@@ -1377,6 +1423,7 @@ components:
           type: array
           items: {$ref: '#/components/schemas/RunState'}
           description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded, then its `readiness`: `loading`, `loaded` (its call's first step loads nothing) or `evicted` (cl-1123)."
+        ssh_sessions: {type: integer, format: int32, minimum: 0, description: "SSH sessions open on it now (cl-1193)."}
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

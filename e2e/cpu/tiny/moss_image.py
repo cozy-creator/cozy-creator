@@ -101,12 +101,9 @@ CELLS: list[Cell] = [
             {"box": [0.55, 0.7, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]}},
     {"entry": "image", "name": "tool", "payload": {"instructions": {"text": "a red fox in fresh snow"}, "seed": 7,
                                                    "negative_prompt": "blurry"}, "check": size(1024, 1024)},
-    # `edit` and `control` as `generate` calls them, without the LoRA it stacks: what an adapter not applied makes.
-    {"entry": "edit", "name": "plain", "payload": _EDIT, "files": {"prompt.references.0.file": _shared.picture("fox", 512, 512)},
-     "check": size(512, 512)},
-    {"entry": "control", "name": "plain", "payload": _POSED, "files": {"control.0.image": _shared.bones("bones", 512, 512)},
-     "check": size(512, 512)},
-    # With a picture, Moss-Image-Edit on `model`; with a pose map, thedeoxen's pose LoRA: each away from its plain twin.
+    # With a picture, Moss-Image-Edit on `model`; with a pose map, thedeoxen's pose LoRA: each away from its plain twin,
+    # `edit` and `control` as `generate` calls them without the LoRA it stacks (what an adapter not applied makes). Both
+    # are internal, which no person runs: their references were recorded through the stand-in (drive.py) and stand.
     # Another picture or skeleton moves it 0.2-0.7/255 (e2e 43358050938): the tiny DiT reads its references near their
     # mean, so neither has a bar.
     {"entry": "generate", "name": "edit", "payload": _EDIT, "files": {"prompt.references.0.file": _shared.picture("fox", 512, 512)},

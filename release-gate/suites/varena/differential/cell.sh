@@ -1,7 +1,8 @@
 # differential: a model must not know what its memory went through, and one request is one answer. Sourced by cells.sh.
 # Each model runs the same request and seed in each arm, so Paul's unique-request rule doesn't apply: this is correctness,
 # not a benchmark. Arms run in turn, because swapping a package's source ends its executors, and each second call is a
-# real warm repeat: the copies have call memoization stripped, and hook.py records digests of latents and outputs.
+# real warm repeat: the copies have call memoization stripped, and hook.py arms the Runtime's gate seam
+# (`cozy_runtime.differential`, Runtime 0.48 and later), which records digests of latents and outputs.
 #   repeat   base 1 against base 2, warm: byte-identical
 #   checks   vt.checks on, every idle pool unmapped before each use, scratch pages, freed blocks and reused ones perturbed,
 #            guards between large blocks: its calls against base's, byte for byte. `uses` must have reached a pool,
@@ -40,7 +41,7 @@ diff_press() {  # diff_press <name> <package> <function> <args...>: after diff_m
   done
   diff_expect "diff-$name-refill" "diff-$name-base-2" "diff-$name-refill-2"
   diff_expect "diff-$name-noroom" "diff-$name-base-2" "diff-$name-hold-2"
-  [ "$(jq '[.. | .native_steps? // 0] | max' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
+  [ "$(jq '[.. | objects | .graphs? // empty | objects | .[] | .replays? // 0] | add // 0' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
     expect "diff-$name-refill-replayed" FAIL "the second call ran eagerly: nothing refilled for a replay"
   [ "$(jq '[.. | .weight_residency?.evictions? // 0] | max' "diff-$name-refill-2.json" 2>/dev/null)" != 0 ] ||
     expect "diff-$name-refill-left" FAIL "no weight left the card: the replay refilled nothing"
@@ -51,6 +52,11 @@ if [ -z "$PKGS" ]; then
   [ -n "$ONLY" ] && [[ $ONLY != *,differential,* ]] || expect differential FAIL "needs --packages: nothing was run, so nothing is proven"
 else
   mkdir -p "$ARMS"
+  # The arms are the Runtime's gate seam, inert off a dev machine (cr-329): the pod becomes one, and restarts.
+  if [ -z "$ONLY" ] || [[ $ONLY == *,differential,* || $ONLY == *,diff-* ]]; then
+    pod_dev "$CLI" "$M" > /dev/null || expect differential-dev FAIL "the pod's config.toml says no dev = true: the arms stay off"
+    cap off
+  fi
   diff_model sdxl sdxl generate 6GiB uses prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_press sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_eager sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))

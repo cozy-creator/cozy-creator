@@ -8,12 +8,17 @@ cohort's source: those URLs are read at production's origin and those wheels' ha
 released versions only (Paul 11-13: no prereleases for testing), so the committed lock may name an older release of such a
 package than the source the suite's Hub built; never a newer one. Every other byte must be the committed lock's. Prints the
 first line that differs and exits 1, or exits 0.
+
+A committed lock pins only what a machine can fetch: each file it names at production's index must be one the Hub serves (a
+HEAD each, not followed: a redirect to storage is served, a 4xx isn't).
 """
 
 from __future__ import annotations
 
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 PRODUCTION = "https://tensorhub.com"
@@ -65,9 +70,41 @@ def cohort(want: str, got: str) -> str:
     return "\n[[package]]\n".join(blocks)
 
 
+#: At most this many files a lock pins are asked of the Hub, each within its timeout.
+ASKED, TIMEOUT = 32, 20
+FILE = re.compile(r'url = "(' + re.escape(PRODUCTION) + r'/v1/index/[^"]+)"')
+
+
+class Unfollowed(urllib.request.HTTPRedirectHandler):
+    """A redirect is the Hub's answer: the file is served, from storage, which a HEAD there would be refused."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def unserved(committed: str) -> str:
+    """The first file the committed lock pins at production's index that the Hub answers with a 4xx, said; else ''. One it
+    can't ask (a network error, a 5xx) is said on stderr and passes: this judges the lock, not the Hub's health."""
+    opener = urllib.request.build_opener(Unfollowed)
+    for url in sorted(set(FILE.findall(committed)))[:ASKED]:
+        try:
+            opener.open(urllib.request.Request(url, method="HEAD"), timeout=TIMEOUT).close()
+        except urllib.error.HTTPError as answer:
+            if 400 <= answer.code < 500:
+                return f"it pins {url}, which the Hub answers {answer.code}: a committed lock pins only what a machine can fetch"
+            if answer.code >= 500:
+                print(f"lock_same.py: {url}: the Hub answered {answer.code}", file=sys.stderr)
+        except OSError as error:
+            print(f"lock_same.py: {url}: {error}", file=sys.stderr)
+    return ""
+
+
 def main() -> int:
     committed, made = (Path(arg).read_text() for arg in sys.argv[1:3])
     origin = sys.argv[3] if len(sys.argv) > 3 else ""
+    if said := unserved(committed):
+        print(said[:300])
+        return 1
     got = normal(made, origin)
     try:
         want = cohort(normal(committed, origin), got)

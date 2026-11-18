@@ -293,8 +293,8 @@ export class Client {
 
   /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
    *  hears runs only of these. One that ended is told again on the next. */
-  async show(stream: string, projects: string[], machines: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
-    const body = JSON.stringify({ projects, machines })
+  async show(stream: string, projects: string[], machines: boolean, gpus: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
+    const body = JSON.stringify({ projects, machines, gpus })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
     // Older services confirm completion without saying which Readers they could install.
     return response.status === 204 ? null : response.json()
@@ -510,8 +510,8 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name }, undefined, write)
   }
 
-  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
+  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box. */
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
@@ -769,10 +769,6 @@ export class Client {
   }
 
   /** Its GPUs' use, a reading each second while the stream is read (cl-1100). */
-  machineGpuEvents(name: string, signal: AbortSignal): Promise<Response> {
-    return this.opened(`${machine(name)}/gpus`, signal)
-  }
-
   // Packages
 
   packages(q: string, limit: number, signal?: AbortSignal): Promise<PackageSearch> {
