@@ -514,7 +514,8 @@ fn rc_locked(lock: &str) -> Option<Wheel> {
 /// RC's set together, never an RC Runtime on the index's TensorFS, which lacks what the RC's added (gate 44238862903:
 /// `Device.region() takes 3 positional arguments but 4 were given`). The one a lock of `held` (those it holds) takes beside this
 /// very Runtime build while the RC still serves it, so a new build alone moves no lock (cl-1199) and nothing is read of the
-/// Runtime's wheel; else the RC's newest that `runtime`'s `tensorfs` requirement admits. None: `src` selects a source for either
+/// Runtime's wheel; else the RC's newest that `runtime`'s `tensorfs` requirement admits. Either of this cozy's TensorFS series
+/// first (a lock made before the RC's TensorFS was the next minor's moves to it). None: `src` selects a source for either
 /// itself (the developer's cohort: nothing is put beside it), `runtime` names no requirement, the RC serves no build it admits,
 /// or its builds can't be read; the index resolves it then.
 pub(crate) async fn rc_tensorfs_wheel(src: &Path, runtime: &Wheel, held: &[&str]) -> Option<Wheel> {
@@ -526,12 +527,18 @@ pub(crate) async fn rc_tensorfs_wheel(src: &Path, runtime: &Wheel, held: &[&str]
     let builds = crate::rc::tensorfs_builds().await.inspect_err(|e| tracing::warn!("the open RC's TensorFS builds: {}", e.message)).ok()?;
     let wheel = |(build, url): &(Build, String)| Wheel { version: build.version.clone(), url: url.clone(), sha256: build.sha256.clone() };
     let beside = |lock: &&str| lock.contains(&runtime.url);
-    if let Some(taken) = held.iter().copied().filter(beside).find_map(|lock| builds.iter().find(|(_, url)| lock.contains(url.as_str()))) {
+    // This cozy's series first: what a machine with no pair of its own speaks (TensorD's `speaks`). A held build of another stands
+    // while the RC serves none of ours.
+    let ours = |build: &Build| this_series(VersionSpecifiers::from_str(&format!("=={}", build.version)).ok().as_ref());
+    let serves_ours = builds.iter().any(|(build, _)| ours(build));
+    if let Some(taken) = held.iter().copied().filter(beside)
+        .find_map(|lock| builds.iter().find(|(build, url)| lock.contains(url.as_str()) && (ours(build) || !serves_ours)))
+    {
         return Some(wheel(taken));
     }
     let needs = rc_tensorfs(runtime).await?;
-    let admitted = |version: &str| Version::from_str(version).is_ok_and(|version| needs.contains(&version.without_local()));
-    builds.iter().find(|(build, _)| admitted(&build.version)).map(wheel)
+    let admitted = |(build, _): &&(Build, String)| Version::from_str(&build.version).is_ok_and(|version| needs.contains(&version.without_local()));
+    builds.iter().filter(admitted).find(|(build, _)| ours(build)).or_else(|| builds.iter().find(admitted)).map(wheel)
 }
 
 /// Whether a lock is made for a rental's platform, where it takes the RC's TensorFS build (`rc_tensorfs_wheel`): every lock but one
