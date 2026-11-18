@@ -9,10 +9,10 @@ machine must end itself. The provider refuses the end twice (503), then takes th
 (<dir>/machine.pid, its group leader), as a provider ending the container does.
 
 Case `held` (e2e/cli/holdwins.sh, cl-1196): a rental this computer ordered, whose lease grants the keys in <dir>/keys (one a line),
-as a Hub grants the devices of the account that rented it, for 10 min. With <dir>/link_floor.json its lease names that floor for
-the machine's first download, and a slow link the machine reports is answered `replacing` (rentalself.sh's slow_link, th-405).
+as a Hub grants the devices of the account that rented it, for 10 min. With <dir>/slow_link.json its lease names that slow-link
+rule, and a slow link the machine reports is answered `replacing` (rentalself.sh's slow_link, th-405).
 
-  standin.py link <dir> slow|paced  prints one line per thing that rental got wrong of its link, <dir>/link_mbit Mbit/s wide"""
+  standin.py link <dir> slow|landed|paced  prints one line per thing that rental got wrong of its link, <dir>/link_mbit Mbit/s wide"""
 
 import base64
 import http.server
@@ -61,9 +61,9 @@ def serve(dir: str, case: str) -> None:
                 if case == "held":
                     keys = open(os.path.join(dir, "keys")).read().split()
                     lease: dict[str, object] = {"worker_id": worker, "authorized_keys": keys, "lease_seconds": 600}
-                    floor = os.path.join(dir, "link_floor.json")
-                    if os.path.exists(floor):
-                        lease["link_floor"] = json.load(open(floor))
+                    rule = os.path.join(dir, "slow_link.json")
+                    if os.path.exists(rule):
+                        lease["slow_link"] = json.load(open(rule))
                     return answer(self, 200, lease)
                 return answer(self, 200, {"worker_id": worker, "authorized_keys": [], "lease_seconds": LEASE_SECONDS})
             answer(self, 404, {"error": {"code": "worker.route_not_found", "message": self.path, "remedy": "none"}})
@@ -170,8 +170,8 @@ def verdict(dir: str, case: str) -> None:
 
 
 def link(dir: str, case: str) -> None:
-    floor = json.load(open(os.path.join(dir, "link_floor.json")))
-    floor_mbps, window = float(floor["mbps"]), float(floor["window_seconds"])
+    rule = json.load(open(os.path.join(dir, "slow_link.json")))
+    floor_mbps, window = float(rule["mbps"]), float(rule["window_seconds"])
     wide = float(open(os.path.join(dir, "link_mbit")).read())
     # (bytes, seconds) of each report, by signal.
     told: dict[str, list[tuple[float, float]]] = {"slow_link": [], "download": []}
@@ -188,18 +188,22 @@ def link(dir: str, case: str) -> None:
     said = "; ".join(f"{signal} {size / 1e6:.0f} MB over {seconds:.1f} s ({mbps((size, seconds)):.0f} Mbit/s)"
                      for signal, reports in told.items() for size, seconds in reports) or "nothing"
     wrong: list[str] = []
+    log = open(os.path.join(dir, "machine.log"), errors="replace").read()
     if case == "slow":
         if len(slow) != 1 or measured:
             wrong.append(f"through {wide:.0f} Mbit/s, under its lease's {floor_mbps:.0f}, it told its Hub {said}: want one slow_link alone")
         elif slow[0][1] < window or not 0.5 * wide <= mbps(slow[0]) <= 1.25 * wide:
             wrong.append(f"its slow_link says {said}: want the {wide:.0f} Mbit/s link's pace over its lease's {window:.0f} s window or more")
-        if "the Hub is placing this rental on another host" not in open(os.path.join(dir, "machine.log"), errors="replace").read():
+        if "the Hub is placing this rental on another host" not in log:
             wrong.append("its log doesn't say the Hub is placing it on another host, as the Hub answered")
     else:
         if slow or len(measured) != 1:
-            wrong.append(f"through {wide:.0f} Mbit/s, over its lease's {floor_mbps:.0f}, it told its Hub {said}: want one download alone")
-        elif measured[0][0] < 1 << 30 or not floor_mbps <= mbps(measured[0]) <= 1.25 * wide:
+            wrong.append(f"through {wide:.0f} Mbit/s, its lease's rule {floor_mbps:.0f}, it told its Hub {said}: want one download alone")
+        elif measured[0][0] < 1 << 30 or not 0.5 * wide <= mbps(measured[0]) <= 1.25 * wide:
             wrong.append(f"its download says {said}: want 1 GiB or more at the {wide:.0f} Mbit/s link's pace")
+        # Under the rule, holding more than the lease allows: measured, never reported slow, and its log says why.
+        if case == "landed" and "not reported slow" not in log:
+            wrong.append(f"its log doesn't say it holds more than its lease's {rule['landed_bytes_max']} bytes, so not reported slow")
     for found in wrong:
         print(found)
     if not wrong:
