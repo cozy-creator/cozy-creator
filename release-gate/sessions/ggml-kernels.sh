@@ -22,9 +22,9 @@ TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$T
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · $MODELS"
 # The ride-along (optional): `decode` lanes (label=org/name@sha256:…) and `make` lanes (comma-separated recipe lanes of the
-# packages checkout `tree`'s qwen3, quantized on the pod from `model`), each timed by ggml-decode's `decode` drive (warm, plain
-# and with MTP drafting) on this pod after the kernels: one pod tells a lane's kernels from its bytes (q8_0 against q8_0 with
-# its LM head kept bf16, beside int8).
+# packages checkout `tree`'s qwen3, each quantized on the pod from `model` or, written `lane=org/name@sha256:…`, from that
+# bf16 commit), each timed by ggml-decode's `decode` drive (warm, plain and with MTP drafting) on this pod after the kernels:
+# one pod tells a lane's kernels from its bytes (q8_0 against q8_0 with its LM head kept bf16, beside int8).
 # llama.cpp's side built on the runner first (compiling and linking need no GPU): a build that can't link fails here, at $0,
 # not on a pod (44297995601). `arch` names the card's target where the SKU doesn't.
 arch_of() {
@@ -68,8 +68,11 @@ DFIX=$HERE/fixtures/ggml-decode
 drive_check "$FIX/drive" ggml_drive
 drive_lock "$FIX/drive"
 if [ -n "$DECODE$MAKE" ]; then
-  [ -z "$MAKE" ] || { [[ $MODEL == */*@sha256:* ]] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ]; } ||
-    fail "make needs model (org/name@sha256:…) and a packages checkout tree with qwen3"
+  for entry in ${MAKE//,/ }; do
+    from=$MODEL; [[ $entry != *=* ]] || from=${entry#*=}
+    [[ $from == */*@sha256:* ]] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] ||
+      fail "make $entry needs a model (org/name@sha256:…, its own or \`model\`) and a packages checkout tree with qwen3"
+  done
   kernels "$PACKAGES/$TREE/qwen3"
   drive_check "$DFIX/drive" ggml_logits ${TREE:+"qwen3=$PACKAGES/$TREE/qwen3/uv.lock"}
   drive_lock "$DFIX/drive"
@@ -121,11 +124,13 @@ done
 
 if [ -n "$DECODE$MAKE" ]; then
   read -ra pairs <<<"$DECODE"
-  [ -z "$MAKE" ] || step pull-model model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
-  for lane in ${MAKE//,/ }; do
-    step "make-$lane" model quantize "$MODEL" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME" || fail "quantize $lane"
+  declare -A pulled=()
+  for entry in ${MAKE//,/ }; do
+    lane=${entry%%=*} from=$MODEL; [[ $entry != *=* ]] || from=${entry#*=}
+    [ -n "${pulled[$from]:-}" ] || { step "pull-from-$lane" model install "$from" --on "$NAME" || fail "pull $from"; pulled[$from]=1; }
+    step "make-$lane" model quantize "$from" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME" || fail "quantize $lane"
     c=$(made "make-$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
-    pairs+=("$lane=${MODEL%@*}@$c"); say "$lane: ${MODEL%@*}@$c"
+    pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
