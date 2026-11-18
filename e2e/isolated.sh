@@ -307,6 +307,7 @@ case $key in
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp | cli:slow-link) needs='packages spare' ;;
+  cli:lora-slot) needs='packages lorabase' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
   # A tool whose model a small disk has no room for (cl-1175).
@@ -777,7 +778,8 @@ PYH3
   fi
   if [[ " $needs " == *" lorabase "* ]]; then
     # lora_reads (cli/commands.sh, tfs-300): e2e/lora-base, a 16 MiB text encoder (e2e/lora-te's) with a 256 KiB transformer put on
-    # it, one linear `proj`; and e2e/lora-proj, a rank-4 LoRA of `proj` in PEFT's names.
+    # it, one linear `proj`; e2e/lora-base-b, another `proj` on it (lora_slot, cl-1241); and e2e/lora-proj, a rank-4 LoRA of `proj` in
+    # PEFT's names.
     page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
     part_weights "$seed/te.safetensors" text_encoder 4 4194304
     python3 -I - "$seed" <<'PY'
@@ -793,12 +795,14 @@ def write(path, tensors):
     text += b" " * (-len(text) % 8)
     open(path, "wb").write(struct.pack("<Q", len(text)) + text + data)
 write(f"{sys.argv[1]}/proj.safetensors", {"proj.weight": ("F32", [256, 256], 5)})
+write(f"{sys.argv[1]}/proj-b.safetensors", {"proj.weight": ("F32", [256, 256], 8)})
 write(f"{sys.argv[1]}/proj-lora.safetensors", {"proj.lora_A.weight": ("F16", [4, 256], 6), "proj.lora_B.weight": ("F16", [256, 4], 7)})
 PY
     mirror "$seed/te.safetensors:text_encoder" e2e/lora-te f32 0.1.0 "$page" --source-format as-is
     mirror "$seed/proj.safetensors" e2e/lora-base f32 0.1.0 "$page" --source-format as-is --base e2e/lora-te@0.1.0:transformer
+    mirror "$seed/proj-b.safetensors" e2e/lora-base-b f32 0.1.0 "$page" --source-format as-is --base e2e/lora-te@0.1.0:transformer
     standin_lora "$seed/proj-lora.safetensors:transformer" e2e/lora-proj "$page" '' || exit 1
-    log "published e2e/lora-base@0.1.0 (text_encoder, transformer) and e2e/lora-proj@0.1.0 (a LoRA of its proj)"
+    log "published e2e/lora-base@0.1.0 and e2e/lora-base-b@0.1.0 (text_encoder, transformer) and e2e/lora-proj@0.1.0 (a LoRA of their proj)"
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" ltxlora "* ]]; then
