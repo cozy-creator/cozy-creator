@@ -75,31 +75,73 @@ BG="$BG $LLAMA_PID"
 pod_install stage "$PACKAGES/$TREE/$PACKAGE"
 step pull model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
 declare -A REF
+BAD=()  # what failed: a lane of ours, a comparison, llama.cpp's side; the session fails at the end, after judging the rest
 for pair in $(param have ''); do REF[${pair%%=*}]=${pair#*=}; done
 for lane in "${lanes[@]}"; do
   if [ -n "${REF[$lane]:-}" ]; then
     step "pull-$lane" model install "${REF[$lane]}" --on "$NAME" || fail "pull $lane ${REF[$lane]}"
     continue
   fi
-  step "$lane" model quantize "$MODEL" --lane "$lane" --package "./$PACKAGE" --on "$NAME" || fail "quantize $lane"
+  if ! step "$lane" model quantize "$MODEL" --lane "$lane" --package "./$PACKAGE" --on "$NAME"; then
+    grep -m1 '^error' "$OUT/$lane.txt" | tee -a "$R"
+    say "FAILED: quantize $lane; the other lanes are still judged"; BAD+=("quantize $lane"); continue
+  fi
   on_candidates "$lane"
-  c=$(made "$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
+  c=$(made "$lane"); [ -n "$c" ] || { say "FAILED: quantize $lane made no checkpoint"; BAD+=("quantize $lane"); continue; }
   REF[$lane]="${MODEL%@*}@$c"; say "$lane: ${REF[$lane]}"
   n=$(runno "$lane")
   [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$lane-run.json" 2> /dev/null
 done
 
+# 3. Each check as soon as its inputs are on the pod, not after everything: the source once llama.cpp's download is in,
+# each lane of ours once llama-quantize's file of its type is, each --pure file once written (44392334657 failed one lane
+# and judged none).
+checks=(source)
+for lane in "${lanes[@]}"; do [ -z "${REF[$lane]:-}" ] || checks+=("$lane"); done
+for t in "${pure[@]}"; do checks+=("pure:$t"); done
+ready() {  # ready <check>: the pod.log line that says llama.cpp's side made its input
+  case $1 in
+    source) there "grep -q '^[0-9:]* download .* took' /w/out/pod.log" < /dev/null ;;
+    pure:*) there "grep -q '^[0-9:]* llama-quantize --pure ${1#pure:} took' /w/out/pod.log" < /dev/null ;;
+    *) there "grep -q '^[0-9:]* llama-quantize ${1^^} took' /w/out/pod.log" < /dev/null ;;
+  esac
+}
+judge() {  # judge <check>: compare.py on it, its lines into the report
+  local arg=$1 code
+  case $1 in
+    source) ;;
+    pure:*) arg="$1=/w/pure-${1#pure:}.gguf" ;;
+    *) arg="$1=${REF[$1]}:/w/${1^^}.gguf" ;;
+  esac
+  there "PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL $arg" 7200 \
+    < /dev/null > "$OUT/compare-${1/:/-}.jsonl" 2> "$OUT/compare-${1/:/-}.err"; code=$?
+  sed 's/^/    /' "$OUT/compare-${1/:/-}.jsonl" | tee -a "$OUT/compare.jsonl" >> "$R"
+  [ "$code" = 0 ] || { tail -c 1500 "$OUT/compare-${1/:/-}.err" | tee -a "$R"; say "FAILED: $1 differs from llama.cpp's"; BAD+=("$1"); }
+  [ "$code" != 0 ] || say "$1: byte for byte llama.cpp's"
+}
+installed=''
+while [ "${#checks[@]}" -gt 0 ]; do
+  alive=1; kill -0 "$LLAMA_PID" 2> /dev/null || alive=0
+  left=()
+  for c in "${checks[@]}"; do
+    if ready "$c"; then
+      [ -n "$installed" ] || {
+        there "export PATH=\$HOME/.local/bin:\$PATH; uv pip install -q -p /w/py/bin/python /w/${TENSORFS##*/}" < /dev/null ||
+          fail "compare.py's TensorFS on the pod"
+        installed=1
+      }
+      judge "$c"
+    else
+      left+=("$c")
+    fi
+  done
+  checks=("${left[@]}")
+  [ "${#checks[@]}" -gt 0 ] || break
+  [ "$alive" = 1 ] || { say "FAILED: llama.cpp's side ended before ${checks[*]}"; BAD+=("${checks[@]}"); break; }
+  sleep 60
+done
 wait "$LLAMA_PID"; code=$?
 there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
-[ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 2000 /w/out/convert.log" < /dev/null | tee -a "$R"; fail "llama.cpp's side: exit $code"; }
-
-# 3. Compared.
-args=()
-for lane in "${lanes[@]}"; do args+=("$lane=${REF[$lane]}:/w/${lane^^}.gguf"); done
-for t in "${pure[@]}"; do args+=("pure:$t=/w/pure-$t.gguf"); done
-there "export PATH=\$HOME/.local/bin:\$PATH; uv pip install -q -p /w/py/bin/python /w/${TENSORFS##*/} &&
-  PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL ${args[*]}" 7200 \
-  < /dev/null > "$OUT/compare.jsonl" 2> "$OUT/compare.err"; code=$?
-sed 's/^/    /' "$OUT/compare.jsonl" >> "$R"
-[ "$code" = 0 ] || { tail -c 2000 "$OUT/compare.err" | tee -a "$R"; fail "our lanes differ from llama-quantize's (compare.jsonl)"; }
+[ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 2000 /w/out/convert.log" < /dev/null | tee -a "$R"; BAD+=("llama.cpp's side: exit $code"); }
+[ "${#BAD[@]}" = 0 ] || fail "${BAD[*]}"
 say "PASS: ${LANES}${PURE:+ and --pure $PURE} byte for byte llama-quantize's ($LLAMA) on $HFREPO"

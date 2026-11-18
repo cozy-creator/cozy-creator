@@ -1,9 +1,9 @@
 """ggml-ingest, on the pod: our ggml lanes and TensorFS's ggml-ref/1 against llama-quantize's GGUFs of the same source.
 
-    compare.py <hf dir> <store dir> <bf16 ref> <lane>=<ref>:<gguf> ... pure:<TYPE>=<gguf> ...
+    compare.py <hf dir> <store dir> <bf16 ref> [source] <lane>=<ref>:<gguf> ... pure:<TYPE>=<gguf> ...
 
-First the source: every tensor of the Hugging Face checkpoint llama.cpp converted equals the bf16 commit's, byte for
-byte (a fused expert stack against the commit's experts in order). Then each lane: every tensor llama-quantize
+`source`: every tensor of the Hugging Face checkpoint llama.cpp converted equals the bf16 commit's, byte for byte (a
+fused expert stack against the commit's experts in order, each a `gate_and_up_proj`). Each lane: every tensor llama-quantize
 quantized against ours, its type and its block bytes. Then each `--pure` GGUF: every tensor llama-quantize quantized
 against ggml-ref/1 of the same source values, so each block type is proven, not only the ones a mix picks.
 
@@ -74,13 +74,14 @@ def main() -> int:
 
     # The source: llama.cpp converts the same bytes as the commit holds.
     seen, same, missing, differ = 0, 0, [], []
-    for key, data in safetensors(hf):
+    for key, data in safetensors(hf) if "source" in specs else ():
         seen += 1
         fused = re.fullmatch(r"(.*\.mlp\.experts)\.(gate_up|down)_proj(?:\.weight)?", key)
         if key in source:
             ours_bytes = source.read(key).tobytes()
         elif fused:
-            parts = [f"{fused.group(1)}.{e}.{fused.group(2)}_proj.weight" for e in range(int(text["num_experts"]))]
+            own = "gate_and_up" if fused.group(2) == "gate_up" else "down"
+            parts = [f"{fused.group(1)}.{e}.{own}_proj.weight" for e in range(int(text["num_experts"]))]
             if not all(p in source for p in parts):
                 missing.append(key)
                 continue
@@ -92,9 +93,11 @@ def main() -> int:
             same += 1
         else:
             differ.append(key)
-    say(check="source", hf_tensors=seen, commit_tensors=len(source), identical=same, differ=differ[:10],
-        missing=missing[:10])  # fmt: skip
-    failed += bool(differ or missing)
+    if "source" in specs:
+        say(check="source", hf_tensors=seen, commit_tensors=len(source), identical=same, differ=differ[:10],
+            missing=missing[:10])  # fmt: skip
+        failed += bool(differ or missing or not seen)
+    specs = [s for s in specs if s != "source"]
 
     n_layer = int(text["num_hidden_layers"])
     n_expert = int(text.get("num_experts", 0) or 0)
@@ -140,7 +143,7 @@ def main() -> int:
                 if own in source or m.group(1) == "down":
                     pieces.append((own, None))
                     continue
-                fused = f"{p}mlp.experts.{e}.gate_up_proj.weight"
+                fused = f"{p}mlp.experts.{e}.gate_and_up_proj.weight"
                 half = int(source[fused].shape[0]) // 2
                 pieces.append((fused, np.arange(half) + (half if m.group(1) == "up" else 0)))
             return pieces, False
