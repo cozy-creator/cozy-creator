@@ -174,9 +174,41 @@ export function stageParts(progress: Progress): { words: string; count?: string 
   return { words: `${words},`, count }
 }
 
-/** Its own work, as a person reads it: its stage and what it counts, `Rendering, step 6 of 8, 3s left`, `Rewriting the prompt, 65
- *  tokens`. The time is the whole run's, Calcifer's estimate. */
+/** Why a run waits, as Calcifer says it (`waiting for 2 GPUs, held by run PRO6-60, about 2 min`: cl-1187), less the machine state its
+ *  reason repeats (`queued: `), each run `boxOf` knows by its bare number named by its box (`<hero>`). The one wording for the drawer, the
+ *  run list, the canvas face and the machine tabs (cl-1197); none while it waits for nothing. */
+export function waitReason(waiting: string | null | undefined, boxOf?: (run: number) => string | undefined): string {
+  const said = waiting?.replace(/^(queued|preparing|running): /, "") ?? ""
+  return boxOf ? said.replace(/\brun (\d+)/g, (whole, number: string) => { const box = boxOf(Number(number)); return box ? `<${box}>` : whole }) : said
+}
+
+/** `waitReason` as a line. */
+export const waitWords = (waiting: string | null | undefined, boxOf?: (run: number) => string | undefined) => sentence(waitReason(waiting, boxOf))
+
+/** What it waits for alone, `Waiting for 2 GPUs`: its reason up to its first comma, a box's line, which has room for no more (as
+ *  cl-1205's `Waiting for download`: a cut-off line lost its key word). Who holds it and about how long, its machine's tab, its queue,
+ *  its drawer and the run list say whole (`waitWords`). */
+export const waitFor = (waiting: string | null | undefined) => sentence(waitReason(waiting).split(", ")[0])
+
+/** It waits on downloads its progress names (cl-1205's typed `waiting_on`): its box and tile say `Waiting for download`; its rows, its
+ *  drawer and the run list its stage, `Waiting for Sdxl to download`, and never its machine's reason over it, whose bytes are the
+ *  download's to show (Paul: the jobs waiting "don't need to independently report the progress"), so a download wait reads one way. */
+export const downloadWait = (run: Run) => Boolean(run.progress?.waiting_on?.length)
+
+/** What a waiting run waits for, whole, as a row says it: a download wait its stage (`downloadWait`), any other its reason
+ *  (`waitWords`). None while it waits for nothing. */
+export function waitLine(run: Run): string {
+  if (!downloadWait(run)) return waitWords(run.waiting)
+  const own = run.progress?.stage.split(/\s+\/\s+/).at(-1)?.trim()
+  return own ? stageName(own) : "Waiting for download"
+}
+
+/** What it's doing, as a person reads it: what it waits for while it waits (cl-1197; Paul read a 96 s wait for GPUs, shown as its stage
+ *  "Preparing, time left unknown", as stuck), else its stage and what it counts, `Rendering, step 6 of 8, 3s left`, `Rewriting the
+ *  prompt, 65 tokens`. The time is the whole run's, Calcifer's estimate. */
 export function workWords(run: Run): string {
+  const wait = downloadWait(run) ? "" : waitWords(run.waiting)
+  if (wait) return wait
   const progress = run.progress
   if (!progress?.stage && !progress?.total) return ""
   const left = secondsLeft(run)
@@ -190,17 +222,18 @@ export function long(run: Run, now: number): boolean {
   return now - began > 10_000 || (secondsLeft(run) ?? 0) > 10
 }
 
-/** Its stage, how far, and how fast bytes move; what it waits on says first. */
+/** Its stage, how far, and how fast bytes move; what it waits on says first, a download wait by its stage alone (`downloadWait`). */
 export function progressWords(run: Run): string {
   const progress = run.progress
-  if (!progress) return sentence(run.waiting ?? run.machine_state ?? "")
+  const wait = downloadWait(run) ? "" : waitWords(run.waiting)
+  if (!progress) return wait || sentence(run.machine_state ?? "")
   const parts = [stageWords(progress)]
   parts.push(countWords(progress))
   if (progress.bytes_per_s) parts.push(rateWords(progress.bytes_per_s))
   const left = eta(run)
   if (left) parts.push(left)
   const line = parts.filter(Boolean).join(" · ")
-  return run.waiting ? `${sentence(run.waiting)} · ${line}` : line
+  return wait ? `${wait} · ${line}` : line
 }
 
 /** Its own time, never its queue's. */

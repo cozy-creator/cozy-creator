@@ -524,6 +524,7 @@ WEB_2=(
   zoom
   swap-words
   playback
+  steady-face
 )
 WEB_3=(
   focus

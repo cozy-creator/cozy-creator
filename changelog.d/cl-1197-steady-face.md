@@ -1,0 +1,1 @@
+A box's face says a phase only once it has lasted 400 ms (cl-1197): a run whose weights are here and whose environment is installed goes straight to its own work, with no "Downloading…" or "Installing…" flashing by. A real download or install still shows, with its progress, within half a second.
