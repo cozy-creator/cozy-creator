@@ -174,17 +174,6 @@ test('capped: probe', { tag: '@engines' }, async ({ page, project, context, sign
     await knob('probe_cap', null);
   });
 
-  await step('first frame and seeks', async () => {
-    const rows = [];
-    for (const cap of [null, 4 * MB, MB, 512 << 10]) {
-      await knob('probe_cap', cap);
-      rows.push({ way: `URL, ${named(cap)}`, ...(await plain(page, url(), false)) });
-    }
-    await knob('probe_cap', null);
-    rows.push({ way: 'memory', ...(await plain(page, url(), true)) });
-    say('first frame and seeks', rows);
-  });
-
   await step('a file still landing', async () => {
     // Its first 6 MB (about 6 s) and its last 1 MiB (its index) are in place. The element plays from the start and soon asks past them.
     for (const past of [9000, 416, 503]) {
@@ -219,6 +208,17 @@ test('capped: probe', { tag: '@engines' }, async ({ page, project, context, sign
     await knob('probe_cap', null);
   });
 
+  await step('first frame and seeks', async () => {
+    const rows = [];
+    for (const cap of [null, 4 * MB, MB, 512 << 10]) {
+      await knob('probe_cap', cap);
+      rows.push({ way: `URL, ${named(cap)}`, ...(await plain(page, url(), false)) });
+    }
+    await knob('probe_cap', null);
+    rows.push({ way: 'memory', ...(await plain(page, url(), true)) });
+    say('first frame and seeks', rows);
+  });
+
   await step('twelve at once', async () => {
     const windows = [{ page }];
     for (let i = 0; i < 2; i++) {
@@ -227,7 +227,8 @@ test('capped: probe', { tag: '@engines' }, async ({ page, project, context, sign
       await expect(one.page.locator('.stage')).toBeVisible();
       windows.push(one);
     }
-    for (const cap of [null, 4 * MB, 2 * MB, MB, 512 << 10]) {
+    // Firefox: only the cap the page will ask for (all five took it past its lane's 20 minutes in 44246295237).
+    for (const cap of browserName === 'firefox' ? [MB] : [null, 4 * MB, 2 * MB, MB, 512 << 10]) {
       try {
         await knob('probe_cap', cap);
         for (const one of windows) {
