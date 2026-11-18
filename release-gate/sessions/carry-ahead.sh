@@ -6,7 +6,7 @@
 # Qwen Image 2 from a packages checkout (a dev home), every step through this runner's cozy and its Calcifer, on the session's TensorD;
 # evidence is the machine's own log and records.
 # 0. An encrypted project (`cozy new`, its passphrase from a file), unlocked with no idle lock; the rental has qwen-image-2 installed.
-#    `photo` and `wide`, pictures of noise (~12 MB and ~28 MB, so each goes in ranges), imported into it.
+#    `photo` and `wide`, pictures of noise (~6 MB and ~24 MB, so each goes in ranges), imported into it.
 # 1. A page shows it; photo gets Qwen and an edit: Calcifer says photo's guess carried its picture ahead to the rental, an encrypted
 #    project's, and the machine says it landed whole, before any render.
 # 2. The runner's uplink shaped to `mbit`: wide gets Qwen and an edit, and while its picture goes ahead, photo is rendered. The carry
@@ -67,13 +67,13 @@ cozy --json vault --directory "$OUT/sealed" status > "$OUT/vault.json" 2>&1 || f
 jq -e '.encrypted == true and .state == "unlocked"' "$OUT/vault.json" > /dev/null || fail "the project isn't encrypted and unlocked: $(cat "$OUT/vault.json")"
 RUN_PROJECT=$(cd "$OUT/sealed" && pwd)
 noise() { nice -n 19 ffmpeg -v error -y -f lavfi -i "nullsrc=s=$1:d=1,format=rgb24,geq=r='random(1)*255':g='random(2)*255':b='random(3)*255'" -frames:v 1 "$2"; }
-noise 2048x2048 "$OUT/photo.png" && noise 3072x3072 "$OUT/wide.png" || fail "no pictures"
+noise 2048x2048 "$OUT/photo.png" && noise 4096x4096 "$OUT/wide.png" || fail "no pictures"
 for box in photo wide; do
   run_page import "$OUT/$box.png" --name "$box" > "$OUT/$box.json" 2>&1 || fail "import $box: $(tail -c 300 "$OUT/$box.json")"
 done
 PHOTO=sha256:$(sha256sum "$OUT/photo.png" | cut -c1-64) WIDE=sha256:$(sha256sum "$OUT/wide.png" | cut -c1-64)
 WIDE_B=$(stat -c %s "$OUT/wide.png")
-say "cozy $V, a dev home, an encrypted project ($(jq -r .id "$OUT/sealed.json")); photo $(stat -c %s "$OUT/photo.png") bytes ($PHOTO), wide $WIDE_B bytes ($WIDE)"
+say "cozy $V, a dev home, an encrypted project ($(grep -o '"id": *"[^"]*"' "$OUT/sealed.json" | head -1)); photo $(stat -c %s "$OUT/photo.png") bytes ($PHOTO), wide $WIDE_B bytes ($WIDE)"
 quote "$(param need_s 2400)"
 
 shown() { cozy --json machine show "$NAME" > "$1" 2> /dev/null || true; }
