@@ -83,14 +83,15 @@ collect() {
   cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
 }
-# until <stage> <seconds>: the pod says it, else fail.
+# until_stage <stages> <seconds>: the pod says one of <stages> (a regex), else fail. Loaded, a guess whose draft stood still runs
+# ahead at once (cl-1123 D): `loaded` can last less than a look.
 until_stage() {
   local t=0
-  until [ "$(stage)" = "$1" ]; do
+  until [[ "$(stage)" =~ ^($1)$ ]]; do
     sleep 1; t=$((t + 1))
     [ "$t" -lt "$2" ] || { collect; fail "no predicted request was $1 within $2 s: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"; }
   done
-  say "a predicted request is $1 ($t s)"
+  say "a predicted request is $(stage) ($t s)"
 }
 # unload <name>: TensorD restarted, every executor with it; its disk stays.
 unload() {
@@ -128,7 +129,7 @@ run_page add q --tool "$TOOL" --fields "$(jq -nc --arg p "$PROMPT" --argjson tur
   '{instructions: $p, turbo: $turbo, prompt_upsampling: $up, megapixels: 1, aspect_ratio: "1:1", seed: 3}')" > "$OUT/box.json" 2>&1 ||
   fail "the box: $(tail -c 300 "$OUT/box.json")"
 say "box q added: Calcifer predicts its render onto $NAME"
-until_stage loaded "$WAIT"
+until_stage 'loaded|running|done' "$WAIT"
 say "q loaded $(( ($(date +%s%3N) - ASK) / 1000 )) s after the box was added"
 # Its render takes the executor the load left.
 ours render
@@ -144,6 +145,8 @@ if [ "$YIELD" = true ]; then
   # which plans it again and loads it (the GPU is idle); while it does, SDXL is sent.
   ours other-fetch
   step other-fetch run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4 || fail "the other call's fetch"
+  # A new draft, so the box's request is planned and loaded again rather than answered by its run ahead.
+  run_page set q --fields '{"seed": 6}' > "$OUT/edit.json" 2>&1 || fail "the edit: $(tail -c 300 "$OUT/edit.json")"
   unload yield
   until_stage loading 300
   ours other
@@ -151,7 +154,7 @@ if [ "$YIELD" = true ]; then
   step other run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=5 || fail "the other call"
   report other "$(runno other)"
   # Then the GPU is idle again: it loads again, and the idle clock that began when SDXL ended stays where it was.
-  until_stage loaded 600
+  until_stage 'loaded|running|done' 600
   ARMS="$ARMS other"
 fi
 ours end
@@ -159,7 +162,24 @@ kill $BG 2> /dev/null; BG=''
 
 collect
 sed 's/^/version before /' "$OUT/versions.txt" >> "$R"
-grep -aE "load ahead|queue: goes after" "$OUT/tensord.log" | cut -c1-300 | tee -a "$R" > "$OUT/load-ahead.log"
+grep -aE "load ahead|queue: goes after|queue: waiting for a free GPU|runs as if it were sent|adopts the speculative run|takes what it made ready" "$OUT/tensord.log" |
+  cut -c1-300 | tee -a "$R" > "$OUT/load-ahead.log"
+# The two waits a wake could stall (cl-1185): a load's end to the run it hands its executor to, and a call that waits for the GPU a
+# load holds to its start.
+python3 -I - "$OUT/load-ahead.log" <<'PY' | tee -a "$R"
+import sys
+from datetime import datetime
+lines = open(sys.argv[1]).read().splitlines()
+at = lambda line: datetime.fromisoformat(line.split()[0].rstrip("Z")).timestamp()
+for loaded in (l for l in lines if "its models are on GPU" in l):
+    nxt = [l for l in lines if at(l) >= at(loaded) and ("runs as if it were sent" in l or "takes what it made ready" in l)][:1]
+    if nxt:
+        print(f"handoff: loaded at {loaded.split()[0]}, its run sent {1000 * (at(nxt[0]) - at(loaded)):.1f} ms later")
+for wait in (l for l in lines if "queue: waiting for a free GPU" in l):
+    went = [l for l in lines if at(l) >= at(wait) and "queue: goes after" in l and "free GPU" in l][:1]
+    if went:
+        print(f"yield: a call waited for the GPU at {wait.split()[0]}, went {1000 * (at(went[0]) - at(wait)):.1f} ms later")
+PY
 python3 - "$OUT" "$SENT" $ARMS <<'PY' | tee -a "$R" > "$OUT/summary.json"
 import json, sys
 out, sent, names = sys.argv[1], int(sys.argv[2]), sys.argv[3:]

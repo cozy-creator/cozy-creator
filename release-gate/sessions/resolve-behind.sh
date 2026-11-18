@@ -39,7 +39,8 @@ trap 'code=$?; claim; (exit "$code"); finish' EXIT
 quote "$(param seconds 1800)"
 GUARD_ALSO=own guard
 rent
-for _ in $(seq 180); do
+# A new pod's boot update settled first; a bundle's pod is settled (its idle clock runs meanwhile).
+[ -n "${ON:-}" ] || for _ in $(seq 180); do
   cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
   [ "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" = current ] && [ "$(jq -r '.state // empty' "$OUT/show-rc.json")" = ready ] && break
   sleep 5
