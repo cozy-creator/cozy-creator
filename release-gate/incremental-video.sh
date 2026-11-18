@@ -17,6 +17,7 @@
 ONLY=  # the suites' --only chose their cells, not these
 IV_RC=rc/0.27.0  # the open RC both bases are read from
 IV_PY=(python3 -I "$HERE/incremental-video.py")
+IV_AT= IV_BASE_AT= IV_BASE= IV_BASE_V= IV_LAT= IV_LANE=  # set -u: said even when a step that sets them didn't run
 IV_SHOT=(summary="A lighthouse on a rocky coast at dusk, the sea rising." soundscape="Waves breaking, wind, gulls." turbo:=true seed:=$((R + 1210))
   "beats:=$(jq -cn '[{duration: 8, description: "[Shot 1] The beam sweeps over the dark sea as waves roll in and break on the rocks."},
     {duration: 8, description: "The camera rises along the lighthouse as the wind picks up and spray climbs the tower."},
@@ -113,9 +114,16 @@ IV_PKG_BASE=$(git -C "$PKGS" merge-base HEAD FETCH_HEAD 2> /dev/null)
 [ -n "$IV_PKG_BASE" ] && [ "$IV_PKG_BASE" != "$(git -C "$PKGS" rev-parse HEAD)" ] && git -C "$PKGS" worktree add -q --detach "$OUT/packages-before" "$IV_PKG_BASE" \
   || { expect incremental-video FAIL "no merge-base of packages_ref with the packages $IV_RC to compare it with (${IV_PKG_BASE:-none})"; return 0; }
 ln -sfn "$OUT/packages-before/minimax-h3" "$OUT/minimax-h3-before"
+# Its Triton sets, built as gate.sh built the candidate's while the rental booted: each arm's first request finds its own.
+if [ -x "$PKGS/scripts/triton.sh" ]; then
+  ( "$PKGS/scripts/triton.sh" "$OUT/packages-before/minimax-h3" > kernels-minimax-h3-before.log 2>&1; echo $? > kernels-minimax-h3-before.status ) &
+fi
 
 if iv_base; then
   log "incremental-video: before on Runtime $IV_BASE_V ($IV_BASE_AT), packages $IV_PKG_BASE; after on Runtime $rt ($IV_AT), packages $(git -C "$PKGS" rev-parse HEAD); cozy $v and TensorFS $tfs in both"
+  while [ -x "$PKGS/scripts/triton.sh" ] && [ ! -s kernels-minimax-h3-before.status ]; do sleep 2; done
+  [ ! -x "$PKGS/scripts/triton.sh" ] || [ "$(cat kernels-minimax-h3-before.status)" = 0 ] ||
+    log "incremental-video: before's Triton sets did not build, so its run compiles them: $(tail -c 200 kernels-minimax-h3-before.log | tr '\n' ' ')"
   iv_runtime "$IV_BASE" "$IV_BASE_V" before && iv_arm before ./minimax-h3-before/generate
 else
   expect incremental-video FAIL "no base Runtime, so no before arm: $(tail -n 1 gate.log | cut -c1-200)"
