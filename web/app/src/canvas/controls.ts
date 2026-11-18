@@ -22,7 +22,7 @@ function membersOf(rows: Row[]): ToolField[] {
 }
 
 /** A box from whatever its fields hold, for a tool the list doesn't know: what it holds is what can be edited, and text is always there to type. */
-function fromFields(fields: Record<string, unknown>): ToolField[] {
+export function fromFields(fields: Record<string, unknown>): ToolField[] {
   const held = Object.entries(fields).flatMap(([field, value]): ToolField[] => {
     if (OWN.includes(field)) return []
     if (rowsIn(value).length) return [{ field, type: "group", list: true, label: fieldWords(field), min_items: 1, members: membersOf(rowsIn(value)) }]
@@ -57,8 +57,7 @@ export const OWN = ["description", "models", "lora", "node_kind", "selected_vers
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  const hidden = tool?.package.split("/").at(-1) === "minimax-h3" ? ["seed", "quality", "steps", "turbo"] : ["seed"]
-  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && !hidden.includes(field.field)).map((field) => {
+  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && field.field !== "seed").map((field) => {
     const single = field.type === "shape" && field.ratios?.length === 1 ? field.ratios[0] : field.options?.length === 1 ? field.options[0] : field.type === "number" && field.min != null && field.min === field.max ? field.min : undefined
     const value = field.default ?? single
     const fixed = value != null && !(typeof value === "string" && value.toLowerCase() === "auto")
@@ -100,7 +99,7 @@ export const fieldWords = (field: string) => field[0].toUpperCase() + field.slic
 
 /** What it holds that no field declares, such as a hand-written key: it reaches a render all the same. Its description is its own line, and a LoRA or a fine-tune is an add-on. */
 export const heldBeyond = (fields: Record<string, unknown> | undefined, declared: ToolField[]) =>
-  Object.entries(fields ?? {}).filter(([field, value]) => !["seed", "quality", "steps", "turbo"].includes(field) && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
+  Object.entries(fields ?? {}).filter(([field, value]) => field !== "seed" && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
 
 /** What a slot or a prompt's mention can hold, in words. */
 export const WANTED: Record<Media, string> = { image: "an image", video: "a video", audio: "audio" }

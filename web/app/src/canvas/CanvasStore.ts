@@ -1554,8 +1554,6 @@ export class CanvasStore {
     if (!also.take && id) this.aims.set(id, take)
     also = { ...also, take }
     if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
-    const tool = this.tools.get().get(asset.tool ?? "")
-    if (tool?.package.split("/").at(-1) === "minimax-h3" && tool.fields.some((field) => field.field === "turbo")) this.setDraft(key, "turbo", true)
     const local = madeHere(asset.tool)
     const on = local ? ["local"] : this.machines()
     const saved = this.save(key)
@@ -1971,7 +1969,7 @@ export class CanvasStore {
     const known = this.tools.get().get(view.asset.tool ?? "")
     const word = known ? toolName(known) : "the tool"
     const words = holdsPictures(view.asset) ? "Its images stay." : `It's still ${an(view.asset.kind)} ${view.asset.kind} box.`
-    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `Took ${word} off ${name}. ${words}`)
+    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, known), `Took ${word} off ${name}. ${words}`)
   }
 
   private retool(key: string, step: ToolStep, said?: string) {
