@@ -60,7 +60,7 @@ rental_self_case() {
 # loopback, 1500-byte packets, as ondemand_share's).
 #   slow    60 Mbit/s: one `slow_link`, the link's pace over its window, answered `replacing`, which its log says; no `download`.
 #   paced   240 Mbit/s: no `slow_link`; one `download`, 1 GiB or more at the link's pace.
-# On rc/0.27.0 the slow rental sent no `slow_link`.
+# On rc/0.27.0 the slow rental told its Hub nothing until its install ended, 234 s in: one `download` of the whole, 58 Mbit/s.
 slow_link() {
 step "a rental whose first download stays under its lease's floor tells its Hub once; over it, the pace it sustained (th-405)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "slow link: a fresh GitHub Linux runner only"; return 0; }
@@ -86,6 +86,8 @@ slow_link_case() {
     [ -z "$install" ] || { kill "$install" 2> /dev/null || true; wait "$install" 2> /dev/null || true; }
     [ -z "$pid" ] || { kill -KILL -- "-$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true; }
     kill "$standin" 2> /dev/null || true; wait "$standin" 2> /dev/null || true
+    # Its store holds the weights it fetched: none of them goes into the run's artifacts.
+    rm -rf "$d/root"
     sudo tc qdisc del dev lo root 2> /dev/null || true
     sudo ip link set dev lo mtu 65536 || true
     timeout 60 "$COZY" --json machine end "$name" --force -y > "$d/end.json" 2>&1 || true
