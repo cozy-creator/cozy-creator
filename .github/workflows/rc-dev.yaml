@@ -86,7 +86,10 @@ jobs:
           pattern: '*-${{ github.sha }}'
           path: artifacts
       # New files first, SHA256SUMS next (a reader sees the last builds or these, whole), builds past the newest KEEP of
-      # their kind last. A kind not built this time keeps its files and lines.
+      # their kind last. A kind not built this time keeps its files and lines. SHA256SUMS is swapped by name, never deleted
+      # under a reader (cl-1128: `--clobber` deleted it, then uploaded the new one): the new one uploaded as SHA256SUMS.new, the
+      # last renamed SHA256SUMS.old, the new renamed SHA256SUMS. A reader that finds no SHA256SUMS reads SHA256SUMS.old (Calcifer's
+      # rc.rs), which stays until the next swap. A reader beside the swap, bounded, says what it read: never neither.
       - name: The RC's prerelease holds this build and the newest earlier ones
         env:
           BUILD: ${{ needs.changed.outputs.build }}
@@ -127,7 +130,8 @@ jobs:
               fi
             done <<< "$old"
             for name in $held; do
-              if [ "$name" != SHA256SUMS ] && ! grep -qxF "$name" <<< "$named" && ! printf '%s\n' "${files[@]}" | grep -qxF "$name"; then
+              case $name in SHA256SUMS | SHA256SUMS.old | SHA256SUMS.new) continue ;; esac
+              if ! grep -qxF "$name" <<< "$named" && ! printf '%s\n' "${files[@]}" | grep -qxF "$name"; then
                 gh release download "$tag" -R "$REPO" -p "$name" -D ../unnamed --clobber
                 (cd ../unnamed && sha256sum "$name")
               fi
@@ -139,8 +143,31 @@ jobs:
               }' > SHA256SUMS
           cat SHA256SUMS
           gh release upload "$tag" -R "$REPO" --clobber "${files[@]}"
-          gh release upload "$tag" -R "$REPO" --clobber SHA256SUMS
-          listed=" $(awk '{print $2}' SHA256SUMS | tr '\n' ' ') SHA256SUMS "
+          asset() { gh api "repos/$REPO/releases/tags/$tag" --jq ".assets[] | select(.name == \"$1\") | .id"; }
+          rename_asset() { gh api -X PATCH "repos/$REPO/releases/assets/$1" -f name="$2" > /dev/null; }
+          gone=$(asset SHA256SUMS.new); [ -z "$gone" ] || gh api -X DELETE "repos/$REPO/releases/assets/$gone"
+          cp SHA256SUMS SHA256SUMS.new && gh release upload "$tag" -R "$REPO" SHA256SUMS.new
+          base="https://github.com/$REPO/releases/download/$tag"
+          (n=0 sums=0 old=0 neither=0
+           while [ ! -e swapped ] && [ $n -lt 300 ]; do
+             if curl -fsS -o /dev/null --max-time 5 "$base/SHA256SUMS"; then sums=$((sums + 1))
+             elif curl -fsS -o /dev/null --max-time 5 "$base/SHA256SUMS.old"; then old=$((old + 1))
+             else neither=$((neither + 1)); fi
+             n=$((n + 1)); sleep 0.2
+           done
+           echo "$sums $old $neither" > watched) &
+          watcher=$!
+          sleep 2
+          gone=$(asset SHA256SUMS.old); [ -z "$gone" ] || gh api -X DELETE "repos/$REPO/releases/assets/$gone"
+          last=$(asset SHA256SUMS); [ -z "$last" ] || rename_asset "$last" SHA256SUMS.old
+          # A new one that won't take the name puts the last back: a reader is never left with only SHA256SUMS.old.
+          rename_asset "$(asset SHA256SUMS.new)" SHA256SUMS || { [ -z "$last" ] || rename_asset "$last" SHA256SUMS; touch swapped; exit 1; }
+          sleep 2
+          touch swapped && wait "$watcher"
+          read -r sums old neither < watched
+          echo "$tag's index swapped: a reader beside it read SHA256SUMS $sums times, SHA256SUMS.old $old, neither $neither" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$neither" = 0 ] || { echo "::error::a reader found no index $neither times during the swap"; exit 1; }
+          listed=" $(awk '{print $2}' SHA256SUMS | tr '\n' ' ') SHA256SUMS SHA256SUMS.old SHA256SUMS.new "
           for name in $held; do
             case $listed in *" $name "*) ;; *) gh release delete-asset "$tag" "$name" -R "$REPO" -y ;; esac
           done
