@@ -20,6 +20,7 @@
 #   tensorfs, runtime   wheel sources (required)
 #   have      space-separated lane=org/name@sha256:… already written: pulled, not quantized again
 #   seconds   what the cap must buy (5400)
+#   scale     multiplies the pod's phase deadlines (1; 2 for the 35B MoE)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-ingest
@@ -55,7 +56,8 @@ IFS=, read -ra lanes <<<"$LANES"
 IFS=, read -ra pure <<<"$PURE"
 types=("${lanes[@]^^}")
 for t in "${pure[@]}"; do types+=("pure:$t"); done
-there "bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" 10800 < /dev/null & LLAMA_PID=$!
+SCALE=$(param scale 1); [[ $SCALE =~ ^[1-9]$ ]] || fail "scale: 1 to 9"
+there "SCALE=$SCALE bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" $((10800 * SCALE)) < /dev/null & LLAMA_PID=$!
 
 # 1. Ours.
 step pull model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
