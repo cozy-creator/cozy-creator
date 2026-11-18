@@ -168,15 +168,20 @@ impl Runs {
         records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record).map(|state| state.id)).collect()
     }
     /// The runs here not ended that read `model` (org/name), each once by the id its sender gave it: one downloading it now, and
-    /// one whose plan binds it (a child by its root's).
-    pub(crate) fn reading(&self, model: &str) -> Result<Vec<String>, Error> {
+    /// one whose plan binds it (a child by its root's). `asker` hears its own by their ids, any other's counted (cl-1223).
+    pub(crate) fn reading(&self, model: &str, asker: &str) -> Result<crate::others::Others, Error> {
         let engine = &self.service.engine;
         let named = |name: &str| name.eq_ignore_ascii_case(model);
         let mut runs: Vec<String> = crate::activity::downloading().into_iter()
             .filter(|(_, models)| models.iter().any(|m| named(m)))
             .map(|(run, _)| run)
             .collect();
+        // Who sent each, by the id it sent it under.
+        let mut senders = std::collections::HashMap::new();
         for record in engine.nonterminal(usize::MAX).map_err(problem)? {
+            if let Some(submission) = record.submission.as_ref() {
+                senders.insert(submission.request_id.clone(), submission.actor.clone());
+            }
             let Some(submission) = record.submission.as_ref().filter(|s| !s.preparation_id.is_empty()) else { continue };
             // A closed project's runs run nothing now.
             let Ok(scope) = engine.private_storage(&record.id) else { continue };
@@ -194,7 +199,11 @@ impl Runs {
         }
         runs.sort();
         runs.dedup();
-        Ok(runs)
+        let reads = |id: &str| match senders.get(id).is_some_and(|sender| sender == asker) {
+            true => crate::others::Read::Id,
+            false => crate::others::Read::No,
+        };
+        Ok(crate::others::Others::of(runs, reads))
     }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {

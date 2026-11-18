@@ -545,8 +545,11 @@ impl LocalSources {
             false => service.engine.waiting(run, reason),
         };
         let mut waited = false;
+        let project = crate::private_io::current();
         let _installing = installer.take(&caller, order, |holder| {
-            let reason = match holder {
+            // The package is this run's own; the run installing it as this run's readers hear it (cl-1223).
+            let reads = |id: &str| crate::others::read_by(&service.engine, actor, project.as_ref(), id);
+            let reason = match crate::others::Others::of(holder, reads).said("and") {
                 Some(holder) => format!("waiting for {holder} to install {package}"),
                 None => format!("waiting for another render to install {package}"),
             };
@@ -574,6 +577,7 @@ impl LocalSources {
             stop: stop.cloned(),
             order,
             caller: service.engine.caller_id(run),
+            reads: published::reads_of(&service.engine, actor),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
                     if let Err(error) = engine.waiting(&waiter, reason) {

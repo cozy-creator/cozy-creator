@@ -9,7 +9,10 @@ use std::{
     sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
 };
 
-use crate::stop::Stop;
+use crate::{
+    others::{Others, Read},
+    stop::Stop,
+};
 
 pub(crate) static INSTALLS: LazyLock<Line> = LazyLock::new(Line::default);
 
@@ -100,9 +103,17 @@ impl Line {
     }
 
     /// Run `caller`'s turn to do `what`, at `order` (smaller first, then arrival). While it waits,
-    /// `said` hears its place and whose turn it is, and None once its turn comes. A run holding the
-    /// turn already has it at once. None: `stop` ended the wait.
-    pub(crate) fn turn(&'static self, order: u64, caller: &str, what: &str, stop: Option<&Stop>, said: &dyn Fn(Option<String>)) -> Option<Turn> {
+    /// `said` hears its place and whose turn it is as its readers may (`reads`, `behind`), and None once its turn comes. A run
+    /// holding the turn already has it at once. None: `stop` ended the wait.
+    pub(crate) fn turn(
+        &'static self,
+        order: u64,
+        caller: &str,
+        what: &str,
+        stop: Option<&Stop>,
+        said: &dyn Fn(Option<String>),
+        reads: &dyn Fn(&str) -> Read,
+    ) -> Option<Turn> {
         let mut state = self.state();
         if let Some(holder) = state.holder.as_mut().filter(|holder| holder.caller == caller) {
             holder.held += 1;
@@ -149,14 +160,15 @@ impl Line {
                 return None;
             }
             let place = ordinal(state.waiting.range(..key).count() + 1);
-            let text = match &state.holder {
-                Some(holder) => format!("{place} in line to install, after {} installs {}", holder.caller, holder.what),
+            let holder = state.holder.as_ref().map(|holder| (holder.caller.clone(), holder.what.clone()));
+            let text = match &holder {
+                Some((holder, what)) => format!("{place} in line to install, after {holder} installs {what}"),
                 None => format!("{place} in line to install"),
             };
             if shown.as_ref() != Some(&text) {
                 drop(state);
                 tracing::info!(run = caller, "install line: {text}");
-                said(Some(text.clone()));
+                said(Some(behind(&place, holder.as_ref(), reads)));
                 shown = Some(text);
                 state = self.state();
                 continue;
@@ -216,6 +228,20 @@ impl Drop for Raised {
         if orders.is_empty() {
             state.raised.remove(&self.caller);
         }
+    }
+}
+
+/// A waiting run's place behind `holder` (its caller's id, and the package it installs) as the run's readers hear it (cl-1223): their
+/// own project's run and its package, a run they read by id alone without it, another project's install only as that.
+fn behind(place: &str, holder: Option<&(String, String)>, reads: &dyn Fn(&str) -> Read) -> String {
+    let Some((holder, what)) = holder else { return format!("{place} in line to install") };
+    let whose = Others::of([holder], reads);
+    match (whose.read, whose.said("and")) {
+        (Read::No, _) => format!("{place} in line to install, after another project's install"),
+        (Read::Project, Some(run)) => format!("{place} in line to install, after {run} installs {what}"),
+        (Read::Id, Some(run)) => format!("{place} in line to install, after {run} installs its package"),
+        // Its project's list item: a guess, which a run's install takes the line from.
+        (_, None) => format!("{place} in line to install"),
     }
 }
 
