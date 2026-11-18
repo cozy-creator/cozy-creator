@@ -216,6 +216,11 @@ packages RC> -f sku=rtx-a6000 -f disk=200 -f cap=6 -f cozy=<dev-build run> -f pa
 `upscale` (se-147) runs picture Upscale tools (`candidates`: {name, tree, tool, fields, from}) from `packages_refs` checkouts on one
 rental, over `fixtures/upscale-bench` (225 px JPEGs of clean pictures), and scores each output against its clean picture (LPIPS, DISTS,
 PSNR) and with none (MUSIQ, CLIP-IQA) on the runner after the rental ends; `$OUT/sheets` lays them side by side.
+`qwen-cutout` (se-154) runs `qwen-image-2/image` asked to remove the background, from `packages_refs` checkouts on one rental, over two
+synthetic portraits it makes first, Vermeer's Pearl and a teapot photo (`fixtures/ltx-images`), Turbo and full, and judges each
+output's alpha on the runner (`fixtures/qwen-cutout/judge.py`: cleared, solid and partial shares, edge noise, painted-checkerboard
+tiles), with sheets of each over white, black and a checkerboard. A package that takes another of its checkout from the Hub (qwen-image-2
+takes birefnet) runs, in a gate (`pkg`) or a session (`step run <path>`), from `local-sources.sh`'s copy, as a dev home stages it.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.

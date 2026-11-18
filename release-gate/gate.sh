@@ -382,7 +382,16 @@ pkg() {
         expect "kernels-${d##*/}" FAIL "its Triton sets did not build: $(tail -c 300 "kernels-${d##*/}.log")" >&2
       fi
     fi
-    ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
+    # One that takes another package of the checkout from the Hub (`{ index = "tensorhub" }`), which holds no release of an
+    # RC's package, runs from a copy taking it by path (local-sources.sh), as a dev home's checkout stages it (xs-195, se-154).
+    # The copy is a folder in $OUT, never a link to one: its path dependency is relative to where it is.
+    if grep -qs '= *{ *index *= *"tensorhub"' "$d/pyproject.toml"; then
+      [ -d "$OUT/${d##*/}" ] && [ ! -L "$OUT/${d##*/}" ] || "$HERE/local-sources.sh" "$d" "$OUT/${d##*/}" "$PKGS" > /dev/null ||
+        ln -sfn "$d" "$OUT/${d##*/}"
+    else
+      ln -sfn "$d" "$OUT/${d##*/}"
+    fi
+    echo "./${d##*/}/$2"
   else echo "$1/$2"; fi
 }
 output() { run_output "$OUT" "$1" "$2"; }
