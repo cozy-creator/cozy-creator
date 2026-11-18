@@ -10,7 +10,7 @@
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (`tensorfs`, `runtime`: wheel sources
 # as lib.sh `wheel_from` takes; the Runtime a native dev build carrying `_ggml`).
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
-# (3600); the ride-along's decode, make, model and tree (below).
+# (3600); built (a pod-session run that built llama.cpp on a runner: below); the ride-along's decode, make, model and tree.
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -33,13 +33,24 @@ ARCH=$(param arch '')
   rtx-3090* | rtx-3080* | rtx-3070* | rtx-3060* | rtx-a4000 | rtx-a5000 | rtx-a6000 | a40) ARCH=86-real ;;
   *) fail "arch: no target known for $SKU" ;;
 esac
-if ! W=$OUT/llama-check CUDA=$OUT/llama-check/cuda ARCH=$ARCH BUILD_ONLY=1 timeout 3600 bash "$FIX/pod.sh" "$LLAMA" "$LLAMA_SUM" \
+# `built`: a pod-session run whose report says a runner built this llama.cpp for this target (this tree's $0 pre-flight):
+# a rented dispatch naming it builds nothing again, so its quote comes minutes after the dispatch, not a build later
+# (44392328972 quoted 13 min in, at a price that had moved from the pre-flight's).
+BUILT=$(param built '')
+if [ -n "$BUILT" ]; then
+  gh run download "$BUILT" -R cozy-creator/cozy-creator -n "session-ggml-kernels-$BUILT" -D "$OUT/built" > /dev/null 2>&1
+  line=$(grep -m1 "llama.cpp $LLAMA builds for $ARCH on the runner" "$OUT/built/results.txt" 2> /dev/null) ||
+    fail "built: pod-session $BUILT's report has no llama.cpp $LLAMA build for $ARCH on a runner"
+  say "llama.cpp $LLAMA for $ARCH: built on a runner by pod-session $BUILT (${line#* }); not built again"
+  rm -rf "$OUT/built"
+elif ! W=$OUT/llama-check CUDA=$OUT/llama-check/cuda ARCH=$ARCH BUILD_ONLY=1 timeout 3600 bash "$FIX/pod.sh" "$LLAMA" "$LLAMA_SUM" \
   > "$OUT/llama-check.out" 2>&1; then
   tail -c 1500 "$OUT/llama-check/out/build.log" "$OUT/llama-check.out" 2> /dev/null | tee -a "$R"
   fail "llama.cpp $LLAMA doesn't build for $ARCH on the runner"
+else
+  say "llama.cpp $LLAMA builds for $ARCH on the runner: $(tail -n 1 "$OUT/llama-check/out/pod.log")"
+  rm -rf "$OUT/llama-check"
 fi
-say "llama.cpp $LLAMA builds for $ARCH on the runner: $(tail -n 1 "$OUT/llama-check/out/pod.log")"
-rm -rf "$OUT/llama-check"
 DECODE=$(param decode '') MAKE=$(param make '') MODEL=$(param model '') TREE=$(param tree '')
 DFIX=$HERE/fixtures/ggml-decode
 . "$DFIX/preflight.sh"
