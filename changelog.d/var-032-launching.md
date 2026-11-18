@@ -1,0 +1,1 @@
+TensorFS: `tensorfs.varena.torch.launching(graph, stream=)` holds a captured graph's working pool around any launch that runs it, such as a larger graph that holds its clone, as `replay` holds it around a replay. `replay` now uses it (var-032).
