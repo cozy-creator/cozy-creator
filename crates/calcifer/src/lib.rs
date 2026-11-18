@@ -3295,7 +3295,8 @@ impl Calcifer {
     /// project's files and code go to any machine its runs go to, as before cl-1123 carried an encrypted project's (#3857). An
     /// `encrypted` project's go only to one of this account's own (Paul, 11-18: "What really matters is that we can trust the remote
     /// machine as safe"): this computer's, or one it rented; another computer's, added by address (`Machines::add`), is its owner's.
-    fn ahead_link(&self, machine: &str, encrypted: bool) -> Result<Link, String> {
+    /// Where this refuses an encrypted project, its guess lists no item either (`project::guess::staged`).
+    pub(crate) fn ahead_link(&self, machine: &str, encrypted: bool) -> Result<Link, String> {
         let (row, link, ..) = self.machine(machine)?;
         if encrypted && !matches!(row.kind, ::api::calcifer::MachineKind::Local | ::api::calcifer::MachineKind::Rental) {
             return Err(format!("{machine} is another computer's, which this account doesn't own"));
