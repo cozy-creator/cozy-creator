@@ -65,12 +65,15 @@ say "cozy model ls --on local, before:"; sed 's/^/  /' "$OUT/models-before.txt" 
 say "cozy model ls --on local, after:"; sed 's/^/  /' "$OUT/models-after.txt" | tee -a "$R"
 
 # What happened, by time after the box was added: Calcifer's prediction lines of this project and its lists to local; TensorD's list
-# items; and the weights local landed (TensorFS), summed.
-python3 -I - "$OUT/calcifer.log" "$OUT/tensord-local.log" "$OUT/marks.txt" "$RUN_PROJECT" "$OUT/tensorfs-local.log" <<'PY' | tee "$OUT/timeline.txt" | tee -a "$R"
+# items; and the weights local landed (TensorFS's lines in TensorD's log), summed.
+python3 -I - "$OUT/calcifer.log" "$OUT/tensord-local.log" "$OUT/marks.txt" "$RUN_PROJECT" <<'PY' | tee "$OUT/timeline.txt" | tee -a "$R"
 import datetime, re, sys
-calcifer, tensord, marks, folder, tensorfs = sys.argv[1:6]
+calcifer, tensord, marks, folder = sys.argv[1:5]
 def ms(stamp):
-    return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+    try:
+        return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
 marked = [(int(at), what) for at, what in (line.split(" ", 1) for line in open(marks).read().split("\n") if line)]
 added = marked[0][0]
 def lines(path, keep):
@@ -79,11 +82,11 @@ def lines(path, keep):
         if stamp[:4].isdigit() and ms(stamp) >= added - 5000 and keep(line):
             yield ms(stamp), re.sub(r"\x1b\[[0-9;]*m", "", line.split("  INFO ", 1)[-1].split("  WARN ", 1)[-1]).strip()
 said = sorted([(at, "mark: " + what) for at, what in marked]
-              + list(lines(calcifer, lambda l: folder in l or "lists put on local" in l or "lists to local" in l))
+              + list(lines(calcifer, lambda l: folder in l or "guess q on " in l or "lists put on local" in l or "lists to local" in l))
               + [(at, "tensord: " + text) for at, text in lines(tensord, lambda l: "cozy:prepare" in l)])
 for at, text in said[:120]:
     print(f"  +{at - added:>7} ms  {text[:420]}")
-landed = {m.group(1): int(m.group(2)) for path in (tensord, tensorfs) for at, line in lines(path, lambda l: "fetch::download: landed" in l)
+landed = {m.group(1): int(m.group(2)) for at, line in lines(tensord, lambda l: "fetch::download: landed" in l)
           for m in [re.search(r"object=(\w+) bytes=(\d+)", line)] if m}
 items = sum(1 for _ in lines(tensord, lambda l: "cozy:prepare" in l))
 print(f"  local landed {len(landed)} objects, {sum(landed.values())} bytes, from the box's adding on; TensorD said {items} lines of list items")
