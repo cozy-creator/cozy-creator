@@ -45,7 +45,7 @@ V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build"
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
-{ echo 'dev = true'; grep -v '^dev *=' "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
 awk -v source="$SOURCE" '
   function ours() { print "diagnostics = true"; print "packages = \"" source "\""; put = 1 }
   /^(diagnostics|packages) *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
@@ -63,7 +63,7 @@ if has cli; then
     for ss in $(verbs "$W/cli/help-$s.txt"); do c "help-$s-$ss" "$s" "$ss" --help; done
   done
   c doctor doctor; c whoami whoami; c status-nowhere status; c machine-ls machine ls; c machine-show-local machine show local
-  c model-ls model ls; c package-ls package ls; c run-ls run ls
+  c model-ls model ls; c package-ls package ls; c run-ls run ls; c lora-ls lora ls; c lora-search lora search sdxl; c model-search model search qwen
   head -c 24 /dev/urandom | base64 > "$SECRETS/pass.txt"
   c new-notty new notty
   c new-enc new garden --passphrase-file "$SECRETS/pass.txt" --recovery-out "$SECRETS/recovery.txt"
