@@ -4,6 +4,7 @@
 #   writes_once         cl-812: a project write sent again under its key is done once: an undo resent steps once
 #   hub_away            cl-809: locked local code that names the `tensorhub` index runs while the Hub doesn't answer
 #   broken_answers      cl-810: a machine that fails when asked about a run for over 120 s: the run ends as the machine says
+#   answers_while_committing  cl-1202: Status answers while the journal's commits wait for the disk
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 local_wake_update() {
@@ -184,4 +185,55 @@ echo "broken: run $n $status after $((SECONDS - since)) s of '$said'; now: $(jq 
 [ "$status" = in_progress ] || check "broken: run $n settled $status while its machine failed to answer: $(jq -c .reason "$OUT/broken.show.json")"
 settled broken 120
 J '.status == "completed"' "$OUT/broken.show.json" || check "broken: run $n is $(jq -c '[.status, .reason]' "$OUT/broken.show.json"), not completed as its machine says"
+}
+
+# cl-1202, the coordinator (11-17): "a big download on Paul's laptop could still freeze status reads behind a synced commit. Status
+# reads (and anything else that only reads) must not take the journal's writer lock ... so a slow commit delays only other writers."
+# A durable disk, where TensorD's journal commits with a full flush: during a 3 GB write burst beside it, a run writes a log line
+# every 50 ms, each a commit, and each flush of the journal waits 3 s more (slow-sync.c, as behind a busy disk's writeback).
+# `cozy machine show local` answers within 1 s every time; before the fix a read waited out the commit going on, up to 3 s.
+answers_while_committing() {
+[ "$RUNNER_OS" = Linux ] && [ -n "$LOCAL" ] || return 0
+step "Status answers while the journal's commits wait for the disk (cl-1202)"
+local S=$OUT/answers dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1202-slow-sync.conf burst runner t0 ms i
+local budget=1000 slowest=0 over=0 reads=0 waited
+mkdir -p "$S"
+cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$S/slow-sync.so" "$here/slow-sync.c" -ldl || { check "answers: slow-sync.c didn't build"; return; }
+# Calcifer starts the machine, which takes its environment: Calcifer restarted with the shim, then the machine stopped and started.
+mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnvironment=SLOW_SYNC_ON=%s\nEnvironment=SLOW_SYNC_MS=3000\nEnvironment=SLOW_SYNC_LOG=%s\n' \
+  "$S/slow-sync.so" "$S/on" "$S/slow-sync.log" > "$dropin"
+systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || check "answers: Calcifer didn't restart with the shim"
+machine_stop || check "answers: the local machine didn't stop"
+# Its package installed first, so what is timed is the run's commits.
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/lines" count:=1 seconds:=0 --on local > "$S/first.ndjson" 2>&1) \
+  || check "answers: the first run failed: $(tail -c 300 "$S/first.ndjson")"
+for i in 1 2 3; do
+  t0=$(date +%s%3N); cozy --json machine show local > /dev/null 2>&1; echo "before $(( $(date +%s%3N) - t0 ))" >> "$S/reads"
+done
+: > "$S/on"
+dd if=/dev/zero of="$HOME/cl1202-burst" bs=1M count=3072 status=none & burst=$!
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/lines" count:=20 seconds:=0.05 --on local > "$S/run.ndjson" 2> "$S/run.err") &
+runner=$!
+for i in $(seq 300); do
+  kill -0 "$runner" 2> /dev/null || break
+  t0=$(date +%s%3N)
+  cozy --json machine show local > "$S/show.json" 2> "$S/show.err" || check "answers: machine show local failed: $(tail -c 300 "$S/show.err")"
+  ms=$(( $(date +%s%3N) - t0 ))
+  echo "during $ms" >> "$S/reads"
+  reads=$((reads + 1)); [ "$ms" -le "$slowest" ] || slowest=$ms; [ "$ms" -le "$budget" ] || over=$((over + 1))
+  sleep 0.5
+done
+rm -f "$S/on"
+wait "$burst" 2> /dev/null || true
+rm -f "$HOME/cl1202-burst"
+wait "$runner" || check "answers: the run failed: $(tail -c 300 "$S/run.err")"
+waited=$(grep -sc . "$S/slow-sync.log") || waited=0
+rm -f "$dropin"
+systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || check "answers: Calcifer didn't restart without the shim"
+machine_stop || check "answers: the local machine didn't stop after"
+echo "answers: $reads reads while $waited of the journal's flushes waited 3 s: slowest ${slowest} ms, $over over ${budget} ms; before: $(grep '^before' "$S/reads" | cut -d' ' -f2 | paste -sd' ')"
+[ "$waited" -ge 5 ] || check "answers: only $waited of the journal's flushes were slowed: the cell proves nothing"
+[ "$reads" -ge 5 ] || check "answers: only $reads reads while the run went"
+[ "$over" = 0 ] || check "answers: $over of $reads status reads took over ${budget} ms (slowest ${slowest} ms) while the journal's commits waited for the disk"
+J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$S/run.ndjson" || check "answers: the run didn't complete: $(tail -c 300 "$S/run.ndjson")"
 }

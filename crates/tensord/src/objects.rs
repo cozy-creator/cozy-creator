@@ -311,7 +311,7 @@ impl Objects {
         let Some(hex) = hex(digest) else {
             return Ok(None);
         };
-        let Some(length) = self.engine.with_journal(|j| j.object(actor, &hex))? else {
+        let Some(length) = self.engine.read_journal(|j| j.object(actor, &hex))? else {
             return Ok(None);
         };
         let path = self.store()?.path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
@@ -330,7 +330,7 @@ impl Objects {
         let key = resource_actor(actor);
         let actor = key.as_str();
         let _custody = self.guard();
-        let Some(raw) = self.engine.with_journal(|j| j.held_memo(actor, computation))? else {
+        let Some(raw) = self.engine.read_journal(|j| j.held_memo(actor, computation))? else {
             return Ok(None);
         };
         let Ok(mut record) = serde_json::from_slice::<ResultRecord>(&raw) else {

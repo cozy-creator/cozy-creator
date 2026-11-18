@@ -30,7 +30,7 @@ pub(super) fn owns(
         Err(error) => return Err(Error::internal("journal_unreadable", error.to_string())),
     }
     let reserved = (runs.service.engine)
-        .with_journal(|journal| journal.update_run_reserved(&actor, id))
+        .read_journal(|journal| journal.update_run_reserved(&actor, id))
         .map_err(|error| Error::internal("journal_unreadable", error.to_string()))?;
     Ok(reserved || identity.updates.update(id).is_some())
 }

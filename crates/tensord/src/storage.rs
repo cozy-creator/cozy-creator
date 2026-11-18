@@ -255,6 +255,51 @@ pub(crate) fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
     Ok(ObjectRef { sha256, length })
 }
 
+/// Checkpoint `id`'s header object and its header, read off disk and nothing more (cl-1202): a reader (Status, a quote) opens no
+/// checkpoint, so it takes no hold, records no use and runs no upkeep. A header, a commit naming one, or a view this process keeps.
+pub(crate) fn structure(store: &Store, id: &str) -> io::Result<(ObjectRef, tensorfs::format::Header)> {
+    let parse = |bytes: &[u8]| tensorfs::format::Header::from_cbor(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+    if let Some(view) = view(id) {
+        return Ok((ObjectRef::of(&view.header), parse(&view.header)?));
+    }
+    let object = held(store, id)?;
+    let bytes = std::fs::read(store.path(&object).map_err(io_error)?)?;
+    match Tree::from_json(&bytes) {
+        Ok(tree) => {
+            let header = tree.header().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?.1.clone();
+            let bytes = std::fs::read(store.path(&header).map_err(io_error)?)?;
+            let parsed = parse(&bytes)?;
+            Ok((header, parsed))
+        }
+        Err(_) => Ok((object, parse(&bytes)?)),
+    }
+}
+
+/// Whether checkpoint `id`'s structure is here (its header, and the commit naming it when `id` is one), from the store's files
+/// alone: a commit is read (it is small), a header only stat'ed.
+pub(crate) fn present(store: &Store, id: &str) -> bool {
+    if view(id).is_some() {
+        return true;
+    }
+    let Ok(object) = held(store, id) else { return false };
+    let Ok(path) = store.path(&object) else { return false };
+    let mut first = [0u8];
+    let read = std::fs::File::open(&path).and_then(|mut file| std::io::Read::read_exact(&mut file, &mut first));
+    if read.is_err() || first[0] != b'{' {
+        return store.holds(&object);
+    }
+    let tree = std::fs::read(&path).ok().and_then(|bytes| Tree::from_json(&bytes).ok());
+    tree.is_some_and(|tree| tree.header().is_ok_and(|(_, header)| store.holds(header)))
+}
+
+/// The chunks and assets `components` of the checkpoint whose header object is `id` read (all components when empty), from its
+/// `header`, as [`chunks`].
+pub(crate) fn chunks_of(id: &str, header: &tensorfs::format::Header, components: &[String]) -> Vec<ObjectRef> {
+    let own: Vec<String> = view(id).map(|v| v.own.iter().map(|o| ObjectRef::of(o).sha256).collect()).unwrap_or_default();
+    let wanted = tensorfs::fetch::wanted(header, (!components.is_empty()).then_some(components)).unwrap_or_default();
+    wanted.into_iter().filter(|o| !own.contains(&o.sha256)).collect()
+}
+
 /// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, a
 /// commit's (a run's checkpoint output names its commit), or a view this process keeps.
 pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
@@ -273,9 +318,7 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store:
 /// store holds or fetches: never a view's own objects (its graph), which live in memory. None
 /// when it names a component the checkpoint lacks.
 pub(crate) fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {
-    let own: Vec<String> = view(&checkpoint.id().sha256).map(|v| v.own.iter().map(|o| ObjectRef::of(o).sha256).collect()).unwrap_or_default();
-    let wanted = tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default();
-    wanted.into_iter().filter(|o| !own.contains(&o.sha256)).collect()
+    chunks_of(&checkpoint.id().sha256, checkpoint.header(), components)
 }
 
 /// `text` is 64 lowercase hex digits (a bare sha256), or `sha256:` and them when `prefixed`.

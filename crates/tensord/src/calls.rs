@@ -1081,7 +1081,7 @@ fn record_call(
         },
     };
     let measurements = engine
-        .with_journal(|journal| journal.measurements(&record.id))
+        .read_journal(|journal| journal.measurements(&record.id))
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())

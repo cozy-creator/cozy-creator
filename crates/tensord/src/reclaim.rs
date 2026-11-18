@@ -846,6 +846,18 @@ pub(crate) fn seen_free(free: u64) {
     }
 }
 
+/// The environments' and the Runtime's bytes (`measure_usage`) as last measured, with the `ENVIRONMENTS_CHANGED` count they were
+/// measured at: walked again only once an environment changed, or at a sweep (cl-1202: each ~43k-file environment, the uv cache
+/// and the toolchain, walked again every 64 MB the disk moved, kept a core busy for a whole download).
+static ENVIRONMENTS: Mutex<Option<(u64, u64, u64)>> = Mutex::new(None);
+static ENVIRONMENTS_CHANGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An environment was built, compiled, installed or swept, or a uv cache entry came or went: the next measure walks them again.
+pub(crate) fn environments_changed() {
+    ENVIRONMENTS_CHANGED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    ask();
+}
+
 /// Wakes the reclaim thread (`wait_asked`).
 pub(crate) fn ask() {
     *ASKED.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
@@ -872,15 +884,23 @@ pub(crate) fn measure_usage(store: &crate::storage::Store, engine: &Path, uv_cac
     let generations = engine.join("generations");
     let editable = engine.join("editable");
     let skip: Vec<PathBuf> = [generations.clone(), editable.clone(), engine.join("execution")].into_iter().chain(uv_cache.map(Path::to_path_buf)).collect();
-    let named = |e: &fs::DirEntry| !e.file_name().to_string_lossy().starts_with('.');
-    let mut environments: u64 = fs::read_dir(&generations).into_iter().flatten().flatten().filter(named).map(|g| own(&g.path())).sum();
-    let homes = fs::read_dir(&editable).into_iter().flatten().flatten().flat_map(|a| fs::read_dir(a.path()).into_iter().flatten().flatten());
-    let envs = homes.flat_map(|home| fs::read_dir(home.path()).into_iter().flatten().flatten()).filter(|e| e.file_name().to_string_lossy().starts_with("env-"));
-    environments += envs.map(|env| own(&env.path())).sum::<u64>();
-    let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
-    environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
+    let changed = ENVIRONMENTS_CHANGED.load(std::sync::atomic::Ordering::Acquire);
+    let kept = (*ENVIRONMENTS.lock().unwrap()).filter(|(at, ..)| *at == changed).map(|(_, environments, runtime)| (environments, runtime));
+    let (environments, runtime) = kept.unwrap_or_else(|| {
+        let named = |e: &fs::DirEntry| !e.file_name().to_string_lossy().starts_with('.');
+        let mut environments: u64 = fs::read_dir(&generations).into_iter().flatten().flatten().filter(named).map(|g| own(&g.path())).sum();
+        let homes = fs::read_dir(&editable).into_iter().flatten().flatten().flat_map(|a| fs::read_dir(a.path()).into_iter().flatten().flatten());
+        let envs = homes.flat_map(|home| fs::read_dir(home.path()).into_iter().flatten().flatten()).filter(|e| e.file_name().to_string_lossy().starts_with("env-"));
+        environments += envs.map(|env| own(&env.path())).sum::<u64>();
+        let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
+        environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
+        let runtime = du(engine, &skip);
+        // Kept at the count it began at: a change while it walked is walked again.
+        *ENVIRONMENTS.lock().unwrap() = Some((changed, environments, runtime));
+        (environments, runtime)
+    });
     let free = measure(store).ok().map(|disk| disk.available);
-    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]), reclaimable };
+    let usage = Usage { models: du(store, &[]), environments, runtime, runs: du(&engine.join("execution"), &[]), reclaimable };
     *USAGE.lock().unwrap() = Some(usage);
     *MEASURED_FREE.lock().unwrap() = free;
 }

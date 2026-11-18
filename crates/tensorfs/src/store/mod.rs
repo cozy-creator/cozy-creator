@@ -38,7 +38,7 @@ pub(crate) use records::is_name;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -60,8 +60,10 @@ pub(crate) const GRACE: Duration = Duration::from_secs(3600);
 pub(crate) enum Durability {
     /// Each object and record is flushed before it is named (local machines).
     Durable,
-    /// Nothing is flushed until one `syncfs`, which runs before a record names objects this
-    /// handle admitted (pods; owner ruling 2026-09-27, tfs-122). Linux only, else `Durable`.
+    /// Nothing is flushed (pods; owner ruling 2026-09-27, tfs-122): such a disk doesn't outlive its host's crash, and a
+    /// process's own crash loses nothing the page cache holds. A record follows its objects in the filesystem's own order; no
+    /// whole-filesystem flush runs, least of all under a store lock (cl-1202: one held others' locks for the whole download's
+    /// backlog). Linux only, else `Durable`.
     Ephemeral,
 }
 
@@ -187,8 +189,6 @@ pub struct Store {
     root: PathBuf,
     durability: Durability,
     grace: Duration,
-    /// This handle admitted objects that no `syncfs` covers yet (ephemeral only).
-    unsynced: Arc<AtomicBool>,
     /// A cache: writes run its upkeep (expiry, eviction). An origin's (an endpoint's) never do.
     cache: bool,
     /// The collections this handle ran (`maintain`), counted under the lock that serializes them.
@@ -255,7 +255,6 @@ impl Store {
             durability: Durability::of(&root),
             grace: GRACE,
             root,
-            unsynced: Arc::default(),
             cache: true,
             collections: Arc::default(),
             reclaim: Arc::default(),
@@ -473,19 +472,6 @@ impl Store {
         Ok(bytes)
     }
 
-    /// Makes every object this handle admitted durable. Ephemeral: one `syncfs`, which the
-    /// next record commit also runs. Durable objects already are.
-    pub(crate) fn sync(&self) -> Result<()> {
-        if !self.unsynced.swap(false, Ordering::SeqCst) {
-            return Ok(());
-        }
-        let synced = syncfs(&self.root);
-        if synced.is_err() {
-            self.unsynced.store(true, Ordering::SeqCst);
-        }
-        synced.map_err(fail("syncfs", &self.root))
-    }
-
     pub(crate) fn flushes(&self) -> bool {
         self.durability == Durability::Durable
     }
@@ -559,7 +545,6 @@ impl Store {
         }
         fs::rename(temp, blob).map_err(fail("rename into", blob))?;
         if !self.flushes() {
-            self.unsynced.store(true, Ordering::SeqCst);
             return Ok(());
         }
         if created {
@@ -954,12 +939,3 @@ fn allocate(_: &File, _: u64) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn syncfs(root: &Path) -> io::Result<()> {
-    rustix::fs::syncfs(File::open(root)?).map_err(io::Error::from)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn syncfs(_: &Path) -> io::Result<()> {
-    Ok(())
-}

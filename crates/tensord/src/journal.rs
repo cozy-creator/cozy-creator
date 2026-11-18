@@ -593,6 +593,10 @@ impl ProgressSnapshot {
 pub(crate) struct Journal {
     connection: Connection,
     workspace_id: String,
+    /// Its commits' wait for the disk (`synchronous`): `FULL` on a durable disk; `OFF` on an ephemeral one (a pod's overlay, which
+    /// no host crash outlives), as its store flushes nothing there (tfs-122). A commit there waited behind the whole download's
+    /// writeback while it held the journal every request reads (cl-1202: 46 s on an A40, 44219244039).
+    synchronous: &'static str,
 }
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
@@ -819,10 +823,28 @@ impl Journal {
             )
             .map_err(db_error)?;
         platform::durable::sync_dir(root)?;
+        let synchronous = match platform::durable::DiskClass::of(root) {
+            platform::durable::DiskClass::Ephemeral => "OFF",
+            _ => "FULL",
+        };
+        connection.pragma_update(None, "synchronous", synchronous).map_err(db_error)?;
         Ok(Self {
             connection,
             workspace_id,
+            synchronous,
         })
+    }
+
+    /// A second connection on `root`'s journal for reads alone (cl-1202): in WAL mode it reads the last committed state while a
+    /// commit waits for the disk, so a reader (Status, a run's state) never waits on a writer. Opened after `open`, which made the
+    /// schema.
+    pub(crate) fn open_reader(root: &Path) -> io::Result<Self> {
+        let connection = Connection::open(root.join(FILE)).map_err(db_error)?;
+        connection.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;").map_err(db_error)?;
+        let workspace_id: String = connection
+            .query_row("SELECT value FROM machine_metadata WHERE key='workspace_id'", [], |row| row.get(0))
+            .map_err(db_error)?;
+        Ok(Self { connection, workspace_id, synchronous: "OFF" })
     }
 
     /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
@@ -1489,7 +1511,7 @@ impl Journal {
         }
         let accepted = self.accept_now(actor, runs, synced);
         if !synced {
-            self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+            self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
         }
         accepted
     }
@@ -2797,7 +2819,7 @@ impl Journal {
     pub(crate) fn cancel_unsynced(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
         self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
         let canceled = self.cancel_observed(id, actor, None);
-        self.connection.pragma_update(None, "synchronous", "FULL").map_err(db_error)?;
+        self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
         canceled
     }
 

@@ -515,7 +515,7 @@ impl Updates {
     }
 
     fn running(&self) -> Vec<String> {
-        self.engine.with_journal(|journal| journal.started()).unwrap_or_default()
+        self.engine.read_journal(|journal| journal.started()).unwrap_or_default()
     }
 
     /// The build toolchain, probed once and again after each install.
