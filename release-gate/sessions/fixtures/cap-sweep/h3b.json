@@ -1,0 +1,91 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 14400,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "h3-up-2160p-15s",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip15}",
+    "to=2160p",
+    "strength:=0.909",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+   ],
+   "max_s": 5400
+  },
+  {
+   "name": "h3-up-2160p-5s",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "to=2160p",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+   ],
+   "unless": "h3-up-2160p-15s",
+   "max_s": 3600
+  },
+  {
+   "name": "h3-up-1080p-5s",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "to=1080p",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+   ],
+   "unless": "h3-up-2160p-5s",
+   "max_s": 3600
+  },
+  {
+   "name": "h3-vae-round-trip",
+   "target": "minimax-h3/vae_round_trip",
+   "args": [
+    "--file",
+    "video={clip5}"
+   ],
+   "unless": "h3-up-1080p-5s"
+  },
+  {
+   "name": "h3-edit-hardest",
+   "target": "minimax-h3/edit",
+   "args": [
+    "--file",
+    "plate={clip15}",
+    "edit=character_swap",
+    "summary=<Hero> stands in the scene.",
+    "references:=[{\"name\":\"Hero\",\"image\":\"{pic1}\"}]",
+    "beats:=[{\"description\":\"<Hero> replaces the subject and follows its motion.\",\"duration\":15}]",
+    "quality=full",
+    "seed:=30007"
+   ],
+   "max_s": 5400
+  },
+  {
+   "name": "h3-edit-default",
+   "target": "minimax-h3/edit",
+   "args": [
+    "--file",
+    "plate={clip5}",
+    "beats:=[{\"description\":\"heavy snow falls over the whole scene\",\"duration\":5}]",
+    "seed:=30008"
+   ],
+   "unless": "h3-edit-hardest"
+  },
+  {
+   "name": "h3-render-shot-lora",
+   "target": "minimax-h3/render_shot",
+   "args": [
+    "shot:={\"beats\":[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}],\"seed\":30990}",
+    "loras:=[{\"model\":\"alissonerdx/minimax-h3-vfx-edit@0.1.0\",\"strength\":1.0}]"
+   ],
+   "max_s": 4500,
+   "twin": true
+  }
+ ]
+}

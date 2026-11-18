@@ -1,0 +1,77 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 15000,
+ "floor_mb_s": 25,
+ "cells": [
+  {
+   "name": "h3-gen-refs12",
+   "target": "minimax-h3/generate",
+   "args": [
+    "summary=A quiet harbour at dusk, with <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, moving as in <V1>, <V2> and <V3>.",
+    "beats:=[{\"description\":\"<P1> walks along the quay past <P2> while the camera pans slowly; gulls, water, footsteps.\",\"duration\":15}]",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"V1\",\"video\":\"{clip5}\"},{\"name\":\"V2\",\"video\":\"{clip5}\"},{\"name\":\"V3\",\"video\":\"{clip5}\"}]",
+    "quality=full",
+    "seed:=30001"
+   ],
+   "max_s": 5400
+  },
+  {
+   "name": "h3-gen-30s",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15},{\"description\":\"The boat rounds the point and the keeper lights the lamp; the camera rises over the cliff.\",\"duration\":15}]",
+    "carried_frames:=56",
+    "--file",
+    "first_frame={seed}",
+    "--file",
+    "last_frame={lighthouse}",
+    "seed:=30002"
+   ],
+   "max_s": 6000
+  },
+  {
+   "name": "h3-gen-full50",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}]",
+    "turbo:=false",
+    "steps:=50",
+    "quality=full",
+    "seed:=30003"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "orbit-refs",
+   "target": "orbit/orbit",
+   "args": [
+    "instructions=<character> in the colours and materials of <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"},{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"}]",
+    "seed:=30004"
+   ],
+   "max_s": 4500
+  },
+  {
+   "name": "h3-gen-default",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+    "seed:=30005"
+   ],
+   "unless": "h3-gen-refs12"
+  },
+  {
+   "name": "orbit-default",
+   "target": "orbit/orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=30006"
+   ],
+   "unless": "orbit-refs"
+  }
+ ]
+}
