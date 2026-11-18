@@ -54,6 +54,10 @@ if [ "$repo" = cozy-creator ]; then
       git -C "$stage_src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock HEAD:rust-toolchain.toml
       sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1
     fi
+    # TensorFS's version is this harness's to stamp (dev-version.sh, xs-216): another harness's build of the same sources is another
+    # wheel. Keyed by sources alone, a branch from before #3873 built the RC's TensorFS as 0.26.0 and every run reused it beside a
+    # Runtime that floors on 0.27.0.dev<n>: the seed's lock_failed (xs-217).
+    if [ "$what" = tensorfs ]; then sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1; fi
   } | sha256sum | cut -c1-40)
 fi
 # Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it, and outside
