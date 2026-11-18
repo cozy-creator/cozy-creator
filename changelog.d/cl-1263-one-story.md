@@ -1,0 +1,1 @@
+A run queued in its machine's line reads one way (cl-1263): its box says `Queued, 1st in line`, and its machine's tab and queue say the same, then what it waits for there (`Queued, 1st in line. Waiting for PRO-2 to finish with this machine's CPU`). Before, the tab said only the reason and the box and queue only the place.

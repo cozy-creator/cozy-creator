@@ -182,6 +182,19 @@ export function waitReason(waiting: string | null | undefined, boxOf?: (run: num
   return boxOf ? said.replace(/\brun (\d+)/g, (whole, number: string) => { const box = boxOf(Number(number)); return box ? `<${box}>` : whole }) : said
 }
 
+/** A run in its machine's line, its place (cl-1263): `Queued,` and `1st in line`, the words a box's line says and the count it never
+ *  cuts. */
+export const inLine = (place: number) => ({ words: "Queued,", count: `${ordinal(place)} in line` })
+
+/** A run in its machine's line as a row says it (cl-1263): what its box says, then what it waits for there when it says, `Queued, 1st
+ *  in line. Waiting for PRO-2 to finish with this machine's CPU`. The machine tab and the queue both say this: a row begins with its
+ *  box's words and adds the rest, as a GPU wait's do, so one run reads one way. */
+export function lineWords(place: number, waiting?: string | null): string {
+  const { words, count } = inLine(place)
+  const why = waitWords(waiting)
+  return why ? `${words} ${count}. ${why}` : `${words} ${count}`
+}
+
 /** `waitReason` as a line. */
 export const waitWords = (waiting: string | null | undefined, boxOf?: (run: number) => string | undefined) => sentence(waitReason(waiting, boxOf))
 

@@ -7,8 +7,7 @@ import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/project"
 import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
-import { ordinal } from "../format"
-import { downloadWait, runName as runLabel, waitWords, workWords } from "../runs/words"
+import { downloadWait, lineWords, runName as runLabel, waitWords, workWords } from "../runs/words"
 import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
@@ -68,7 +67,7 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
       ? workWords(run) || waitWords(waiting) || "Running"
       : state === "queued"
         ? run.queue_position
-          ? `Queued, ${ordinal(run.queue_position)} in line`
+          ? lineWords(run.queue_position, waiting)
           : waitWords(waiting) || "Queued"
         : waitWords(waiting) || "Getting ready"
   return (

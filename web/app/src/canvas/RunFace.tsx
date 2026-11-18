@@ -8,7 +8,7 @@ import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
 import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
-import { attemptWords, bytesKind, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
+import { attemptWords, bytesKind, inLine, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -166,7 +166,7 @@ function faceNow(seen: Seen): Face {
   const waiting = waitReason(run.waiting, seen.boxOf)
   if (!run.machine) {
     const renting = waiting?.match(/^renting (.+)$/)
-    return renting ? face("renting", "Placing the order", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`) : face("queued", "Queued")
+    return renting ? face("renting", "Placing the order", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", inLine(run.queue_position).words, where, inLine(run.queue_position).count) : face("queued", "Queued")
   }
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
@@ -174,7 +174,7 @@ function faceNow(seen: Seen): Face {
   // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205;
   // Paul: "the 3 jobs that are like 'waiting for download...'"). Which models, its machine's rows say: a box's line has no room for them.
   if (on?.kind === "download") return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: (downloads?.[0] ?? on).id } }
-  if (run.queue_position != null) return face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`)
+  if (run.queue_position != null) return face("queued", inLine(run.queue_position).words, where, inLine(run.queue_position).count)
   if (run.status === "completed") {
     const arriving = run.arriving
     if (arriving?.bytes_total) return face("result", "Downloading the result,", where, moving(arriving.bytes_done, arriving.bytes_total, arriving.bytes_per_s))

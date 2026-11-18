@@ -7,8 +7,7 @@ import { useConnection } from "../../app/Connection"
 import type { Machine, Operation } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
-import { ordinal } from "../format"
-import { downloadWait, runName as runLabel, waitWords, workWords } from "../runs/words"
+import { downloadWait, lineWords, runName as runLabel, waitWords, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
 import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
@@ -133,7 +132,7 @@ function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, 
   const said = on
     ? waitingWords(downloads.length ? downloads : [on])
     : waits(run) && !downloadWait(run)
-      ? waitWords(run.waiting) || (run.queue_position ? `Queued, ${ordinal(run.queue_position)} in line` : "Queued")
+      ? run.queue_position ? lineWords(run.queue_position, run.waiting) : waitWords(run.waiting) || "Queued"
       : workWords(run)
   return (
     <li className="doing" data-doing="run" data-run={run.number}>
