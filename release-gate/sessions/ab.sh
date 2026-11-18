@@ -67,7 +67,8 @@ CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gi
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
-VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
+BENCH=$(cd "$(dirname "$0")/../suites/bench" && pwd)  # absolute: cells run from $OUT, where a relative path finds nothing
+VRAM=$BENCH/vram.py
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -379,7 +380,7 @@ psnr() { ffmpeg -nostdin -i "$(file "$1")" -i "$(file "$2")" -lavfi '[0:v][1:v]p
 # judge <a> <b>: the bench's same-seed rule (suites/bench/media.py) on the two cells' outputs: `like`, or why not.
 judge() {
   local fa fb; fa=$(file "$1") fb=$(file "$2"); [ -s "$fa" ] && [ -s "$fb" ] || { echo "no output to judge"; return; }
-  uv run -q --no-project --with numpy python3 - "$(dirname "$0")/../suites/bench" "$fa" "$fb" "$1" 2>&1 <<'PY' | tail -1
+  uv run -q --no-project --with numpy python3 - "$BENCH" "$fa" "$fb" "$1" 2>&1 <<'PY' | tail -1
 import sys; sys.path.insert(0, sys.argv[1]); import media
 why = media.differs(media.pair(sys.argv[2], sys.argv[3]), sys.argv[4] + "'s output (same request and seed)")
 print('like' if not why else 'DIFFERS: ' + '; '.join(why))
