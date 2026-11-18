@@ -207,11 +207,28 @@ product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCEN
 # set leased (21.4 GiB) beside 1.2 GiB of decode slots, its vision tower's split found no room, and that refusal ended the
 # call where a refused allocation streams it. Red on a card with 22.7-23.6 GiB of room (a 4090 with 22.8); with less
 # (22.5), the slots were refused first and it ran.
+# cr-332: where the expander decodes streamed (Transformers' loop), its embedding table gathers its rows on the host
+# once it leaves the device. The rc/0.27.0 head refilled the 2.37 GiB table whole 685 times in 1,573 tokens on a 4090
+# (2.90 tokens/s against 4.77, pod-session 44223589609). A cell whose expander filled one block over 8 times fails.
+# The bar comes from the 4090 runs of the default edit, seed 42. With the fix no block is filled over 4 times, all
+# before the decode (44241298913: one 2.37 GiB block 4 times, the table twice); in 44223589609's arms every block but
+# the table was filled at most 3 times. The half-broken efadd597 filled the table 11 times and the regression 685, so
+# 8 fails both. The bar was 4, chosen before any green run existed; the first green stood at exactly 4, and a cell
+# with no margin is a flaky one (the coordinator's call, 11-18).
+h3i_table() {
+  local c=$1${TWIN:-} n
+  judged "$c" || return 0
+  n=$(run_get "$OUT" "$c" '[.measurements.memory.stats.varena[]?.stats.trace[]? | select(.set | endswith("/model")) | .block]
+    | group_by(.) | map(length) | max // 0')
+  expect "$c-table" "$([ "${n:-x}" -le 8 ] 2>/dev/null && echo PASS || echo FAIL)" "the expander's most-filled block: ${n:-no record} fills"
+}
 product_minimax_h3_image() {
   cell h3i "$(pkg minimax-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 35))
+  h3i_table h3i
   cell h3i-edit "$(pkg minimax-h3-image generate)" seed:=$((R + 36)) \
     instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
     references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+  h3i_table h3i-edit
 }
 product_ltx_2_5() {
   cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
