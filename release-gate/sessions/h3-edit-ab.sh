@@ -97,8 +97,22 @@ arm() {
   step "arm-$1" machine update "$NAME" --gpu-memory-limit "$2" -y || fail "$1: the restart"
   derived_state "$1" settle
   derived_zero || fail "$1: its arm starts with derived state it did not make: $DERIVED"
+  answers "$1"
   say "$1: arm at $2, pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
 }
+# answers <label>: wait (10 min at most) until the pod answers this runner's Calcifer: in 44289620346 a render 4 s after a
+# restart couldn't install its code ("bickslow didn't answer … Connection refused", machine_unreachable) for 3 min.
+answers() {
+  local t0=$SECONDS
+  until timeout 60 cozy model ls --on "$NAME" --json > "$OUT/answers-$1.json" 2>&1; do
+    [ $((SECONDS - t0)) -lt 600 ] || { podlog "$1-unanswered"; fail "$1: $NAME hasn't answered in 10 min: $(tail -c 300 "$OUT/answers-$1.json")"; }
+    sleep 15
+  done
+  say "$1: $NAME answers ($((SECONDS - t0)) s)"
+}
+# podlog <label>: the pod's TensorD log, its last 300 lines (bounded, agent-rules).
+podlog() { timeout 60 cozy machine logs "$NAME" tensord -n 300 > "$OUT/$1-tensord.log" 2>&1 || true; }
+FAILS=0
 printf 'cell\ttree\tstatus\texec_s\tconditioning_s\tstep1_s\tdense_s\tsparse_s\tsteady_s\tdenoise_s\tdecode_s\tpeak_driver_gib\tpeak_alloc_gib\tsm_mhz\tthrottled\tframes\truntime\ttensorfs\n' > "$OUT/ab.tsv"
 FIRST=''
 # cell <name>: the edit on its tree, rendered on the pod; its record, log, video and numbers kept.
@@ -110,7 +124,14 @@ cell() {
   run_page add "$k" --tool "$PACKAGES/$t/minimax-h3/edit" --fields "$fields" > "$OUT/add-$k.txt" 2>&1 || fail "add $k: $(cat "$OUT/add-$k.txt")"
   say "render $k ($t, $plate)"
   if ! run_page render --on "$NAME" "$k" > "$OUT/render-$k.txt" 2>&1; then
-    say "FAIL $k: $(tail -c 600 "$OUT/render-$k.txt")"; RC=1
+    podlog "$k"
+    if grep -q -E 'machine_unreachable|didn.t answer' "$OUT/render-$k.txt"; then
+      say "$k: $NAME unreachable ($(grep -o -m1 -E 'hasn.t answered[^)]*' "$OUT/render-$k.txt")); once more when it answers"
+      answers "$k-again"
+      run_page render --on "$NAME" "$k" > "$OUT/render-$k-again.txt" 2>&1 || { podlog "$k-again"; say "FAIL $k again: $(tail -c 600 "$OUT/render-$k-again.txt")"; }
+    else
+      say "FAIL $k: $(tail -c 600 "$OUT/render-$k.txt")"
+    fi
   fi
   n=$(newest_run "$k")
   (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$k.json" 2>&1
@@ -131,6 +152,10 @@ cell() {
   echo "$row" >> "$OUT/ab.tsv"
   say "$k: run $n in $((SECONDS - t0)) s: $(tr '\t' ' ' <<< "$row")"
   say "$k: $(LC_ALL=C grep -a -o -m1 -E 'continuation window [^"]*' "$OUT/$k.log") $(LC_ALL=C grep -a -o -m1 -E 'h3 output geometry denoise_rows=[0-9]+' "$OUT/$k.log")"
+  # A cell that didn't complete is counted (two end the session); one that did must run on the first run's pair.
+  if [ "$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)" != completed ]; then
+    RC=1; FAILS=$((FAILS + 1)); [ "$FAILS" -lt 2 ] || fail "$FAILS cells failed"; return 0
+  fi
   # Both arms on one pair: a run that fell back to another Runtime or TensorFS than the first's ends the session.
   local pair; pair=$(jq -r '"\(.measurements.software.runtime // "?") \(.measurements.software.tensorfs // "?")"' "$OUT/$k.json" 2>/dev/null)
   [ -n "$FIRST" ] || FIRST=$pair
