@@ -83,7 +83,7 @@ if [ -n "$CAPPED" ]; then
   step "cap" machine update "$NAME" --gpu-memory-limit "$limit" -y || fail "limit the GPU memory to $limit"
   if step "capped-$label" run "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=64 temperature:=0 --on "$NAME"; then
     record "capped-$label"
-    say "capped $label at $limit: $(grep -o '[0-9]* tokens after [0-9]*: [^"]*' "$OUT/capped-$label.json" | head -1); table gathers: $(jq -c '[.. | objects | select(has("gathered")) | .gathered] | if length == 0 then "not in the record" else add end' "$OUT/capped-$label.json" 2> /dev/null)"
+    say "capped $label at $limit: $(grep -o '[0-9]* tokens after [0-9]*: [^"]*' "$OUT/capped-$label.json" | head -1); token table: $(jq -r '"filled \([.. | objects | select(has("trace")) | .trace[]? | select(tostring | test("embed_tokens"))] | length) times, gathered on the host \([.. | objects | select(has("gathered")) | .gathered | numbers] | add // "?") times"' "$OUT/capped-$label.json" 2> /dev/null)"
   else
     say "FAILED: $label at $limit (its step's output above)"; FAILED+=("capped-$label")
   fi
