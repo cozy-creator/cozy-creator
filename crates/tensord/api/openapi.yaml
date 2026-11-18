@@ -89,8 +89,9 @@ paths:
   /v1/logs/{name}:
     get:
       summary: >-
-        A log the machine keeps (`tensorfs-transport`, `memory`, `tensord`): its whole lines. With `Accept:
-        text/event-stream`, those and then each batch as it is appended, across rotations.
+        A log the machine keeps (`tensorfs-transport`, `memory`, `tensord`): its whole lines, gzip to a caller whose
+        `Accept-Encoding` takes it. With `Accept: text/event-stream`, those and then each batch as it is appended, across
+        rotations.
       operationId: log
       parameters:
         - {name: name, in: path, description: The log's name, required: true, schema: {type: string}}
@@ -98,6 +99,10 @@ paths:
           in: query
           description: 'Its newest N whole lines; absent or 0: all'
           schema: {type: integer, format: int64, minimum: 0}
+        - name: since_ms
+          in: query
+          description: 'Of those, the lines from the first stamped at or after this instant on (unix ms); a follow ignores it'
+          schema: {type: integer, format: int64}
         - name: Last-Event-ID
           in: header
           description: Follow on from this event's place
