@@ -225,7 +225,8 @@ takes birefnet) takes it by path, as cozy stages a package's first-party sibling
 without cozy (`interfaces.sh`) and a fixture calling another tree's package (child-lora-stacks).
 `tree-siblings` (cl-1211, se-153's 44221031943; no rental) runs a tiny CPU package that takes its sibling, at a release no Hub has, from the
 Hub's index, by path on this runner's `local`: it runs on the sibling's version, writes no lock into its folder, locks again when the
-sibling changes, and runs by name from a dev home's checkout.
+sibling changes, and runs by name from a dev home's checkout. No run warns of its lock's Runtime, an RC build named with its commit
+(cl-1219, 44236236787: `>=` on that version didn't parse).
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
