@@ -18,7 +18,8 @@
 # --phases pypi,smoke,cozy,packages,models,images (default all): only those, always in that order, so the release can stop
 # between them (a check that needs PyPI's Runtime before Latest moves). A phase whose earlier phases this run leaves out stands
 # on the world as they leave it, read before anything moves: PyPI serving the set's Runtime and TensorFS by the gate's digests,
-# the cozy release Latest, every gated package's final on the Hub, each held model public. smoke leaves nothing to read.
+# a successful smoke (e2e.yaml) on the cozy release's tag, the cozy release Latest, every gated package's final on the Hub,
+# each held model public. Unread (PyPI, GitHub or the Hub not answering) is not done.
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
 DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,packages,models,images
@@ -33,8 +34,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 HERE=$(cd "$(dirname "$0")" && pwd)
-for p in ${PHASES//,/ }; do [[ ,$ALL, == *,$p,* ]] || { echo "--phases takes $ALL: no $p" >&2; exit 2; }; done
-want() { [[ ,$PHASES, == *,$1,* ]]; }
+IFS=, read -r -a named <<< "$PHASES"
+[ ${#named[@]} -gt 0 ] || { echo "--phases takes $ALL: none named" >&2; exit 2; }
+for p in "${named[@]}"; do [[ ,$ALL, == *",$p,"* ]] || { echo "--phases takes $ALL: no '$p'" >&2; exit 2; }; done
+want() { [[ ,$PHASES, == *",$1,"* ]]; }
 if [ "${1:-}" = --record ]; then
   gate=${2:-}; shift 2
   [[ $gate == https://* ]] && [ $# -gt 0 ] || { echo "--record <URL> <gate dir>...: the hand gate's dirs and where their result is recorded" >&2; exit 2; }
@@ -69,6 +72,13 @@ done_pypi() {
   { [ -z "$(field tensorfs_sha256)" ] || on_pypi tensorfs "$(field tensorfs)" "$(field tensorfs_sha256)"; } &&
     { [ -z "$(field runtime_sha256)" ] || on_pypi cozy-runtime "$(field runtime)" "$(field runtime_sha256)"; }
 }
+done_smoke() {  # a passing e2e.yaml dispatch on the cozy release's tag, where the smoke runs: the default path stops on a red one
+  local passed
+  [ -n "$(field runtime_sha256)" ] && [ -n "$ref" ] && [ -n "$(field cozy)" ] || return 0
+  passed=$(gh run list -R cozy-creator/cozy-creator -w e2e.yaml -b "v$(field cozy)" -e workflow_dispatch -L 20 --json conclusion \
+    -q '[.[] | select(.conclusion == "success")] | length' 2> /dev/null) || { WHY="GitHub's e2e runs on v$(field cozy) did not answer"; return 1; }
+  [ "${passed:-0}" -gt 0 ] || { WHY="no passing smoke (e2e.yaml) on v$(field cozy)"; return 1; }
+}
 done_cozy() {
   local latest
   [ -n "$(field cozy_sha256)" ] || return 0
@@ -76,17 +86,20 @@ done_cozy() {
   [ "$latest" = "v$(field cozy)" ] || { WHY="cozy v$(field cozy) is not Latest (${latest:-unread} is)"; return 1; }
 }
 done_packages() {  # every package at the gated ref has its final (its version less any prerelease part) or later on the Hub
-  local listed p t v final latest missing=
+  local listed names p t v final latest missing= checked=0
   [ -n "$ref" ] || return 0
-  git -C "$PKGS" cat-file -e "$ref^{commit}" 2> /dev/null || git -C "$PKGS" fetch -q origin "$ref"
+  git -C "$PKGS" cat-file -e "$ref^{commit}" 2> /dev/null || git -C "$PKGS" fetch -q origin "$ref" ||
+    { WHY="$PKGS can't fetch $ref"; return 1; }
+  names=$(git -C "$PKGS" ls-tree --name-only "$ref") || { WHY="$PKGS can't read $ref"; return 1; }
   listed=$(cozy package ls --json --limit 200) || { WHY="the Hub's package listing did not answer"; return 1; }
-  for p in $(git -C "$PKGS" ls-tree --name-only "$ref"); do
+  for p in $names; do
     t=$(git -C "$PKGS" show "$ref:$p/pyproject.toml" 2> /dev/null) && grep -q cozy.application <<< "$t" || continue
-    v=$(awk -F'"' '/^version = /{print $2; exit}' <<< "$t")
+    checked=$((checked + 1)) v=$(awk -F'"' '/^version = /{print $2; exit}' <<< "$t")
     final=$(sed -E 's/(a|b|rc)[0-9]+$//; s/\.dev[0-9]+$//' <<< "$v")
     latest=$(jq -r --arg p "_/$p" --arg q "$p" '[.packages[] | select(.package == $p or .package == $q)][0].latest_release // empty' <<< "$listed")
-    [ -n "$latest" ] && [ "$(printf '%s\n' "$final" "$latest" | sort -V | head -1)" = "$final" ] || missing="$missing $p $final"
+    [[ $latest =~ ^[0-9]+(\.[0-9]+)*$ ]] && [ "$(printf '%s\n' "$final" "$latest" | sort -V | head -1)" = "$final" ] || missing="$missing $p $final"
   done
+  [ "$checked" -gt 0 ] || { WHY="no package at $ref"; return 1; }
   [ -z "$missing" ] || { WHY="no final on the Hub for:$missing"; return 1; }
 }
 done_models() {
@@ -105,7 +118,7 @@ for p in ${ALL//,/ }; do
       "done_$q" || { echo "--phases: $p stands on $q, which has not happened: $WHY. Nothing promoted" >&2; exit 1; }
       stood="$stood $q"
     done
-  elif [ "$p" != smoke ]; then left="$left $p"; fi
+  else left="$left $p"; fi
 done
 echo "phases: $ordered${stood:+ (standing on$stood, read now)}${DRY:+; dry run}"
 # go <repo> <workflow> <args...>: the workflow dispatched, then followed to its end; a failure stops the promotion.
