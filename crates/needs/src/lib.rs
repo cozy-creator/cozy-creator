@@ -5,9 +5,10 @@
 //! needed, and one whose rule gives no answer for a request is as one with none.
 //!
 //! What a call then wants of its models is one walk here too (`wants`, `resolved`): its slots by the rules' answers and, for a
-//! function that calls others, theirs. Calcifer walks it to quote a call and to tell a machine what to fetch ahead of one (Paul,
-//! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'");
-//! a machine walks it for a call sent with no such word. The two can't disagree on what a request needs.
+//! function that calls others, theirs, its own package's or another's (cl-1123: Orbit's `render_shot` is H3's). Calcifer walks it
+//! to quote a call and to tell a machine what to fetch ahead of one (Paul, 11-17: "calcifer says 'okay, I'm going to send machine-A
+//! this request, so I should tell it to download the required files'"); a machine walks it for a call sent with no such word. The
+//! two can't disagree on what a request needs.
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 
@@ -84,7 +85,61 @@ pub fn answers(entry: &Value, sent: &Value) -> Answers {
     answers
 }
 
-/// What a call wants of its models, by slot (`<function>.models.<parameter>`), as its function's needs rules say of its request
+/// Another package a walk goes into: its distribution, as a call names it (`calls[].package`), and its interface (an environment's
+/// callee App, cl-1123). Its slots and functions are named behind it: `<distribution>/<function>.models.<parameter>`.
+pub type Other<'a> = (&'a str, &'a Value);
+
+/// A call's package and the others it may call: `None` is its own, `Some(i)` the i-th other.
+struct Packages<'a> {
+    own: &'a Value,
+    others: &'a [Other<'a>],
+}
+
+impl<'a> Packages<'a> {
+    fn document(&self, package: Option<usize>) -> &'a Value {
+        package.map_or(self.own, |at| self.others[at].1)
+    }
+
+    /// The package a call `from` a function of `from` goes to: another's when it is one of `others`, else `from`'s own.
+    fn called(&self, from: Option<usize>, call: &Value) -> Option<usize> {
+        let named = call["package"].as_str().map(normalized);
+        named.and_then(|named| self.others.iter().position(|(distribution, _)| normalized(distribution) == named)).or(from)
+    }
+
+    /// What a walk names `function` of `package`: bare, its own; behind its distribution, another's.
+    fn named(&self, package: Option<usize>, function: &str) -> String {
+        match package {
+            None => function.to_owned(),
+            Some(at) => format!("{}/{function}", self.others[at].0),
+        }
+    }
+
+    /// The function a walk's name names, with its package.
+    fn entry(&self, name: &str) -> Option<(Option<usize>, &'a Value)> {
+        match name.split_once('/') {
+            None => api::interface::entrypoint(self.own, name).map(|entry| (None, entry)),
+            Some((distribution, function)) => {
+                let at = self.others.iter().position(|(held, _)| *held == distribution)?;
+                api::interface::entrypoint(self.others[at].1, function).map(|entry| (Some(at), entry))
+            }
+        }
+    }
+}
+
+/// A distribution's name as Python compares them (PEP 503): `minimax_h3` is `minimax-h3`.
+fn normalized(name: &str) -> String {
+    let mut said = String::with_capacity(name.len());
+    for part in name.split(['-', '_', '.']).filter(|part| !part.is_empty()) {
+        if !said.is_empty() {
+            said.push('-');
+        }
+        said.push_str(&part.to_ascii_lowercase());
+    }
+    said
+}
+
+/// What a call wants of its models, by slot (`<function>.models.<parameter>`; another package's behind its distribution,
+/// `<distribution>/<function>.models.<parameter>`), as its function's needs rules say of its request
 /// (`wants`): the slots it waits for before it starts; for each function it may call that no rule answers for, the slots that one
 /// waits for, of which what they all read is waited for; and what it may read besides, by group, fetched only in the background. A
 /// slot named in none is never fetched for it. Each side resolves a slot to a checkpoint itself (`resolved`): Calcifer by its Hub
@@ -97,7 +152,7 @@ pub struct Wants {
 }
 
 impl Wants {
-    /// Each function a slot of it belongs to, once, in the order first named.
+    /// Each function a slot of it belongs to, once, in the order first named; another package's behind its distribution.
     pub fn functions(&self) -> Vec<&str> {
         let slots = self.needed.iter().chain(self.either.iter().flatten()).chain(self.extras.iter().flat_map(|(_, slots)| slots));
         let mut functions: Vec<&str> = vec![];
@@ -116,26 +171,30 @@ pub const ON_DEMAND: &str = "its on-demand models";
 /// What a call of `entrypoint` in the interface `document` wants of its models, by slot, given what its rules say of the request
 /// (`answers`; none, for a call sent with no request). A function that loads models waits for each slot but an on-demand one, and
 /// for one whose rule holds; one whose rule doesn't hold is never fetched; the rest of its on-demand slots are its extras. One that
-/// loads none and calls others (an orchestrator, H3's `generate`): for each function it calls (`callees`), what that one waits for
-/// is waited for when its rule says this request calls it, and is `either` when no rule answers, of which what they all read is
-/// waited for; the rest of each is an extra. A called function's own rules read its own request, which only its call brings: none
-/// of them answers here.
-pub fn wants(document: &Value, entrypoint: &str, answers: &Answers) -> Wants {
+/// loads none and calls others (an orchestrator, H3's `generate`; Orbit, whose `render_shot` is H3's, one of `others`): for each
+/// function it calls (`callees`), what that one waits for is waited for when its rule says this request calls it, and is `either`
+/// when no rule answers, of which what they all read is waited for; the rest of each is an extra. A called function's own rules
+/// read its own request, which only its call brings (Orbit builds H3's in code): none of them answers here.
+pub fn wants(document: &Value, others: &[Other<'_>], entrypoint: &str, answers: &Answers) -> Wants {
     let mut wants = Wants::default();
     let Some(entry) = api::interface::entrypoint(document, entrypoint) else { return wants };
     if !api::interface::models(entry).is_empty() {
-        let (needed, extras) = split(entry, answers);
+        let (needed, extras) = split(entry, answers, "");
         wants.needed = needed;
         if !extras.is_empty() {
             wants.extras.push((ON_DEMAND.to_owned(), extras));
         }
         return wants;
     }
-    let unasked = Answers::default();
-    for callee in callees(document, entrypoint, &answers.unneeded) {
-        let Some(entry) = api::interface::entrypoint(document, &callee) else { continue };
-        let (needed, extras) = split(entry, &unasked);
-        match answers.needed.contains(&callee) {
+    let (packages, unasked) = (Packages { own: document, others }, Answers::default());
+    for callee in callees(document, others, entrypoint, &answers.unneeded) {
+        let Some((package, entry)) = packages.entry(&callee) else { continue };
+        let behind = match package {
+            None => String::new(),
+            Some(at) => format!("{}/", others[at].0),
+        };
+        let (needed, extras) = split(entry, &unasked, &behind);
+        match api::interface::name(entry).is_some_and(|name| answers.needed.contains(name)) {
             true => {
                 wants.needed.extend(needed);
                 if !extras.is_empty() {
@@ -151,9 +210,10 @@ pub fn wants(document: &Value, entrypoint: &str, answers: &Answers) -> Wants {
     wants
 }
 
-/// `entry`'s own slots by `answers`: those it waits for (each but an on-demand one, raw weights too, and one whose rule holds), and
-/// its extras (an on-demand one no rule answers). One whose rule doesn't hold is in neither.
-fn split(entry: &Value, answers: &Answers) -> (Vec<String>, Vec<String>) {
+/// `entry`'s own slots by `answers`, each path `behind` its package's name when it is another's: those it waits for (each but an
+/// on-demand one, raw weights too, and one whose rule holds), and its extras (an on-demand one no rule answers). One whose rule
+/// doesn't hold is in neither.
+fn split(entry: &Value, answers: &Answers, behind: &str) -> (Vec<String>, Vec<String>) {
     let (mut needed, mut extras) = (vec![], vec![]);
     for slot in api::interface::models(entry) {
         let Some(path) = api::interface::slot_path(slot) else { continue };
@@ -164,38 +224,51 @@ fn split(entry: &Value, answers: &Answers) -> (Vec<String>, Vec<String>) {
         let raw = slot["weights"].as_bool() == Some(true);
         let on_demand = slot["on_demand"].as_bool() == Some(true);
         match !on_demand || raw || answers.needed.contains(parameter) {
-            true => needed.push(path.to_owned()),
-            false => extras.push(path.to_owned()),
+            true => needed.push(format!("{behind}{path}")),
+            false => extras.push(format!("{behind}{path}")),
         }
     }
     (needed, extras)
 }
 
-/// The internal functions of `document` that construct a model and that `entrypoint`, loading none itself, calls: those its `calls`
-/// name (the Runtime's static reading, through its own helpers), and theirs in turn, in its package's order (cl-1077: H3's `edit`
-/// brought `upscale`'s upscaler). One that declares no `calls` may call any of them. One its rules say the request doesn't call
-/// (`uncalled`) is left out, and what only it reaches.
-pub fn callees(document: &Value, entrypoint: &str, uncalled: &BTreeSet<String>) -> Vec<String> {
+/// The functions that construct a model and that `entrypoint` of `document`, loading none itself, calls: those its `calls` name (the
+/// Runtime's static reading, through its own helpers), its package's own or one of `others`' (cl-1123: Orbit's `render_shot`, H3's),
+/// and theirs in turn, in each package's order, its own first (cl-1077: H3's `edit` brought `upscale`'s upscaler). Another package's
+/// is named behind its distribution (`minimax-h3/ref2va_segment`). One that declares no `calls` may call any internal one of its
+/// package. One its rules say the request doesn't call (`uncalled`) is left out, and what only it reaches.
+pub fn callees(document: &Value, others: &[Other<'_>], entrypoint: &str, uncalled: &BTreeSet<String>) -> Vec<String> {
+    let packages = Packages { own: document, others };
     let constructs = |entry: &Value| api::interface::models(entry).iter().any(|slot| slot["weights"].as_bool() != Some(true));
     let reached = api::interface::entrypoint(document, entrypoint).filter(|entry| entry.get("calls").is_some()).map(|root| {
-        let (mut reached, mut pending) = (BTreeSet::new(), vec![root]);
-        while let Some(entry) = pending.pop() {
-            for called in entry["calls"].as_array().into_iter().flatten().filter_map(|call| call["function"].as_str()) {
+        let (mut reached, mut pending) = (BTreeSet::new(), vec![(None, root)]);
+        while let Some((package, entry)) = pending.pop() {
+            for call in entry["calls"].as_array().into_iter().flatten() {
+                let Some(called) = call["function"].as_str() else { continue };
                 if std::ptr::eq(entry, root) && uncalled.contains(called) {
                     continue;
                 }
-                if reached.insert(called.to_owned()) {
-                    pending.extend(api::interface::entrypoint(document, called));
+                let to = packages.called(package, call);
+                if reached.insert((to, called.to_owned())) {
+                    pending.extend(api::interface::entrypoint(packages.document(to), called).map(|entry| (to, entry)));
                 }
             }
         }
         reached
     });
-    api::interface::entrypoints(document)
-        .filter(|entry| api::interface::internal(entry) && constructs(entry))
-        .filter_map(|entry| api::interface::name(entry).map(str::to_owned))
-        .filter(|name| reached.as_ref().is_none_or(|reached| reached.contains(name)))
-        .collect()
+    let mut found = vec![];
+    for package in std::iter::once(None).chain((0..others.len()).map(Some)) {
+        for entry in api::interface::entrypoints(packages.document(package)).filter(|entry| constructs(entry)) {
+            let Some(name) = api::interface::name(entry) else { continue };
+            let called = match &reached {
+                Some(reached) => reached.contains(&(package, name.to_owned())),
+                None => package.is_none() && api::interface::internal(entry),
+            };
+            if called {
+                found.push(packages.named(package, name));
+            }
+        }
+    }
+    found
 }
 
 /// Checkpoints by their id, each with the components read of it (none: all of it).
