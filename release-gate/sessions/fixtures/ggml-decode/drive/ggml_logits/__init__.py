@@ -1,11 +1,15 @@
-"""ggml-decode's logits check (xs-213): a lane's next-token distributions against a reference lane's, on the same text,
-through the Runtime as a run loads either (its leaves, its kernels). Per position: whether the top tokens agree, and
-KL(reference || lane) in nats."""
+"""ggml-decode's drives (xs-213), through the Runtime as a run loads a lane (its leaves, its kernels).
+- `logits`: a lane's next-token distributions against a reference lane's on the same text. Per position: whether the
+  top tokens agree, and KL(reference || lane) in nats.
+- `decode`: the lane's single-row greedy decode of `PROMPT` for a fixed number of tokens, timed with the checkpoint's
+  MTP head drafting (as every call runs) and without it, warm (each after its own warm-up)."""
 
 import json
+import time
 
 import msgspec
 import torch
+from cozy_runtime import lm
 from cozy_runtime.author import App, Context
 from cozy_runtime.vlm import VisionLM
 
@@ -25,6 +29,14 @@ TEXTS = (
     "Quantization stores each weight in fewer bits: a block of thirty-two values shares one scale, and each value keeps an "
     "eight-bit integer. Decoding multiplies them back. The error is small compared with the spread of the weights, so the "
     "model's answers barely change, while the memory it reads for every token halves.",
+)
+
+
+#: ggml-decode's story, as Qwen's chat template writes a user turn with thinking off: the same tokens llama.cpp's side
+#: is given (fixtures/ggml-decode/llama.sh).
+PROMPT = (
+    "<|im_start|>user\nWrite a long, detailed story about a lighthouse keeper who finds a message in a bottle. Keep "
+    "writing until you are stopped.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
 
 
@@ -56,4 +68,38 @@ def logits(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
             "kl_p99": float(kl.quantile(0.99)),
             "kl_max": float(kl.max()),
         })
+    return Agreement(json.dumps(rows))
+
+
+def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float, list[int]]:
+    inputs = {"input_ids": ids.to(net.device), "attention_mask": torch.ones_like(ids).to(net.device)}
+    torch.cuda.synchronize()
+    began = time.perf_counter()
+    out = lm.generate(net, inputs, max_new_tokens=tokens, stop=[], pad=0, temperature=0.0)
+    torch.cuda.synchronize()
+    return time.perf_counter() - began, out[0].tolist()
+
+
+@app.entrypoint(accelerator=True)
+def decode(ctx: Context, model: VisionLM) -> Agreement:
+    """`PROMPT` decoded greedily for 512 tokens, never stopping, with the MTP head drafting and without: wall tokens/s
+    (its ~40-token prefill included), each after a 64-token warm-up of its own, and whether both made the same tokens."""
+    net = model.pipe.components["model"]
+    ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
+    head = lm.HEADS.get(net)
+    rows: dict[str, object] = {"prompt_tokens": int(ids.shape[1]), "gpu": torch.cuda.get_device_name()}
+    made: dict[str, list[int]] = {}
+    for mode in ("drafted", "plain") if head is not None else ("plain",):
+        if mode == "plain" and head is not None:
+            del lm.HEADS[net]
+        try:
+            _timed(net, ids, 64)
+            seconds, made[mode] = _timed(net, ids, 512)
+        finally:
+            if head is not None:
+                lm.HEADS[net] = head
+        rows[mode] = {"tokens": len(made[mode]), "s": round(seconds, 3), "tok_s": round(len(made[mode]) / seconds, 1)}
+    if len(made) == 2:
+        a, b = made["drafted"], made["plain"]
+        rows["same_tokens"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
     return Agreement(json.dumps(rows))
