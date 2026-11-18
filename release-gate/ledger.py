@@ -182,15 +182,31 @@ def versions(rec: dict[str, JSON], package: str, built: dict[str, JSON]) -> dict
     return v
 
 
-def workload(rec: dict[str, JSON], cap: str | None) -> dict[str, JSON]:
-    """What was asked: the function, the request without its seed (a digest), the seed, its shape, the GPUs and VRAM cap."""
+# The request's units: what an estimate scales a row's time by.
+UNITS = ('width', 'height', 'megapixels', 'aspect_ratio', 'resolution', 'to', 'steps', 'frames', 'fps', 'turbo')
+
+
+def defaults(d: str, package: str, function: str) -> dict[str, JSON]:
+    """The function's own defaults, from the interface the gate described it by (interfaces.sh --out, <d>/interfaces/)."""
+    doc = obj(load(os.path.join(d, 'interfaces', f'{package}.json')))
+    entry = next((obj(e) for e in arr(doc.get('entrypoints')) if obj(e).get('name') == function), {})
+    out = {text(obj(f).get('name')): obj(f).get('default') for f in arr(obj(entry.get('request')).get('fields')) if 'default' in obj(f)}
+    out.update({k.split('/', 1)[1]: v for k, v in obj(obj(entry.get('invocable')).get('defaults')).items() if k.startswith('request/')})
+    return {k: v for k, v in out.items() if k and v is not None}
+
+
+def workload(rec: dict[str, JSON], cap: str | None, d: str | None = None) -> dict[str, JSON]:
+    """What was asked: the function, the request without its seed (a digest), the seed, its shape (every unit, the function's
+    defaults filling what the request left out), the GPUs and VRAM cap."""
     target = (text(rec.get('target')) or '').split('@', 1)[0]
     parts = [p for p in target.split('/') if p not in ('local', '_', '.')]
     req = obj(rec.get('request'))
     inp = dict(obj(req.get('input')))
     seed = inp.pop('seed', req.get('seed'))
-    shape: dict[str, JSON] = {k: inp[k] for k in ('width', 'height', 'megapixels', 'aspect_ratio', 'steps', 'frames', 'turbo') if k in inp}
-    seconds = sum(num(obj(b).get('duration')) or 0 for b in arr(inp.get('beats'))) or num(inp.get('duration'))
+    package, function = (parts[-2] if len(parts) >= 2 else target), (parts[-1] if parts else '')
+    told = {**(defaults(d, package, function) if d else {}), **inp}
+    shape: dict[str, JSON] = {k: told[k] for k in UNITS if told.get(k) is not None}
+    seconds = sum(num(obj(b).get('duration')) or 0 for b in arr(told.get('beats'))) or num(told.get('duration')) or num(told.get('duration_s'))
     if seconds:
         shape['seconds'] = seconds
     degree = max([num(obj(m.get('execution')).get('degree')) or 1 for m in measurements(rec)] or [1])
@@ -203,7 +219,7 @@ def workload(rec: dict[str, JSON], cap: str | None) -> dict[str, JSON]:
         if isinstance(v, list):
             return [form(x) for x in v]
         return '·' if isinstance(v, str) and (' ' in v or '\n' in v or v.startswith('<')) else v
-    return {'package': parts[-2] if len(parts) >= 2 else target, 'function': parts[-1] if parts else '', 'seed': seed,
+    return {'package': package, 'function': function, 'seed': seed,
             'request': 'sha256:' + hashlib.sha256(json.dumps(inp, sort_keys=True).encode()).hexdigest()[:32],
             'form': 'sha256:' + hashlib.sha256(json.dumps(form(inp), sort_keys=True).encode()).hexdigest()[:32],
             'shape': shape, 'gpus': int(degree), 'cap': cap}
@@ -287,7 +303,7 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
         rec = obj(load(file(name + '.json')))
         if not rec or 'number' not in rec or target.startswith('/') or name.endswith(('-weights', '-weights-off')):
             continue  # not a run record, or a suite's own driver (kernels, gemm) rather than a package's function
-        w = workload(rec, caps.get(name) or arm_caps.get(arm(name)) or cap)
+        w = workload(rec, caps.get(name) or arm_caps.get(arm(name)) or cap, d)
         w['ask'] = asks.get(name)
         st = state(rec)
         fn = f"{arm(name)} {w['package']}/{w['function']}"
