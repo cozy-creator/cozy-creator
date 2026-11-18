@@ -2,8 +2,8 @@
 
 Each sample is one JSON line: the time, TensorD's pid and each thread as [tid, name, state, wchan, utime+stime ticks,
 syscall]. The syscall is readable only when TensorD allows a ptracer. With `gdb`, `thread apply all bt` is also written
-2, 5 and 9 s after TensorD's first `import-pages` thread appears. Each line in host.txt is the load and the CPU and
-I/O pressure, once a second.
+2, 5 and 9 s after TensorD's first `import-pages` thread appears. Once a second, host.txt gets the load, the CPU and I/O
+pressure, and TensorD's API connections (`ss -tni`: queues, RTT, window).
 """
 
 import json
@@ -80,5 +80,12 @@ with open(os.path.join(out, "threads.ndjson"), "w") as samples, open(os.path.joi
             last_host = now
             pressure = " ".join(read(f"/proc/pressure/{kind}").split("\n")[0].replace("some ", f"{kind}:") for kind in ("cpu", "io", "memory"))
             host.write(f"{now:.3f} load {read('/proc/loadavg').strip()} {pressure}\n")
+            # TensorD's API connections (its listening ports'): their queues, RTT and window, to tell a stalled link from a stalled process.
+            listening = subprocess.run(["ss", "-tlnpH"], capture_output=True, text=True).stdout
+            ports = {line.split()[3].rsplit(":", 1)[1] for line in listening.splitlines() if '"tensord"' in line and len(line.split()) > 3}
+            if ports:
+                match = " or ".join(f"sport = :{p}" for p in sorted(ports)).split()
+                api = subprocess.run(["ss", "-tniH", "state", "established", "(", *match, ")"], capture_output=True, text=True).stdout
+                host.write(f"{now:.3f} api {' '.join(api.split())[:4000]}\n")
         samples.flush()
         time.sleep(max(0.0, now + 0.25 - time.time()))
