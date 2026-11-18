@@ -7,7 +7,17 @@ name = "ggml-logits"
 version = "0.1.0"
 description = "ggml-decode's drives: logits agreement between lanes, and a lane's timed decode with and without MTP drafting"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+# As qwen3's: the drives load the same VisionLM, a Transformers model.
+dependencies = [
+    "cozy-runtime[media]>=0.48.0.dev0,<0.49",
+    "msgspec>=0.19",
+    "numpy>=1.26",
+    "pillow>=12",
+    "tokenizers>=0.23",
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "transformers>=5.17",
+]
 
 [project.entry-points."cozy.application"]
 default = "ggml_logits:app"
