@@ -69,7 +69,7 @@ arm() {
   fi
   [ "$(cozy machine show "$NAME" --json | jq -r .status.version)" = "$want" ] || fail "$label: the pod doesn't run TensorD $want"
   if [ -n "${4:-}" ]; then
-    for model in $(cozy machine show "$NAME" --json | jq -r '.status.models[]?.model'); do
+    for model in $(cozy machine show "$NAME" --json | jq -r '.status.models[]?.repository'); do
       cozy model uninstall "$model" --on "$NAME" >> "$OUT/uninstall.txt" 2>&1 || say "$label: $model wasn't uninstalled: $(tail -c 200 "$OUT/uninstall.txt")"
     done
     say "$label: the pod's models uninstalled; $(cozy machine show "$NAME" --json | jq -r '.status.models | length') left"
