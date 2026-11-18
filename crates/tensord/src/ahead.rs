@@ -4,7 +4,8 @@
 //! to worry about what it's told, what a request MAY look like, to ensure it's ready for it"), made ready by the machine's own warm
 //! run of it: planned as that request's call would be (its function's needs rules on its payload, its lane for these GPUs, this
 //! store), its code installed, what it needs downloaded, behind every run in the machine's lines, a prepare behind every upcoming job
-//! and every run's guesses (`origin::priority`). A list is the caller's whole one: what it drops is canceled. Their ids are kept out
+//! and every run's guesses (`origin::priority`), a prepare list's items in the list's order, whichever was listed first (`place`,
+//! cl-1278). A list is the caller's whole one: what it drops is canceled. Their ids are kept out
 //! of every listing; their readiness shows in Status (`readiness`), their downloads as any, under these ids. A call later sent as
 //! the same request (`RunSpec::predicted`, its identity the item's) is that request (`adopts`).
 //!
@@ -18,14 +19,20 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError, Weak,
     },
     time::{Duration, Instant},
 };
 
 use api::{error::Error, machine as v1};
 
-use crate::{api::auth::VerifiedActor, runs::Runs, stop::Stop};
+use crate::{
+    access::{Fetch, Needs},
+    api::auth::VerifiedActor,
+    origin::priority,
+    runs::Runs,
+    stop::Stop,
+};
 
 /// The prefixes of the ids an upcoming job's and a prepare item's runs take.
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
@@ -87,6 +94,61 @@ const ADOPTABLE: Duration = Duration::from_secs(120);
 
 /// Each listed item's extras still coming once its needs landed (`extras`), by its run's id: a list that drops it ends them.
 static EXTRAS: LazyLock<Mutex<HashMap<String, Stop>>> = LazyLock::new(Mutex::default);
+
+/// Each prepare item's place in the download line, by its run's id (`origin::priority::prepare`): the smaller goes first, and a
+/// list's items stand in the list's order (`placed`). By its run's acceptance, an edited box's new item went behind every box
+/// guessed before it, and its Render waited 100 s for 11 GB not yet begun (cl-1278, pod-session 44338350009).
+static PLACES: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Mutex::default);
+
+/// What each prepare item's run has in the download line, by its run's id (`lines`): each fetch and what it lined, to line again
+/// where a list moves the item ahead (`again`).
+static LINED: LazyLock<Mutex<HashMap<String, Vec<(Weak<Fetch>, Needs)>>>> = LazyLock::new(Mutex::default);
+
+/// Prepare item `id`'s place in the download line; the last, for one no list names.
+pub(crate) fn place(id: &str) -> u64 {
+    lock(&PLACES).get(id).copied().unwrap_or(priority::LAST)
+}
+
+/// Run `caller` is about to line `reads` under `fetch` (`Fetch::lined`): kept for a prepare item, whose place may move.
+pub(crate) fn lines(caller: &str, fetch: &Arc<Fetch>, reads: &Needs) {
+    if guess(caller) {
+        lock(&LINED).entry(caller.to_owned()).or_default().push((Arc::downgrade(fetch), reads.clone()));
+    }
+}
+
+/// A prepare list's items (`ids`, in its order) placed in the download line; those whose place it changed. The downloader moves an
+/// object ahead and never back (`tensorfs::fetch`: wanted twice, it takes the more urgent order), so the list is placed from its
+/// last item up: each stays where it is while that is ahead of the one after it, else goes one ahead of that one.
+fn placed(ids: &[String]) -> Vec<String> {
+    let mut places = lock(&PLACES);
+    let (mut next, mut moved) = (priority::LAST + 1, vec![]);
+    for id in ids.iter().rev() {
+        let at = places.get(id).copied().filter(|at| *at < next).unwrap_or(next.saturating_sub(1));
+        if places.insert(id.clone(), at) != Some(at) {
+            moved.push(id.clone());
+        }
+        next = at;
+    }
+    moved
+}
+
+/// Prepare item `id` moved ahead in the download line: what its run lined is lined at its new place too, each object taking the
+/// more urgent of its orders, so nothing of it stops or starts again. One whose run lined nothing yet lines there when it does.
+fn again(runs: &Runs, id: &str) {
+    let lined: Vec<(Arc<Fetch>, Needs)> = (lock(&LINED).get(id).into_iter().flatten()).filter_map(|(fetch, reads)| Some((fetch.upgrade()?, reads.clone()))).collect();
+    if lined.is_empty() {
+        return;
+    }
+    let free = crate::reclaim::Disk::measure(runs.publisher.store().root()).map_or(0, |disk| disk.free());
+    let at = place(id);
+    for (fetch, reads) in lined {
+        let wanted = fetch.lined(&reads, &|rank| priority::prepare(at, false, rank), &|rank| priority::prepare(at, true, rank), free);
+        if let Err(error) = wanted.and_then(|lined| fetch.hint(lined, None)) {
+            tracing::warn!("list item {id} wasn't moved ahead in the download line: {error}");
+        }
+    }
+    tracing::info!("list item {id} moved ahead in the download line");
+}
 
 /// Each list's newest put, by caller and list (`put`): an older one its admission hasn't reached is never admitted.
 static PUTS: LazyLock<Mutex<HashMap<List, u64>>> = LazyLock::new(Mutex::default);
@@ -211,6 +273,8 @@ pub(crate) fn put(
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
     let list = (crate::runs::actor_id(actor), prefix);
     lock(&LISTED).insert(list.clone(), ids.clone());
+    // A prepare list's order is its items' order in the download line (cl-1278).
+    let moved = if prefix == PREPARE { placed(&ids) } else { vec![] };
     // What no list names now loads no more (cl-1123).
     if let Some(pool) = runs.service.pool() {
         pool.unlist(&crate::runs::actor_id(actor));
@@ -218,6 +282,11 @@ pub(crate) fn put(
     // What no list names any more is weighed no more.
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
+    lock(&PLACES).retain(|id, _| named.contains(id));
+    lock(&LINED).retain(|id, lined| {
+        lined.retain(|(fetch, _)| fetch.strong_count() > 0);
+        named.contains(id)
+    });
     // What no list names now is adoptable a while yet (`DROPPED`).
     let kept = {
         let mut dropped = lock(&DROPPED);
@@ -259,16 +328,19 @@ pub(crate) fn put(
     let runs = runs.clone();
     std::thread::Builder::new()
         .name(format!("list-{}", prefix.trim_end_matches(':').rsplit(':').next().unwrap_or(prefix)))
-        .spawn(move || admit(&runs, actor, list, put, requests, ids, admission))
+        .spawn(move || admit(&runs, actor, list, put, requests, ids, moved, admission))
         .map_err(|error| Error::internal("list_unadmitted", error.to_string()))?;
     Ok(())
 }
 
 /// List put `put`'s items admitted, one put at a time, unless a newer put of its list came since (which admits its own, and drops
-/// what this one would have). Its admission holds the machine's release meanwhile.
-fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests: Vec<v1::RunRequest>, ids: Vec<String>, admission: crate::machine::lifecycle::Admission) {
+/// what this one would have). Its admission holds the machine's release meanwhile. Those it `moved` in the download line are
+/// lined where they stand now first, whatever came since.
+#[allow(clippy::too_many_arguments)]
+fn admit(runs: &Arc<Runs>, actor: VerifiedActor, list: List, put: u64, requests: Vec<v1::RunRequest>, ids: Vec<String>, moved: Vec<String>, admission: crate::machine::lifecycle::Admission) {
     static ADMITTING: Mutex<()> = Mutex::new(());
     let _one = lock(&ADMITTING);
+    moved.iter().for_each(|id| again(runs, id));
     if lock(&PUTS).get(&list) != Some(&put) {
         return;
     }
