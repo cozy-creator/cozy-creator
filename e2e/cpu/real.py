@@ -48,6 +48,11 @@ def cozy(binary: str, project: Path, args: list[str], log: Path, timeout: float 
     runs = [cast(dict[str, Json], row["run"]) for row in map(parsed, log.read_text().splitlines())
             if isinstance(row, dict) and isinstance(row.get("run"), dict)]
     last = runs[-1] if runs else {}
+    # A call that read a model, or called a function, its needs rules said its request doesn't use: the rule is wrong, and
+    # that model came only when read (TensorD's `needs_rule_missed`, cl-1103).
+    missed = [w for w in cast(list[dict[str, Json]], last.get("warnings") or []) if w.get("code") == "needs_rule_missed"]
+    if missed:
+        raise Failed(f"needs_rule_missed: {first_line(missed[0].get('message', ''))}")
     if done.returncode != 0 or runs and last.get("status") != "completed":
         reason = cast(dict[str, Json], last.get("reason") or {})
         said = reason.get("message") or reason.get("code") or log.with_suffix(".err").read_text().strip()
