@@ -76,7 +76,7 @@ def quarter(name: str, subject_line: str, scene: str, words: str, seconds: int =
 
 
 def full(name: str, subject_line: str, summary_where: str, first: str, scene: str, words: str, pinned: bool = True,
-         extra_defs: list[str] = (), extra_keep: list[str] = (), views: dict[int, str] = {}) -> str:  # noqa: B006
+         extra_defs: list[str] = (), extra_keep: list[str] = (), views: dict[int, str] = {}, seconds: int = 15) -> str:  # noqa: B006
     """One clockwise 360-degree turn in 15 s; `views` puts a picture at a milestone."""
     defs = [subject_line, *extra_defs]
     if pinned:
@@ -94,7 +94,7 @@ def full(name: str, subject_line: str, summary_where: str, first: str, scene: st
                f"[Shot 1] {first} The camera performs exactly one smooth clockwise 360-degree orbit around {words}, at constant radius, "
                f"constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. "
                f"{scene} {NO}",
-               turns(15, marks))  # fmt: skip
+               turns(seconds, marks))  # fmt: skip
 
 
 def plain(name: str, kind: str, words: str) -> str:
@@ -258,5 +258,23 @@ renders = [
      "fields": {"text": plain("<girl>", "plain", "the completely stationary <girl>"), "refs": ["girl"], "first": 1, "last": 1, "lora": ORB,
                 "duration": 15, "seed": 152110}},
 ]
+import sys
+
+if sys.argv[1:] == ["resume"]:
+    # The renders 44188990755 didn't reach (its pod ended at a render boundary on the 3-rental rule), and se-156's audit against
+    # ORB360's recipe, each against e1 at its seed: no keyframe pin (the trained `[reference generation]` tag alone), `<Subject 1>`
+    # as the trained captions name it, and the card's 124 frames.
+    by = {r["name"]: r for r in renders}
+    e1 = by["e1-orb-turn"]
+    sword = full("<swordswoman>", SWORD, "in the environment shown in <Picture 1>",
+                 "The shot begins from <Picture 1>, with its exact environment, ground, background and light.", STREET,
+                 "the completely stationary <swordswoman>", seconds=5)
+    renders = [by[n] for n in ("e2-orb-turn-views", "e3-orb-turn-face", "f2-orb-new-scene", "f3-orb-pictured-scene", "f4-orb-grey-keyed")] + [
+        {"name": "g1-orb-turn-unpinned", "tool": T, "files": e1["files"],
+         "fields": {**{k: v for k, v in e1["fields"].items() if k not in ("first", "last")}, "aspect_ratio": "3:4"}},
+        {"name": "g2-orb-turn-subject-1", "tool": T, "files": e1["files"],
+         "fields": {**e1["fields"], "text": e1["fields"]["text"].replace("<swordswoman>", "<Subject 1>"), "refs": ["Subject 1"]}},
+        {"name": "g3-orb-turn-124", "tool": T, "files": e1["files"], "fields": {**e1["fields"], "text": sword, "duration": 5}},
+    ]
 print(json.dumps({"tree": "pk", "derive": [{"name": "w-grey", "op": "grey", "from": "fixture:w-girl.png"}], "renders": renders,
                   "seconds": 9000}, indent=1))

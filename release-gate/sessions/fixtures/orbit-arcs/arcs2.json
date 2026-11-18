@@ -1,0 +1,163 @@
+{
+ "tree": "pk",
+ "derive": [
+  {
+   "name": "w-grey",
+   "op": "grey",
+   "from": "fixture:w-girl.png"
+  }
+ ],
+ "renders": [
+  {
+   "name": "e2-orb-turn-views",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:m-panel.png",
+    "picture2": "fixture:m-right2.png",
+    "picture3": "fixture:m-back.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<swordswoman> is the exact same rigid character shown in <Picture 1>, <Picture 2> and <Picture 3>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<right> shows <swordswoman> from her right side, 90 degrees clockwise round her, in <Picture 2>; it is not a frame of the video.\n<back> shows <swordswoman> from directly behind, 180 degrees round her, in <Picture 3>; it is not a frame of the video, and its street is not the scene.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <swordswoman> in the environment shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<swordswoman> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n<right> (not a frame of [Shot 1]; seen from 90 degrees clockwise of the starting direction): fully_preserved - its geometry, clothing and details define her right side; the orbit passes the same side.\n<back> (not a frame of [Shot 1]; seen from 180 degrees clockwise of the starting direction): fully_preserved - its geometry, clothing and details define her back; the orbit passes the same side.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its exact environment, ground, background and light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <swordswoman>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The surrounding street stays in place in the world and is revealed consistently as the camera moves, continuing the same location seen in <Picture 1>, drawn in the same black-and-white ink and screentone manga style. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 5 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 3.750000 seconds (zero-based frame 90), the camera has advanced 90 degrees clockwise from its starting azimuth; it faces her right side, as in <Picture 2>.\nAt 7.500000 seconds (zero-based frame 180), the camera has advanced 180 degrees clockwise from its starting azimuth; it faces her back, as in <Picture 3>.\nAt 11.291667 seconds (zero-based frame 271), the camera has advanced 270 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "swordswoman",
+     "right",
+     "back"
+    ],
+    "first": 1,
+    "last": 1,
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "seed": 152109
+   }
+  },
+  {
+   "name": "e3-orb-turn-face",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:m-panel.png",
+    "picture2": "fixture:m-face.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<swordswoman> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<face> is a close-up of <swordswoman>'s face, shown in <Picture 2>; it is not a frame of the video. Her face keeps exactly these features from every angle the camera sees it.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <swordswoman> in the environment shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<swordswoman> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n<face> (not a frame of [Shot 1]): fully_preserved - her facial features, hair and expression are retained from every angle.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its exact environment, ground, background and light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <swordswoman>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The surrounding street stays in place in the world and is revealed consistently as the camera moves, continuing the same location seen in <Picture 1>, drawn in the same black-and-white ink and screentone manga style. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "swordswoman",
+     "face"
+    ],
+    "first": 1,
+    "last": 1,
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "seed": 152109
+   }
+  },
+  {
+   "name": "f2-orb-new-scene",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:w-girl.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<girl> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <girl> standing on a city rooftop at sunset, like a single instant stopped in time.\n\nretention_analysis:\n<girl> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> (not a frame of [Shot 1]): fully_preserved - its character's appearance, outfit and pose define <girl>; its plain white background is not part of the scene.\n\ndetailed_description:\n[Shot 1] The shot begins facing <girl> from the same direction as <Picture 1>, but she stands on a city rooftop at sunset: a concrete floor, a low railing, a water tank, the city skyline and an orange sky around her. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <girl>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The rooftop and skyline stay in place in the world and are revealed consistently as the camera circles. Everything is frozen in time. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; it faces the same side of <girl> as <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; it faces the same side of <girl> as at the start.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "girl"
+    ],
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "aspect_ratio": "9:16",
+    "seed": 152111
+   }
+  },
+  {
+   "name": "f3-orb-pictured-scene",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:w-girl.png",
+    "picture2": "fixture:s-classroom.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<girl> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<classroom> is the room shown in <Picture 2>, where <girl> stands; its desks, windows, blackboard, walls and light remain unchanged.\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <girl> standing in the middle of <classroom>, like a single instant stopped in time.\n\nretention_analysis:\n<girl> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> (not a frame of [Shot 1]): fully_preserved - its character's appearance, outfit and pose define <girl>; its plain white background is not part of the scene.\n<classroom> (not a frame of [Shot 1]): fully_preserved - the room's layout, furniture and light are retained around her.\n\ndetailed_description:\n[Shot 1] The shot begins facing <girl> from the same direction as <Picture 1>, but she stands in the middle of <classroom> between the rows of desks, in its warm late-afternoon light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <girl>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The room stays in place in the world and is revealed consistently as the camera circles: the windows, the blackboard, the door and the back wall pass behind her in turn. Nobody else is in the room. Everything is frozen in time. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; it faces the same side of <girl> as <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; it faces the same side of <girl> as at the start.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "girl",
+     "classroom"
+    ],
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "aspect_ratio": "9:16",
+    "seed": 152112
+   }
+  },
+  {
+   "name": "f4-orb-grey-keyed",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "derive:w-grey"
+   },
+   "key": "white",
+   "fields": {
+    "text": "subject_definitions:\n<girl> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <girl> against the plain background shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<girl> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its plain background and studio light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <girl>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The background stays the same plain and empty all the way around, with no ground, sky, landscape or weather. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "girl"
+    ],
+    "first": 1,
+    "last": 1,
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "seed": 152110
+   }
+  },
+  {
+   "name": "g1-orb-turn-unpinned",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:m-panel.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<swordswoman> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <swordswoman> in the environment shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<swordswoman> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its exact environment, ground, background and light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <swordswoman>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The surrounding street stays in place in the world and is revealed consistently as the camera moves, continuing the same location seen in <Picture 1>, drawn in the same black-and-white ink and screentone manga style. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "swordswoman"
+    ],
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "seed": 152109,
+    "aspect_ratio": "3:4"
+   }
+  },
+  {
+   "name": "g2-orb-turn-subject-1",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:m-panel.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<Subject 1> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <Subject 1> in the environment shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its exact environment, ground, background and light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <Subject 1>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The surrounding street stays in place in the world and is revealed consistently as the camera moves, continuing the same location seen in <Picture 1>, drawn in the same black-and-white ink and screentone manga style. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 362 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 5.000000 seconds (zero-based frame 120), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 10.041667 seconds (zero-based frame 241), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 15.041667 seconds (zero-based frame 361), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "Subject 1"
+    ],
+    "first": 1,
+    "last": 1,
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 15,
+    "seed": 152109
+   }
+  },
+  {
+   "name": "g3-orb-turn-124",
+   "tool": "orbit/probe",
+   "files": {
+    "picture": "fixture:m-panel.png"
+   },
+   "fields": {
+    "text": "subject_definitions:\n<swordswoman> is the exact same rigid character shown in <Picture 1>. Her geometry, proportions, materials, colors, markings and surface details remain unchanged.\n<Picture 1> is the first-frame viewpoint of [Shot 1].\n\nsummary:\nORB360_CW. A frozen-moment 360-degree orbit of <swordswoman> in the environment shown in <Picture 1>, like a single instant stopped in time.\n\nretention_analysis:\n<swordswoman> (appears in [Shot 1]): fully_preserved - her geometry, proportions, materials, colors, markings and surface details are retained, and she stays completely frozen.\n<Picture 1> ([Shot 1] first frame and last frame): fully_preserved - the orbit starts and ends on this view.\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>, with its exact environment, ground, background and light. The camera performs exactly one smooth clockwise 360-degree orbit around the completely stationary <swordswoman>, at constant radius, constant elevation, constant focal length, constant speed, and constant framing, ending at the starting viewpoint. The surrounding street stays in place in the world and is revealed consistently as the camera moves, continuing the same location seen in <Picture 1>, drawn in the same black-and-white ink and screentone manga style. No articulation, deformation, secondary motion, wind, zoom, dolly, camera roll, cuts, lighting changes, or scene changes.\n\nAll 4 milestones below belong to the same uninterrupted [Shot 1], not separate shots. The video runs at 24 fps and has 124 frames. Angles describe camera motion clockwise as viewed from above, relative to the starting camera azimuth; the subject itself does not rotate. The camera moves continuously at constant angular speed between these milestones, without pausing or reversing.\nAt 0.000000 seconds (zero-based frame 0), the camera has advanced 0 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\nAt 1.708333 seconds (zero-based frame 41), the camera has advanced 120 degrees clockwise from its starting azimuth.\nAt 3.416667 seconds (zero-based frame 82), the camera has advanced 240 degrees clockwise from its starting azimuth.\nAt 5.125000 seconds (zero-based frame 123), the camera has advanced 360 degrees clockwise from its starting azimuth; the viewpoint corresponds to <Picture 1>.\n\nThe entire subject is a single frozen three-dimensional scene throughout the shot. Every visible eyelid keeps its reference position: no blinking. Each eye keeps a fixed gaze relative to the head and never tracks the moving camera. Facial expression, mouth, head, hands, feet and body pose remain unchanged. Hair strands, clothing, ribbons, accessories and loose parts are rigidly fixed in the same positions. There is no breathing, sway, settling or secondary motion. Only the camera changes position. Camera radius, focal length and look-at point stay fixed. Lighting stays fixed in world space; normal viewpoint-dependent shading and reflections remain physically consistent.\n\noverall_soundscape:\nN/A\n\nnon_diegetic_music:\nN/A",
+    "refs": [
+     "swordswoman"
+    ],
+    "first": 1,
+    "last": 1,
+    "lora": "matlowai/orb360@0.1.1",
+    "duration": 5,
+    "seed": 152109
+   }
+  }
+ ],
+ "seconds": 9000
+}
