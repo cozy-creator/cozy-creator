@@ -135,13 +135,15 @@ if has tools; then
   P=$PJ/garden
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
-  PAGE add "$P" sky --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a red kite over a green hill, morning light", "seed": 5}' > "$W/out/sky.add.json" 2>&1
-  t0=$SECONDS; timeout 300 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/show-sky.json" 2>&1
-  cozy model ls --on "$NAME" > "$W/prefetch-models.txt" 2>&1 < /dev/null
-  cozy machine logs "$NAME" --since 15m -n 600 < /dev/null 2>&1 | grep -aiE 'expander|prefetch|prepar|download|install' | tail -80 > "$W/prefetch-log.txt"
-  cp "$P/.vault-calcifer/diagnostics/walk.log" "$W/walk-garden.log" 2> /dev/null || find "$P" -name walk.log -exec cp {} "$W/walk-garden.log" \; 2> /dev/null
-  grep -ahiE 'expander' "$W/prefetch-log.txt" "$W/walk-garden.log" "$W/prefetch-models.txt" 2> /dev/null | cut -c1-260 | head -20 | sed 's/^/    prefetch: /' >> "$R"
-  say "prefetch, an encrypted project's t2i box shown $((SECONDS - t0)) s: $(grep -ahoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.txt" "$W/walk-garden.log" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
+  if jq -e 'any(.[]; .name == "sky")' "$STEPS" > /dev/null; then
+    PAGE add "$P" sky --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a red kite over a green hill, morning light", "seed": 5}' > "$W/out/sky.add.json" 2>&1
+    t0=$SECONDS; timeout 300 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/show-sky.json" 2>&1
+    cozy model ls --on "$NAME" > "$W/prefetch-models.txt" 2>&1 < /dev/null
+    cozy machine logs "$NAME" --since 15m -n 600 < /dev/null 2>&1 | grep -aiE 'expander|prefetch|prepar|download|install' | tail -80 > "$W/prefetch-log.txt"
+    cp "$P/.vault-calcifer/diagnostics/walk.log" "$W/walk-garden.log" 2> /dev/null || find "$P" -name walk.log -exec cp {} "$W/walk-garden.log" \; 2> /dev/null
+    grep -ahiE 'expander' "$W/prefetch-log.txt" "$W/walk-garden.log" "$W/prefetch-models.txt" 2> /dev/null | cut -c1-260 | head -20 | sed 's/^/    prefetch: /' >> "$R"
+    say "prefetch, an encrypted project's t2i box shown $((SECONDS - t0)) s: $(grep -ahoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.txt" "$W/walk-garden.log" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
+  fi
   # Placeholders a step file may use: {klein_lora} (the catalog's first FLUX.3 Klein LoRA, as a CLI user finds one), {klein_model}.
   if grep -q '{klein_' "$STEPS"; then
     DIR=$P c lora-klein lora ls klein --limit 10
