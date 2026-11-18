@@ -94,7 +94,9 @@ impl Publisher {
         // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
         let said = |reason: Option<String>| job.waiting(reason);
         loop {
-            let turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
+            let turn = crate::line::INSTALLS
+                .turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said, &|id: &str| job.reads(id))
+                .ok_or_else(super::canceled)?;
             *job.yields.lock().unwrap() = Some(turn.outranked().clone());
             let built = self.build_in_turn(env, project, job);
             *job.yields.lock().unwrap() = None;

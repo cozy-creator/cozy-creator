@@ -6,6 +6,7 @@ use crate::{
     execution::Engine,
     gpu_service::{Plan, Pool},
     journal::Execution,
+    others::{Others, Read},
 };
 use serde_json::Value;
 use std::{
@@ -770,7 +771,7 @@ impl Service {
                     } else if invocation.degree > 0 && gpu_fenced {
                         "waiting for an earlier process to let go of the GPUs".to_owned()
                     } else if cpu_full {
-                        self.cpu_wait(&holders)
+                        self.cpu_wait(&record, &holders)
                     } else if invocation.degree > 0 {
                         "waiting for a free GPU".to_owned()
                     } else {
@@ -798,14 +799,15 @@ impl Service {
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
     }
-    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them, by their callers' ids,
-    /// which each caller names as people know them (`waiting for LAB2-12 to finish with this machine's CPU`).
-    fn cpu_wait(&self, holders: &[Execution]) -> String {
-        let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
-        match named.as_slice() {
-            [] => "waiting for this machine's CPU to free up".to_owned(),
-            [one] => format!("waiting for {one} to finish with this machine's CPU"),
-            [rest @ .., last] => format!("waiting for {} or {last} to finish with this machine's CPU", rest.join(", ")),
+    /// What deviceless run `record` waits for while this machine's CPU slots are full: the runs holding them as its readers hear them
+    /// (`others`, cl-1223), by their callers' ids, which each caller names as people know them (`waiting for LAB2-12 to finish with
+    /// this machine's CPU`), and another project's only as that.
+    fn cpu_wait(&self, record: &Execution, holders: &[Execution]) -> String {
+        let ids: Vec<(String, &Execution)> = holders.iter().map(|holder| (self.engine.caller_id(&holder.id), holder)).collect();
+        let reads = |id: &str| ids.iter().find(|(held, _)| held == id).map_or(Read::No, |(_, holder)| crate::others::read_between(record, holder));
+        match Others::of(ids.iter().map(|(id, _)| id), reads).said("or") {
+            None => "waiting for this machine's CPU to free up".to_owned(),
+            Some(holders) => format!("waiting for {holders} to finish with this machine's CPU"),
         }
     }
     /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes. A project's run, or a

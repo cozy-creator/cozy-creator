@@ -197,6 +197,14 @@ impl std::fmt::Debug for Providers {
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
+/// How far a job's run's readers read another run, by its caller's id (`others::read_by`).
+pub(crate) type Reads = Box<dyn Fn(&str) -> crate::others::Read + Send + Sync>;
+
+/// How far the readers of `sender`'s run in this scope read another run: what the words its job says name (cl-1217, cl-1223).
+pub(crate) fn reads_of(engine: &Arc<crate::execution::Engine>, sender: &str) -> Option<Reads> {
+    let (engine, sender, project) = (engine.clone(), sender.to_owned(), crate::private_io::current());
+    Some(Box::new(move |id: &str| crate::others::read_by(&engine, &sender, project.as_ref(), id)))
+}
 
 /// How long a resolve's read of a checkpoint's structure goes before its run says what it waits behind (cl-1185).
 const SAY_AHEAD: std::time::Duration = std::time::Duration::from_secs(3);
@@ -212,8 +220,8 @@ pub(crate) struct Job {
     /// (`Engine::waiting`).
     pub(crate) caller: String,
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
-    /// Whether its run's own readers read run `id` (a caller's id) too: what it waits behind names no other run (cl-1217).
-    pub(crate) reads: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// How far its run's own readers read run `id` (a caller's id): what it waits behind names no other project's run (cl-1217).
+    pub(crate) reads: Option<Reads>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
@@ -260,8 +268,8 @@ impl Job {
             waiting(reason);
         }
     }
-    fn reads(&self, id: &str) -> bool {
-        self.reads.as_ref().is_some_and(|reads| reads(id))
+    fn reads(&self, id: &str) -> crate::others::Read {
+        self.reads.as_ref().map_or(crate::others::Read::No, |reads| reads(id))
     }
     pub(crate) fn stage(&self, stage: String) {
         self.set(stage, 0, 0);
@@ -569,8 +577,6 @@ impl Publisher {
         }
         let engine = service.engine.clone();
         let run = request.run.clone();
-        // Its run's readers read `actor`'s runs in its project, and those in none (`Engine::get_public`).
-        let (journal, sender, project) = (service.engine.clone(), actor.to_owned(), crate::private_io::current());
         let job = Job {
             observer: observe,
             stop: stop.cloned(),
@@ -583,10 +589,7 @@ impl Publisher {
                     }
                 }) as Box<dyn Fn(Option<String>) + Send + Sync>
             }),
-            reads: Some(Box::new(move |id: &str| {
-                let sent = |scope| crate::private_io::within(scope, || journal.get_public(Some(&sender), id).is_ok());
-                sent(None) || project.clone().is_some_and(|project| sent(Some(project)))
-            })),
+            reads: reads_of(&service.engine, actor),
             ..Default::default()
         };
         // A disk that can't hold it says what fills it and what would.
@@ -1396,7 +1399,8 @@ impl Publisher {
             let holder = self.building.lock().unwrap().get(identity).cloned();
             // A guess building it goes at this run's place in line until it's built (`line::Line::raise`).
             let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, job.order));
-            job.waiting(Some(match holder {
+            // The package is this run's own; the run building it as this run's readers hear it (cl-1223).
+            job.waiting(Some(match crate::others::Others::of(holder.as_deref(), |id| job.reads(id)).said("and") {
                 Some(run) => format!("waiting for {run} to install {package} {release}"),
                 None => format!("waiting for another render to install {package} {release}"),
             }));

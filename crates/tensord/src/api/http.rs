@@ -476,11 +476,17 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
         return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
     }
     let admitted = m.admit()?;
+    let asker = actor_id(caller.actor);
     let removed = m.call(move |runs| {
-        let reading = runs.reading(&model)?;
-        if let Some(first) = reading.first() {
-            let message = format!("{model} is being used by {}. Remove it once that finishes.", reading.join(" and "));
-            return Err(Error::conflict("model_in_use", message).next(format!("cozy run watch {first}")));
+        // Its asker's own runs by their ids, which its client names as people know them; any other's counted (cl-1223).
+        let reading = runs.reading(&model, &asker)?;
+        if !reading.none() {
+            let who = reading.said("and").unwrap_or_else(|| "another render".to_owned());
+            let refused = Error::conflict("model_in_use", format!("{model} is being used by {who}. Remove it once that finishes."));
+            return Err(match reading.first() {
+                Some(first) => refused.next(format!("cozy run watch {first}")),
+                None => refused,
+            });
         }
         let result = runs.service.engine.store.remove_cached_model(&model)
             .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;

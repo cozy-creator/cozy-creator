@@ -37,6 +37,7 @@ mod memo;
 mod memory;
 mod objects;
 mod origin;
+mod others;
 mod output_capacity;
 use tensorfs::precision;
 mod process;
