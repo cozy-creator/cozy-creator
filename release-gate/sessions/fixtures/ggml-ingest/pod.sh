@@ -23,31 +23,28 @@ if ! command -v uv > /dev/null; then
     $PY0 -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); m=t.getmember('uv-x86_64-unknown-linux-gnu/uv'); m.name='uv'; t.extract(m, sys.argv[2])" /tmp/uv.tgz "$HOME/.local/bin"
   fi
 fi
-if [ ! -d $W/src ]; then
-  get "https://github.com/ggml-org/llama.cpp/archive/refs/tags/$TAG.tar.gz" $W/src.tgz
-  echo "$SUM  $W/src.tgz" | sha256sum -c --quiet -
-  tar xzf $W/src.tgz -C $W && mv "$W/llama.cpp-$TAG" $W/src
-fi
-[ -x $W/py/bin/python ] || uv venv -q -p 3.12 $W/py
-uv pip install -q -p $W/py/bin/python -r $W/src/requirements/requirements-convert_hf_to_gguf.txt cmake ninja "huggingface_hub[hf_xet]"
-log "build llama-quantize ($TAG, CPU)"
-t0=$(date +%s)
-[ -x $W/build/bin/llama-quantize ] || {
-  $W/py/bin/cmake -S $W/src -B $W/build -G Ninja -DCMAKE_MAKE_PROGRAM=$W/py/bin/ninja -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF > $W/out/build.log 2>&1
-  $W/py/bin/cmake --build $W/build -j "$(nproc)" --target llama-quantize >> $W/out/build.log 2>&1
+# Each phase has its deadline and logs its time: a stall costs one deadline, and the 5-minute report names the phase.
+phase() {
+  local name=$1 secs=$2 t0=$(date +%s) code=0; shift 2
+  log "$name (deadline $secs s)"
+  timeout "$secs" bash -c "$*" || code=$?
+  [ $code = 0 ] || { log "FAILED $name after $(($(date +%s) - t0)) s (exit $code)"; exit 1; }
+  log "$name took $(($(date +%s) - t0)) s"
 }
-log "built in $(($(date +%s) - t0)) s"
-log "download $HF"
-$W/py/bin/hf download "$HF" --local-dir $W/hf > $W/out/download.log 2>&1
-log "convert to a bf16 GGUF"
-PYTHONPATH=$W/src/gguf-py $W/py/bin/python $W/src/convert_hf_to_gguf.py $W/hf --outtype bf16 --outfile $W/bf16.gguf \
-  > $W/out/convert.log 2>&1
+log "pod: $(nproc) CPUs, $(free -g | awk '/Mem:/{print $2}') GiB RAM, $(df -BG --output=avail $W | tail -1 | tr -d ' ') free"
+[ -d $W/src ] || phase "fetch llama.cpp $TAG" 900 "$(declare -f get); PY0=$PY0; get https://github.com/ggml-org/llama.cpp/archive/refs/tags/$TAG.tar.gz $W/src.tgz &&
+  echo '$SUM  $W/src.tgz' | sha256sum -c --quiet - && tar xzf $W/src.tgz -C $W && mv $W/llama.cpp-$TAG $W/src"
+[ -x $W/py/bin/python ] || uv venv -q -p 3.12 $W/py
+phase "converter's requirements" 900 "uv pip install -q -p $W/py/bin/python -r $W/src/requirements/requirements-convert_hf_to_gguf.txt cmake ninja 'huggingface_hub[hf_xet]'"
+[ -x $W/build/bin/llama-quantize ] || phase "build llama-quantize ($TAG, CPU)" 1800 "$W/py/bin/cmake -S $W/src -B $W/build -G Ninja -DCMAKE_MAKE_PROGRAM=$W/py/bin/ninja -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF > $W/out/build.log 2>&1 &&
+  $W/py/bin/cmake --build $W/build -j $(nproc) --target llama-quantize >> $W/out/build.log 2>&1"
+phase "download $HF" 1800 "$W/py/bin/hf download $HF --local-dir $W/hf > $W/out/download.log 2>&1"
+phase "convert to a bf16 GGUF" 1800 "PYTHONPATH=$W/src/gguf-py $W/py/bin/python $W/src/convert_hf_to_gguf.py $W/hf --outtype bf16 --outfile $W/bf16.gguf > $W/out/convert.log 2>&1"
 for type in "$@"; do
-  log "llama-quantize $type"
   case $type in
-    pure:*) $W/build/bin/llama-quantize --pure $W/bf16.gguf $W/pure-${type#pure:}.gguf ${type#pure:} > $W/out/quantize-$type.log 2>&1 ;;
-    *) $W/build/bin/llama-quantize $W/bf16.gguf $W/$type.gguf $type > $W/out/quantize-$type.log 2>&1 ;;
+    pure:*) phase "llama-quantize --pure ${type#pure:}" 1800 "$W/build/bin/llama-quantize --pure $W/bf16.gguf $W/pure-${type#pure:}.gguf ${type#pure:} > $W/out/quantize-$type.log 2>&1" ;;
+    *) phase "llama-quantize $type" 1800 "$W/build/bin/llama-quantize $W/bf16.gguf $W/$type.gguf $type > $W/out/quantize-$type.log 2>&1" ;;
   esac
 done
 rm -f $W/bf16.gguf
