@@ -148,7 +148,7 @@ if has updates; then
     (cd "$PJ/plain" && cozy --json run show "$run" --full) > "$W/upd-$arm-record.json" 2>&1 < /dev/null
     local times; times=$(jq -c '[paths(scalars) as $p | select(($p[-1] | tostring) | test("_at_ms$")) | {key: ($p | map(tostring) | join(".")), value: getpath($p)}] | from_entries' "$W/upd-$arm-record.json" 2> /dev/null)
     gap=$(jq -r '((.accepted_at_ms // .["run.accepted_at_ms"] // 0) - (.created_at_ms // .["run.created_at_ms"] // 0))' <<< "$times" 2> /dev/null)
-    say "update $arm ($*): exit $rc in $((t1 - t0)) ms ($(grep -v '^\s*$' "$W/upd-$arm.txt" | tail -2 | tr '\n' ' ' | cut -c1-200)); machine show ready $(( ${first:-$t1} - t1 )) ms after it returned${first:+}${first:- (never in 15 min)}; run ${run:-?}: $times; created→accepted ${gap:-?} ms"
+    say "update $arm ($*): exit $rc in $((t1 - t0)) ms ($(grep -v '^\s*$' "$W/upd-$arm.txt" | tail -2 | tr '\n' ' ' | cut -c1-200)); machine show ready $(( ${first:-$t1} - t1 )) ms after it returned$([ -n "$first" ] || echo ' (never answered ready in 15 min)'); run ${run:-?}: $times; created→accepted ${gap:-?} ms"
     if [ -z "$first" ] || [ "${gap:-0}" -gt 5000 ] 2> /dev/null || [ $(( ${first:-$t1} - t1 )) -gt 5000 ]; then
       cozy machine logs "$NAME" tensord -n 300 < /dev/null > "$W/upd-$arm-tensord.log" 2>&1
       cozy machine logs "$NAME" tensorfs -n 100 < /dev/null > "$W/upd-$arm-tensorfs.log" 2>&1
