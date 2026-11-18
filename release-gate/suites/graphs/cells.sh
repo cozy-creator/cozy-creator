@@ -39,6 +39,7 @@ gcap() {
   expect "graphs-cap-$1" FAIL "machine show says ${limit:-nothing} bytes, not $want"
 }
 gcap off
+ggib=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)  # the card's memory
 # gcopy <package>: the checkout's package with its memoization out, at ./graphs/<package>.
 gcopy() {
   rm -rf "${G:?}/$1"; mkdir -p "$G/$1"
@@ -80,7 +81,6 @@ elif gcopy p-h3-image; then
   # Judged on a card over 24 GiB (cr-287: it needs an rtx-5090). On 24 GB the short prompt's DiT is queued for idle, but
   # its weights aren't resident then and nothing records (gates 44185248105, 44384060967): there the row says so and the
   # three calls are still held to the same bytes above.
-  ggib=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
   if [ "${ggib:-0}" -le 24 ]; then
     expect graphs-ph3-idle SKIP "not judged on a ${ggib:-?} GiB card (cr-287): idle recordings $idle, replays $replays, as written for $eager"
   elif [ "$replays" -gt 0 ] && [ "$idle" -gt 0 ] && [ "$eager" = '""' ]; then
@@ -182,9 +182,11 @@ for f in graphs-*.json; do
 done
 for m in "${mismatched[@]}"; do log "graphs mismatch: $m"; done
 # Every 16th replay of a region is audited: only P-H3-Image's, SDXL's and Anima's repeats replay that often (a lone
-# graphs-klein-283 replays its DiT 13 times). A --only that asks for none of them audits nothing: nothing to judge.
-if [ "$audited" = 0 ] && [ "${#mismatched[@]}" = 0 ] && ! gwant graphs-ph3 && ! gwant graphs-sdxl && ! gwant graphs-anima; then
-  expect graphs-audit SKIP "no replay audited: --only asked for no graphs-ph3, graphs-sdxl or graphs-anima cell"
+# graphs-klein-283 replays its DiT 13 times). A --only that asks for none of them audits nothing: nothing to judge. Nor does
+# one that asks only for P-H3-Image's on a card of 24 GiB or less, where its short prompt records nothing at idle (cr-287) and
+# its text-to-image replays 2 steps (gate 44394125080).
+if [ "$audited" = 0 ] && [ "${#mismatched[@]}" = 0 ] && { ! gwant graphs-ph3 || [ "${ggib:-0}" -le 24 ]; } && ! gwant graphs-sdxl && ! gwant graphs-anima; then
+  expect graphs-audit SKIP "no replay audited: --only asked for no cell that replays 16 times on this card (graphs-sdxl, graphs-anima; graphs-ph3 over 24 GiB)"
 elif [ "$audited" -gt 0 ] && [ "${#mismatched[@]}" = 0 ]; then
   expect graphs-audit PASS "$audited replays audited, none differed"
 else
