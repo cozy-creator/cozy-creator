@@ -347,6 +347,11 @@ impl Machines {
             payload.insert("mode".into(), mode.name().into());
         }
         let target = named.join(", ");
+        // One of Calcifer's own moves (the RC's) that an update by hand pinned meanwhile, while it fetched the RC's `cozy`: the pin
+        // wins (cl-1203: a candidate TensorD replaced a minute later on mucheng and lucario).
+        if crate::rc::calcifers(key) && self.held_by_hand(&m.name).is_some() {
+            return Err(Error::new(Kind::Conflict, "machine_held", format!("{} was held by hand meanwhile; it stays as it is", m.name)));
+        }
         let submit = SubmitRun { project: None,
             agreed: None,
             stays: vec![],

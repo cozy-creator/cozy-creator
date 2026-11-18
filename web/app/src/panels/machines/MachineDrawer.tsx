@@ -209,7 +209,9 @@ export function MachineDrawer() {
           {machine.attempt?.replaced && ` The last attempt failed: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
-      {machine.offline && <p className="warn">It's offline, so it can't take runs. It comes back if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {machine.state === "ending" && machine.reason && (
+        <p className="warn">It's ending ({machine.reason}), so it takes no runs. Its Hub destroys it, and it costs nothing after that.</p>
+      )}
       {brokenWords(machine) && <p className="warn">{brokenWords(machine)}</p>}
       {machine.unreachable && !ended && <p className="muted">It didn't respond just now ({machine.unreachable}), so this is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}

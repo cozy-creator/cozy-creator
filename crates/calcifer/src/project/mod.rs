@@ -2723,7 +2723,7 @@ async fn rename(
 }
 
 /// `PUT /v1/projects/{id}/machines` (cl-873): the machines its runs go to, each by its name or rental id as `cozy machine ls` lists it;
-/// none: any machine. One offline stays: a run none of them can take says why. Every reader of the project hears it.
+/// none: any machine. One ending stays: a run none of them can take says why. Every reader of the project hears it.
 async fn machines(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -3912,7 +3912,7 @@ struct Walk {
 /// How often what's landing tries a project that won't take it.
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
-pub(crate) const GONE: [&str; 4] = ["machine_ended", "machine_name_ended", "machine_offline", "machine_ending"];
+pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_name_ended", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
 
 /// Job `key` as its machines `on` quote it: the function its tool `with` names, with `made`'s choices, its package read with nothing
@@ -4317,7 +4317,7 @@ impl Walk {
     }
 
     /// Of `on`, the machines that take work now (cl-920, Paul 11-12: "if those machines are ended then either try a different machine or
-    /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
+    /// tell me to rent a new one"): with every one gone (ended or ending), where a render naming none goes, said once a render.
     fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
         let api = self.host.api();
         // Each by its name now: a rental asked by a name it had before goes where its order went (cl-1089, cl-1125).
@@ -7102,7 +7102,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
 }
 
 /// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
-/// With every one of them gone now (ending, or offline by its Hub's word), this computer and this account's rentals: never an added
+/// With every one of them gone now (ending, by this computer's or its Hub's word), this computer and this account's rentals: never an added
 /// machine the project didn't name (cl-1066).
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;

@@ -19,7 +19,7 @@ pub(crate) const HEADERS: [&str; 11] = [
 /// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "rentals", "unanswered", "signed_out", "machines.name", "machines.placeholder", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
-    "machines.ordered", "machines.unverified", "machines.offline", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
+    "machines.ordered", "machines.unverified", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
@@ -90,7 +90,7 @@ pub(crate) fn print(ctx: &Context, list: &MachineList) {
     if let Some(note) = super::local_note() {
         println!("{note}");
     }
-    for note in live().filter_map(offline) {
+    for note in live().filter_map(closing) {
         println!("{note}");
     }
     for note in live().filter_map(end_failed) {
@@ -286,7 +286,7 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if let Some(broken) = broken(m) {
         record = record.alarm("broken", broken);
     }
-    if let Some(note) = offline(m) {
+    if let Some(note) = closing(m) {
         record = record.note(note);
     }
     if let Some(note) = end_failed(m) {
@@ -479,7 +479,6 @@ fn kind(m: &Machine) -> &'static str {
 
 pub(crate) fn state_cell(m: &Machine) -> String {
     let mut cell = match m.state {
-        _ if m.offline.is_some() => format!("offline: {}", m.offline.as_deref().unwrap_or_default()),
         MachineState::Ready | MachineState::Booting if m.broken.is_some() => format!("broken: {}", m.broken.as_ref().map_or("", |b| b.code.as_str())),
         MachineState::Booting => match &m.boot {
             Some(boot) => format!("booting · {boot}"),
@@ -492,7 +491,10 @@ pub(crate) fn state_cell(m: &Machine) -> String {
             ),
             None => "ready".into(),
         },
-        MachineState::Ending => "ending".into(),
+        MachineState::Ending => match &m.reason {
+            Some(reason) => format!("ending: {reason}"),
+            None => "ending".into(),
+        },
         MachineState::Ended => "ended".into(),
         MachineState::Stopped => "stopped · starts when used".into(),
         MachineState::Unknown => "unknown".into(),
@@ -507,7 +509,7 @@ pub(crate) fn state_cell(m: &Machine) -> String {
         cell += &format!(" · {stuck} stuck");
     }
     match m.unreachable_since_ms {
-        Some(at) if m.state == MachineState::Ready && m.offline.is_none() && unreachable_since(m).is_none() => {
+        Some(at) if m.state == MachineState::Ready && unreachable_since(m).is_none() => {
             cell += &format!(" (unreachable for {})", clock(now_ms() - at))
         }
         _ => {}
@@ -634,12 +636,13 @@ fn broken(m: &Machine) -> Option<String> {
     Some(format!("{} ({}); {then}", broken.message, broken.code))
 }
 
-/// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.
-fn offline(m: &Machine) -> Option<String> {
-    let r = m.rental.as_ref().filter(|_| m.offline.is_some())?;
+/// What the owner of a rental its Hub is ending can do (its provider stopped it: cl-1203): it takes no runs and is destroyed.
+fn closing(m: &Machine) -> Option<String> {
+    let reason = m.reason.as_deref().filter(|_| m.state == MachineState::Ending)?;
+    let r = m.rental.as_ref()?;
     Some(format!(
-        "{} is offline and refuses runs: it returns if its provider resumes it, and ends after 15 \
-         minutes idle. To keep working: `cozy machine rent {}`, or `cozy run … --on new`.",
+        "{} is ending ({reason}): it takes no runs, and its Hub destroys it. To keep working: `cozy machine rent {}`, or \
+         `cozy run … --on new`.",
         m.name, r.sku
     ))
 }

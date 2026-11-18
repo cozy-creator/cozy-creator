@@ -75,7 +75,7 @@ function recorders() {
     }
     if (event.type === 'machine.updated') {
       const m = event.machine, s = m.status ?? {};
-      return { type: event.type, machine: { name: m.name, kind: m.kind, state: m.state, rental_id: m.rental_id, running: m.running, queued: m.queued, offline: m.offline, broken: m.broken, unreachable: m.unreachable, rental: m.rental && { sku: m.rental.sku, gpus: m.rental.gpus, disk_gb: m.rental.disk_gb, usd_micros_per_hour: m.rental.usd_micros_per_hour }, activity: s.activity, disk: s.disk, models_bytes: s.models_bytes, runtime: s.runtime, tensorfs: s.tensorfs, gpus: (s.gpus ?? []).map((gpu) => gpu.name), queue: s.queue?.map((q) => ({ id: q.id, run: q.run, target: q.target, state: q.state })) } };
+      return { type: event.type, machine: { name: m.name, kind: m.kind, state: m.state, rental_id: m.rental_id, running: m.running, queued: m.queued, reason: m.reason, broken: m.broken, unreachable: m.unreachable, rental: m.rental && { sku: m.rental.sku, gpus: m.rental.gpus, disk_gb: m.rental.disk_gb, usd_micros_per_hour: m.rental.usd_micros_per_hour }, activity: s.activity, disk: s.disk, models_bytes: s.models_bytes, runtime: s.runtime, tensorfs: s.tensorfs, gpus: (s.gpus ?? []).map((gpu) => gpu.name), queue: s.queue?.map((q) => ({ id: q.id, run: q.run, target: q.target, state: q.state })) } };
     }
     return { type: event.type, id: event.id ?? event.name ?? event.stream };
   };

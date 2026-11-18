@@ -21,10 +21,9 @@ export const gpusWords = (machine: Machine) => {
   return `${rental.gpus}× ${rental.accelerator}`
 }
 
-/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Offline (its provider stopped
- *  it)`. */
+/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Ending (vast stopped
+ *  it)`. A rental is up, ending or ended, never offline in between (Paul 11-17). */
 export function stateWords(machine: Machine, now: number): string {
-  if (machine.offline) return `Offline (${machine.offline})`
   if (machine.broken && machine.state !== "ended") return `Not working (${machine.broken.message.replace(/\.$/, "")})`
   const unverified = machine.unverified ? " (may be out of date)" : ""
   switch (machine.state) {
@@ -37,7 +36,7 @@ export function stateWords(machine: Machine, now: number): string {
       return `Ready${unverified}`
     }
     case "ending":
-      return "Ending"
+      return machine.reason ? `Ending (${machine.reason})` : "Ending"
     case "ended":
       return "Ended"
     case "stopped":
@@ -90,7 +89,7 @@ export function slowWords(machine: Machine): string[] {
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
+  machine.end_failed || machine.end_unconfirmed || (machine.broken && machine.state !== "ended")
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"

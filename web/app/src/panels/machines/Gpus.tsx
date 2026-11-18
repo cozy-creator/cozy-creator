@@ -87,7 +87,7 @@ function stateOf(gpu: Gpu, status: MachineStatus): { word: string; tone: "ok" | 
 /** Each GPU: its name, memory and driver, whether it works, and how busy it is now; the ones the machine couldn't use, said under them. */
 export function Gpus({ machine, status }: { machine: Machine; status: MachineStatus }) {
   const gpus = status.gpus ?? []
-  const use = useGpuUse(machine.name, gpus.length > 0 && machine.state === "ready" && !machine.offline && !machine.broken)
+  const use = useGpuUse(machine.name, gpus.length > 0 && machine.state === "ready" && !machine.broken)
   const readings = use.state === "reading" ? use.use?.gpus : undefined
   return (
     <Section title="GPUs">

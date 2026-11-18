@@ -1310,15 +1310,10 @@ alias?: string | null, address?: string | null,
  */
 fingerprint?: Digest | null,
 /**
- * Why it ended.
+ * Why it ended; while `ending`, why by its Hub's word when the Hub ends it (its provider stopped it: cl-1203). A rental is
+ * up, ending or ended, never offline in between (Paul 11-17).
  */
 reason?: string | null,
-/**
- * Why a ready machine is offline, by its Hub's word (its provider stopped it, or its Hub is
- * ending it), while it does not answer: runs to it are refused. Its state stays `ready`,
- * which is what a reader that predates this field shows.
- */
-offline?: string | null,
 /**
  * Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
  * can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).

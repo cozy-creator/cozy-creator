@@ -1,9 +1,10 @@
 //! The machine's idle clock. A rental releases itself after 15 minutes with no job queued for it
 //! or running on it, used or not (owner ruling 2026-10-10); every run asked of it is a job (a
-//! call, a job, a warm-up, an upload, an update); an explicit keepalive restarts that clock once.
-//! The clock is durable state, never a sample held in memory: the journal's last job end and the
-//! ledger's idle start (this rental's first boot, a keepalive, or an update's activation or end),
-//! so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
+//! call, a job, a warm-up, an upload); an explicit keepalive restarts that clock once. An update
+//! is no use (cl-1203: an RC follower's updates every few minutes kept hougetsu up for hours): it
+//! holds the release while it runs and restarts nothing. The clock is durable state, never a
+//! sample held in memory: the journal's last job end and the ledger's idle start (this rental's
+//! first boot, or a keepalive), so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
 //! executors outside the warm sets exit and give back every byte they held, after 15 it exits
 //! itself (Calcifer starts it again when something uses it), unless another computer's controller
 //! is authorized to use it or a warm set keeps a member in memory (a warming API request). A client following a run or a log, reading an output or uploading an object, holds either
@@ -90,12 +91,11 @@ impl Drop for Follow {
     }
 }
 
-/// Holds the idle clock while an update runs; its end starts the clock again.
+/// Holds the release while an update runs; its end restarts no clock: a deadline that passed meanwhile releases at once.
 pub(crate) struct Updating(Arc<Lifecycle>);
 impl Drop for Updating {
     fn drop(&mut self) {
         self.0.updating.fetch_sub(1, Ordering::AcqRel);
-        self.0.used();
         self.0.changed();
     }
 }
@@ -269,28 +269,13 @@ impl Lifecycle {
         Ok(Admission(self.clone()))
     }
 
-    /// An update is a job: it holds the idle clock from its request to its end. Refused as `admit`
-    /// refuses; the admission it takes holds the clock until the update's own hold does.
+    /// An update holds the release from its request to its end, and is no use: the idle clock runs on through it. Refused as
+    /// `admit` refuses; the admission it takes holds the release until the update's own hold does.
     pub(crate) fn update(self: &Arc<Self>) -> Result<Updating, Error> {
         let admission = self.admit()?;
         self.updating.fetch_add(1, Ordering::AcqRel);
         drop(admission);
         Ok(Updating(self.clone()))
-    }
-
-    /// Work that is not in the journal ended (an update, or its activation): the idle clock starts
-    /// again now, durably, so the service an update restarts counts its window from here.
-    pub(crate) fn used(&self) {
-        let mut state = self.state.lock().unwrap();
-        if state.ledger.released {
-            return;
-        }
-        let mut ledger = state.ledger.clone();
-        ledger.idle_since_ms = ledger.idle_since_ms.max(now_ms());
-        match self.save(&ledger) {
-            Ok(()) => state.ledger = ledger,
-            Err(error) => tracing::warn!("the idle ledger could not be written: {error}"),
-        }
     }
 
     /// An update begins to activate: new runs are held (accepted, queued) until it restarts the

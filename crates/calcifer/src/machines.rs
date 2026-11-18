@@ -395,7 +395,7 @@ impl Machines {
             Err(e) => return Err(e),
         };
         if row.state != MachineState::Ended
-            && self.offline(&row.name).is_none()
+            && self.closing(&row.name).is_none()
             && self.not_answering(&row.name).is_none()
             && let Ok(Some(link)) = self.calcifer.link(&row.name)
         {
@@ -930,10 +930,12 @@ impl Machines {
         } else if let Some(failed) = self.failed_end(row)? {
             machine.end_failed = Some(failed);
         }
+        // Its Hub is ending it: ending, never ready but offline (Paul 11-17).
         if machine.state == MachineState::Ready
-            && let Some(reason) = self.offline(&row.name)
+            && let Some(reason) = self.closing(&row.name)
         {
-            machine.offline = Some(reason);
+            machine.state = MachineState::Ending;
+            machine.reason = Some(reason);
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
@@ -1169,7 +1171,7 @@ impl Machines {
     /// paced; the machine is unreachable only when no connection to it can be made, never for a
     /// stream that broke or an answer that is slow. For a rental that is unreachable its Hub is
     /// asked, paced apart, and its word is the only one that ends it. While its Hub says it is
-    /// offline only its Hub is read, never the machine, until the Hub says it is back or gone.
+    /// ending only its Hub is read, never the machine, until the Hub says it is gone.
     async fn follow_status(self: Arc<Self>, name: String, kind: MachineKind) {
         let (mut pause, mut hub_pause) = (Duration::ZERO, Duration::ZERO);
         let mut hub_at = tokio::time::Instant::now();
@@ -1178,9 +1180,9 @@ impl Machines {
                 Ok(Some(row)) if row.state != MachineState::Ended => {}
                 _ => return,
             }
-            let offline = self.offline(&name).is_some();
+            let closing = self.closing(&name).is_some();
             let mut unreachable = false;
-            if !offline {
+            if !closing {
                 let streamed = self.status_frames(&name, &mut pause).await;
                 self.stream_closed(&name);
                 let error = match streamed {
@@ -1212,7 +1214,7 @@ impl Machines {
                 }
                 self.silent_after_update(&name);
             }
-            let ask = kind == MachineKind::Rental && (offline || unreachable);
+            let ask = kind == MachineKind::Rental && (closing || unreachable);
             if ask && tokio::time::Instant::now() >= hub_at {
                 hub_pause = (hub_pause * 2).clamp(Duration::from_secs(5), Duration::from_secs(60));
                 hub_at = tokio::time::Instant::now() + hub_pause;
@@ -1220,7 +1222,7 @@ impl Machines {
                     return;
                 }
             }
-            match self.offline(&name).is_some() {
+            match self.closing(&name).is_some() {
                 true => tokio::time::sleep_until(hub_at).await,
                 false => {
                     pause = (pause * 2).clamp(Duration::from_millis(500), Duration::from_secs(10));
@@ -1507,11 +1509,11 @@ impl Machines {
         }
     }
 
-    /// Why the machine is offline: its Hub's last word is that its provider stopped it or that
-    /// it is ending, and it has not answered since. None while it answers, whatever its Hub said.
-    pub(crate) fn offline(&self, name: &str) -> Option<String> {
+    /// Why the machine is ending by its Hub's word (its provider stopped it, or the Hub is ending it), and it has not answered
+    /// since. None while it answers, whatever its Hub said.
+    pub(crate) fn closing(&self, name: &str) -> Option<String> {
         let row = self.store().machine(name).ok()??;
-        self.offline_in(&row, &lock(&self.seen))
+        self.closing_in(&row, &lock(&self.seen))
     }
 
     /// Why nothing can run on the machine (cl-977): its own word, else this computer's that it went silent after an update.
@@ -1554,12 +1556,12 @@ impl Machines {
         }
     }
 
-    fn offline_in(&self, row: &MachineRow, seen: &HashMap<String, Seen>) -> Option<String> {
+    fn closing_in(&self, row: &MachineRow, seen: &HashMap<String, Seen>) -> Option<String> {
         let answering = seen
             .get(&row.name)
             .is_some_and(|s| s.frame.is_some() && s.unreachable.is_none());
         match row.kind {
-            MachineKind::Rental if !answering => self.hubs.offline(row),
+            MachineKind::Rental if !answering => self.hubs.closing(row),
             _ => None,
         }
     }
@@ -1595,7 +1597,7 @@ impl Machines {
         self.reachable(&row).await.map(|()| row.name)
     }
 
-    /// Refuses a run to a machine it cannot reach: one that ended, one its Hub says is offline,
+    /// Refuses a run to a machine it cannot reach: one that ended, one its Hub says is ending,
     /// and one that answers no connect while its Hub says nothing of it coming. A rental on its
     /// way takes it. A machine whose Status stream is live is asked nothing, nor is its Hub; a
     /// Hub is asked only of a rental that did not answer.
@@ -1613,8 +1615,8 @@ impl Machines {
         if row.endpoint.is_none() {
             return Ok(());
         }
-        if let Some(reason) = self.offline(&name) {
-            return Err(offline_refusal(&name, &reason));
+        if let Some(reason) = self.closing(&name) {
+            return Err(closing_refusal(&name, &reason));
         }
         if let Some(broken) = self.broken(&name) {
             return Err(broken_refusal(&name, &broken.message));
@@ -1634,7 +1636,7 @@ impl Machines {
         };
         match word {
             Some(Word::Gone(cause)) => return Err(ended_refusal(&name, &cause)),
-            Some(Word::Offline(reason)) => return Err(offline_refusal(&name, &reason)),
+            Some(Word::Closing(reason)) => return Err(closing_refusal(&name, &reason)),
             Some(Word::Moved | Word::Booting) => return Ok(()),
             Some(Word::Up) | None => {}
         }
@@ -1780,7 +1782,7 @@ impl Machines {
             .into_iter()
             .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
             .filter(|row| !ending.contains(&row.name))
-            .filter(|row| self.offline_in(row, &seen).is_none())
+            .filter(|row| self.closing_in(row, &seen).is_none())
             .filter(|row| seen.get(&row.name).and_then(|seen| broken_in(&row.name, seen)).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
             .min_by_key(|row| {
@@ -1790,7 +1792,7 @@ impl Machines {
             .map(|row| row.name))
     }
 
-    /// Why `name` takes no work now (cl-920): it ended or is no machine here, its end is asked, or its Hub says it's offline. None: it may.
+    /// Why `name` takes no work now (cl-920): it ended or is no machine here, its end is asked, or its Hub is ending it. None: it may.
     pub(crate) fn gone(&self, name: &str) -> Option<String> {
         if name == "local" {
             return None;
@@ -1809,7 +1811,7 @@ impl Machines {
         if let Some(broken) = self.broken(name) {
             return Some(format!("{name} isn't working ({})", broken.message));
         }
-        self.offline(name).map(|why| format!("{name} is offline ({why})"))
+        self.closing(name).map(|why| format!("{name} is ending ({why})"))
     }
 
     /// Whether `name` ended or is no machine here: it leaves every project's chosen machines (cl-920).
@@ -1985,8 +1987,8 @@ pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machin
     if row.state == MachineState::Ended {
         return Err(unavailable("it has ended".into()));
     }
-    if let Some(reason) = machines.offline(&row.name) {
-        return Err(offline_refusal(&row.name, &reason));
+    if let Some(reason) = machines.closing(&row.name) {
+        return Err(closing_refusal(&row.name, &reason));
     }
     let link = machines.calcifer.link(&row.name).map_err(unavailable)?;
     let link = link.ok_or_else(|| unavailable("it has no address yet".into()))?;
@@ -1996,7 +1998,7 @@ pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machin
             machines.unreachable(&row.name, e.clone());
             return Err(match machines.hub_word(&row.name).await {
                 Some(Word::Gone(cause)) => ended_refusal(&row.name, &cause),
-                Some(Word::Offline(reason)) => offline_refusal(&row.name, &reason),
+                Some(Word::Closing(reason)) => closing_refusal(&row.name, &reason),
                 _ => unavailable(e),
             });
         }
@@ -2662,10 +2664,10 @@ pub(crate) fn broken_refusal(name: &str, reason: &str) -> Error {
         .next(format!("cozy machine show {name}"))
 }
 
-fn offline_refusal(name: &str, reason: &str) -> Error {
-    Error::new(Kind::Unavailable, "machine_offline", format!("{name} is offline ({reason})."))
-        .remedy("It comes back if its provider resumes it. Until then, run it on another machine, or rent a new one.")
-        .next(format!("cozy machine show {name}"))
+fn closing_refusal(name: &str, reason: &str) -> Error {
+    Error::new(Kind::Conflict, "machine_ending", format!("{name} is ending ({reason}), so it can't take new runs."))
+        .remedy("Run it on another machine, or rent a new one.")
+        .next("cozy machine ls")
 }
 
 /// `local` is never ended.

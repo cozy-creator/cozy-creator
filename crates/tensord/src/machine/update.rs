@@ -615,9 +615,6 @@ impl Updates {
         status.to = this_binary(identified(&self.paths.sdk())?);
         status.error.clear();
         status.enter("succeeded");
-        if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.used();
-        }
         if let Some(launch) = &pending.binary {
             let marker = self.paths.engine.join(DEV);
             match pending.dev {
@@ -1043,10 +1040,6 @@ impl Updates {
             "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );
-        // The restarted service's idle window starts here; its commit starts it again.
-        if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.used();
-        }
         exit(if binary.is_some() { super::binary::EXEC_EXIT } else { REPLACE_EXIT });
         Ok(())
     }
