@@ -69,10 +69,10 @@ fn bf16(planned: &[Planned]) -> bool {
 }
 
 /// Narrows every plain F32 tensor of a BF16 model that its component's class does not keep to BF16, and says what it
-/// did, a line a component.
-pub(crate) fn narrow(planned: &mut [Planned], components: &[Folder]) -> Vec<String> {
+/// did in one line (none when it holds no F32).
+pub(crate) fn narrow(planned: &mut [Planned], components: &[Folder]) -> Option<String> {
     if !bf16(planned) {
-        return vec![];
+        return None;
     }
     let classes: BTreeMap<&str, &ClassRef> = components.iter().map(|c| (c.name.as_str(), &c.class)).collect();
     // component → (narrowed, their F32 bytes, kept by the rule, kept for want of one)
@@ -93,15 +93,16 @@ pub(crate) fn narrow(planned: &mut [Planned], components: &[Folder]) -> Vec<Stri
     }
     let class = |c: &str| classes.get(c).map_or_else(String::new, |c| c.name.clone());
     let mb = |b: u64| b as f64 / 1e6;
-    (done.into_iter())
+    let said: Vec<String> = (done.into_iter())
         .map(|(c, (n, bytes, kept, unknown))| match unknown {
             0 => format!(
-                "width: {c}: {n} F32 tensors stored as BF16 ({:.1} MB to {:.1} MB), {kept} kept at F32 by {}'s published rule",
+                "{c}: {n} F32 tensors stored as BF16 ({:.1} MB to {:.1} MB), {kept} kept at F32 by {}'s published rule",
                 mb(bytes),
                 mb(bytes / 2),
                 class(&c)
             ),
-            _ => format!("width: {c}: {unknown} F32 tensors kept as stored: no published rule is known for its class ({})", class(&c)),
+            _ => format!("{c}: {unknown} F32 tensors kept as stored: no published rule is known for its class ({})", class(&c)),
         })
-        .collect()
+        .collect();
+    (!said.is_empty()).then(|| format!("width: {}", said.join("; ")))
 }

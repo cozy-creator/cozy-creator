@@ -1088,10 +1088,8 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         progress(note, 0, 0);
     }
     // Each F32 tensor at the model's compute width, unless its class's published rule keeps it (`keep`).
-    if !as_is {
-        for note in keep::narrow(&mut planned, &layout.components) {
-            progress(&note, 0, 0);
-        }
+    if let Some(note) = (!as_is).then(|| keep::narrow(&mut planned, &layout.components)).flatten() {
+        progress(&note, 0, 0);
     }
     stopped(req)?;
     // Nothing refused: the bulk lands, each download resuming from its header.
