@@ -93,7 +93,7 @@ one() {
   if [ "$LOCK" = fresh ]; then
     # A release's question (promote.sh): the cozy under test locks it, from a copy, and it runs from that lock.
     t=$SECONDS pkg=$out/locked/$p runtime=lock tensorfs=lock
-    mkdir -p "$out/locked" && cp -r "$PACKAGES/$p" "$pkg" && rm -rf "$pkg/.venv"
+    mkdir -p "$out/locked" && cp -r "$PACKAGES/$p" "$pkg" && rm -rf "$pkg/.venv" "$pkg/uv.lock"  # fresh: no committed lock to keep pins from
     if ! python3 "$HERE/../package-lock.py" --cozy "$COZY" "$pkg" > "$out/lock.json" 2> "$out/lock.err"; then
       echo "FAIL $p - lock $((SECONDS - t))s: $(tail -c 300 "$out/lock.err" | tr '\n' ' ')"; return 1
     elif ! pinned=$(python3 -I "$HERE/lock_pins.py" "$pkg/uv.lock" "cozy-runtime==$RUNTIME" "tensorfs==$TENSORFS"); then
