@@ -1,7 +1,9 @@
-import { type KeyboardEvent, type PointerEvent, useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { holdMedia } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
+import { useFocusLayer } from "./FocusFrame"
 import { useFullScreen } from "./FullScreen"
 import type { Shown } from "./shown"
 import { FullScreenButton } from "./timeline/Player"
@@ -67,7 +69,8 @@ function Dial({ angle }: { angle: number }) {
  * A video that turns, not plays (Paul, 11-11): a drag across it turns it, wrapping at 0/360 when it loops; arrows step it; Spin plays it
  * round at its own speed. Every frame of an orbit is a keyframe, so a seek shows at once; one seek is in flight at a time, so a drag never
  * queues a backlog. The demo viewer in outputs/orb360-demo-20261111 is its reference. In Focus its bar has full screen, where a drag turns it
- * as in the box (cl-1080).
+ * as in the box (cl-1080). Zoomed in Focus (cl-1190), a drag still turns it, as fast as at the fit; a Shift-drag or a middle-button drag
+ * pans, as 3D viewers pan; its bar and hint stay at the frame's size.
  */
 export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; orbit: Orbit }) {
   const { client } = useConnection()
@@ -79,6 +82,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   // Its own length, read from the element: a take just landed isn't measured yet, and one frame would turn nothing (cl-1131).
   const [length, setLength] = useState(0)
   const screen = useFullScreen(true)
+  const layer = useFocusLayer()
   const at = useRef(0)
   const seek = useRef<{ pending: number | null; busy: boolean }>({ pending: null, busy: false })
   const drag = useRef<{ x: number; from: number; last: number; t: number; v: number } | null>(null)
@@ -176,7 +180,8 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   }
 
   const down = (event: PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return
+    // A Shift or middle-button drag pans the frame it's zoomed in; a right press is its box's menu.
+    if (event.button !== 0 || event.shiftKey || (event.target as HTMLElement).closest("button")) return
     regain()
     stopSpin()
     cancelAnimationFrame(frameId.current)
@@ -187,8 +192,8 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const held = drag.current
     if (!held) return
-    // As seen: the canvas's zoom scales the stage, and the pointer moves in the screen's pixels.
-    const width = event.currentTarget.getBoundingClientRect().width || 1
+    // As fitted: a drag across the frame turns it a whole circle, however far Focus has zoomed it.
+    const width = event.currentTarget.getBoundingClientRect().width / (layer?.scale() ?? 1) || 1
     const now = performance.now()
     turn(held.from + ((sign * (event.clientX - held.x)) / width) * PER_WIDTH)
     held.v = (((sign * (event.clientX - held.last)) / width) * PER_WIDTH) / Math.max(1, now - held.t)
@@ -219,6 +224,8 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
     turn(at.current + sign * by)
   }
 
+  // In Focus, over the frame and never zoomed with it.
+  const onTop = (node: ReactNode) => (layer?.overlay ? createPortal(node, layer.overlay) : node)
   return (
     <div
       className={`orbit canvas-control ${ready ? "ready" : ""}`}
@@ -259,8 +266,8 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
         }}
         onEnded={() => setSpinning(false)}
       />
-      {!used && <span className="orbit-hint">Drag to turn</span>}
-      <div className="orbit-bar">
+      {!used && onTop(<span className="orbit-hint">Drag to turn</span>)}
+      {onTop(<div className="orbit-bar">
         <Dial angle={shownAngle} />
         <span className="orbit-deg">{Math.round(shownAngle) % 360}°</span>
         <button type="button" className="orbit-act canvas-control" aria-pressed={spinning} onClick={spin}>
@@ -278,7 +285,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
           Front
         </button>
         {screen && <FullScreenButton full={screen.full} toggle={screen.toggle} className="orbit-act orbit-full canvas-control" />}
-      </div>
+      </div>)}
     </div>
   )
 }

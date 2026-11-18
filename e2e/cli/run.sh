@@ -518,6 +518,7 @@ WEB_2=(
   llm-reads
   orbit
   tools-local
+  zoom
   swap-words
   playback
 )
