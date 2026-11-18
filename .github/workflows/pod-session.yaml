@@ -79,6 +79,9 @@ jobs:
             release-gate/ledger.py
             release-gate/ref
             release-gate/suites/bench/vram.py
+            release-gate/suites/bench/comfy.py
+            release-gate/suites/bench/pod.sh
+            release-gate/suites/bench/comfyui-seal.pub
             release-gate/suites/bench/fixtures
             release-gate/suites/tensord
             release-gate/suites/disk
@@ -108,7 +111,7 @@ jobs:
           fetch-depth: 0
           path: packages.git
       - uses: actions/checkout@v5
-        if: inputs.script == 'bench' || inputs.script == 'upscale'
+        if: inputs.script == 'bench' || inputs.script == 'upscale' || inputs.script == 'comfy-levels'
         with:
           repository: cozy-creator/benchmarks
           ref: ${{ fromJSON(inputs.params).bench_ref || 'master' }}
