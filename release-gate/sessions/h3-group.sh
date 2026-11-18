@@ -94,21 +94,7 @@ group() {
 # second (cr-326): while s0 holds GPU 0, s1 runs on the second GPU alone (sealed CUDA_VISIBLE_DEVICES=1), where torch's device 0
 # is NVML's 1. Its record must name that GPU, and every GPU row of this session's runs the name, power limit and MIG mode
 # (`settings`) that `nvidia-smi -i <its uuid>` reads. A Runtime that asked NVML by torch's ordinal recorded GPU 0's for s1.
-read -r -d '' CARDS << 'JQ'
-def na: if . == "[Not Supported]" then "[N/A]" else . end;
-($smi | split("\n") | map(select(length > 0) | split(", ") | map(sub("\\s+$"; ""))
-  | {key: .[1], value: {gpu: (.[0] | tonumber), name: .[2], settings: "\(.[3] | na)W/\(.[4] | na)"}}) | from_entries) as $card
-| ($card | to_entries | map(select(.value.gpu == 1)) | .[0].key // "") as $second
-| [.[] | [.calls[]?.measurements.execution // {} | .gpus[]? | select(.uuid != "")]] as $runs
-| ($runs[-2:] | map(select(length > 0 and all(.[]; .uuid == $second))) | length) as $alone
-| [$runs[][] | select($card[.uuid] == null or $card[.uuid] != {gpu, name, settings})
-  | "GPU \(.gpu) \(.uuid) recorded \(.name) \(.settings), nvidia-smi says \($card[.uuid] // {} | "GPU \(.gpu) \(.name) \(.settings)")"] as $bad
-| if $second == "" then "FAIL second: nvidia-smi names no GPU 1"
-  elif $alone == 0 then "FAIL second: inconclusive: neither 1-GPU run ran on GPU 1 alone (\($second))"
-  elif ($bad | length) > 0 then "FAIL second: \($bad | join("; "))"
-  else "PASS second: a run on GPU 1 alone (\($second)) recorded \($card[$second].name) \($card[$second].settings), as nvidia-smi -i says; \([$runs[][]] | length) GPU rows of \($runs | length) runs match"
-  end
-JQ
+CARDS=$(dirname "$0")/fixtures/h3-group/second.jq
 second() {
   local c n got records=()
   restart second
@@ -127,7 +113,7 @@ second() {
     < /dev/null 2> /dev/null | grep -E '^[0-9]+, ' > "$OUT/nvidia-smi.txt"
   [ -s "$OUT/nvidia-smi.txt" ] || fail "second: no nvidia-smi answer from $NAME"
   for c in "$OUT"/g[0-9].json "$OUT/s0.json" "$OUT/s1.json"; do [ -f "$c" ] && records+=("$c"); done
-  got=$(jq -rs --rawfile smi "$OUT/nvidia-smi.txt" "$CARDS" "${records[@]}")
+  got=$(jq -rs --rawfile smi "$OUT/nvidia-smi.txt" -f "$CARDS" "${records[@]}")
   say "${got:-FAIL second: no record was read}"
   [[ $got == PASS* ]] || RC=1
 }

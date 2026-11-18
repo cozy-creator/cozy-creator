@@ -64,12 +64,17 @@ elif [ "$boot" != 0 ]; then
   check "boot: the run failed: $(tail -3 "$OUT/boot.txt")"
 else
   ran=$( (cd "$RUN_PROJECT" && cozy --json run watch "$(runno boot)" --once --full) | jq -r '.result.runtime // empty')
-  # The first work on it was accepted only once an update of it had settled: it moved before it took work.
+  # The first work on it was accepted only once an update of it had settled: it moved before it took work. The move is the
+  # machine's job, not this project's run (`run ls` never lists it: the first two rentals' check compared nothing, 44383243364,
+  # 44386311710), so it is read from the machine's own record; with no settled update or no accepted work there is no order to
+  # hold, and the leg fails.
+  cozy machine show "$NAME" --json > "$OUT/boot-show.json" 2> /dev/null
   first=$(jq -r '[.runs[] | select(.kind != "update") | .accepted_at_ms // empty] | min // empty' "$OUT/boot-runs.json")
-  moved=$(jq -r '[.runs[] | select(.kind == "update" and .status == "completed") | .settled_at_ms] | min // empty' "$OUT/boot-runs.json")
+  moved=$(jq -r '[.jobs[]? | select(.kind == "update" and .status == "completed") | .settled_at_ms // empty] | min // empty' "$OUT/boot-show.json")
   if [[ $ran != *.dev* ]]; then check "boot: the code ran on Runtime ${ran:-?}, not the RC's"
-  elif [ -n "$moved" ] && [ -n "$first" ] && [ "$first" -lt "$moved" ]; then check "boot: work reached $NAME at $first, before its update settled at $moved"
-  else say "boot PASS: the code waited for $NAME's move to the RC${moved:+ (settled $moved, first work accepted $first)} and ran on Runtime $ran"
+  elif [ -z "$moved" ] || [ -z "$first" ]; then check "boot: no order to hold: $NAME's record shows ${moved:+an update settled at $moved}${moved:-no settled update} and ${first:+work accepted at $first}${first:-no accepted work}: $(jq -c '[.jobs[]? | {kind, status}]' "$OUT/boot-show.json" 2> /dev/null | cut -c1-200)"
+  elif [ "$first" -lt "$moved" ]; then check "boot: work reached $NAME at $first, before its update settled at $moved"
+  else say "boot PASS: the code waited for $NAME's move to the RC (its update settled $moved, first work accepted $first, $((first - moved)) ms later) and ran on Runtime $ran"
   fi
 fi
 

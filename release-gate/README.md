@@ -25,7 +25,7 @@ A session written for one issue's proof is deleted by the PR that closes the iss
 | `bench` | SDXL, FLUX.2, Qwen-Image 4 MP, Klein and H3 at 8 and 6 GiB (`rtx-4090x1.capped`); H3 Turbo 15 s uncapped against the ledger; each box tool at its defaults (`t-*`: the `benchmarks.json` a release carries); the ComfyUI matrix by hand (`matrix-skus`, `suites/bench/README.md`) | per group (`suites/bench/skus`) |
 | `graphs` | CUDA graphs replayed bit for bit on a dev machine: P-H3-Image, SDXL, Anima uncapped and at 6 GiB, Klein on cr-283's request, the describer's second call, H3's latent upscaler | rtx-4090 |
 | `execution` | prompt LMs decoding after another model with no capture refused (`prompt-lm`, xs-182) | rtx-4090 |
-| `multi-gpu` | H3 over two GPUs: two beat one, and a fine-tune fetched during the call | one card per family, ×2 |
+| `multi-gpu` | H3 over two GPUs: two beat one, and a fine-tune fetched during the call; a run on GPU 1 alone records its own card (`h3-second`, cr-326). A GPU the machine says was slowed (heat or its host's power limit: `ledger.py throttled`) voids `h3-gpus-faster`, which fails to run again on another host, and its ledger rows carry `host_throttled`, never a base | one card per family, ×2 |
 | `consumer` | SDXL's fp8 lane on its float route, on a card below sm89 (`sdxl-fp8-float`, cr-338) | rtx-3060 |
 | `edit`, `upscale` | chained Qwen Image 2 edits keep the photo (se-153); each picture upscaler beats Lanczos on small JPEGs (se-147) | rtx-4090 |
 | `packages` | what a release changes, from the `--packages` checkout's source, plus what `--only` names | rtx-4090, rtx-5090 |
@@ -69,7 +69,9 @@ replaces them, and a SKU with none needs `--establish` once.
 - **By hand:** `release-gate/gate.sh rtx-4090 --suite escaped --runtime <url#sha256=…> --publish`, in the default `~/.cozy`.
 - **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f suites=<one>
   -f skus=<sku> -f disk=<GB> -f packages_ref=<packages commit>`, from `master`, `rc/*` or `release/*`. One suite a
-  dispatch. `hub=prod` signs in with the CI device key (environment `release-gate`).
+  dispatch. `hub=prod` signs in with the CI device key (environment `release-gate`). A PASS becomes the baseline only
+  with `publish=true` (off by default), and only a whole suite's: with `only` or `cells` the dispatch is refused before
+  anything rents.
 - **Promotion:** `verify.sh <run>...` prints the candidate set only when every gate passed on the same set;
   `verify.sh --release` also needs each `escaped.tsv` row passed, or accepted by name for that release in
   `escaped-accepted.tsv` (printed `ACCEPTED`; never one that ran and failed). `promote.sh <run id>` then hands it to
