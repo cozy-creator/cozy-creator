@@ -1,881 +1,881 @@
 {
- "tree": "rc",
- "cap": "off",
- "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
- "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
- "need_s": 4600,
- "floor_mb_s": 25,
- "stall_s": 600,
- "push_each": false,
- "cells": [
-  {
-   "name": "sdxl-gen-cold",
-   "target": "sdxl/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40001"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "sdxl-gen-warm",
-   "target": "sdxl/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40002"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "sdxl-img-cold",
-   "target": "sdxl/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40003"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "sdxl-img-warm",
-   "target": "sdxl/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40004"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "sdxl-up-cold",
-   "target": "sdxl/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40005"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "sdxl-up-warm",
-   "target": "sdxl/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40006"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "bg-cold",
-   "target": "birefnet/remove_background",
-   "args": [
-    "--file",
-    "image={seed}"
-   ],
-   "max_s": 600,
-   "restart": true
-  },
-  {
-   "name": "bg-warm",
-   "target": "birefnet/remove_background",
-   "args": [
-    "--file",
-    "image={lighthouse}"
-   ],
-   "max_s": 600
-  },
-  {
-   "name": "anima-gen-cold",
-   "target": "anima/generate",
-   "args": [
-    "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
-    "megapixels:=1",
-    "seed:=40009"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "anima-gen-warm",
-   "target": "anima/generate",
-   "args": [
-    "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
-    "megapixels:=1",
-    "seed:=40010"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "anima-img-cold",
-   "target": "anima/image",
-   "args": [
-    "instructions=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
-    "megapixels=1",
-    "seed:=40011"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "anima-img-warm",
-   "target": "anima/image",
-   "args": [
-    "instructions=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
-    "megapixels=1",
-    "seed:=40012"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "moss-gen-cold",
-   "target": "moss-image/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40013"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "moss-gen-warm",
-   "target": "moss-image/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40014"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "moss-img-cold",
-   "target": "moss-image/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40015"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "moss-img-warm",
-   "target": "moss-image/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40016"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "moss-up-cold",
-   "target": "moss-image/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40017"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "moss-up-warm",
-   "target": "moss-image/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40018"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "moss-i2i-cold",
-   "target": "moss-image/image_to_image",
-   "args": [
-    "--file",
-    "image={seed}",
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40019"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "moss-i2i-warm",
-   "target": "moss-image/image_to_image",
-   "args": [
-    "--file",
-    "image={seed}",
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40020"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "hid-gen-cold",
-   "target": "hidream-o1/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40021"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "hid-gen-warm",
-   "target": "hidream-o1/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40022"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "hid-turbo-cold",
-   "target": "hidream-o1/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40023"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "hid-turbo-warm",
-   "target": "hidream-o1/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40024"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "hid-img-cold",
-   "target": "hidream-o1/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "seed:=40025"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "hid-img-warm",
-   "target": "hidream-o1/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "seed:=40026"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "krea-gen-cold",
-   "target": "krea-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40027"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "krea-gen-warm",
-   "target": "krea-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40028"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "krea-turbo-cold",
-   "target": "krea-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40029"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "krea-turbo-warm",
-   "target": "krea-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40030"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "krea-img-cold",
-   "target": "krea-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40031"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "krea-img-warm",
-   "target": "krea-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40032"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "ideo-gen-cold",
-   "target": "ideogram-4/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40033"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "ideo-gen-warm",
-   "target": "ideogram-4/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40034"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "ideo-img-cold",
-   "target": "ideogram-4/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40035"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "ideo-img-warm",
-   "target": "ideogram-4/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40036"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "klein-gen-cold",
-   "target": "flux.3-klein/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40037"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "klein-gen-warm",
-   "target": "flux.3-klein/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40038"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "klein-turbo-cold",
-   "target": "flux.3-klein/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40039"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "klein-turbo-warm",
-   "target": "flux.3-klein/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40040"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "klein-img-cold",
-   "target": "flux.3-klein/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40041"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "klein-img-warm",
-   "target": "flux.3-klein/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40042"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "klein-up-cold",
-   "target": "flux.3-klein/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40043"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "klein-up-warm",
-   "target": "flux.3-klein/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40044"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qi2-gen-cold",
-   "target": "qwen-image-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40045"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qi2-gen-warm",
-   "target": "qwen-image-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40046"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qi2-turbo-cold",
-   "target": "qwen-image-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40047"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qi2-turbo-warm",
-   "target": "qwen-image-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40048"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qi2-img-cold",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40049"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qi2-img-warm",
-   "target": "qwen-image-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40050"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qi2-up-cold",
-   "target": "qwen-image-2/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=2",
-    "seed:=40051"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qi2-up-warm",
-   "target": "qwen-image-2/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=2",
-    "seed:=40052"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "fibo-gen-cold",
-   "target": "fibo-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40053"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "fibo-gen-warm",
-   "target": "fibo-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40054"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "fibo-turbo-cold",
-   "target": "fibo-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40055"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "fibo-turbo-warm",
-   "target": "fibo-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40056"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "fibo-img-cold",
-   "target": "fibo-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "seed:=40057"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "fibo-img-warm",
-   "target": "fibo-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "seed:=40058"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "q3-ask-cold",
-   "target": "qwen3/ask",
-   "args": [
-    "prompt=In three sentences, why does a lighthouse need a lens?",
-    "seed:=40059"
-   ],
-   "max_s": 600,
-   "restart": true
-  },
-  {
-   "name": "q3-ask-warm",
-   "target": "qwen3/ask",
-   "args": [
-    "prompt=In three sentences, why does a lighthouse need a lens?",
-    "seed:=40060"
-   ],
-   "max_s": 600
-  },
-  {
-   "name": "q3-caption-cold",
-   "target": "qwen3/caption",
-   "args": [
-    "--file",
-    "images={seed}",
-    "seed:=40061"
-   ],
-   "max_s": 600,
-   "restart": true
-  },
-  {
-   "name": "q3-caption-warm",
-   "target": "qwen3/caption",
-   "args": [
-    "--file",
-    "images={seed}",
-    "seed:=40062"
-   ],
-   "max_s": 600
-  },
-  {
-   "name": "q3-write-cold",
-   "target": "qwen3/write",
-   "args": [
-    "instructions=Write two sentences about a lighthouse keeper at dusk.",
-    "seed:=40063"
-   ],
-   "max_s": 600,
-   "restart": true
-  },
-  {
-   "name": "q3-write-warm",
-   "target": "qwen3/write",
-   "args": [
-    "instructions=Write two sentences about a lighthouse keeper at dusk.",
-    "seed:=40064"
-   ],
-   "max_s": 600
-  },
-  {
-   "name": "ph3-gen-cold",
-   "target": "p-h3-image/generate",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40065"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "ph3-gen-warm",
-   "target": "p-h3-image/generate",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40066"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "ph3-up-cold",
-   "target": "p-h3-image/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40067"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "ph3-up-warm",
-   "target": "p-h3-image/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40068"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qimg-gen-cold",
-   "target": "qwen-image/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40069"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qimg-gen-warm",
-   "target": "qwen-image/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40070"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qimg-turbo-cold",
-   "target": "qwen-image/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40071"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qimg-turbo-warm",
-   "target": "qwen-image/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40072"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "qimg-img-cold",
-   "target": "qwen-image/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels=1",
-    "seed:=40073"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "qimg-img-warm",
-   "target": "qwen-image/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels=1",
-    "seed:=40074"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "f2-gen-cold",
-   "target": "flux-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40075"
-   ],
-   "max_s": 1200,
-   "restart": true
-  },
-  {
-   "name": "f2-gen-warm",
-   "target": "flux-2/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40076"
-   ],
-   "max_s": 1200
-  },
-  {
-   "name": "f2-turbo-cold",
-   "target": "flux-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40077"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "f2-turbo-warm",
-   "target": "flux-2/generate_turbo",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40078"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "f2-img-cold",
-   "target": "flux-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40079"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "f2-img-warm",
-   "target": "flux-2/image",
-   "args": [
-    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
-    "megapixels:=1",
-    "seed:=40080"
-   ],
-   "max_s": 900
-  },
-  {
-   "name": "f2-up-cold",
-   "target": "flux-2/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40081"
-   ],
-   "max_s": 900,
-   "restart": true
-  },
-  {
-   "name": "f2-up-warm",
-   "target": "flux-2/upscale",
-   "args": [
-    "--file",
-    "image={seed}",
-    "megapixels:=2",
-    "seed:=40082"
-   ],
-   "max_s": 900
-  }
- ]
+  "tree": "rc",
+  "cap": "off",
+  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+  "need_s": 5400,
+  "floor_mb_s": 25,
+  "stall_s": 600,
+  "push_each": false,
+  "cells": [
+    {
+      "name": "sdxl-gen-cold",
+      "target": "sdxl/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40001"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "sdxl-gen-warm",
+      "target": "sdxl/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40002"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "sdxl-img-cold",
+      "target": "sdxl/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40003"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "sdxl-img-warm",
+      "target": "sdxl/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40004"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "sdxl-up-cold",
+      "target": "sdxl/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40005"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "sdxl-up-warm",
+      "target": "sdxl/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40006"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "bg-cold",
+      "target": "birefnet/remove_background",
+      "args": [
+        "--file",
+        "image={seed}"
+      ],
+      "max_s": 600,
+      "restart": true
+    },
+    {
+      "name": "bg-warm",
+      "target": "birefnet/remove_background",
+      "args": [
+        "--file",
+        "image={lighthouse}"
+      ],
+      "max_s": 600
+    },
+    {
+      "name": "anima-gen-cold",
+      "target": "anima/generate",
+      "args": [
+        "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
+        "megapixels:=1",
+        "seed:=40009"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "anima-gen-warm",
+      "target": "anima/generate",
+      "args": [
+        "prompt=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
+        "megapixels:=1",
+        "seed:=40010"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "anima-img-cold",
+      "target": "anima/image",
+      "args": [
+        "instructions=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
+        "megapixels=1",
+        "seed:=40011"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "anima-img-warm",
+      "target": "anima/image",
+      "args": [
+        "instructions=masterpiece, best quality, anime illustration of a lighthouse keeper with a lantern on a cliff at dusk",
+        "megapixels=1",
+        "seed:=40012"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "moss-gen-cold",
+      "target": "moss-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40013"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "moss-gen-warm",
+      "target": "moss-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40014"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "moss-img-cold",
+      "target": "moss-image/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40015"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "moss-img-warm",
+      "target": "moss-image/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40016"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "moss-up-cold",
+      "target": "moss-image/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40017"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "moss-up-warm",
+      "target": "moss-image/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40018"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "moss-i2i-cold",
+      "target": "moss-image/image_to_image",
+      "args": [
+        "--file",
+        "image={seed}",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40019"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "moss-i2i-warm",
+      "target": "moss-image/image_to_image",
+      "args": [
+        "--file",
+        "image={seed}",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40020"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "hid-gen-cold",
+      "target": "hidream-o1/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40021"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "hid-gen-warm",
+      "target": "hidream-o1/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40022"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "hid-turbo-cold",
+      "target": "hidream-o1/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40023"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "hid-turbo-warm",
+      "target": "hidream-o1/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40024"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "hid-img-cold",
+      "target": "hidream-o1/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "seed:=40025"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "hid-img-warm",
+      "target": "hidream-o1/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "seed:=40026"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "krea-gen-cold",
+      "target": "krea-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40027"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "krea-gen-warm",
+      "target": "krea-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40028"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "krea-turbo-cold",
+      "target": "krea-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40029"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "krea-turbo-warm",
+      "target": "krea-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40030"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "krea-img-cold",
+      "target": "krea-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40031"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "krea-img-warm",
+      "target": "krea-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40032"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "ideo-gen-cold",
+      "target": "ideogram-4/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40033"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "ideo-gen-warm",
+      "target": "ideogram-4/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40034"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "ideo-img-cold",
+      "target": "ideogram-4/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40035"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "ideo-img-warm",
+      "target": "ideogram-4/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40036"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "klein-gen-cold",
+      "target": "flux.3-klein/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40037"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "klein-gen-warm",
+      "target": "flux.3-klein/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40038"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "klein-turbo-cold",
+      "target": "flux.3-klein/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40039"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "klein-turbo-warm",
+      "target": "flux.3-klein/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40040"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "klein-img-cold",
+      "target": "flux.3-klein/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40041"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "klein-img-warm",
+      "target": "flux.3-klein/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40042"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "klein-up-cold",
+      "target": "flux.3-klein/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40043"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "klein-up-warm",
+      "target": "flux.3-klein/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40044"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qi2-gen-cold",
+      "target": "qwen-image-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40045"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qi2-gen-warm",
+      "target": "qwen-image-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40046"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qi2-turbo-cold",
+      "target": "qwen-image-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40047"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qi2-turbo-warm",
+      "target": "qwen-image-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40048"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qi2-img-cold",
+      "target": "qwen-image-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40049"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qi2-img-warm",
+      "target": "qwen-image-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40050"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qi2-up-cold",
+      "target": "qwen-image-2/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=2",
+        "seed:=40051"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qi2-up-warm",
+      "target": "qwen-image-2/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=2",
+        "seed:=40052"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "fibo-gen-cold",
+      "target": "fibo-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40053"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "fibo-gen-warm",
+      "target": "fibo-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40054"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "fibo-turbo-cold",
+      "target": "fibo-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40055"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "fibo-turbo-warm",
+      "target": "fibo-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40056"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "fibo-img-cold",
+      "target": "fibo-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "seed:=40057"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "fibo-img-warm",
+      "target": "fibo-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "seed:=40058"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "q3-ask-cold",
+      "target": "qwen3/ask",
+      "args": [
+        "prompt=In three sentences, why does a lighthouse need a lens?",
+        "seed:=40059"
+      ],
+      "max_s": 600,
+      "restart": true
+    },
+    {
+      "name": "q3-ask-warm",
+      "target": "qwen3/ask",
+      "args": [
+        "prompt=In three sentences, why does a lighthouse need a lens?",
+        "seed:=40060"
+      ],
+      "max_s": 600
+    },
+    {
+      "name": "q3-caption-cold",
+      "target": "qwen3/caption",
+      "args": [
+        "--file",
+        "images={seed}",
+        "seed:=40061"
+      ],
+      "max_s": 600,
+      "restart": true
+    },
+    {
+      "name": "q3-caption-warm",
+      "target": "qwen3/caption",
+      "args": [
+        "--file",
+        "images={seed}",
+        "seed:=40062"
+      ],
+      "max_s": 600
+    },
+    {
+      "name": "q3-write-cold",
+      "target": "qwen3/write",
+      "args": [
+        "instructions=Write two sentences about a lighthouse keeper at dusk.",
+        "seed:=40063"
+      ],
+      "max_s": 600,
+      "restart": true
+    },
+    {
+      "name": "q3-write-warm",
+      "target": "qwen3/write",
+      "args": [
+        "instructions=Write two sentences about a lighthouse keeper at dusk.",
+        "seed:=40064"
+      ],
+      "max_s": 600
+    },
+    {
+      "name": "ph3-gen-cold",
+      "target": "p-h3-image/generate",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40065"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "ph3-gen-warm",
+      "target": "p-h3-image/generate",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40066"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "ph3-up-cold",
+      "target": "p-h3-image/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40067"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "ph3-up-warm",
+      "target": "p-h3-image/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40068"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qimg-gen-cold",
+      "target": "qwen-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40069"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qimg-gen-warm",
+      "target": "qwen-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40070"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qimg-turbo-cold",
+      "target": "qwen-image/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40071"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qimg-turbo-warm",
+      "target": "qwen-image/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40072"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "qimg-img-cold",
+      "target": "qwen-image/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels=1",
+        "seed:=40073"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "qimg-img-warm",
+      "target": "qwen-image/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels=1",
+        "seed:=40074"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "f2-gen-cold",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40075"
+      ],
+      "max_s": 1200,
+      "restart": true
+    },
+    {
+      "name": "f2-gen-warm",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40076"
+      ],
+      "max_s": 1200
+    },
+    {
+      "name": "f2-turbo-cold",
+      "target": "flux-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40077"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "f2-turbo-warm",
+      "target": "flux-2/generate_turbo",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40078"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "f2-img-cold",
+      "target": "flux-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40079"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "f2-img-warm",
+      "target": "flux-2/image",
+      "args": [
+        "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+        "megapixels:=1",
+        "seed:=40080"
+      ],
+      "max_s": 900
+    },
+    {
+      "name": "f2-up-cold",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40081"
+      ],
+      "max_s": 900,
+      "restart": true
+    },
+    {
+      "name": "f2-up-warm",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={seed}",
+        "megapixels:=2",
+        "seed:=40082"
+      ],
+      "max_s": 900
+    }
+  ]
 }
