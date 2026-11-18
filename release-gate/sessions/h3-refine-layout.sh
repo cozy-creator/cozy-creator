@@ -67,7 +67,17 @@ for s in 15 5; do
   say "clip$s: $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_read_frames -of compact=p=0:nk=1 "$M/clip$s.mp4"), sha256 $(sha256sum < "$M/clip$s.mp4" | cut -c1-16)"
 done
 # Each second's first frame and the last, 4x4.
-ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -vf "select='not(mod(n\,24))+eq(n\,359)',scale=480:-2,tile=4x4" -vsync 0 -frames:v 1 "$OUT/clip-sheet.jpg" || fail "clip sheet"
+mkdir -p "$WORK/sheet"
+ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -vf "select='not(mod(n\,24))+eq(n\,359)',scale=480:-2" -fps_mode passthrough "$WORK/sheet/c%02d.png" 2> "$OUT/clip-sheet.err" &&
+  ffmpeg -nostdin -v error -y -i "$WORK/sheet/c%02d.png" -vf tile=4x4 -frames:v 1 "$OUT/clip-sheet.jpg" 2>> "$OUT/clip-sheet.err" ||
+  fail "clip sheet: $(tail -c 300 "$OUT/clip-sheet.err")"
+# The analysis proven at $0 on the plate against itself and a re-encode of it, in r-1440's layout (selftest/).
+ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -c:v libx264 -crf 32 -c:a copy "$WORK/reencoded.mp4" || fail "selftest re-encode"
+mkdir -p "$OUT/selftest"
+jq -n --arg p "$M/clip15.mp4" --arg r "$WORK/reencoded.mp4" '[{pair: "selftest", plate: $p, one: $p, r: $r, spans: [[0,32],[25,57],[50,82],[75,107]]}]' > "$WORK/selftest.json"
+nice -n 19 uv run -q --no-project --with numpy --with matplotlib python -I "$FIX/analyze.py" "$FRAMES_PY" "$OUT/selftest" "$WORK/selftest.json" \
+  > "$OUT/selftest/out.txt" 2>&1 || fail "the analysis on the plate: $(tail -c 600 "$OUT/selftest/out.txt")"
+say "selftest: $(tail -c 700 "$OUT/selftest/out.txt")"
 if [ "$SHEET" = true ]; then
   for i in $(seq 0 29); do
     at=$((SHEET_FROM + i * SHEET_STEP))

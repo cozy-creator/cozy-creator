@@ -35,9 +35,14 @@ def pick(path: str, at: list[int], width: int, height: int, crop: str = "") -> d
     """RGB frames `at` (indices), each scaled to width x height (after `crop`, in the video's own pixels)."""
     sel = "+".join(f"eq(n\\,{n})" for n in sorted(set(at)))
     chain = f"select='{sel}',{crop + ',' if crop else ''}scale={width}:{height}:flags=lanczos,format=rgb24"
-    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vf", chain, "-vsync", "0", "-f", "rawvideo", "-"],
-                         capture_output=True, check=True).stdout
-    got = np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
+    # Each selected frame once: `-fps_mode` since FFmpeg 5.1, `-vsync` before it.
+    for sync in (["-fps_mode", "passthrough"], ["-vsync", "0"]):
+        done = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vf", chain, *sync, "-f", "rawvideo", "-"], capture_output=True)
+        if done.returncode == 0:
+            break
+    else:
+        raise RuntimeError(f"ffmpeg select on {path}: {done.stderr.decode()[-400:]}")
+    got = np.frombuffer(done.stdout, np.uint8).reshape(-1, height, width, 3)
     return dict(zip(sorted(set(at)), got, strict=True))
 
 
