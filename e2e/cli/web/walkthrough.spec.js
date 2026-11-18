@@ -300,6 +300,19 @@ test('walkthrough', async ({ context, page, project, api, cli, signIn, newContex
         await page.waitForTimeout(1500);
         await snap(page, `${asset.name}-focus`);
         writeFileSync(join(DIR, `${slug(asset.name)}-focus.txt`), await r.innerText());
+        if (/remove_background|upscale_image/.test(asset.tool ?? '')) {
+          // The same box rendered again from Focus, as a user presses Render on a box that already has its take (cl-1225).
+          const render = r.getByRole('button', { name: /^Render/ }).first();
+          writeFileSync(join(DIR, `${slug(asset.name)}-render-button.txt`), (await render.count()) ? `${await render.innerText()} enabled=${await render.isEnabled()}` : 'no Render button');
+          if ((await render.count()) && (await render.isEnabled())) {
+            await render.click();
+            await page.waitForTimeout(4000);
+            await snap(page, `${asset.name}-render-again-4s`);
+            await page.waitForTimeout(40000);
+            await snap(page, `${asset.name}-render-again-44s`);
+            writeFileSync(join(DIR, `${slug(asset.name)}-after-render-again.txt`), await r.innerText());
+          }
+        }
         const video = r.locator('video').first();
         if (await video.count()) {
           const play = r.getByRole('button', { name: /^Play/ }).first();

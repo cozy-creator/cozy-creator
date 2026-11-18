@@ -100,7 +100,7 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
   local engine
   for engine in $(param engines chrome,webkit | tr , ' '); do
     [ "$engine" = chrome ] || [ -d "$HOME/.cache/ms-playwright" ] || continue
-    WALK=$W WALK_PROJECT=$PJ/garden WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
+    WALK=$W WALK_PROJECT=$P WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
       HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) CHROME=$(command -v google-chrome) OUT=$OUT/web-$1-$engine \
       NODE_PATH=$PW/node_modules node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/walkthrough.config.js" --project "$engine" \
       > "$W/page-$1-$engine.log" 2>&1
@@ -116,7 +116,7 @@ if has page; then
   cozy machine logs local -n 80 < /dev/null 2>&1 | grep -aiE 'download|prefetch|prepar|install|qwen' | tail -20 | cut -c1-250 | sed 's/^/    local: /' >> "$R"
 fi
 
-P=$PJ/garden
+P=$PJ/$(param project garden)
 # A tool by the id the palette lists it under (a dev home's may be namespaced).
 tid() { jq -r --arg t "$1" '[(.tools // .)[]?.id] | map(select(. == $t or endswith("/" + $t))) | first // $t' "$W/tools.json" 2> /dev/null || echo "$1"; }
 # media <name>: the box's newest take's file, kept in out/ and measured.
@@ -170,7 +170,6 @@ if has updates; then
   upd limit-back --gpu-memory-limit off
 fi
 if has tools; then
-  P=$PJ/garden
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
   if jq -e 'any(.[]; .name == "sky")' "$STEPS" > /dev/null; then
@@ -213,6 +212,7 @@ if has tools; then
   PAGE cancel "$P" stop > "$W/out/stop.cancel.json" 2>&1; sleep 20
   DIR=$P c run-ls-cancel run ls
   say "cancel: $(tail -c 300 "$W/out/stop.cancel.json" | tr '\n' ' '); run ls: $(sed -n 2,3p "$W/cli/run-ls-cancel.txt" | tr '\n' ' ' | cut -c1-300)"
+  if has gone; then
   # The client gone mid-run (a laptop's lid closed): a Krea render asked, this computer's Calcifer stopped for 2 min, started again.
   PAGE add "$P" lid --tool "$(tid krea-2/image)" --fields '{"instructions": "a lighthouse keeper reading by lamplight", "seed": 9}' > "$W/out/lid.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lid > "$W/out/lid.render.json" 2>&1; sleep 5
@@ -222,6 +222,9 @@ if has tools; then
   t1=$SECONDS
   for _ in $(seq 1 60); do PAGE asset "$P" lid > "$W/out/lid.asset.json" 2>&1; jq -e '[.versions[]?] | length > 0' "$W/out/lid.asset.json" > /dev/null 2>&1 && break; sleep 10; done
   say "client gone: lid has $(jq '[.versions[]?] | length' "$W/out/lid.asset.json" 2> /dev/null) version(s) $((SECONDS - t1)) s after Calcifer came back"
+  DIR=$P c status-after-gone status
+  say "after Calcifer came back: $(grep -aiE 'lock|health' "$W/cli/status-after-gone.txt" | head -3 | tr '\n' ' ')"
+  fi
   PAGE asset "$P" $(jq -r '.[] | select(.kind != "cli") | .name' "$STEPS") lid stop > "$W/assets.json" 2>&1
   DIR=$P c run-ls-tools run ls
   DIR=$W c machine-show-after machine show "$NAME"
@@ -238,7 +241,6 @@ fi
 # A Qwen render cancelled from the page near step 3, then the same box again (cozy-creator #3758: the executor kept warm): it completes,
 # starts fast, its peak normal. A warm-up render first, so the cancel lands on a warm executor as a user's would.
 if has cancel; then
-  P=$PJ/garden
   PAGE add "$P" qr --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a stone bridge over a mountain river, autumn", "turbo": false, "megapixels": 1}' > "$W/out/qr.add.json" 2>&1
   t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-warm.render.json" 2> "$W/out/qr-warm.render.err"
   say "qr warm-up: exit $? in $((SECONDS - t1)) s"
@@ -265,7 +267,6 @@ fi
 # Seeds (cozy-creator #3772, Paul: "you can only memoize when you have a fixed seed"): a box with no seed rendered three times, three
 # seeds and three pictures, none from memory; `cozy render <box> -n 3`, three seeds; a box at seed 42 twice, the second from memory.
 if has seeds; then
-  P=$PJ/garden
   PAGE add "$P" free --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo"}' > "$W/out/free.add.json" 2>&1
   for i in 1 2 3; do
     t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" free > "$W/out/free-$i.render.json" 2> "$W/out/free-$i.render.err"
@@ -292,7 +293,6 @@ fi
 { has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results
 # A machine lost mid-run: a long SDXL render going, the rental ended under it; what the box, the run and the CLI then say.
 if has lost; then
-  P=$PJ/garden
   PAGE add "$P" lost --tool "$(tid sdxl/image)" --fields '{"instructions": "a sprawling city of glass towers at dusk, aerial view", "megapixels": 16, "seed": 4}' > "$W/out/lost.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lost > "$W/out/lost.render.json" 2>&1
   for _ in $(seq 1 300); do PAGE asset "$P" lost > "$W/out/lost-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/lost-poll.json" > /dev/null 2>&1 && break; sleep 2; done
@@ -316,6 +316,6 @@ fi
 if has update; then
   DIR=$W c update-check update --check; DIR=$W c update update; DIR=$W c version-after --version
 fi
-[ ! -d "$PJ/garden" ] || DIR=$PJ c vault-lock-end vault --directory "$PJ/garden" lock
+[ ! -d "$PJ/garden" ] || [ -n "${KEEP_OPEN:-}" ] || DIR=$PJ c vault-lock-end vault --directory "$PJ/garden" lock
 say "walkthrough done: $(wc -l < "$W/cli/times.tsv") commands, $(awk -F'\t' '$2 != 0' "$W/cli/times.tsv" | wc -l) non-zero"
 cp "$W/cli/times.tsv" "$OUT/cli-times.tsv"

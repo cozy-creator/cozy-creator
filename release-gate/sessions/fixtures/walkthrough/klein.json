@@ -4,5 +4,8 @@
   {"name": "krea", "tool": "krea-2/image", "fields": {"instructions": "a fox curled up asleep in fresh snow, soft morning light, photograph", "seed": 7}},
   {"name": "klein-lora", "tool": "flux.3-klein/image", "fields": {"instructions": "a lighthouse on a basalt cliff at dusk, oil painting", "aspect_ratio": "16:9", "seed": 7, "models": {"model": {"ref": "{klein_model}", "lora": [{"ref": "{klein_lora}", "strength": 1.0}]}}}},
   {"name": "klein-edit", "tool": "flux.3-klein/image", "fields": {"instructions": "Make <photo> a snowy winter night, keep everything else.", "seed": 7}},
-  {"name": "cli-klein-lora", "kind": "cli", "tool": "flux.3-klein/generate_turbo", "args": ["prompt=a lighthouse on a basalt cliff at dusk, oil painting", "seed=7", "--lora", "{klein_lora}"]}
+  {"name": "cli-klein-lora", "kind": "cli", "tool": "flux.3-klein/generate_turbo", "args": ["prompt=a lighthouse on a basalt cliff at dusk, oil painting", "seed=7", "--lora", "{klein_lora}"]},
+  {"name": "cutout", "tool": "birefnet/remove_background", "fields": {"image": "<photo>"}},
+  {"name": "cli-cutout", "kind": "cli", "tool": "birefnet/remove_background", "args": ["--file", "image={ref}"], "why": "cl-1225: the same seedless memoized tool on the box's own picture"},
+  {"name": "cli-cutout-again", "kind": "cli", "tool": "birefnet/remove_background", "args": ["--file", "image={ref}"]}
 ]
