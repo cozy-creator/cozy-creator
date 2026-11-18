@@ -129,7 +129,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds || has lost || has updates; then
+if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -137,6 +137,32 @@ if has tools || has idle || has cancel || has seeds || has lost || has updates; 
   quote "$(param seconds 3600)"
   t0=$SECONDS; order; ready; say "rented $NAME ($RID) in $((SECONDS - t0)) s by the CLI"
   DIR=$W c machine-ls-rented machine ls; DIR=$W c machine-show-rented machine show "$NAME"
+fi
+# Relock (W-D1; `cozy update` restarts Calcifer): in the ENCRYPTED project, a render going on the rental, then one on `local`, Calcifer
+# restarted as an update does, the project unlocked again: does the take land, was the run canceled or did it finish, what does the box
+# say while locked and after, is anything lost.
+if has relock; then
+  G=$PJ/garden
+  PAGE import "$G" "$REF/seed.jpg" --name photo > "$W/out/garden-photo.json" 2>&1
+  relock() {  # relock <label> <machine> <box> <tool> <fields>
+    local label=$1 on=$2 box=$3 t0 i
+    PAGE add "$G" "$box" --tool "$(tid "$4")" --fields "$5" > "$W/out/$box.add.json" 2>&1
+    PAGE render "$G" --on "$on" --queue "$box" > "$W/out/$box.render.json" 2>&1
+    for i in $(seq 1 300); do PAGE asset "$G" "$box" > "$W/out/$box-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/$box-poll.json" > /dev/null 2>&1 && break; sleep 1; done
+    say "relock $label: $box rendering on $on ($(jq -c '.asset.rendering' "$W/out/$box-poll.json" 2> /dev/null | cut -c1-120)); restarting Calcifer"
+    t0=$SECONDS; DIR=$G c "restart-$label" restart
+    DIR=$G c "status-locked-$label" status; PAGE asset "$G" "$box" > "$W/out/$box-locked.json" 2>&1
+    DIR=$PJ/plain c "runs-while-locked-$label" run ls
+    say "relock $label: after the restart: $(grep -aiE 'lock|health|error' "$W/cli/status-locked-$label.txt" | head -2 | tr '\n' ' ' | cut -c1-200); the box: $(head -c 200 "$W/out/$box-locked.json")"
+    sleep 45
+    DIR=$G c "unlock-$label" vault unlock --passphrase-file "$SECRETS/pass.txt"
+    say "relock $label: unlocked $((SECONDS - t0)) s after the restart: exit $(tail -1 "$W/cli/times.tsv" | cut -f2)"
+    for i in $(seq 1 120); do PAGE asset "$G" "$box" > "$W/out/$box-after.json" 2> /dev/null; jq -e '([.versions[]?] | length > 0) or (.asset.failure != null and (.asset.making | not))' "$W/out/$box-after.json" > /dev/null 2>&1 && break; sleep 5; done
+    DIR=$G c "runs-after-$label" run ls
+    say "relock $label: $((SECONDS - t0)) s after the restart the box has $(jq '[.versions[]?] | length' "$W/out/$box-after.json" 2> /dev/null) version(s), failure $(jq -c '.asset.failure' "$W/out/$box-after.json" 2> /dev/null | cut -c1-300); runs: $(sed -n 2,3p "$W/cli/runs-after-$label.txt" | tr '\n' ' ' | cut -c1-300)"
+  }
+  relock rental "$NAME" lockedsdxl sdxl/image '{"instructions": "a hot air balloon over a lavender field", "megapixels": 4, "seed": 21}'
+  relock local local lockedcut birefnet/remove_background '{"image": "<photo>"}'
 fi
 # Updates (coordinator, 11-18: after `machine update` said completed, a render's first run waited 342 s; after a settings-only update the
 # pod refused connections ~3 min): each update timed, `machine show` until it answers ready, then a small run's created → accepted →
@@ -199,6 +225,11 @@ if has tools; then
         mapfile -t args < <(jq -r '.args[]' <<< "$s" | sed "s#{ref}#$REF/seed.jpg#")
         DIR=$P TO=3600 c "cli-$name" run "$tool" --on "$NAME" "${args[@]}"; rc=$?
         say "cli $name (cozy run $tool): exit $rc in $(tail -1 "$W/cli/times.tsv" | cut -f3) ms: $(tail -3 "$W/cli/cli-$name.txt" | tr '\n' ' ' | cut -c1-300)"
+        continue ;;
+      cozy)
+        mapfile -t args < <(jq -r '.args[]' <<< "$s" | sed "s#{machine}#$NAME#")
+        DIR=$P TO=1800 c "$name" "${args[@]}"; rc=$?
+        say "$name (cozy ${args[*]}): exit $rc in $(tail -1 "$W/cli/times.tsv" | cut -f3) ms: $(grep -v '^\s*$' "$W/cli/$name.txt" | tail -4 | tr '\n' ' ' | cut -c1-400)"
         continue ;;
       page) PAGE add "$P" "$name" --tool "$(tid "$tool")" --fields "$(jq -c .fields <<< "$s")" > "$W/out/$name.add.json" 2>&1 || { say "$name: add failed: $(tail -c 300 "$W/out/$name.add.json")"; continue; } ;;
     esac
