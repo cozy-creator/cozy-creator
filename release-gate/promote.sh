@@ -20,6 +20,8 @@
 # on the world as they leave it, read before anything moves: PyPI serving the set's Runtime and TensorFS by the gate's digests,
 # a successful smoke (e2e.yaml) on the cozy release's tag, the cozy release Latest, every gated package's final on the Hub,
 # each held model public. Unread (PyPI, GitHub or the Hub not answering) is not done.
+# Whatever the phases (so --packages for any), a set that holds packages is refused before anything moves unless every model a
+# slot of theirs loads by default is public, or held in `models` for the models phase (defaults.sh, cl-1243: th-412's 404s).
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
 DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,packages,models,images
@@ -53,9 +55,12 @@ mapfile -t models < <(jq -r '.models[]?' <<< "$set_")
 if want images && [ -n "$(field runtime_sha256)$(field tensorfs_sha256)$(field cozy_sha256)" ] && [ -z "$IMAGES" ]; then
   echo "the set moves cozy, the Runtime or TensorFS: --images '<profile>=sha256:… …', the worker images staged from it" >&2; exit 2
 fi
-if [ -n "$ref" ] && { want packages || want models || want images; }; then
+if [ -n "$ref" ]; then
   [ -n "$PKGS" ] && [ -f "$PKGS/Taskfile.yaml" ] || { echo "the set holds packages at $ref: --packages <a packages checkout>" >&2; exit 2; }
-  [ "$(git -C "$PKGS" rev-parse --abbrev-ref HEAD)" = master ] || { echo "$PKGS is not on master" >&2; exit 2; }
+  ! { want packages || want models || want images; } || [ "$(git -C "$PKGS" rev-parse --abbrev-ref HEAD)" = master ] ||
+    { echo "$PKGS is not on master" >&2; exit 2; }
+  "$HERE/defaults.sh" "$PKGS" "$ref" "${models[@]}" ||
+    { echo "not every default model of the packages at $ref is public or held (above): nothing promoted" >&2; exit 1; }
 fi
 if want models; then
   for m in "${models[@]}"; do
