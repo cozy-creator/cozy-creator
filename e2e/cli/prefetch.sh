@@ -38,7 +38,7 @@ pre_end() {
   [ -z "${PRE_SLOWED:-}" ] || sudo tc qdisc del dev lo root 2> /dev/null || check "prefetch: the store's link wasn't restored"
   PRE_SLOWED=''
   # Its projects closed, as nothing shows them now: what the run keeps of them is read once their files stand still.
-  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-local" "$OUT/pre-disk" "$OUT/pre-retry"; do
+  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-quoted" "$OUT/pre-yields" "$OUT/pre-load" "$OUT/pre-local" "$OUT/pre-disk" "$OUT/pre-retry" "$OUT/pre-order"; do
     for _ in $(seq 75); do [ -e "$project/project.db-shm" ] || break; sleep 0.2; done
   done
 }
@@ -89,7 +89,7 @@ pre_log() {
 }
 # pre_judge <log> <from ms> <facts JSON>: what its machine's downloader and install line did from then on (`fetching`, `landed`,
 # `fetch refused` and `install line` in its TensorD's log), judged by the Python on stdin: `weights`, its objects by digest, each
-# with when it began, landed or was refused and at which order's class (0 a run's, 2 a run's guess, 3 a caller's guess); `landed`,
+# with when it began, landed or was refused, at which order and its class (0 a run's, 2 a run's guess, 3 a caller's guess); `landed`,
 # the bytes of those that landed; `installs`, when an environment's build took the install line. Each line it prints is a failure.
 pre_judge() {
   local judge
@@ -118,6 +118,7 @@ for line in open(log, errors="replace"):
         # 1 is software's order (a package's files): no weights. 0 is what a started call reads now: a run's.
         if order and seen["class"] is None:
             seen["class"] = -1 if int(order[1]) == 1 else max(int(order[1]) - 2, 0) >> 62
+            seen["order"] = int(order[1])
     if "install line: its turn" in line:
         installs.append(when)
 MIB = 1 << 20
@@ -693,6 +694,131 @@ else
   check "prefetch retry: its row never said why its guess failed in 3 min: ${row:-no row}"
 fi
 pre_end
+}
+
+# prefetch_order (cl-1278; the Predictive Downloads coordinator, 11-18, on Paul's "you know how google chrome, when you're typing into a
+# browser, will pre-fetch the url you're likely to complete typing?"): "among a machine's predicted boxes, the one the user touched
+# most recently downloads first." The release walkthrough (pod-session 44338350009, one RTX 4090): two cold boxes, about 60 GB at
+# about 105 MB/s; an edit makes a new item, which went by its run's acceptance, so the Qwen box just edited went behind Klein's whole
+# set, and its Render waited about 100 s for an 11 GB enhancer that hadn't started. Here stand-o, a new stand-in, holds nothing, and
+# the store is at 10 MB/s. A project of it holds two boxes when the page shows it: `first` (e2e/pre-a: its 320 MiB VAE and 384 MiB
+# transformer) and `second` (e2e/pre-b's transformer, 384 MiB, on that VAE). `first` downloads; with half of what it needs there
+# (352 MiB), `second`'s words are edited. The edited box's needs are whole before `first`'s. Nothing of `first` is cancelled: its item stays
+# listed, and each of its objects in flight at the edit is begun once, never refused, and lands. The timeline is the machine's own
+# (stand-o's TensorD's log): when each item's needs were here and each object began and landed, from the edit.
+prefetch_order() {
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+step "prefetch (cl-1278): of two boxes guessed onto one machine, the one edited last downloads first, and nothing of the other is cancelled"
+local P=$OUT/pre-order name=stand-o tool=e2e-prefetched/still began edited came at_edit facts
+[ -z "${PRE_PAGE:-}${PRE_SLOWED:-}" ] || pre_end
+PRE_PAGE='' PRE_SLOWED=''
+cozy --json machine show local > "$OUT/set-local.json" || { check "prefetch order: machine show local"; return 0; }
+stand_in "$name" || return 0
+sudo tc qdisc del dev lo root 2> /dev/null || true
+slow_store prefetch 80mbit || { order_end; return 0; }
+PRE_SLOWED=1
+cozy --json new --unencrypted "$P" > "$OUT/pre-order-new.json" 2>&1 || { check "prefetch order: new: $(tail -c 300 "$OUT/pre-order-new.json")"; order_end; return 0; }
+in_project "$P" --json machine use "$name" > "$OUT/pre-order-use.json" 2>&1 || { check "prefetch order: machine use $name: $(tail -c 300 "$OUT/pre-order-use.json")"; order_end; return 0; }
+# Both boxes there before the page shows the project: one guess round makes both, in the boxes' order.
+jq -n --arg t "$tool" '[{name: "first", tool: $t, kind: "image", fields: {instructions: "A still of the first box."}},
+  {name: "second", tool: $t, kind: "image", fields: {instructions: "A still of the second box.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
+  | boxes_in "$P" || { order_end; return 0; }
+pre_page || { order_end; return 0; }
+began=$(date -u +%s%3N)
+pre_show "$P" || { order_end; return 0; }
+came=$(pre_wait "$P" first 352)
+at_edit="first $(pre_row "$P" first | jq -c '{done, total, ready, stage}' 2> /dev/null), second $(pre_row "$P" second | jq -c '{done, total, ready, stage}' 2> /dev/null)" || true
+[ "$came" -ge $((352 << 20)) ] || { check "prefetch order: $name never had 352 MiB of the first box's needs: $at_edit"; order_end; return 0; }
+edited=$(date -u +%s%3N)
+project_api "$P" /assets/second -X PATCH -H 'Content-Type: application/json' \
+  -d '{"fields": {"instructions": "A still of the second box, at dusk.", "models": {"model": {"ref": "e2e/pre-b@0.1.0"}}}}' > "$OUT/pre-order-patch.json" 2>&1 \
+  || check "prefetch order: the second box wasn't edited: $(tail -c 300 "$OUT/pre-order-patch.json")"
+echo "prefetch order: the second box was edited $((edited - began)) ms after the page showed the project; the rows then: $at_edit"
+pre_ready "$P" second "$name" 300 || true
+pre_ready "$P" first "$name" 300 || true
+cozy machine logs local calcifer --lines 0 --since 30m > "$OUT/pre-order-calcifer.log" 2>&1 || true
+pre_log "$name" "$OUT/pre-order.tensord.log"
+# Which item is whose, from the lists Calcifer sent stand-o: the key on the list before the edit and after it is the first box's,
+# the key new after it the edited box's.
+facts=$(python3 -I - "$OUT/pre-order-calcifer.log" "$name" "$began" "$edited" <<'KEYS'
+import json, re, sys
+from datetime import datetime
+log, name, began, edited = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+lists = []
+for line in open(log, errors="replace"):
+    found = re.search(r"lists to " + re.escape(name) + r": .*prepare \[(.*?)\]( \(unchanged\))?$", line.rstrip())
+    if not found or found[2]:
+        continue
+    try:
+        when = int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        continue
+    if when >= began:
+        lists.append((when, re.findall(r'"([^"]+)"', found[1])))
+before = next((keys for when, keys in reversed(lists) if when <= edited), [])
+after = next(((when, keys) for when, keys in lists if when > edited and set(keys) - set(before)), (0, []))
+kept, new = [key for key in before if key in after[1]], [key for key in after[1] if key not in before]
+print(json.dumps({"edited": edited, "before": before, "after": after[1], "listed_ms": after[0] - edited if after[0] else None,
+                  "first": kept[0] if len(kept) == 1 else "", "second": new[0] if len(new) == 1 else "", "lists": len(lists)}))
+KEYS
+) || facts=''
+echo "prefetch order: Calcifer's lists to $name: $(jq -c '{before, after, listed_ms, lists}' <<< "${facts:-null}" 2> /dev/null)"
+if J '(.first // "") != "" and (.second // "") != ""' <<< "${facts:-null}"; then
+  pre_judge "$OUT/pre-order.tensord.log" "$began" "$facts" <<'JUDGE' > "$OUT/pre-order.failed" 2> "$OUT/pre-order.timeline"
+edit, here, dropped = facts["edited"], {}, []
+for line in open(log, errors="replace"):
+    when = at(line)
+    if when < since:
+        continue
+    found = re.search(r"cozy:prepare:(\S+): what it needs is here", line)
+    if found:
+        here.setdefault(found[1], when)
+    found = re.search(r"list item cozy:prepare:(\S+) dropped: its run", line)
+    if found:
+        dropped.append(found[1])
+first, second = here.get(facts["first"]), here.get(facts["second"])
+said = lambda when: "never" if when is None else f"{(when - edit) / 1000:+.1f} s"
+place = lambda seen: (max(seen.get("order", 2) - 2, 0) >> 32) & ((1 << 30) - 1)
+# Each object in the order it began: when it began and landed from the edit, its size, and its place in the line and rank there.
+for sha, seen in sorted(weights.items(), key=lambda item: min(item[1]["fetching"] or [1 << 62])):
+    print(f"  {sha[:12]} {seen['bytes'] // MIB:4d} MiB began {said(min(seen['fetching'], default=None))}, landed {said(min(seen['landed'], default=None))}"
+          f", place {place(seen)} rank {max(seen.get('order', 2) - 2, 0) & 0xffffffff}, begun {len(seen['fetching'])}x, refused {len(seen['refused'])}x", file=sys.stderr)
+flying = [seen for seen in weights.values() if seen["fetching"] and min(seen["fetching"]) <= edit and not (seen["landed"] and min(seen["landed"]) <= edit)]
+went = sum(seen["bytes"] for seen in weights.values() if seen["landed"] and min(seen["landed"]) <= edit)
+print(json.dumps({"edited_box_whole": said(second), "first_box_whole": said(first), "landed_at_the_edit_mib": went // MIB, "in_flight_at_the_edit": len(flying),
+                  "of_them_landed_before_the_edited_box_was_whole": sum(1 for seen in flying if seen["landed"] and second and min(seen["landed"]) <= second),
+                  "begun_again": sum(1 for seen in weights.values() if len(seen["fetching"]) > 1), "refused": sum(1 for seen in weights.values() if seen["refused"])}), file=sys.stderr)
+if second is None or first is None:
+    print(f"what the edited box needs was here {said(second)} and what the first box needs {said(first)}: one never came whole")
+elif second > first:
+    print(f"what the edited box needs was whole {(second - first) / 1000:.1f} s after what the first box needs ({said(second)} against {said(first)} from the edit): the box touched last went behind the box guessed before it")
+if not flying:
+    print("nothing was in flight when the second box was edited: the first box wasn't downloading, and the scene doesn't hold")
+again = [seen for seen in flying if len(seen["fetching"]) > 1 or seen["refused"]]
+if again:
+    print(f"{len(again)} of the first box's {len(flying)} objects in flight at the edit were begun again or refused: something of it was cancelled")
+lost = [seen for seen in flying if not seen["landed"]]
+if lost:
+    print(f"{len(lost)} of the first box's {len(flying)} objects in flight at the edit never landed")
+if facts["first"] in dropped:
+    print("the first box's item was dropped and its run ended, though only the second box was edited")
+runs = [sha[:12] for sha, seen in weights.items() if seen["class"] != 3]
+if runs:
+    print(f"{len(runs)} objects came at a run's order, not a caller's guess's (class 3): {runs[:3]}")
+JUDGE
+  sed 's/^/prefetch order: /' "$OUT/pre-order.timeline"
+  grep -q '"edited_box_whole"' "$OUT/pre-order.timeline" && ! grep -q '^Traceback' "$OUT/pre-order.timeline" \
+    || check "prefetch order: its judge didn't finish: $(tail -2 "$OUT/pre-order.timeline" | cut -c1-300)"
+  while read -r why; do check "prefetch order: $why"; done < "$OUT/pre-order.failed"
+else
+  check "prefetch order: Calcifer's lists to $name don't say which item is whose: $(grep -E "lists to $name" "$OUT/pre-order-calcifer.log" | tail -4 | cut -c1-300)"
+fi
+order_end
+}
+# order_end: the page gone, the link as it was, stand-o ended.
+order_end() {
+  pre_end
+  timeout 60 "$COZY" --json machine end stand-o --force -y > "$OUT/stand-o-end.json" 2>&1 || true
 }
 
 # prefetch_sealed (cl-1123; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What really matters is that we can
