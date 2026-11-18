@@ -418,10 +418,12 @@ impl Lists {
             let planned = if name == "local" { &planned_local } else { &planned };
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
             upcoming.sort_by_key(|listed| listed.start_at_ms);
-            // Its guesses, each once, then what demand elsewhere asks of it that no guess does.
+            // Its guesses, each once, then what demand elsewhere asks of it that no guess does: nothing of an encrypted project where
+            // its request may not go ahead (`Calcifer::sealed_from`, cl-1123).
             let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
+            let sealed = upcoming.is_empty().then(|| machines.calcifer.sealed_from(&name)).flatten();
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
-                .chain(demand(&planned, &name, &frame, upcoming.is_empty()));
+                .chain(demand(&planned, &name, &frame, upcoming.is_empty(), sealed.as_deref()));
             // And what a render named, until the machine answers it (`answered`).
             lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
             let pinned: Vec<(String, v1::Predicted)> = (lock(&self.pinned).iter())
@@ -783,18 +785,23 @@ fn line(message: &str) -> String {
 
 /// What `machine` prepares for demand elsewhere: nothing while it has upcoming jobs or a queue; else the published functions planned
 /// on other machines that it can run, the most-asked first, each once. Local code isn't: it is sent to a machine with the job that
-/// runs it there.
-fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool) -> Vec<(String, v1::Predicted)> {
+/// runs it there. Nor is an encrypted project's where `sealed` says why nothing of it goes ahead (`Calcifer::sealed_from`; cl-1123,
+/// the release coordinator: "for an encrypted project the request should be on the machine that runs the run and nowhere else").
+fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool, sealed: Option<&str>) -> Vec<(String, v1::Predicted)> {
     let queued = frame.queue.as_ref().is_some_and(|queue| !queue.is_empty());
     if !idle || queued {
         return vec![];
     }
     let mut asked: Vec<(String, usize, String, v1::Predicted)> = vec![];
-    for listed in (planned.iter().filter(|(name, _)| name.as_str() != machine))
-        .flat_map(|(_, lists)| lists.values().flatten())
-        .filter(|listed| listed.fits.iter().any(|fits| fits == machine))
-        .filter(|listed| matches!(listed.item.spec.source, Some(v1::Source::Release(_))))
+    for (folder, listed) in (planned.iter().filter(|(name, _)| name.as_str() != machine))
+        .flat_map(|(_, lists)| lists.iter().flat_map(|(folder, listed)| listed.iter().map(move |listed| (folder, listed))))
+        .filter(|(_, listed)| listed.fits.iter().any(|fits| fits == machine))
+        .filter(|(_, listed)| matches!(listed.item.spec.source, Some(v1::Source::Release(_))))
     {
+        if let Some(why) = sealed.filter(|_| crate::project::vault::encrypted_within(listed.project.folder_root())) {
+            withheld(folder, &listed.asset, machine, why);
+            continue;
+        }
         let key = identity(&listed.item);
         match asked.iter_mut().find(|(held, ..)| *held == key) {
             Some((_, count, ..)) => *count += 1,
@@ -803,6 +810,19 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
     }
     asked.sort_by_key(|(_, count, ..)| std::cmp::Reverse(*count));
     asked.into_iter().map(|(_, _, hub, item)| (hub, item)).collect()
+}
+
+/// Why each encrypted project's waiting job isn't prepared on a machine, by its folder, box and machine: said once until it changes.
+static WITHHELD: LazyLock<Mutex<HashMap<(String, String, String), String>>> = LazyLock::new(Mutex::default);
+
+/// Box `asset` of `folder` isn't prepared on `machine` for `why`: said in its project's own log (`say`) when that's new.
+fn withheld(folder: &str, asset: &str, machine: &str, why: &str) {
+    let at = (folder.to_owned(), asset.to_owned(), machine.to_owned());
+    if lock(&WITHHELD).get(&at).is_some_and(|said| said == why) {
+        return;
+    }
+    say(folder, || format!("{folder}: {asset} isn't prepared on {machine} while it waits elsewhere: nothing of this encrypted project goes ahead: {why}"));
+    lock(&WITHHELD).insert(at, why.to_owned());
 }
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine.
