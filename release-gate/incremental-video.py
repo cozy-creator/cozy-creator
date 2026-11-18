@@ -183,13 +183,17 @@ def arm(out: Path, name: str) -> dict[str, object]:
     said = {int(event["rev"]): t for t, event in reversed(video) if event["type"] in ("output_item.added", "output_item.delta") and event.get("rev")}
     kept_of = {int(event["rev"]): int(event.get("appended_from") or 0) for _, event in video if event["type"] == "output_item.delta" and event.get("rev")}
     landed = {int(event["rev"]): t for t, event in reversed(video) if event["type"] == "output_item.landed" and event.get("rev")}
+    sizes = {int(event["rev"]): int(event["length"]) for _, event in video if event["type"] == "output_item.landed" and event.get("rev") and event.get("length")}
+    # Every revision that landed, as the run's events say; its probe and decode where the watcher took its file (none: not probed).
+    watched = {int(rev_text): (int(at), json.loads(probe), errors.strip()) for rev_text, at, size, probe, errors in revs}
     rows = []
-    for rev_text, at, size, probe, errors in revs:
-        rev, length = int(rev_text), int(size)
+    for rev in sorted(set(sizes) | set(watched)):
+        length = sizes.get(rev) or int(next(size for rev_text, _, size, _, _ in revs if int(rev_text) == rev))
         wire, net = window(said[rev], landed[rev]) if rev in said and rev in landed else (None, None)
+        at, probe, errors = watched.get(rev, (None, {}, None))
         rows.append({"rev": rev, "length": length, "appended_from": kept_of.get(rev, 0), "expected_read": length - kept_of.get(rev, 0),
-                     "wire": wire, "wire_interfaces": net, "said_ms": said.get(rev), "landed_ms": landed.get(rev), "watched_ms": int(at),
-                     "probe": json.loads(probe), "decode_errors": errors.strip()})
+                     "wire": wire, "wire_interfaces": net, "said_ms": said.get(rev), "landed_ms": landed.get(rev), "watched_ms": at,
+                     "probe": probe, "decode_errors": errors})
     calls = record.get("calls") or []
     last = calls[-1] if calls else {}
     stages = ((last.get("measurements") or {}).get("attribution") or {}).get("stages") or {}

@@ -72,6 +72,9 @@ iv_watch() {
         rm -rf "iv-$arm.out"
         (cd "${RUN_PROJECT:-$PWD}" && "$CLI" run watch "$(run_ref "$OUT" "$name" "$n")" --once -o "$OUT/iv-$arm.out") > /dev/null 2>&1
         f=$(find "iv-$arm.out" -name '*.mp4' 2> /dev/null | head -1)
+        # A revision of a run still going has no digest on its record, so `run watch -o` exports none of it (44275320398 saw only
+        # the take): it is the project's file of that length, where Calcifer landed it.
+        [ -n "$f" ] || f=$(find "$OUT/project/files/" -maxdepth 1 -name '*.mp4' -size "${want}c" 2> /dev/null | head -1)
         if [ -n "$f" ] && [ "$(stat -c %s "$f")" = "$want" ]; then
           last=$rev
           mkdir -p "iv-$arm.revisions" && cp "$f" "iv-$arm.revisions/rev-$rev.mp4"
@@ -177,7 +180,7 @@ fi
 end_it
 if [ -n "$IV_AFTER" ]; then
   seams=$(jq -r '.result.seams // [] | map(tostring) | join(",")' iv-after.json)
-  joins=$(jq -r '[.after.revisions[] | .probe.video] | .[:-1] | map(tostring) | join(",")' <<< "$iv")
+  joins=$(jq -r '[.after.revisions[:-1][] | .probe.video // empty] | map(tostring) | join(",")' <<< "$iv")
   nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/incremental-video.py" pictures "${IV_BEFORE:--}" "$IV_AFTER" "${IV_WHOLE:--}" \
     --seams "$seams" --joins "$joins" --out "$OUT/iv-pictures" > iv-pictures.json 2> iv-pictures.err
   pics=$(cat iv-pictures.json)
