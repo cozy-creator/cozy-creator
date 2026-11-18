@@ -22,9 +22,10 @@ const PICTURES = 50;
 const SIDE = 1200;
 const COLUMNS = 10;
 const [W, DX, DY] = [240, 280, 320];
-/** Long enough for the old build's stall to show whole, short enough that the cell ends; above every bar. A Mac's runner makes thumbnails
- *  slowly at rc (agent a92b210), so its wait is shorter, to leave the frames time to be judged. */
-const WAIT_MS = process.platform === 'darwin' ? 15_000 : 75_000;
+/** Long enough for the old build's stall to show whole, short enough that the cell ends; above every bar. The same on a Mac: at 15 s its
+ *  previews could not all be drawn on its runner (6 to 43 of 50 a tab, 44245107402 to 44273472488), so the check failed by construction;
+ *  a wait returns as soon as they are, and test.slow leaves the frames time to be judged. */
+const WAIT_MS = 75_000;
 const VIEWPORT = { width: 1600, height: 1000 };
 // What Paul asked (11-13), on the fast hosted runners; each is held times this runner's speed against those (speed.js).
 const BARS = { frames_first_ms: 100, frames_all_ms: 100, previews_cold_ms: 2000, previews_warm_ms: 1000, landed_ms: 2000 };
