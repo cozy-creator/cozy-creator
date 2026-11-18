@@ -4981,8 +4981,8 @@ impl Walk {
                     continue;
                 }
                 // None of its machines can run it: no room for its weights (cl-1175, Paul 11-17: "stop them from trying to download
-                // models they cannot fit"), or no GPU where nothing measured says it runs without one (cl-1279). It waits here, nothing of it
-                // sent, until one can, or a rental comes; said once.
+                // models they cannot fit"), or no GPU where nothing measured says it runs without one (cl-1279). It waits here, nothing
+                // of it sent, until one can, or a rental comes; said once.
                 if let (true, Some(held)) = (unsent.ready, placement::unable(&placement.offers)) {
                     walker.waiting.remove(&unsent.key);
                     let line = placement::unable_line(held, "render");

@@ -245,6 +245,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         gpus: pool.serving_width(),
         link: if link > 0.0 { link / 1e3 } else { LINK },
         card,
+        memory: 0,
         nvlink,
         times,
         now_ms: crate::machine::lifecycle::now_ms(),

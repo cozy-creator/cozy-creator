@@ -617,7 +617,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
             }
-            // None of them can run it (no room for its weights, no GPU for a function nothing measured says runs without one): refused before
+            // None of them can run it (no room for its weights; no GPU, and nothing measured says it runs without one): refused before
             // anything downloads, with the rental its asker may choose instead.
             if let Err(e) = &chosen
                 && matches!(e.code.as_str(), "machine_disk_full" | "machine_no_gpu")
