@@ -17,7 +17,8 @@
 # 2-4 and the sparse 5-8 means, steady 2-8), decode, peak VRAM (driver and allocated), SM clock and throttle share, and its
 # Runtime and TensorFS: a run on another pair than the first's fails the session. A1/A2 and B1/B2 are checked for the same
 # frames (one build, one seed). The pod ends before the summary.
-# params: runtime (the Runtime wheel, https://…#sha256=<hex>), cells, vram_cap (8GiB), max_failures (2), need_s (7800). (`cap` is lib.sh's dollar cap.)
+# params: runtime and tensorfs (the RC pair the pod runs, each a wheel https://…#sha256=<hex>: what a fresh lock under
+# this session's cozy resolves since cozy-creator #3873, which takes the RC's TensorFS beside an RC Runtime), cells, vram_cap (8GiB), max_failures (2), need_s (7800). (`cap` is lib.sh's dollar cap.)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/h3-edit-sound" && pwd) || fail "no fixtures"
 CELLS=$(param cells "warm a1 b1 b2 a2 cap") VCAP=$(param vram_cap 8GiB) MOST=$(param max_failures 2)
@@ -37,6 +38,13 @@ W=$OUT/wheel/$(basename "${URL%%#*}" | sed 's/%2B/+/g')
 curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
 [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
 WANT_RT=$(basename "$W" | cut -d- -f2)
+TURL=$(param tensorfs)
+[[ $TURL == https://*'#sha256='* ]] || fail "tensorfs is not https://…#sha256=<hex>"
+TW=$OUT/wheel/$(basename "${TURL%%#*}" | sed 's/%2B/+/g')
+curl -fsSL --retry 5 --retry-all-errors "${TURL%%#*}" -o "$TW" || fail "cannot fetch the tensorfs wheel"
+[ "$(sha256sum "$TW" | cut -c1-64)" = "${TURL##*sha256=}" ] || fail "tensorfs wheel sha256"
+WANT_TFS=$(basename "$TW" | cut -d- -f2)
+say "candidate: cozy $(cozy --version 2>/dev/null | awk '{print $NF}'), Runtime $WANT_RT, TensorFS $WANT_TFS"
 
 M=$OUT/media
 fetch() { curl -fsSL --retry 5 -A "cozy-release-gate/1.0" "$2" -o "$M/$1" || fail "fetch $1"; }
@@ -67,18 +75,25 @@ for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
 done
 [ "$(jq -r '[.[] | "\(.runtime) \(.tensorfs)"] | unique | length' "$OUT/guided.json")" = 1 ] ||
   fail "the trees resolve different Runtime/TensorFS pairs: $(jq -c 'map_values({runtime, tensorfs})' "$OUT/guided.json")"
-[ "$(jq -r '[.[] | .runtime] | first' "$OUT/guided.json")" = "$WANT_RT" ] ||
-  fail "the trees lock Runtime $(jq -r '[.[] | .runtime] | first' "$OUT/guided.json"), not the wheel's $WANT_RT"
+# The committed locks (uv sync --frozen above) only plan the guide; the pod runs what this cozy's lock resolves, checked
+# below by a local install and per run on the pod.
 for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
   (cd "$RUN_PROJECT" && cozy run "$PACKAGES/$t/minimax-h3/edit" --describe) > "$OUT/describe-$t.txt" 2>&1 ||
     fail "$t's edit doesn't describe: $(tail -c 400 "$OUT/describe-$t.txt")"
   say "tree $t: edit described ($(grep -c -i -E 'audio' "$OUT/describe-$t.txt") lines name audio)"
   kernels "$PACKAGES/$t/minimax-h3"
 done
+# The lock a render's staging makes (44296224697 and 44300237631 failed there under a cozy older than #3873), at $0:
+# #1005's tree installed on this runner's local machine through cozy.
+if [ -n "${TREE[b1]:-}" ] && [ -f "$PACKAGES/pk/minimax-h3/pyproject.toml" ]; then
+  timeout 1800 cozy package install "$PACKAGES/pk/minimax-h3" --on local -y > "$OUT/lock-pk.txt" 2>&1 ||
+    fail "pk doesn't install through this cozy's lock: $(tail -c 600 "$OUT/lock-pk.txt")"
+  say "tree pk: installed locally through cozy ($(grep -o -m1 -E 'cozy[-_]runtime[ =]+[0-9][^ ,)]*' "$OUT/lock-pk.txt"; grep -o -m1 -E 'tensorfs[ =]+[0-9][^ ,)]*' "$OUT/lock-pk.txt"))"
+fi
 
 quote "$(param need_s 7800)"
 rent
-step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" -y || fail "update"
+step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TW" -y || fail "update"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
 
 run_page import "$M/kelly.mp4" --name kelly > "$OUT/import-kelly.txt" 2>&1 || fail "import kelly: $(cat "$OUT/import-kelly.txt")"
@@ -174,7 +189,7 @@ cell() {
   local pair; pair=$(jq -r '"\(.measurements.software.runtime // "?") \(.measurements.software.tensorfs // "?")"' "$OUT/$k.json" 2>/dev/null)
   [ -n "$FIRST" ] || FIRST=$pair
   [ "$pair" = "$FIRST" ] || fail "$k ran on Runtime/TensorFS $pair, not the first run's $FIRST"
-  [ "${pair%% *}" = "$WANT_RT" ] || fail "$k ran on Runtime ${pair%% *}, not the candidate $WANT_RT"
+  [ "$pair" = "$WANT_RT $WANT_TFS" ] || fail "$k ran on Runtime/TensorFS $pair, not the candidates $WANT_RT $WANT_TFS"
 }
 for c in $CELLS; do
   case $c in
