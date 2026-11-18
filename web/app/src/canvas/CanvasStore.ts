@@ -346,6 +346,9 @@ export class CanvasStore {
   private estimating = new Map<string, number>()
   /** The box being worked on where it stands: the view fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
+  /** While Focus is open and on the way back from it, the canvas's zoom outside it: what the board asks pictures at, so the boxes
+   *  behind Focus keep the pictures they had and come back drawn at once, never asked again at Focus's zoom (cl-1207). */
+  restZoom: number | null = null
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
@@ -496,6 +499,7 @@ export class CanvasStore {
     this.viewport = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
+    this.restZoom = null
     this.focusEntering.set(false)
     this.focusedName.set(null)
     this.dragging.clear()
@@ -551,6 +555,7 @@ export class CanvasStore {
     this.viewing.set(null)
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
+    this.restZoom = null
     this.focusEntering.set(false)
     this.focusedName.set(null)
   }

@@ -1,0 +1,1 @@
+Boxes behind Focus keep their canvas pictures (cl-1207): in Focus and on the way back the board asks each picture at the canvas's own zoom, not Focus's, so on leaving Focus every box is drawn at once instead of standing empty while its file loads.
