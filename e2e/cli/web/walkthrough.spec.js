@@ -7,7 +7,7 @@
 const { mkdirSync, readFileSync, writeFileSync, existsSync } = require('fs');
 const { join } = require('path');
 const { randomBytes } = require('crypto');
-const { test, expect, canvasIdle, focus, openPoint } = require('./fixtures');
+const { test, expect, canvasIdle, canvasPoint, focus, openPoint } = require('./fixtures');
 const { dropFiles, fit, leave } = require('./hands');
 const { carry } = require('./geometry');
 
@@ -272,6 +272,79 @@ test('walkthrough', async ({ context, page, project, api, cli, signIn, newContex
         await page.waitForTimeout(2000);
         await snap(page, `route-${where}`);
       }
+    });
+  }
+
+  if (STAGE === 'rerender') {
+    // cl-1271: Render on a box that has a take and unchanged inputs, seen at 1, 5 and 30 s; then how a take reaches the disk from the page,
+    // and where its seed reads.
+    const folder = process.env.WALK_PROJECT;
+    let code = null;
+    await step(page, 'the project opened', async () => {
+      const listed = await api.get('/v1/projects');
+      code = (listed.projects ?? listed).find((p) => p.path === folder)?.code ?? (await api.post('/v1/projects', { path: folder })).code;
+      await page.goto(`${origin}/p/${code}`);
+      await canvas();
+      await fit(page).catch(() => {});
+      await snap(page, 'canvas');
+    });
+    for (const name of (process.env.WALK_BOXES || 'cut').split(',')) {
+      await step(page, `${name}: Render on its take, unchanged`, async () => {
+        const r = await focus(page, name);
+        await page.waitForTimeout(1000);
+        await snap(page, `${name}-before`);
+        const posted = page.waitForResponse((a) => a.request().method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(a.url()).pathname), { timeout: 30_000 }).catch(() => null);
+        await r.getByRole('button', { name: 'Render', exact: true }).click();
+        const answer = await posted;
+        writeFileSync(join(DIR, `${slug(name)}-render-post.json`), answer ? JSON.stringify({ status: answer.status(), body: await answer.json().catch(() => null) }, null, 2) : 'no POST /runs seen');
+        for (const [at, wait] of [[1, 1000], [5, 4000], [30, 25000]]) {
+          await page.waitForTimeout(wait);
+          await snap(page, `${name}-${at}s`);
+          writeFileSync(join(DIR, `${slug(name)}-${at}s.txt`), `${await r.innerText()}\n---\n${await page.locator('[role=status], [role=alert], .toast, .notes').allInnerTexts().then((t) => t.join('\n')).catch(() => '')}`);
+        }
+        const bell = page.getByRole('button', { name: 'Notifications' });
+        if (await bell.count()) {
+          await bell.click();
+          await page.waitForTimeout(800);
+          await snap(page, `${name}-notifications`);
+          writeFileSync(join(DIR, `${slug(name)}-notifications.txt`), await page.locator('body').innerText());
+          await page.keyboard.press('Escape');
+        }
+        await leave(page).catch(() => {});
+      });
+    }
+    await step(page, 'a take onto the disk: right-click its tile in Focus', async () => {
+      const r = await focus(page, 'cut');
+      const tile = r.locator('[data-take]').first();
+      await tile.click({ button: 'right' });
+      await page.waitForTimeout(600);
+      await snap(page, 'take-menu');
+      const item = page.getByRole('menuitem', { name: /download/i }).or(page.getByRole('button', { name: /^download$/i })).first();
+      const [file] = await Promise.all([page.waitForEvent('download', { timeout: 30_000 }), item.click()]);
+      const to = join(W, 'out', 'downloads', `take-${file.suggestedFilename()}`);
+      mkdirSync(join(W, 'out', 'downloads'), { recursive: true });
+      await file.saveAs(to);
+      writeFileSync(join(DIR, 'take-download.txt'), `${file.suggestedFilename()} -> ${to}`);
+      await leave(page).catch(() => {});
+    });
+    await step(page, 'a box onto the disk: right-click it on the canvas', async () => {
+      const at = await canvasPoint(page, 'cut');
+      await page.mouse.click(at.x, at.y, { button: 'right' });
+      await page.waitForTimeout(600);
+      await snap(page, 'box-menu');
+      writeFileSync(join(DIR, 'box-menu.txt'), await page.locator('[role=menu]').allInnerTexts().then((t) => t.join('\n')).catch(() => '(no menu)'));
+      const item = page.getByRole('menuitem', { name: /download/i }).first();
+      const [file] = await Promise.all([page.waitForEvent('download', { timeout: 30_000 }), item.click()]);
+      await file.saveAs(join(W, 'out', 'downloads', `box-${file.suggestedFilename()}`));
+      writeFileSync(join(DIR, 'box-download.txt'), file.suggestedFilename());
+    });
+    await step(page, "a take's seed: the runs drawer", async () => {
+      await page.goto(`${origin}/p/${code}/runs`);
+      await page.waitForTimeout(2500);
+      await snap(page, 'runs');
+      const row = page.getByText(/seeded/).first();
+      if (await row.count()) { await row.click(); await page.waitForTimeout(2000); await snap(page, 'run-drawer'); }
+      writeFileSync(join(DIR, 'run-drawer.txt'), await page.locator('body').innerText());
     });
   }
 

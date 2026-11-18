@@ -90,7 +90,7 @@ fi
 
 # 3. The page.
 PW=$OUT/playwright-test
-if has page || has tools; then
+if has page || has tools || has zero || has cancel || has seeds; then
   npm install -s --prefix "$PW" @playwright/test@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install @playwright/test: $(tail -c 300 "$OUT/npm.log")"
   [[ ,$(param engines chrome,webkit), != *,webkit,* ]] ||
     (cd "$PW" && sudo -E env "PATH=$PATH" node node_modules/playwright-core/cli.js install-deps webkit && node node_modules/playwright-core/cli.js install webkit) > "$OUT/webkit.log" 2>&1 ||
@@ -100,7 +100,7 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
   local engine
   for engine in $(param engines chrome,webkit | tr , ' '); do
     [ "$engine" = chrome ] || [ -d "$HOME/.cache/ms-playwright" ] || continue
-    WALK=$W WALK_PROJECT=$P WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
+    WALK=$W WALK_PROJECT=$P WALK_BOXES=${WALK_BOXES:-} WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
       HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) CHROME=$(command -v google-chrome) OUT=$OUT/web-$1-$engine \
       NODE_PATH=$PW/node_modules node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/walkthrough.config.js" --project "$engine" \
       > "$W/page-$1-$engine.log" 2>&1
@@ -132,6 +132,51 @@ media() {
 going() { (cd "$1" && cozy run ls < /dev/null 2> /dev/null) | awk -v t="$2" 'NR > 1 && $2 ~ t && $4 ~ /^running/ {print; exit}'; }
 # stepof <run ls line>: the step it is at, from its progress (`3/40`, `step 3 of 40`), else 0.
 stepof() { grep -oE '([0-9]+) ?(/|of) ?[0-9]+' <<< "$1" | head -1 | grep -oE '^[0-9]+' || echo 0; }
+# Zero ($0, this computer's CPU; coordinator 11-18, cl-1271): Render on a box that has a take and unchanged inputs (BiRefNet, which takes
+# no seed; a memoized tool at seed 42), seen in the page at 1, 5 and 30 s and by `cozy render`; how a take gets onto the disk from the
+# page and where its seed reads; a cancel landing mid-run, by `cozy run ls`'s STATUS and PROGRESS, then the same box again.
+if has zero; then
+  Z=$PJ/plain ZT=$HERE/fixtures/walkthrough/zero.py
+  small=$W/out/small.jpg; ffmpeg -v error -y -i "$REF/seed.jpg" -vf scale=512:-2 "$small" 2> /dev/null || cp "$REF/seed.jpg" "$small"
+  PAGE import "$Z" "$small" --name photo > "$W/out/z-photo.json" 2>&1
+  zr() {  # zr <box>: a page render on local, its time said
+    local t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$Z" --on local "$1" > "$W/out/z-$1-$2.render.json" 2> "$W/out/z-$1-$2.render.err"
+    say "zero: $1 render $2 on local: exit $? in $((SECONDS - t1)) s; versions $(jq '.versions | length' "$W/out/z-$1-$2.render.json" 2> /dev/null); $(tail -c 200 "$W/out/z-$1-$2.render.err" | tr '\n' ' ')"
+  }
+  PAGE add "$Z" cut --tool birefnet/remove_background --fields '{"image": "<photo>"}' > "$W/out/z-cut.add.json" 2>&1; zr cut 1
+  PAGE add "$Z" fixedbox --tool "$ZT/seeded" --fields '{"instructions": "a fixed seed", "seed": 42}' > "$W/out/z-fixed.add.json" 2>&1; zr fixedbox 1
+  PAGE add "$Z" freebox --tool "$ZT/seeded" --fields '{"instructions": "no seed"}' > "$W/out/z-free.add.json" 2>&1; zr freebox 1; zr freebox 2
+  DIR=$Z c z-runs-before run ls
+  WALK_BOXES=cut,fixedbox pageflow rerender
+  DIR=$Z c z-runs-after-page run ls; DIR=$Z c z-runs-after-page-json --json run ls --full
+  PAGE board "$Z" > "$W/out/z-board.json" 2>&1
+  say "zero: the board's jobs after the page's Render: $(jq -c '[(.jobs // .board.jobs // [])[] | {asset, state, number, why, run}]' "$W/out/z-board.json" 2> /dev/null | cut -c1-600)"
+  DIR=$Z c z-render-cut render cut --on local; DIR=$Z c z-render-fixed render fixedbox --on local; DIR=$Z c z-render-free render freebox --on local
+  for b in cut fixedbox freebox; do say "zero: cozy render $b: $(grep -v '^\s*$' "$W/cli/z-render-${b%box}.txt" 2> /dev/null | head -3 | tr '\n' ' ' | cut -c1-300)"; done
+  DIR=$Z c z-runs-after-cli run ls
+  sed -n 1,12p "$W/cli/z-runs-after-cli.txt" | cut -c1-200 | sed 's/^/    zero runs: /' >> "$R"
+  r=$(awk 'NR > 1 && $2 ~ /seeded/ {print $1; exit}' "$W/cli/z-runs-after-cli.txt")
+  [ -z "$r" ] || { DIR=$Z c z-watch-seeded --json run watch "$r" --full; say "zero: run $r's record names its seed: $(grep -aoE '"seed": ?[0-9]+' "$W/cli/z-watch-seeded.txt" | sort -u | head -3 | tr '\n' ' ')"; }
+  # A cancel mid-run: the slow still asked, cancelled as the page cancels it once `cozy run ls` says it's at step 3, then asked again.
+  PAGE add "$Z" slowbox --tool "$ZT/slow" --fields '{"instructions": "slowly", "seconds": 40}' > "$W/out/z-slow.add.json" 2>&1
+  t1=$SECONDS; PAGE render "$Z" --on local --queue slowbox > "$W/out/z-slow.queue.json" 2>&1
+  cancelled='' first=''
+  for _ in $(seq 1 600); do
+    line=$(going "$Z" 'slow'); printf '%s\t%s\n' "$((SECONDS - t1))" "$line" >> "$W/out/z-slow.poll.tsv"
+    if [ -n "$line" ]; then
+      first=${first:-$SECONDS}; step=$(stepof "$line")
+      if [ "${step:-0}" -ge 3 ] || [ $((SECONDS - first)) -ge 12 ]; then
+        PAGE cancel "$Z" slowbox > "$W/out/z-slow.cancel.json" 2>&1; cancelled="at $((SECONDS - t1)) s, step ${step:-?} ($line)"; break
+      fi
+    fi
+    sleep 0.5
+  done
+  sleep 8; DIR=$Z c z-runs-cancel run ls
+  say "zero: slowbox cancelled ${cancelled:-never (never seen running)}; then: $(awk 'NR > 1 && $2 ~ /slow/ {print; exit}' "$W/cli/z-runs-cancel.txt" | tr -s ' ' | cut -c1-200)"
+  zr slowbox after-cancel
+  DIR=$Z c z-runs-final run ls
+  say "zero: slowbox again: $(awk 'NR > 1 && $2 ~ /slow/ {print; exit}' "$W/cli/z-runs-final.txt" | tr -s ' ' | cut -c1-200)"
+fi
 # 4. Rented: one machine by the CLI, the tools chained on it.
 if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
