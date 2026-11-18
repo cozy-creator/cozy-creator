@@ -109,10 +109,11 @@ if [ -z "$RWF" ] || [ ! -f "$RWF" ] || [ -z "$PKGS" ]; then
   expect incremental-video FAIL "needs a candidate Runtime wheel (runtime_wheel: ${RWF:-none}) and a packages_ref"
   return 0
 fi
-git -C "$PKGS" fetch -q --depth=50 origin "$IV_RC" 2> /dev/null
-IV_PKG_BASE=$(git -C "$PKGS" merge-base HEAD FETCH_HEAD 2> /dev/null)
-[ -n "$IV_PKG_BASE" ] && [ "$IV_PKG_BASE" != "$(git -C "$PKGS" rev-parse HEAD)" ] && git -C "$PKGS" worktree add -q --detach "$OUT/packages-before" "$IV_PKG_BASE" \
-  || { expect incremental-video FAIL "no merge-base of packages_ref with the packages $IV_RC to compare it with (${IV_PKG_BASE:-none})"; return 0; }
+# Its merge-base as GitHub reads it, as iv_base reads the Runtime's: the checkout is one commit deep (44273987649 found none in it).
+IV_PKG_BASE=$(gh api "repos/cozy-creator/packages/compare/$IV_RC...$(git -C "$PKGS" rev-parse HEAD)" -q .merge_base_commit.sha 2> iv-base.err)
+[ -n "$IV_PKG_BASE" ] && [ "$IV_PKG_BASE" != "$(git -C "$PKGS" rev-parse HEAD)" ] && git -C "$PKGS" fetch -q --depth=1 origin "$IV_PKG_BASE" 2>> iv-base.err \
+  && git -C "$PKGS" worktree add -q --detach "$OUT/packages-before" "$IV_PKG_BASE" \
+  || { expect incremental-video FAIL "no merge-base of packages_ref with the packages $IV_RC to compare it with (${IV_PKG_BASE:-none}): $(tail -c 200 iv-base.err 2> /dev/null)"; return 0; }
 ln -sfn "$OUT/packages-before/minimax-h3" "$OUT/minimax-h3-before"
 # Its Triton sets, built as gate.sh built the candidate's while the rental booted: each arm's first request finds its own.
 if [ -x "$PKGS/scripts/triton.sh" ]; then
