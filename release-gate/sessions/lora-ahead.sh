@@ -212,6 +212,13 @@ if [ -n "$BARE_N" ]; then
 fi
 rendered turn
 listing after-turn
+say "plain: birefnet, a package with no LoRA slot, on $NAME"
+step plain run "$SOURCE/birefnet/remove_background" --file "image=$REF/seed.jpg" --on "$NAME" || { say "birefnet failed: $(tail -c 400 "$OUT/plain.txt")"; RC=1; }
+PLAIN_N=$(runno plain)
+if [ -n "$PLAIN_N" ]; then
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$PLAIN_N" --once) > "$OUT/plain.json" 2>&1
+  say "plain, run $PLAIN_N: $(jq -c '{status, placed, weights: .measurements.weights, models: [.measurements.models[]? | {slot, repository, adapters}]}' "$OUT/plain.json" 2> /dev/null | cut -c1-900)"
+fi
 pod_logs
 cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
 grep -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | sed 's/.*INFO tensord::ahead: //' | cut -c1-300 | while read -r line; do say "adopted: $line"; done
