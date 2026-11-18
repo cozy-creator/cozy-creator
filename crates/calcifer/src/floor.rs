@@ -226,9 +226,9 @@ impl Machines {
     /// The Runtime `name` (on `frame`) moves to first, for any run, when it is `local` below this cozy's Runtime minor or with no
     /// pair of its own (cl-1055, cl-1254): the RC's newest build for an RC or dev build of cozy; else its Hub's pin when that is of
     /// this minor, which always wins (a pin is how a release is rolled back or fixed forward); else PyPI's newest final of the minor,
-    /// for the while a new cozy is out and its Hub's pin, which moves last at promotion, still names the last release's pair. None
-    /// on the minor, for any other machine, or with no RC build or Hub software to read. Refused, in a line that says so, when
-    /// nothing of the minor is published or PyPI can't be read.
+    /// for the while a new cozy is out and its Hub's pin, which moves last at promotion, still names the last release's pair, or
+    /// while its Hub was never read. None on the minor, for any other machine, or with no RC build to read. Refused, in a line that
+    /// says so, when nothing of the minor is published or PyPI can't be read.
     pub(crate) async fn own_runtime(&self, name: &str, frame: &api::machine::StatusFrame) -> Result<Option<String>, Error> {
         let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
         if !local || api::release::on_runtime_minor(&frame.runtime) {
@@ -238,8 +238,10 @@ impl Machines {
             let sums = self.rc.now().await.ok();
             return Ok(sums.and_then(|sums| sums.build("runtime", &frame.platform).map(|(build, _)| build.version)).filter(|runtime| api::release::of_runtime_minor(runtime)));
         }
-        let Some(software) = self.software().await else { return Ok(None) };
-        if api::release::of_runtime_minor(&software.runtime) {
+        // Its Hub's pin of the minor wins. One never read (a computer that hasn't reached its Hub) is no pin: PyPI's, as below (cl-1273).
+        if let Some(software) = self.software().await
+            && api::release::of_runtime_minor(&software.runtime)
+        {
             return Ok(Some(software.runtime.clone()));
         }
         let minor = api::release::RUNTIME_MINOR.trim_start_matches(">=").splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
