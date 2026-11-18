@@ -9,7 +9,7 @@ const { chromeArgs } = require('./chrome');
 const out = join(process.env.OUT || tmpdir(), 'web');
 module.exports = defineConfig({
   testDir: __dirname,
-  testMatch: ['llm.spec.js', 'llm-stream.spec.js', 'machine-details.spec.js', 'orbit.spec.js'],
+  testMatch: ['llm.spec.js', 'llm-stream.spec.js', 'machine-details.spec.js', 'orbit.spec.js', 'video-mentions.spec.js'],
   grep: /@gpu|machine-details: GPU use/,
   outputDir: join(out, 'results'),
   workers: 1,
