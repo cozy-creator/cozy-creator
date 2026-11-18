@@ -143,7 +143,7 @@ fn seen(store: &Store) -> std::io::Result<Seen> {
     for model in store.refs().map_err(storage::io_error)? {
         for (release, lane, reference) in entries(&model) {
             // Read off disk, as a reader does: no lock of the store's (cl-1202).
-            let read = store.path(reference).map_err(storage::io_error).and_then(|path| std::fs::read(path));
+            let read = store.path(reference).map_err(storage::io_error).and_then(std::fs::read);
             let Some(tree) = read.ok().and_then(|bytes| tensorfs::format::Tree::from_json(&bytes).ok()) else {
                 continue;
             };
