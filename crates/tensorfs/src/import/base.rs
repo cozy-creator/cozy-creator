@@ -59,9 +59,15 @@ fn unfamiliar(base: &Header, composed: &Header, pairs: &[(String, &str)]) -> Res
         .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
         .collect();
     let Err(why) = fam.form_of(&stored) else { return Ok(()) };
+    // The family's own tables that write these components: a named one (`moss.text_encoder`) is never detected.
+    let writes = |t: &&super::engine::Table| {
+        t.lora.is_none() && fam.sources.contains(&t.name) && t.components.iter().any(|c| pairs.iter().any(|(n, _)| *n == c.name))
+    };
+    let formats: Vec<&str> = super::tables().iter().filter(writes).map(|t| t.name.as_str()).collect();
+    let format = if formats.is_empty() { "<format>".to_owned() } else { formats.join(" or ") };
     refuse(Code::FAMILY_MISMATCH, format!(
         "the base is {} {}, and with the source's {} it is no {} form ({why}). Convert the source to its \
-         layout (--source-format <format>), or upload it without --base",
+         layout (--source-format {format}), or upload it without --base",
         was.name, was.form, pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", "), was.name))
 }
 

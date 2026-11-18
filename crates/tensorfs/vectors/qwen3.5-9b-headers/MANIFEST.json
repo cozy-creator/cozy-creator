@@ -1,0 +1,101 @@
+{
+ "note": "Qwen3.5-9B in its own Transformers layout (Qwen3_5ForConditionalGeneration: model.language_model., model.visual., lm_head, the mtp. layer), as two published abliterations keep it: pottokao's Heretic made for MOSS-Image and huihui-ai's, whose headers and index are byte for byte the same (the files are not); moss.text_encoder and pan2.text_encoder read it onto moss's and pan2's text_encoder. Headers only.",
+ "members": [
+  {
+   "source": "hf://pottokao/MOSS-Image-Text-Encoder-Heretic@9f4a2b4034a87b04a9d51904fd8084edfa11cf29/model.safetensors-00001-of-00004.safetensors",
+   "page": "https://huggingface.co/pottokao/MOSS-Image-Text-Encoder-Heretic",
+   "member": "model.safetensors-00001-of-00004.safetensors",
+   "header_file": "model.safetensors-00001-of-00004.safetensors.header",
+   "header_sha256": "b9a4eb7e269fed6f83f046413693444f83581583ef7d10fcdd2123174295340b",
+   "header_bytes": 1784,
+   "full_length": 5276436216,
+   "declared_source_sha256": "62be16bc8855331111b983a3bd1bb289e3bd4e3c9aeb052c3b5f53ec770b2da6"
+  },
+  {
+   "source": "hf://pottokao/MOSS-Image-Text-Encoder-Heretic@9f4a2b4034a87b04a9d51904fd8084edfa11cf29/model.safetensors-00002-of-00004.safetensors",
+   "page": "https://huggingface.co/pottokao/MOSS-Image-Text-Encoder-Heretic",
+   "member": "model.safetensors-00002-of-00004.safetensors",
+   "header_file": "model.safetensors-00002-of-00004.safetensors.header",
+   "header_sha256": "0c4acd8c22127b804e5d7d6bc2bdac6405cc8401815ac2fee378be101690c3be",
+   "header_bytes": 6824,
+   "full_length": 5335161512,
+   "declared_source_sha256": "0b29d4615d05cf71d605c959a7bbf8860cd80d82f0560b9b309bab6522d23b83"
+  },
+  {
+   "source": "hf://pottokao/MOSS-Image-Text-Encoder-Heretic@9f4a2b4034a87b04a9d51904fd8084edfa11cf29/model.safetensors-00003-of-00004.safetensors",
+   "page": "https://huggingface.co/pottokao/MOSS-Image-Text-Encoder-Heretic",
+   "member": "model.safetensors-00003-of-00004.safetensors",
+   "header_file": "model.safetensors-00003-of-00004.safetensors.header",
+   "header_sha256": "8a5f2d0c798f70b8dcad8ddfc99ace2d00f70069a6453e99fb4e1323818bc381",
+   "header_bytes": 8320,
+   "full_length": 5368717440,
+   "declared_source_sha256": "5da40e83f0530d383593acae09682080f197c46976a34b00be5bcf0460ba81ff"
+  },
+  {
+   "source": "hf://pottokao/MOSS-Image-Text-Encoder-Heretic@9f4a2b4034a87b04a9d51904fd8084edfa11cf29/model.safetensors-00004-of-00004.safetensors",
+   "page": "https://huggingface.co/pottokao/MOSS-Image-Text-Encoder-Heretic",
+   "member": "model.safetensors-00004-of-00004.safetensors",
+   "header_file": "model.safetensors-00004-of-00004.safetensors.header",
+   "header_sha256": "cabedc57e4d0e1027b3f4aa1179ff069e07ff9aa639131f917047100959fdaed",
+   "header_bytes": 77536,
+   "full_length": 3325995712,
+   "declared_source_sha256": "7a778406726d024ec073696511bfa48c8f2a6ae2bba1505b2f3d1090fa207328"
+  },
+  {
+   "source": "hf://pottokao/MOSS-Image-Text-Encoder-Heretic@9f4a2b4034a87b04a9d51904fd8084edfa11cf29/model.safetensors.index.json",
+   "page": "https://huggingface.co/pottokao/MOSS-Image-Text-Encoder-Heretic",
+   "member": "model.safetensors.index.json",
+   "header_file": "model.safetensors.index.json",
+   "header_sha256": "26d3539b516be613f39563617cb9d33b3f83d401298125be392c80cefb8f7fe5",
+   "header_bytes": 79657
+  },
+  {
+   "source": "hf://huihui-ai/Huihui-Qwen3.5-9B-abliterated@05b9e7c9b978ba29bdb8f50a49c30e4b91183339/model.safetensors-00001-of-00004.safetensors",
+   "page": "https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated",
+   "member": "model.safetensors-00001-of-00004.safetensors",
+   "header_file": "model.safetensors-00001-of-00004.safetensors.header",
+   "header_sha256": "b9a4eb7e269fed6f83f046413693444f83581583ef7d10fcdd2123174295340b",
+   "header_bytes": 1784,
+   "full_length": 5276436216,
+   "declared_source_sha256": "919d422e1522951d441157378518e3a0c61c0b5abc94ce9d1f5ba38d2cdae69d"
+  },
+  {
+   "source": "hf://huihui-ai/Huihui-Qwen3.5-9B-abliterated@05b9e7c9b978ba29bdb8f50a49c30e4b91183339/model.safetensors-00002-of-00004.safetensors",
+   "page": "https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated",
+   "member": "model.safetensors-00002-of-00004.safetensors",
+   "header_file": "model.safetensors-00002-of-00004.safetensors.header",
+   "header_sha256": "0c4acd8c22127b804e5d7d6bc2bdac6405cc8401815ac2fee378be101690c3be",
+   "header_bytes": 6824,
+   "full_length": 5335161512,
+   "declared_source_sha256": "fd66bab5b3ed0cb96bf263a64b406934d0cff09dedae0488cd7bb9fa0e7639f8"
+  },
+  {
+   "source": "hf://huihui-ai/Huihui-Qwen3.5-9B-abliterated@05b9e7c9b978ba29bdb8f50a49c30e4b91183339/model.safetensors-00003-of-00004.safetensors",
+   "page": "https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated",
+   "member": "model.safetensors-00003-of-00004.safetensors",
+   "header_file": "model.safetensors-00003-of-00004.safetensors.header",
+   "header_sha256": "8a5f2d0c798f70b8dcad8ddfc99ace2d00f70069a6453e99fb4e1323818bc381",
+   "header_bytes": 8320,
+   "full_length": 5368717440,
+   "declared_source_sha256": "582ddb2558d0fe05170073d8646bb5f752fbb731995c42194641fb0610722061"
+  },
+  {
+   "source": "hf://huihui-ai/Huihui-Qwen3.5-9B-abliterated@05b9e7c9b978ba29bdb8f50a49c30e4b91183339/model.safetensors-00004-of-00004.safetensors",
+   "page": "https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated",
+   "member": "model.safetensors-00004-of-00004.safetensors",
+   "header_file": "model.safetensors-00004-of-00004.safetensors.header",
+   "header_sha256": "cabedc57e4d0e1027b3f4aa1179ff069e07ff9aa639131f917047100959fdaed",
+   "header_bytes": 77536,
+   "full_length": 3325995712,
+   "declared_source_sha256": "f95d920ce0073a8aa97827e791e639d44efeac47b7fc5fd99a417bb6838e364f"
+  },
+  {
+   "source": "hf://huihui-ai/Huihui-Qwen3.5-9B-abliterated@05b9e7c9b978ba29bdb8f50a49c30e4b91183339/model.safetensors.index.json",
+   "page": "https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated",
+   "member": "model.safetensors.index.json",
+   "header_file": "model.safetensors.index.json",
+   "header_sha256": "26d3539b516be613f39563617cb9d33b3f83d401298125be392c80cefb8f7fe5",
+   "header_bytes": 79657
+  }
+ ]
+}
