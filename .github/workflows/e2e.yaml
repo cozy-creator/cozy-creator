@@ -985,7 +985,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "### cli ${{ matrix.shard }} (edge) is red: the run's other jobs end" >> "$GITHUB_STEP_SUMMARY"
+          # The run ends "cancelled": its face says which shard ended it and its first failure (lib.sh `check`'s failures.txt).
+          first=$(find "$RUNNER_TEMP/e2e" -name failures.txt -size +0 2> /dev/null | head -1 | xargs -r head -n1 | cut -c1-300) || true
+          echo "### Ended: cli ${{ matrix.shard }} (edge) is red${first:+: $first}; the run's other jobs end" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Ended: cli ${{ matrix.shard }} red::${first:-cli ${{ matrix.shard }} (edge) is red}"
           gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
 
 
