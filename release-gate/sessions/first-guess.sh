@@ -27,7 +27,12 @@ awk -v source="$SOURCE" '
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 case $KIND in
   qwen) kernels "$SOURCE/qwen-image-2"; BOX=photo ;;
-  orbit) kernels "$SOURCE/minimax-h3"; BOX=turned ;;
+  orbit)
+    kernels "$SOURCE/minimax-h3"; BOX=turned
+    # What a guess of an Orbit box carries to its machine: orbit and the checkout's packages it calls, the Triton sets built in them too.
+    for p in orbit minimax-h3; do
+      say "$p as carried: $(du -sb --exclude=.venv --exclude=.git "$SOURCE/$p" | cut -f1) bytes in $(find "$SOURCE/$p" -path '*/.venv' -prune -o -type f -print | wc -l) files; its Triton sets $(du -sb "$SOURCE/$p"/*/_triton 2> /dev/null | cut -f1 | paste -sd+ | bc 2> /dev/null || echo 0) bytes"
+    done ;;
   *) fail "kind $KIND" ;;
 esac
 nice -n 19 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1024x1024:rate=1' -frames:v 1 "$OUT/photo.png" || fail "no picture"
@@ -110,7 +115,7 @@ turned() {
   run_page boxes "$OUT/boxes-$1.json" > "$OUT/boxes-$1.txt" 2>&1 || fail "turned: $(tail -c 300 "$OUT/boxes-$1.txt")"
   answered=$(date +%s%3N)
   until cozy machine logs local calcifer --lines 3000 2> /dev/null | grep -q "$RUN_PROJECT: turned guessed on"; do
-    [ $((SECONDS - began)) -lt 240 ] || { say "project $1: turned not guessed in 4 min"; break; }
+    [ $((SECONDS - began)) -lt 60 ] || { say "project $1: turned not guessed in 1 min"; break; }
     sleep 2
   done
   timeline "$1" "$asked" "$answered" "$answered" > /dev/null
