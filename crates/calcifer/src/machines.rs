@@ -1828,9 +1828,14 @@ impl Machines {
 
     /// The least busy rental of the account that fits a run of `gpus` GPUs (0: any), a
     /// ready one before a booting one: runs wait for a rental on its way, never buy around it.
+    /// Busy counts every client's runs there, as its Status queue says them, as `picture` does.
     fn fitting(&self, gpus: u32) -> Result<Option<String>, Error> {
         let store = self.store();
         let load = self.calcifer.machine_load().map_err(internal)?;
+        let queues: Vec<(String, Vec<v1::Queued>)> =
+            lock(&self.seen).iter().filter_map(|(name, seen)| Some((name.clone(), seen.frame.as_ref()?.queue.clone()?))).collect();
+        let others: HashMap<String, u32> =
+            queues.iter().map(|(name, queue)| (name.clone(), queue.iter().filter(|root| !self.sent_here(root)).count() as u32)).collect();
         let ending: HashSet<String> = store
             .pending_asks()
             .map_err(internal)?
@@ -1854,7 +1859,7 @@ impl Machines {
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
-                (row.endpoint.is_none(), running + queued, row.name.clone())
+                (row.endpoint.is_none(), running + queued + others.get(&row.name).copied().unwrap_or_default(), row.name.clone())
             })
             .map(|row| row.name))
     }
