@@ -49,6 +49,21 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     await expect.poll(() => coming.size, { message: 'the page\'s own files arrived before it navigates', timeout: 30_000 }).toBe(0);
     await page.goto(to);
   };
+  /** Its machine's tab, and what it opens. */
+  const tab = () => page.getByRole('navigation', { name: 'Machines', exact: true }).locator(`.mtab[data-machine="${machine}"]`);
+  const doing = page.getByRole('dialog', { name: /^What .+ is doing$/ });
+  /** Its machine's queue, opened in the page as a person does, by its tab's Details, and its canvas again by the drawer's Close: never
+   *  page.goto, which cancels the page's own files under way, each a candidate delivery error (cl-1262: rentals 44277530156 and
+   *  44293715839 still met it after `away`, as their pictures loaded). */
+  const queue = async () => {
+    await tab().click();
+    await expect(doing).toBeVisible();
+    await doing.getByRole('link', { name: 'Details', exact: true }).click();
+  };
+  const canvas = async () => {
+    await page.locator('aside.drawer').getByRole('link', { name: 'Close', exact: true }).click();
+    await expect.poll(() => new URL(page.url()).pathname, { message: 'back at its canvas' }).toBe(new URL(url).pathname);
+  };
   /** What each place says of the run now: its box's face, its machine's tab, its machine's queue. */
   const seen = {};
   const face = async () => (await canvasCard(page, box))?.rendered?.progress?.state ?? null;
@@ -77,8 +92,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   });
 
   await test.step(`${which}: its machine's tab`, async () => {
-    await page.getByRole('navigation', { name: 'Machines', exact: true }).locator(`.mtab[data-machine="${machine}"]`).click();
-    const doing = page.getByRole('dialog', { name: /^What .+ is doing$/ });
+    await tab().click();
     await expect(doing).toBeVisible();
     const row = doing.locator(`li.doing[data-run="${run}"] .said`);
     if (said) await agrees('the tab says its wait', async () => ((await row.count()) ? row.textContent() : null), line);
@@ -88,7 +102,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   });
 
   await test.step(`${which}: its machine's queue`, async () => {
-    await away(`${url}/machines/${encodeURIComponent(machine)}`);
+    await queue();
     const row = page.locator(`li.qrow[data-run="${run}"] .said`);
     await expect(row).toBeVisible({ timeout: 60_000 });
     if (said) await agrees('the queue says its wait', () => row.textContent(), line);
@@ -97,23 +111,19 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   test.info().annotations.push({ type: 'seen', description: JSON.stringify(seen) });
 
   await test.step(`${which}: its looks, paper and dark, while it waits`, async () => {
-    // Its own appearance, as the page's switch sets it.
+    // Its own appearance, as the page's switch sets it: the open page takes it at once (its `appearance` event), with no reload.
     for (const theme of ['paper', 'dark']) {
       await api.call('PUT', `/v1/projects/${encodeURIComponent(id)}/appearance`, { appearance: { theme } });
-      // The open page takes it at once (its `appearance` event) and fetches that theme's pictures: they arrive before it navigates
-      // (rental 44277530156: navigating as they began canceled 4 of them, each a candidate delivery error).
       await themed(page, theme);
-      await away(url);
-      await expect(page.locator('.stage')).toBeVisible();
-      await themed(page, theme);
+      await canvas();
       await expect.poll(() => canvasVisible(page, box), { timeout: 60_000 }).toBe(true);
       await fit(page);
       await page.screenshot({ path: join(shots, `${which}-face-${theme}.png`), animations: 'disabled' });
-      await page.getByRole('navigation', { name: 'Machines', exact: true }).locator(`.mtab[data-machine="${machine}"]`).click();
-      await expect(page.getByRole('dialog', { name: /^What .+ is doing$/ })).toBeVisible();
+      await tab().click();
+      await expect(doing).toBeVisible();
       await page.screenshot({ path: join(shots, `${which}-tab-${theme}.png`), animations: 'disabled' });
       await page.keyboard.press('Escape');
-      await away(`${url}/machines/${encodeURIComponent(machine)}`);
+      await queue();
       await expect(page.locator(`li.qrow[data-run="${run}"]`)).toBeVisible({ timeout: 60_000 });
       await page.screenshot({ path: join(shots, `${which}-queue-${theme}.png`), animations: 'disabled' });
     }
