@@ -2682,6 +2682,18 @@ fn pool_back(owner: &Device, state: &mut State, id: PoolId) -> crate::Allocation
     Ok(bases.iter().map(|(_, bytes, _)| bytes).sum())
 }
 
+/// Of `ptrs`, each that starts a live block of ordinary working memory: in no graph pool. What a
+/// capture's ops read there a replay reads again, so its graph holds it (`tensorfs.varena.torch.graph`,
+/// var-034). A Region's pages, a graph pool's blocks and anything else are not.
+pub fn eager_blocks(device: i32, ptrs: &[u64]) -> Result<Vec<u64>> {
+    let Some(owner) = existing(device)? else {
+        return Ok(Vec::new());
+    };
+    let state = owner.lock()?;
+    Ok(ptrs.iter().copied().filter(|ptr| state.blocks.get(ptr).is_some_and(|block| block.life == Life::Live
+        && state.segments.get(&block.segment).is_some_and(|segment| segment.pool.is_none()))).collect())
+}
+
 /// The owner declares the allocations it holds here dead between uses of this pool: nothing
 /// reads them outside `pool_reserve` .. `pool_record_stream(end)`. The core may then release
 /// the pool's pages when idle, keeping its VA, blocks and graph. Any other live allocation

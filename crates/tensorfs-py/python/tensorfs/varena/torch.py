@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from torch import Tensor, UntypedStorage, nn
     from torch import device as TorchDevice
     from torch.cuda import _POOL_HANDLE, CUDAGraph, Stream
+    from torch.multiprocessing.reductions import StorageWeakRef
 
     from ._offload import GraphsMode, Offload, Pipeline
 
@@ -546,6 +547,14 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
     Other producer streams must already be joined by the caller. Native capture
     admission still refuses unrelated producers; pool preparation may allocate/wait.
     Shared-pool replay order remains the owner's contract.
+
+    The graph knows the ordinary working memory its capture's ops took (`_taking`), weakly: a launch
+    reads it again, and freed, its pages may be unmapped, so `launching` refuses then in one line where
+    the device would fault (Xid 31, var-034). Its owner holds what the graph reads, or records it
+    again (the Runtime's graphs expire when a storage they read dies). A Region's pages, a weight's,
+    are not tracked: its Binding re-pins them for each replay, and nothing here may hold them, or
+    they stay pinned for the graph's life (var-030 §9). A kernel launched outside Torch's dispatcher
+    (by pointer, through ctypes) is not seen: hold what you launch it on.
     """
     _installed()
     import torch
@@ -570,11 +579,13 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
         raise
     started = False
     error = None
+    taken: dict[int, StorageWeakRef] = {}
     with torch.cuda.device(device), torch.cuda.stream(stream):
         try:
             cuda_graph.capture_begin(pool=cast("_POOL_HANDLE", pool))  # a PoolId is graph_pool_handle()'s pair
             started = True
-            yield cuda_graph
+            with _taking()(device, taken):
+                yield cuda_graph
         except BaseException as caught:
             error = caught
         finally:
@@ -611,6 +622,68 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
             raise torch.OutOfMemoryError(detail) from error
         raise error.with_traceback(error.__traceback__)
     cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))  # type: ignore[attr-defined]  # marks a graph varena captured
+    cuda_graph._varena_operands = list(taken.values())  # type: ignore[attr-defined]  # what its replays read (`_taking`)
+    try:  # a raw `graph.replay()` is `replay`'s: its pool mapped back and what it reads checked
+        cuda_graph.__class__ = _replayed(type(cuda_graph))
+    except TypeError:  # a graph class whose layout refuses it: `launching` alone checks
+        pass
+
+
+@functools.cache
+def _taking() -> type:
+    """The dispatch mode a capture runs under (`graph`): each CUDA storage its ops take that is a live
+    block of ordinary working memory, into `taken`. A graph pool's blocks (its own, made in the
+    capture) and a Region's pages are not taken. Made once: a class made per capture lives until the
+    cycle collector runs, and with it what it holds (cr-333)."""
+    import torch
+    from torch.multiprocessing.reductions import StorageWeakRef
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils._pytree import tree_leaves
+
+    tensor = torch.Tensor
+
+    class Taking(TorchDispatchMode):
+        def __init__(self, device: int, taken: dict[int, StorageWeakRef]) -> None:
+            super().__init__()
+            self.device, self.taken, self.asked = device, taken, set[int]()
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):  # type: ignore[no-untyped-def]
+            kwargs = kwargs or {}
+            fresh: dict[int, UntypedStorage] = {}
+            for value in tree_leaves((args, kwargs)):
+                if not isinstance(value, tensor) or not value.is_cuda:
+                    continue
+                try:
+                    storage = value.untyped_storage()
+                    ptr = storage.data_ptr()
+                except (RuntimeError, NotImplementedError):  # a wrapper with no storage
+                    continue
+                if ptr and ptr not in self.asked:
+                    self.asked.add(ptr)
+                    fresh[ptr] = storage
+            if fresh:
+                for ptr in _ext._varena_working_eager_blocks(self.device, list(fresh)):
+                    self.taken[ptr] = StorageWeakRef(fresh[ptr])
+            return func(*args, **kwargs)
+
+    return Taking
+
+
+@functools.cache
+def _replayed(base: type) -> type:
+    """`base` whose `replay` is this module's `replay`: a raw `graph.replay()` maps its pool back
+    and checks what it reads (`launching`). `replay` launches `_varena_base`'s."""
+    if getattr(base, "_varena_base", None) is not None:
+        return base
+
+    class Replayed(base):  # type: ignore[misc, valid-type]
+        _varena_base = base
+
+        def replay(self) -> None:
+            replay(self)
+
+    Replayed.__name__ = Replayed.__qualname__ = base.__name__
+    return Replayed
 
 
 @contextmanager
@@ -637,6 +710,9 @@ def launching(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> Iterato
     stream = torch.cuda.current_stream(device) if stream is None else stream
     if _device(stream.device) != device:
         raise ValueError("launch stream belongs to a different device")
+    if dead := sum(ref.expired() for ref in getattr(cuda_graph, "_varena_operands", ())):  # any launch reads them (var-034)
+        raise RuntimeError(f"a tensor this CUDA graph reads was freed ({dead} of the working-memory storages its capture took): "
+                           "hold its inputs as long as the graph replays, or record it again")
     prepare_pool(pool, 0, device)
     _ext._varena_working_pool_retain(device, pool)
     try:
@@ -654,7 +730,7 @@ def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
     """Replay an owned graph, its pool held through completion on the selected stream (`launching`).
     A scratch pool's contents are undefined between replays: copy every input in first."""
     with launching(cuda_graph, stream=stream):
-        cuda_graph.replay()
+        getattr(type(cuda_graph), "_varena_base", type(cuda_graph)).replay(cuda_graph)  # the graph's own, not `_replayed`'s
 
 
 def offload(model_or_pipeline: nn.Module | Pipeline, device: DeviceLike = 0, *, graphs: GraphsMode = "auto") -> Offload:
