@@ -5,7 +5,8 @@
 # each alone (weights on disk, kernels built), a restart after each. Then three arrangements, each from a machine restart,
 # B run `calls` times with one seed:
 #   fresh      B alone
-#   neighbour  A once, left idle `idle_s`, then B; then A again
+#   neighbour  A once, left idle `idle_s`, then B; then A again. Once for each of `variants` (A's request shapes: one
+#              whose graph records in its call leaves another executor behind than one that runs as written)
 #   ended      A once, the machine restarted (no `cozy` verb ends one executor), then B
 # Read, not judged: calls.tsv has each call's time, reserved and resident bytes, evictions, fills, graphs and digest (the
 # weight counters are the process's, cumulative). <call>-before/after.snap is each process's ledger row and the card's use
@@ -18,11 +19,20 @@
 #   runtime, tensorfs  a version, or a wheel's https URL (`#sha256=<hex>` checked): fetched here and given as a file, since
 #              `machine update --runtime` takes a version or a path
 #   expect     {"version", "runtime", "tensorfs"}: what `machine show` must say after the update; else the session is void
+#   variants   {"<name>": [args], ...}: A's requests, a neighbour arrangement each (default: {"neighbour": a's args});
+#              the first also warms A up, so it names every model A can need
+#   ended      false: no `ended` arrangement
 #   calls      B's calls in each arrangement (3)
 #   idle_s     seconds A is left idle before B (30)
 #   need_s     seconds the cap must buy (3000)
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree) A=$(param a '{}') B=$(param b '{}') CALLS=$(param calls 3) IDLE=$(param idle_s 30) EXPECT=$(param expect '{}')
+VARIANTS=$(param variants '{}') ENDED=$(param ended true)
+[ "$(jq length <<<"$VARIANTS")" != 0 ] || VARIANTS=$(jq -c '{neighbour: .args}' <<<"$A")
+jq -e 'to_entries | all(.[]; (.key | test("^[a-z0-9]+$")) and (.value | type == "array"))' <<<"$VARIANTS" > /dev/null || fail "variants $VARIANTS"
+mapfile -t VNAMES < <(jq -r 'keys_unsorted[]' <<<"$VARIANTS")
+# with <a or b> <variant>: it with that variant's args
+with() { jq -c --argjson v "$VARIANTS" --arg n "$2" '.args = $v[$n]' <<<"$1"; }
 [ -n "$TREE" ] && [ -d "$PACKAGES/$TREE" ] || fail "no packages checkout for tree '$TREE'"
 [[ $CALLS =~ ^[1-9]$ && $IDLE =~ ^[0-9]+$ ]] || fail "calls $CALLS, idle_s $IDLE"
 for m in "$A" "$B"; do
@@ -135,7 +145,7 @@ snap() {
       else if (w[1] == "card") s = s $i " MiB" }
     print (s == "" ? "no sample" : s) }' <<<"$line")"
 }
-printf 'call\tstatus\texec_s\tpeak_reserved_mib\tdriver_before_mib\tdriver_peak_mib\tweights_resident_mib\tweights_reserved_mib\tevictions\tfills\treclaimed_mib\treclaimed_room_mib\tfilled_mib\tfilled_n\tcapacity_mib\tgraphs\tas_written\tmemoized\tsha256\n' > "$OUT/calls.tsv"
+printf 'call\tstatus\texec_s\tpeak_reserved_mib\tdriver_before_mib\tdriver_peak_mib\tweights_resident_mib\tweights_reserved_mib\tevictions\tfills\treclaimed_mib\treclaimed_room_mib\tfilled_mib\tfilled_n\tcapacity_mib\tgraphs\tas_written\tmemoized\tsha256\tpinned_mib\tactive_graphs\n' > "$OUT/calls.tsv"
 failed=0
 # call <name> <a or b>: one run of it, its record kept (<name>.json), its row in calls.tsv.
 call() {
@@ -159,7 +169,8 @@ call() {
        (([.. | objects | .chosen? // empty | .[]? | .capacity? // empty] | max // 0) / 1048576 | floor),
        ([.measurements.residency.graphs // {} | to_entries[] | "\(.key) \(.value.captures // 0)c/\(.value.replays // 0)r"] | join(", ")),
        ([.measurements.residency.graphs // {} | to_entries[] | .value.graph.eager // [] | .[]] | unique | join("; ")),
-       ((.memo.memoized // false) or ([.calls[]?.memoized] | any)), ([.output[]?.sha256] | join(","))] | @tsv' "$OUT/$n.json" >> "$OUT/calls.tsv" 2> /dev/null
+       ((.memo.memoized // false) or ([.calls[]?.memoized] | any)), ([.output[]?.sha256] | join(",")),
+       (($w.pinned_bytes // 0) / 1048576 | floor), ([.measurements.residency.graphs // {} | to_entries[] | .value.active_graphs // 0] | add // 0)] | @tsv' "$OUT/$n.json" >> "$OUT/calls.tsv" 2> /dev/null
   local st; st=$(jq -r '.status // "none"' "$OUT/$n.json" 2> /dev/null)
   say "$n run ${N:-none} ${st:-none}: $(tail -n 1 "$OUT/calls.tsv" | cut -f3- | tr '\t' ' ')"
   [ "$st" = completed ] || { failed=$((failed + 1)); say "$n reason: $(jq -r '.reason.message // .reason // empty' "$OUT/$n.json" 2> /dev/null | head -c 600)"; }
@@ -179,25 +190,29 @@ jq -e --argjson is "$is" 'to_entries | all(.[]; $is[.key] == .value)' <<<"$EXPEC
 sampler
 call warm-b "$B"
 restart warm-a
-call warm-a "$A"
+call warm-a "$(with "$A" "${VNAMES[0]}")"
 [ "$failed" = 0 ] || fail "a warm-up call did not complete"
 
 restart fresh
 for i in $(seq "$CALLS"); do call "fresh-b$i" "$B"; done
 samples
 
-restart neighbour
-call neighbour-a "$A"
-say "neighbour: A left idle ${IDLE}s"; sleep "$IDLE"
-for i in $(seq "$CALLS"); do call "neighbour-b$i" "$B"; done
-call neighbour-a2 "$A"
-samples
+for v in "${VNAMES[@]}"; do
+  restart "$v"
+  call "$v-a" "$(with "$A" "$v")"
+  say "$v: A left idle ${IDLE}s"; sleep "$IDLE"
+  for i in $(seq "$CALLS"); do call "$v-b$i" "$B"; done
+  call "$v-a2" "$(with "$A" "$v")"
+  samples
+done
 
-restart ended-a
-call ended-a "$A"
-restart ended
-for i in $(seq "$CALLS"); do call "ended-b$i" "$B"; done
-samples
+if [ "$ENDED" = true ]; then
+  restart ended-a
+  call ended-a "$(with "$A" "${VNAMES[0]}")"
+  restart ended
+  for i in $(seq "$CALLS"); do call "ended-b$i" "$B"; done
+  samples
+fi
 cozy machine logs "$NAME" memory -n 2000 > "$OUT/machine-memory.log" 2>&1
 
 column -t -s $'\t' "$OUT/calls.tsv" | cut -c1-400 | tee -a "$R"
