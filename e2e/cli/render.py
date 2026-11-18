@@ -191,8 +191,9 @@ def main() -> int:
     cut = cast(list[Json], row("film").get("prefixes", []))
     check("only_the_named_renders", only.code == 0 and took(only, "film") == [films + 1] and took(only, "shot_2") == [] and took(only, "shot_1") == []
           and len(versions("shot_2")) == shots and "out of date" not in only.out + only.err, only)
-    tracks = cast(list[Json], cast(Json, cut[-1].get("timeline") or {}).get("tracks") or [{}]) if cut else [{}]
-    clips = cast(list[Json], tracks[0].get("clips", []))
+    timeline: Json = cast(Json, cut[-1].get("timeline") or {}) if cut else {}
+    tracks: list[Json] = cast(list[Json], timeline.get("tracks") or [{}])
+    clips: list[Json] = cast(list[Json], tracks[0].get("clips", []))
     read = next((piece.get("sha256") for piece in clips if piece.get("clip") == "<shot_2>"), None)
     check("read_as_it_stands", read is not None and read == newest, {"read": read, "newest": newest, "clips": clips})
 
