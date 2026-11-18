@@ -125,25 +125,10 @@
   min-height: 0;
   overflow: hidden;
 }
-/* The frame as fitted: what's looked at, zoomed in it; over it, never zoomed, its overlay and its zoom's controls (cl-1190). */
-.focus-frame {
-  position: relative;
-  flex: none;
-}
 .focus-image-transform {
   position: relative;
-  width: 100%;
-  height: 100%;
+  flex: none;
   transform-origin: center;
-}
-.focus-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 9;
-  pointer-events: none;
-}
-.focus-overlay > * {
-  pointer-events: auto;
 }
 .focus-viewer[data-zoomed] .focus-image-transform {
   cursor: grab;
@@ -163,9 +148,9 @@
   --surface-media-height: 100%;
   --surface-media-overflow: visible;
 }
-/* Zoomed in past one screen pixel to each of its own, a picture's or a video's pixels as they are, as an image editor draws them:
-   smoothed, they'd show what isn't in its file (cl-1184, cl-1190). Fitted, and a thumbnail standing in, smoothed. */
-.focus-image-transform[data-pixelated] :is(.buffered-image[data-displayed-resolution="original"] img, video.live, .orbit-video) {
+/* Zoomed past one screen pixel to each of its own, a picture's pixels as they are, as an image editor draws them: smoothed, they'd show
+   what isn't in its file (cl-1184). */
+.buffered-image[data-pixelated] img {
   image-rendering: pixelated;
 }
 .focus-image-transform > .tl {
@@ -186,21 +171,12 @@
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   z-index: 10;
 }
-.focus-frame:has(.image-edit-action) > .focus-image-zoom {
+.focus-stack:has(.image-edit-action) > .focus-image-zoom {
   bottom: 60px;
 }
-/* While a picture, a video or an orbit is looked at: never over words being written, a take being made or a sound. */
-.focus-frame:is(:has(.in-frame), :has(.making), :has(audio)) > .focus-image-zoom {
+/* Only while a picture is looked at: never over words being written, a take being made, a video or a sound. */
+.focus-stack:is(:has(.in-frame), :has(.making), :has(video), :has(audio), :has(> .focus-under)) > .focus-image-zoom {
   display: none;
-}
-/* Full screen, the transport lies over the frame's bottom: the zoom's controls go to its top. */
-.focus-viewer[data-full] .focus-image-zoom {
-  top: 12px;
-  bottom: auto;
-}
-.focus-image-zoom .tb.fit {
-  font-size: var(--small);
-  padding: 0 10px;
 }
 .focus-image-zoom .tb {
   min-width: 36px;
@@ -575,7 +551,7 @@ body:has(.focus-viewport) .zoom {
   height: 22px;
   margin-top: 0;
 }
-.focus-viewer[data-resting]:has(.tl-transport[data-playing]) :is(.focus-under, .focus-image-zoom) {
+.focus-viewer[data-resting]:has(.tl-transport[data-playing]) .focus-under {
   opacity: 0;
   pointer-events: none;
 }
