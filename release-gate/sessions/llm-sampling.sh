@@ -7,21 +7,26 @@
 # recorded graphs. The rental runs this cozy's TensorD and the change's Runtime (`runtime`). Without `rent`, $0: the quote and the checks before it.
 # params:
 #   runtime  the cozy-runtime dev-build run id of the Runtime the rental runs (required)
+#   tensorfs the TensorFS wheel beside it (an https URL or artifact:<run>/<name>; required): the Runtime's pair
 #   model    the checkpoint (default: `drafted`'s, qwen/qwen3.5-9b-mtp@0.2.0)
 #   seconds  what the cap must buy (default 2400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-SRC=$(param runtime '') MODEL=$(param model '')
+SRC=$(param runtime '') TFS=$(param tensorfs '') MODEL=$(param model '')
 for tool in jq python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build of rc/<x>>"
 [[ $SRC =~ ^[0-9]+$ ]] || fail "runtime: a cozy-runtime dev-build run id"
 W=$(wheel_from "$OUT/wheel" "$SRC") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $SRC"
-say "runtime: ${W##*/}"
+[ -n "$TFS" ] && TF=$(wheel_from "$OUT/tensorfs" "$TFS") && [ -n "$TF" ] || fail "no TensorFS wheel from '$TFS'"
+say "runtime: ${W##*/}, tensorfs: ${TF##*/}"
+# The real lock at $0: Calcifer locks the proof package as a run stages it, so a lock uv can't make fails here, before a rental.
+step lock package install "$ROOT/e2e/cli/sampler" --on local || fail "the proof package doesn't lock: $(tail -c 400 "$OUT/lock.txt")"
+cozy package ls > "$OUT/packages.txt" 2>&1; grep -i sampler "$OUT/packages.txt" | sed 's/^/  lock: /' | tee -a "$R"
 quote "$(param seconds 2400)"
 rent
-step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" -y || fail "the pod's TensorD and Runtime"
+step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TF" -y || fail "the pod's TensorD, Runtime and TensorFS"
 for _ in $(seq 180); do
   cozy machine show "$NAME" --json > "$OUT/show.json" 2> /dev/null
   [ "$(jq -r '.state // empty' "$OUT/show.json")" = ready ] && break
