@@ -1,0 +1,1 @@
+TensorFS tells a process what more it may hold in host RAM (`varena.host_room`): the host's number, which keeps the computer's reserve for programs outside cozy, less what its processes hold and its headroom. A CPU executor's weights now draw on it, where the Runtime kept 8 GiB free of its own (var-027).
