@@ -397,6 +397,25 @@ impl Drop for Driving {
     }
 }
 
+/// A project's unsettled runs on `$machine`, which doesn't answer, each settled canceled through `$store` (cl-1064): the
+/// project's own store, or a lock's transition's (cl-1259), whose journal methods are the same. Its driver let go, its events
+/// published; the machine cancels each when it next answers, before anything else is sent to it. Its numbers.
+macro_rules! cancel_unanswered {
+    ($calcifer:expr, $store:expr, $machine:expr) => {{
+        let (calcifer, store, machine) = ($calcifer, $store, $machine);
+        let mut canceled = vec![];
+        for id in store.unsettled()? {
+            let Some(row) = store.run(id.as_str())? else { continue };
+            if row.machine.as_deref() != Some(machine) { continue; }
+            let mut events = store.request_cancel(id.as_str())?;
+            events.extend(store.cancel_unanswered(id.as_str(), machine, "machine_not_answering", "the project was locked")?);
+            if lock(&calcifer.driving).contains(&id) { lock(&calcifer.let_go).insert(id.clone()); }
+            calcifer.publish(&id, events); calcifer.wake(&id); canceled.push(row.number);
+        }
+        Ok(canceled)
+    }};
+}
+
 impl Calcifer {
     /// Opens Calcifer's home (`~/.cozy/calcifer`) and resumes every run it owes.
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>, Error> {
@@ -1059,16 +1078,14 @@ impl Calcifer {
     pub(crate) fn cancel_unanswered_for_lock(&self, project: &str, machine: &str) -> Result<Vec<u64>, Error> {
         let Some(owner) = self.owner_of(project) else { return Ok(vec![]) };
         let store = owner.store()?;
-        let mut canceled = vec![];
-        for id in store.unsettled()? {
-            let Some(row) = store.run(id.as_str())? else { continue };
-            if row.machine.as_deref() != Some(machine) { continue; }
-            let mut events = store.request_cancel(id.as_str())?;
-            events.extend(store.cancel_unanswered(id.as_str(), machine, "machine_not_answering", "the project was locked")?);
-            if lock(&self.driving).contains(&id) { lock(&self.let_go).insert(id.clone()); }
-            self.publish(&id, events); self.wake(&id); canceled.push(row.number);
-        }
-        Ok(canceled)
+        cancel_unanswered!(self, &store, machine)
+    }
+
+    /// [`Self::cancel_unanswered_for_lock`] inside the lock's own transition (`vault::close`), through its store: the project's
+    /// journal read any other way waits behind that transition's exclusive hold, so the lock waited on itself and failed `run_cancel`
+    /// (cl-1259).
+    pub(crate) fn cancel_unanswered_sealing(&self, store: &crate::project::journal::SealingStore<'_>, machine: &str) -> Result<Vec<u64>, Error> {
+        cancel_unanswered!(self, store, machine)
     }
 
     /// What Calcifer still owes, which a next Calcifer would resume: every unsettled run's id,

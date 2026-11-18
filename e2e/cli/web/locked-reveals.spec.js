@@ -2,7 +2,10 @@
 // the coordinator, 11-17: "An encrypted project that is locked should reveal nothing about its contents until it is unlocked ... For a run
 // that's in flight while the project is locked, the machine view may say 'a locked project's run' and nothing more."
 // An encrypted project's run goes on local; local stops answering (its TensorD held with SIGSTOP, as a rental gone quiet), and the project
-// is locked: it stays locking while its run can't end. Then, and again once it has locked, every route the page and the CLI read says of
+// is locked: it locks, its run is settled canceled and the stopped machine's clean-up is owed (cl-1064, as 0.26.1 shipped it: "the lock
+// goes through, the project's processes on the unresponsive machine are stopped ..., and the cleanup finishes when the machine answers
+// again"; it supersedes this cell's first premise, that the lock stayed locking while its run couldn't end, cl-1259). Then, while local
+// still doesn't answer and again once its clean-up is paid, every route the page and the CLI read says of
 // it no more than that it's there and locked: the machines' list and one machine (no record, id or name of its run: "a locked project's
 // run" with its state), the events stream (no machine or run update naming it), the projects index and an address (no key), its key, its
 // state, runs, assets, history, canvas, view, nodes, thumbnails and files (refused), a run by its id or name, activity and status; once it
@@ -207,32 +210,32 @@ test('locked-reveals', { tag: '@solo' }, async ({ page, project, api, cli, guard
     /** Local's runs, as `/v1/machines` lists them. */
     const localRuns = async () => ((await api.get('/v1/machines')).machines.find((machine) => machine.name === 'local')?.status?.runs ?? []);
 
-    await test.step('local stops answering, and the project locks: it stays locking while its run can\'t end', async () => {
+    await test.step('local stops answering, and the project locks: its run is settled canceled, the stopped machine\'s clean-up owed', async () => {
       held = localMachine();
       testInfo.annotations.push({ type: 'held', description: held.join(' ') });
       for (const pid of held) process.kill(pid, 'SIGSTOP');
       const said = await cli('--json', 'vault', '--directory', project.path, 'lock');
       expect(said.code, `cozy vault lock: ${said.stdout.slice(-400)} ${said.stderr.slice(-200)}`).toBe(0);
       const answered = JSON.parse(said.stdout.trim().split('\n').at(-1));
-      expect(answered.vault?.state, 'the lock answers locking: its run is still going').toBe('locking');
+      expect(answered.vault?.state, 'the lock goes through though local doesn\'t answer (cl-1064)').toBe('locked');
       expect.soft(answered.ended, 'the lock says it ended the run').toContain(run.number);
-      expect(await vault(), 'it is locking').toBe('locking');
-      expect.soft((await api.get(project.at('/vault'))).holding, 'its status says its run holds it').toBe('runs');
+      expect.soft(answered.owed, 'the lock says local\'s clean-up is owed for when it answers').toBeTruthy();
+      expect(await vault(), 'it is locked').toBe('locked');
     });
-    // What either stream says from here is said with the project locking.
+    // What either stream says from here is said with the project locked.
     await new Promise((done) => setTimeout(done, 1_000));
     const [allFrom, runsFrom] = [all.events.length, runs.events.length];
 
-    await test.step('locking: every route says nothing of it, and local says only that a locked project\'s run is there', async () => {
-      await readAll('locking');
-      await otherSays('locking');
+    await test.step('locked, local still silent: every route says nothing of it, and local says only that a locked project\'s run is there', async () => {
+      await readAll('locked, local silent');
+      await otherSays('locked, local silent');
       const there = await localRuns();
       expect.soft(there.filter((one) => one.run?.project_id === project.id || (one.id ?? '').includes(run.id) || one.run?.id === run.id), 'local holds no record of its run').toEqual([]);
       const sealed = there.filter((one) => one.locked);
       expect.soft(sealed.map((one) => Object.keys(one).sort()), 'local says a locked project\'s run is there, its state and nothing more').toEqual([['locked', 'state']]);
       // A machine read now, as `cozy machine show` reads it, isn't answered: the stream hears local change.
       const one = await read(api, 'GET', '/v1/machines/local', undefined, 60_000);
-      expect.soft(leaks(one.text), `locking: GET /v1/machines/local (${one.status}) says nothing of the locked project`).toEqual([]);
+      expect.soft(leaks(one.text), `locked, local silent: GET /v1/machines/local (${one.status}) says nothing of the locked project`).toEqual([]);
       await expect.poll(() => all.events.slice(allFrom).some((event) => event.type === 'machine.updated' && event.machine?.name === 'local'),
         { message: 'the stream tells local changed', timeout: 60_000 }).toBe(true);
     });
@@ -243,30 +246,26 @@ test('locked-reveals', { tag: '@solo' }, async ({ page, project, api, cli, guard
         await page.setViewportSize({ width, height });
         await looks(theme);
         await page.goto(project.url());
-        const gate = page.locator('[data-vault-state="locking"]');
-        await expect(gate, 'the project\'s page says it is locking').toBeVisible();
-        await expect.soft(gate.locator('p').first(), `${tag}: it says a run is still finishing`).toHaveText('Locking: a run is still finishing. The project locks once it ends.');
-        await expect.soft(gate.getByRole('button', { name: 'Try locking again' }), `${tag}: with nothing to press`).toHaveCount(0);
-        await page.screenshot({ path: join(shots, `locking-page-${tag}.png`) });
+        const gate = page.locator('[data-vault-state="locked"]');
+        await expect(gate, 'the project\'s page says it is locked').toBeVisible();
+        await page.screenshot({ path: join(shots, `locked-page-${tag}.png`) });
         await page.getByRole('navigation', { name: 'Machines', exact: true }).locator('.mtab[data-machine="local"]').click();
         const working = page.getByRole('dialog', { name: /^What .+ is doing$/ });
         await expect(working, 'a click on local lists what it is doing').toBeVisible();
         // Its run first, as it's running; the other project's after it, waiting.
         await expect.soft(working.locator('li.doing[data-doing="other"] b').first(), `${tag}: it says a locked project's run is there`).toHaveText('A locked project\'s run');
         await expect.soft(working.getByText('This project\'s run'), `${tag}: and nothing of whose it is`).toHaveCount(0);
-        await page.screenshot({ path: join(shots, `locking-machine-${tag}.png`) });
+        await page.screenshot({ path: join(shots, `locked-machine-${tag}.png`) });
         await page.keyboard.press('Escape');
       }
     });
 
-    await test.step('local answers again, and the project locks', async () => {
+    await test.step('local answers again: the project stays locked, and its owed clean-up is paid', async () => {
       for (const pid of [...held].reverse()) process.kill(pid, 'SIGCONT');
       held = [];
-      await expect.poll(vault, { message: 'locked once its run ended', timeout: 60_000, intervals: [1_000] }).toBe('locked').catch(async () => {
-        // The sweeper retries with its backoff: a lock asked now finishes it.
-        await cli('--json', 'vault', '--directory', project.path, 'lock');
-        await expect.poll(vault, { message: 'locked', timeout: 180_000, intervals: [1_000] }).toBe('locked');
-      });
+      expect(await vault(), 'still locked').toBe('locked');
+      await expect.poll(async () => (await localRuns()).filter((one) => one.locked || one.run?.project_id === project.id).length,
+        { message: 'local holds nothing of it once its clean-up is paid', timeout: 120_000, intervals: [1_000] }).toBe(0);
     });
 
     await test.step('locked: every route and the machine\'s logs say nothing of it', async () => {
