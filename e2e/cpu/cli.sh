@@ -52,18 +52,21 @@ fi
 
 # A first-party dependency whose checkout version production's Hub doesn't hold yet (stage.py's unpublished.txt) is no committed
 # lock's: a machine can't fetch it, so the dependent's lock leaves it out until the gated publish relocks it on (packages
-# RELEASING.md). The copy locked here leaves it out the same way: its requirement and its source.
+# RELEASING.md). The copy locked here, its own (the bind cells bind the package as it is), leaves it out the same way: its
+# requirement and its source.
 unpublished=$(paste -sd, "$OUT/staged/unpublished.txt" 2> /dev/null || true)
+locking=$cli/lock/$p
+rm -rf "$cli/lock" && mkdir -p "$cli/lock" && cp -r "$cli/src/$p" "$locking"
 [ "${LOCK:-}" = fresh ] || for dep in ${unpublished//,/ }; do
   spelled=$(sed 's/[-_.]/[-_.]/g' <<< "$dep")
-  sed -i -E "/^[[:space:]]*\"$spelled([<>=!~;[ ][^\"]*)?\",?[[:space:]]*\$/d; /^$spelled[[:space:]]*=/d" "$cli/src/$p/pyproject.toml"
+  sed -i -E "/^[[:space:]]*\"$spelled([<>=!~;[ ][^\"]*)?\",?[[:space:]]*\$/d; /^$spelled[[:space:]]*=/d" "$locking/pyproject.toml"
 done
 if [ "${LOCK:-}" = fresh ]; then
   :
-elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
+elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$locking" > "$cli/lock.json" 2> "$cli/lock.err"; then
   # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same, and each
   # first-party file the committed lock pins one production's Hub serves.
-  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
+  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$locking/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
     line PASS - lock "${unpublished:+unpublished $unpublished left out}"
   else line FAIL - lock "the committed uv.lock is stale: $stale"; fi
 elif grep -qE 'not_logged_in|401|403' "$cli/lock.json" "$cli/lock.err"; then
