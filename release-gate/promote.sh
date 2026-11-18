@@ -60,6 +60,9 @@ if [ -n "$RELREF" ]; then
   [ -n "$ref" ] && [ -n "$PKGS" ] || { echo "--packages-ref needs a set that holds packages and --packages <checkout>" >&2; exit 2; }
   rel=$(git -C "$PKGS" rev-parse -q --verify "$RELREF^{commit}") || { echo "$PKGS has no $RELREF: fetch it" >&2; exit 2; }
   git -C "$PKGS" cat-file -e "$ref^{commit}" 2> /dev/null || { echo "$PKGS has no gated $ref: fetch it" >&2; exit 2; }
+  # Only a commit that follows the gated one: an older or unrelated tree is no release of what the gate ran.
+  git -C "$PKGS" merge-base --is-ancestor "$ref" "$rel" ||
+    { echo "--packages-ref ${rel:0:10} is not a descendant of the gated ${ref:0:10}: nothing promoted" >&2; exit 2; }
   if [ "$rel" != "$(git -C "$PKGS" rev-parse "$ref^{commit}")" ]; then
     moved=$(python3 -I "$HERE/version-only.py" "$PKGS" "$ref" "$rel") ||
       { echo "$moved" >&2; echo "--packages-ref ${rel:0:10} differs from the gated ${ref:0:10} by more than versions: nothing promoted" >&2; exit 1; }
