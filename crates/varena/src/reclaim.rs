@@ -176,8 +176,10 @@ impl<'a> Sequence<'a> {
         }
         while let Some(step) = ORDER.get(self.step).copied() {
             let (index, started) = (self.step, Instant::now());
+            let before = self.released;
             let done = self.run(step, want, physical);
             self.gpu.driver().note_reclaim(index, started.elapsed());
+            self.gpu.driver().note_reclaim_step(index, matches!(done, Ok(true)), self.released.saturating_sub(before));
             if done? {
                 return Ok(true);
             }
@@ -367,6 +369,7 @@ pub(crate) fn acquire<T>(
     let mut sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
     let mut floor = 2usize << 20;
     let mut waiting: Option<Instant> = None;
+    let mut entered = false;
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
@@ -395,7 +398,9 @@ pub(crate) fn acquire<T>(
         sequence.released = 0;
         let physical = !sequence.gpu.capped() || failure.physical_bytes().is_some()
             || sequence.gpu.peers_can_lift(want);
-        if !sequence.advance(want, physical)? {
+        let advanced = sequence.advance(want, physical)?;
+        sequence.gpu.driver().note_acquire(!std::mem::replace(&mut entered, true), !advanced);
+        if !advanced {
             // Nothing of ours is left to give. What came onto the card outside this process since
             // its quietest sample (a game's, a peer's) may go again: wait for it, and once the card
             // has `want` more free, every lever again from the first.
@@ -591,13 +596,19 @@ pub(crate) fn wait_outside(gpu: &Device, events: &[usize], join: bool) -> Result
     let result = (|| {
         let driver = gpu.driver();
         let _context = driver.enter()?;
+        let waited = Instant::now();
         for event in events {
             driver.wait_event(*event)?;
         }
+        if !events.is_empty() {
+            driver.note_wait(false, waited.elapsed());
+        }
         if join {
+            let joined = Instant::now();
             let started = gpu.joins_started.fetch_add(1, Ordering::AcqRel) + 1;
             driver.synchronize()?;
             gpu.joins_finished.fetch_max(started, Ordering::AcqRel);
+            driver.note_wait(true, joined.elapsed());
         }
         Ok(())
     })();

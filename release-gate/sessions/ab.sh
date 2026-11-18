@@ -340,6 +340,7 @@ for k in "${names[@]}"; do
   fetched=false; ! grep -qE 'downloading .* weights [0-9.]+ [KMG]i?B/' "$OUT/$k.txt" 2>/dev/null || fetched=true
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$(jq -r --arg k "$k" '.[$k].arm' <<<"$ARMS")" "$temp" "${bake:-0}" "${derived:-0}" \
     "${persisted:-0}" "${memo:-false}" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2>/dev/null)" "$fetched" >> "$OUT/states.tsv"
+  pod_files  # var-030 (proof only): kept after each cell, so a session cut short still has them
   say "$k state: $temp, bake ${bake:-0}, derived $(( ${derived:-0} / 1000000000 )) GB, persisted ${persisted:-0}, memoized ${memo:-false}, fetched weights $fetched"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then

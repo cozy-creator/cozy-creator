@@ -86,6 +86,17 @@ pub(crate) struct Counters {
     pub(crate) reclaim_longest_ns: AtomicU64,
     pub(crate) reclaim_longest_step: AtomicU64,
     pub(crate) reclaim_step_ns: [AtomicU64; crate::reclaim::STEPS],
+    // PROOF ONLY (var-030), never merge: each reclaim step's runs, the runs that made progress and
+    // the bytes they released; allocations that entered reclaim, their rounds, those that found
+    // every step exhausted; time waiting on GPU events and on context joins.
+    pub(crate) reclaim_step_runs: [AtomicU64; crate::reclaim::STEPS],
+    pub(crate) reclaim_step_gave: [AtomicU64; crate::reclaim::STEPS],
+    pub(crate) reclaim_step_bytes: [AtomicU64; crate::reclaim::STEPS],
+    pub(crate) reclaim_allocations: AtomicU64,
+    pub(crate) reclaim_rounds: AtomicU64,
+    pub(crate) reclaim_exhausted: AtomicU64,
+    pub(crate) wait_event_ns: AtomicU64,
+    pub(crate) wait_join_ns: AtomicU64,
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -307,6 +318,53 @@ impl Driver {
         if self.counters.reclaim_longest_ns.fetch_max(ns, Ordering::Relaxed) < ns {
             self.counters.reclaim_longest_step.store(step as u64, Ordering::Relaxed);
         }
+    }
+
+    /// PROOF ONLY (var-030): a reclaim step ran, whether it made progress, the bytes it released.
+    pub(crate) fn note_reclaim_step(&self, step: usize, gave: bool, bytes: usize) {
+        self.counters.reclaim_step_runs[step].fetch_add(1, Ordering::Relaxed);
+        if gave {
+            self.counters.reclaim_step_gave[step].fetch_add(1, Ordering::Relaxed);
+        }
+        self.counters.reclaim_step_bytes[step].fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// PROOF ONLY (var-030): a refused allocation went through the reclaim order once more.
+    pub(crate) fn note_acquire(&self, first: bool, exhausted: bool) {
+        if first {
+            self.counters.reclaim_allocations.fetch_add(1, Ordering::Relaxed);
+        }
+        self.counters.reclaim_rounds.fetch_add(1, Ordering::Relaxed);
+        if exhausted {
+            self.counters.reclaim_exhausted.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// PROOF ONLY (var-030): time waiting outside every lock, on events or on a context join.
+    pub(crate) fn note_wait(&self, join: bool, elapsed: Duration) {
+        let ns = elapsed.as_nanos() as u64;
+        if join {
+            self.counters.wait_join_ns.fetch_add(ns, Ordering::Relaxed);
+        } else {
+            self.counters.wait_event_ns.fetch_add(ns, Ordering::Relaxed);
+        }
+    }
+
+    /// PROOF ONLY (var-030): the counters above, by step in ORDER, then the five scalars.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn proof(&self) -> ([u64; crate::reclaim::STEPS], [u64; crate::reclaim::STEPS], [u64; crate::reclaim::STEPS], [u64; 5]) {
+        (
+            std::array::from_fn(|step| self.counters.reclaim_step_runs[step].load(Ordering::Relaxed)),
+            std::array::from_fn(|step| self.counters.reclaim_step_gave[step].load(Ordering::Relaxed)),
+            std::array::from_fn(|step| self.counters.reclaim_step_bytes[step].load(Ordering::Relaxed)),
+            [
+                self.counters.reclaim_allocations.load(Ordering::Relaxed),
+                self.counters.reclaim_rounds.load(Ordering::Relaxed),
+                self.counters.reclaim_exhausted.load(Ordering::Relaxed),
+                self.counters.wait_event_ns.load(Ordering::Relaxed),
+                self.counters.wait_join_ns.load(Ordering::Relaxed),
+            ],
+        )
     }
 
     /// Reclaim time by step, in ORDER.
