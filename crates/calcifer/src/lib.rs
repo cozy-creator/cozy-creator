@@ -242,7 +242,7 @@ const RESAID: Duration = Duration::from_secs(5);
 /// HTTP/2 stream window as base64, so it moves in the one round trip that admits the run.
 const CARRIED_EACH: u64 = 512 << 10;
 
-/// An object a machine lacks, as `Calcifer::land` lands it: its digest, length, the file it is, its name in what's said (a run's field,
+/// An object a machine lacks, as `Calcifer::lacking_to` sends it: its digest, length, the file it is, its name in what's said (a run's field,
 /// else its digest) and what the machine held of it.
 struct Lacking {
     digest: Digest,
@@ -3007,7 +3007,7 @@ impl Calcifer {
                 Lacking { digest: *digest, length: *length, path: input_root.join(&hex), name, held }
             })
             .collect();
-        self.land(link, machine, lacking, run.number, &|reason| self.waiting(&run.id, reason)).await?;
+        self.lacking_to(link, machine, lacking, run.number, &|reason| self.waiting(&run.id, reason)).await?;
         Ok(carried)
     }
 
@@ -3018,7 +3018,7 @@ impl Calcifer {
         length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
-    /// `inputs` written to `machine`, each it doesn't hold whole (`land`, as a run's inputs are): local code carried to the machine a
+    /// `inputs` written to `machine`, each it doesn't hold whole (`lacking_to`, as a run's inputs are): local code carried to the machine a
     /// box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads (cl-1123), so its machine has
     /// them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
     pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
@@ -3030,7 +3030,7 @@ impl Calcifer {
             .filter(|(input, held)| !whole(held, input.length))
             .map(|(input, held)| Lacking { digest: input.digest, length: input.length, path: input.path.clone(), name: input.digest.to_string(), held })
             .collect();
-        self.land(&link, machine, lacking, 0, &|_| {}).await.map_err(|e| e.to_string())
+        self.lacking_to(&link, machine, lacking, 0, &|_| {}).await.map_err(|e| e.to_string())
     }
 
     /// What `machine` lacks of the objects a run reads or a guess carries, landed there: the one way objects go to a machine (cl-1123).
@@ -3038,7 +3038,7 @@ impl Calcifer {
     /// Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797). One larger, or to an older machine,
     /// goes alone, in parts side by side, one write of an object at a time (`writing`, run `number`'s while it writes). `waiting`
     /// hears what it does.
-    async fn land(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
+    async fn lacking_to(&self, link: &Link, machine: &str, lacking: Vec<Lacking>, number: u64, waiting: &(dyn Fn(String) + Sync)) -> Result<(), LinkError> {
         const BATCHED_EACH: u64 = 64 << 20;
         let batches = self.machines().and_then(|machines| machines.live_frame(machine)).is_some_and(|frame| frame.objects_batch);
         let (batched, alone): (Vec<Lacking>, Vec<Lacking>) = lacking.into_iter().partition(|object| batches && object.length > 0 && object.length <= BATCHED_EACH);
