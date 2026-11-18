@@ -6,20 +6,17 @@
 (`Serving(loras=...)`). `Encoder` reads e2e/lora-base's text encoder and takes none; `Transformer` reads a transformer (one
 linear, `proj`, which e2e/lora-proj adapts) of e2e/lora-base or e2e/lora-base-b (another `proj`) and takes them. Each
 function is the shape of first-party ones: `encoded` FLUX.3 Klein's `generate`, `chosen` Klein's, Fibo's and Krea 2's
-`image` box, `edited` qwen-image's functions, `pair` two models at once, `plain` none that takes one. `handed` (cl-1281) is
-Orbit's, MOSS's and H3 edit's shape: it loads no model, and its LoRA slot, with a default and a `needs` rule, goes to the
-call that applies it by its ref."""
+`image` box, `edited` qwen-image's functions, `pair` two models at once, `plain` none that takes one."""
 
 from typing import cast
 
 import msgspec
 import torch
-from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, Weights, call, uses_components
+from cozy_runtime.author import App, Loader, Model, Serving, uses_components
 
 app = App()
 BASE = "e2e/lora-base@0.1.0"
 OTHER = "e2e/lora-base-b@0.1.0"
-PROJ = "e2e/lora-proj@0.1.0"
 TEXT = ("text_encoder",)
 DIT = ("transformer",)
 
@@ -82,11 +79,6 @@ class Edit(msgspec.Struct, kw_only=True):
     edit: bool = False
 
 
-class Hand(msgspec.Struct, kw_only=True):
-    #: `handed` hands its LoRA slot to its call, which only this request fetches (its `needs` rule).
-    styled: bool = True
-
-
 class Read(msgspec.Struct):
     sum: float
     encoded: float = 0.0
@@ -126,10 +118,3 @@ def plain(payload: Ask, text_encoder: Encoder) -> Read:
     """A model that takes no LoRA."""
     return Read(0.0, text_encoder.read())
 
-
-@app.entrypoint(accelerator=False, defaults={"lora": PROJ}, needs={"lora": "request.styled"})
-async def handed(payload: Hand, lora: Weights) -> Read:
-    """`encoded` called with this slot's LoRA on its model when `styled`, else without: the slot's default, or the
-    request's `model.lora=` in its place."""
-    models = {"model": ModelChoice(lora=(Lora(lora.ref),))} if payload.styled else None
-    return await call(encoded, Ask(), models=models)

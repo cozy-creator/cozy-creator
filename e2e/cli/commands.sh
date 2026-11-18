@@ -285,9 +285,11 @@ echo "lora slot: encoded on $(lora_on lora-slot), chosen on $(lora_on lora-slot-
 # cl-1281 (Paul, 11-18: "fix the orbit lora so it's used correctly (follow platform rules) and all other packages should follow
 # our platform-rules so that loras can be overwritten"): a function that loads no model takes its LoRA as a Weights slot, with a
 # default and a needs rule, and hands it to its call by its ref (Orbit, MOSS, H3 edit). Its call's model takes it; without the
-# rule's request it isn't applied. Before (rc/0.27.0): the describer refused a rule on a Weights slot, and a call couldn't take one.
+# rule's request it isn't applied. Red until the Runtime that reads the script has cozy-runtime #2295: before it the describer refuses a
+# rule on a Weights slot, and no Weights has a ref.
 lora_called() { jq -c '[.calls[]? | .measurements.models[]? | select((.adapters // []) | length > 0) | {slot, adapters: [.adapters[] | {model, layers}]}]' "$OUT/$1.json" 2> /dev/null || echo none; }
-if cell lora-handed "$script/handed" && cell lora-handed-plain "$script/handed" styled:=false; then
+local handed=$here/script/lora_handed.py
+if cell lora-handed "$handed/handed" && cell lora-handed-plain "$handed/handed" styled:=false; then
   J '[.calls[]? | .measurements.models[]? | select(.slot == "model") | .adapters[]? | select(.layers > 0)] | length == 1' "$OUT/lora-handed.json" \
     || check "lora handed: its call's model took no LoRA from its slot: $(lora_called lora-handed)"
   J --slurpfile plain "$OUT/lora-handed-plain.json" '.result.sum != $plain[0].result.sum' "$OUT/lora-handed.json" \
