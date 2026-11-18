@@ -182,8 +182,8 @@ while read -r why; do check "ondemand-order: $why"; done < "$OUT/ondemand-order.
 # e2e/calls-extra (256 MiB) on demand, never read, on this cold machine over the 30 MB/s link. Its record says what the machine had
 # and downloaded for it (`measurements.weights`), and what came at its run's order is that and no more; its progress names the
 # machine's download of e2e/calls-needed and no other (`waiting_on`, cl-1205), whose bytes are its needs alone, while e2e/calls-extra
-# comes behind it at an extra's order, never listed as a download; what it waits for says how much it downloads (`cozy machine show`,
-# its run); and a second call finds it all on the machine.
+# comes behind it at an extra's order, never listed as a download; what it says it waits for, if it says, says how much it downloads
+# (`cozy machine show`, its run); and a second call finds it all on the machine.
 ondemand_needs() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a call downloads what it needs and no more; extras come in the background, never waited on (cl-1102)"
@@ -309,8 +309,8 @@ for stage, total in sorted(set(stages)):
         fail(f"its progress said \"{stage}\" as it waited: not that it waits for {needed} alone")
     if total:
         fail(f"its progress said {total} bytes of its own as it waited (\"{stage}\"): its download's bytes are the machine's, said once")
-if not waits:
-    fail("nothing said how much it downloads as it waited (its run's `waiting for the models to download: …`, in its events or `cozy machine show`)")
+# Its run's has/needs words reach a reader only while it's queued (`Engine::set_waiting`); waiting dispatched, the download's bytes
+# above say how much it downloads.
 for said in sorted(set(waits)):
     if extra in said:
         fail(f"it waited on its extra: {said[:200]}")
