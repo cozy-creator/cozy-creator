@@ -126,21 +126,26 @@ if [ "$RENTING" != true ]; then
   say "pre-flight: nothing rented; this runner's machine, which has no GPU: the page reads holding as it runs"
   # This runner's machine on the session cozy's builds: a dev build follows no RC, so none is waited for.
   cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
-  stage dry local
-  # Nothing waits for a GPU here. `waiting` stands in this machine's line behind `holding` on its CPU, a run whose box and rows must
-  # tell one story (cl-1263). The pages are read once Calcifer says why it waits: a page holds its machines as it loaded them, so one
-  # loaded before the reason has none of it on the tab (pre-flight 44304182764). Each page reads it, and a page named red must fail.
-  # In its line (its place) and saying why, not Calcifer's "sending to …" before it has a place.
-  inline='select(.queue_position != null) | .waiting // empty'
-  for _ in $(seq 120); do
-    [ -n "$(watched "$WAITING_RUN" | jq -r "$inline")" ] && break
+  # `holding` alone holds this machine's CPU. Each page's cell renders `waiting` once its page has loaded (WAIT_RENDER), so it stands in
+  # line and says why only after the page opened: rows that read the machine list's copy of it stand still, rows that read its own copy
+  # follow (cl-1263). A page named red must fail.
+  render dry-holding holding local
+  HOLDING_RUN=$(run_of hold) || fail "dry: holding's render made no run: $(tail -c 300 "$OUT/dry-holding.err")"
+  follow dry-holding "$HOLDING_RUN"
+  for _ in $(seq 600); do
+    watched "$HOLDING_RUN" | jq -r '.progress.stage // empty' | grep -qi holding && break
     sleep 1
   done
-  said=$(watched "$WAITING_RUN" | jq -r "$inline")
-  [ -n "$said" ] || fail "dry: run $WAITING_RUN never said why it stands in line: $(watched "$WAITING_RUN" | jq -c '{status, machine_state, queue_position, waiting}')"
-  say "dry: run $WAITING_RUN stands in line: \"$said\""
-  for page in "${PAGE_NAMES[@]}"; do pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE=local; done
-  ended dry
+  say "dry: run $HOLDING_RUN holds local for ${HOLD}s"
+  for page in "${PAGE_NAMES[@]}"; do
+    pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RENDER=waiting WAIT_DIR="$RUN_PROJECT" WAIT_MACHINE=local
+  done
+  # Every run ended: `holding`, then each `waiting` a page rendered.
+  for _ in $(seq $((HOLD + 600))); do
+    [ -z "$( (cd "$RUN_PROJECT" && cozy --json run ls --limit 50) 2> /dev/null | jq -r '(.runs? // [.]) | .[]? | select(.status as $s | ["completed", "failed", "canceled"] | index($s) | not) | .number' 2> /dev/null | head -1)" ] && break
+    sleep 2
+  done
+  say "dry: the runs ended"
   exit "$RC"
 fi
 GUARD_ALSO=own guard
