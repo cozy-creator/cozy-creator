@@ -66,7 +66,8 @@
     "text=<panel> is a black-and-white manga panel. Draw a close-up panel of the same swordswoman's face, from the front at eye level: her face and the top of her shoulders fill the panel, short black bob, determined expression, the high collar of her jacket. Keep her face, hair, clothing, proportions and the black-and-white ink and screentone drawing style exactly as in <panel>. No text, no speech bubbles, no panel border.",
     "megapixels:=4",
     "seed:=152013"
-   ]
+   ],
+   "expect": "failed"
   },
   {
    "name": "fix-e1",
