@@ -159,7 +159,7 @@ product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best q
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
 # The describer on Qwen3.5-9B; the writer on Qwen3.6-35B-A3B, qwen3.6's default before qwen3 replaced it (xs-208).
 product_qwen3() {
-  cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." --file images="$HERE/ref/seed.jpg"
+  cell describer "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="Describe this character: appearance, clothing and pose." caption= --file images="$HERE/ref/seed.jpg"
   cell writer "$(pkg qwen3 ask)" --model model=qwen/qwen3.6-35b-a3b@0.1.0 prompt="Describe this picture: who is in it, where, and the light." --file images="$HERE/ref/seed.jpg"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.

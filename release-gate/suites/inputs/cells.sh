@@ -108,7 +108,7 @@ run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suf
   fits "ideogram-max$x"
   pictures d 16 2
   # The describer's images bind by kind, as positional files.
-  cell "describer-max$x" "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="$(words $LONG)" max_tokens:=16384 seed:=$((R + 912 + o)) \
+  cell "describer-max$x" "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompt="$(words $LONG)" caption= max_tokens:=16384 seed:=$((R + 912 + o)) \
     $(jq -r '.[].image' <<< "$PICS")
   fits "describer-max$x"
   # H3 calls its segments with the prompt inline, at most 48 KiB (cr-281): its longest that runs.
