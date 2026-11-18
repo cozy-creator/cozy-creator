@@ -199,6 +199,15 @@ if [ -n "$UPGRADE" ]; then
   cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local-upgraded.log" 2>&1 || true
   say "TensorD at its start: $(grep -a "list items' runs forgotten" "$OUT/tensord-local-upgraded.log" | tail -1 | cut -c1-200)"
   grep -aq "list items' runs forgotten" "$OUT/tensord-local-upgraded.log" || MISMATCH+=("the upgraded TensorD didn't say it forgot the list items' runs")
+  grep -aq "list items' runs forgotten: .*the journal rewritten" "$OUT/tensord-local-upgraded.log" || MISMATCH+=("the upgraded TensorD didn't rewrite its journal, which held the drafts")
+  # The journal's raw bytes, its WAL's and its index's: none holds the draft's words or the box's name.
+  J=$HOME/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3
+  for f in "$J" "$J-wal" "$J-shm"; do
+    [ -e "$f" ] || { say "  ${f##*/}: absent"; continue; }
+    n=$(grep -caF -e "$DRAFT" -e "$EDITED" -e "$BOX" "$f")
+    say "  ${f##*/}: $(stat -c %s "$f") bytes, $n holding the draft's words or the box's name"
+    [ "$n" = 0 ] || MISMATCH+=("${f##*/} holds the draft's words or the box's name after the upgrade")
+  done
   found upgraded
   tables upgraded
   JUDGED=upgraded

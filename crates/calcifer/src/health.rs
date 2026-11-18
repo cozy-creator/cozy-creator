@@ -18,7 +18,7 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
     let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Cozy can't open its health record.");
     home.open().and_then(|()| durable::private_dir(&home.calcifer())).map_err(|_| failed())?;
     cleared(&home.calcifer());
-    let open =|path: std::path::PathBuf| -> Result<std::fs::File, ::api::error::Error> {
+    let open = |path: std::path::PathBuf| -> Result<std::fs::File, ::api::error::Error> {
         let mut options = OpenOptions::new();
         options.create(true).append(true);
         #[cfg(unix)] {
