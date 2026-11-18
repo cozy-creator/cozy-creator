@@ -44,7 +44,7 @@ async function candidateCDP(page, origin, directory) {
   const receipt = {
     origin, directory: root,
     files: [...files.values()].map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
-    documents: [], static_requests: [], errors: [],
+    documents: [], static_requests: [], errors: [], aborted: [],
     cachemode: { browser_cache: 'unchanged', static_cache_control: 'public, max-age=31536000, immutable', cache_hits: 'unverified; coordinator must observe actual browser cache hits', interception: 'page CDP Fetch; no Playwright routes or Network.setCacheDisabled' },
     disposed: false,
   };
@@ -62,8 +62,27 @@ async function candidateCDP(page, origin, directory) {
   const pending = new Set();
   const error = (operation, failure) => receipt.errors.push({ operation, name: failure?.name ?? 'Error', message: String(failure?.message ?? failure).replace(/https?:\/\/[^\s)]+/g, '[url]') });
   const navigated = ({ frame }) => { if (!frame.parentId) topFrame = frame.id; };
+  // A request the page cancelled itself (a picture whose box re-rendered, a live theme change: 44307867239) is gone before its
+  // answer: the browser says so (Network.loadingFailed, canceled), and answering it fails `Invalid InterceptionId`. That is no
+  // delivery failure, so it is counted in `aborted`, by path. Any other failed answer stays an error.
+  const cancels = new Map();
+  const cancelled = networkId => {
+    if (!networkId) return Promise.resolve(false);
+    let entry = cancels.get(networkId);
+    if (!entry) { entry = {}; entry.seen = new Promise(done => { entry.done = done; }); cancels.set(networkId, entry); }
+    return Promise.race([entry.seen, new Promise(done => setTimeout(done, 2000, false))]);
+  };
+  const failed = ({ requestId, canceled }) => {
+    if (!canceled) return;
+    const entry = cancels.get(requestId);
+    if (entry) entry.done(true); else cancels.set(requestId, { seen: Promise.resolve(true), done() {} });
+  };
   const paused = event => {
     const task = handle(event).catch(async failure => {
+      if (/Invalid InterceptionId/.test(String(failure?.message)) && await cancelled(event.networkId)) {
+        receipt.aborted.push({ path: new URL(event.request.url).pathname, resource: event.resourceType });
+        return;
+      }
       if (!closing && !page.isClosed()) error('Fetch.requestPaused', failure);
       // Failed candidate delivery stays a failed receipt; unblock only this request with its real response.
       if (!closing) await session.send('Fetch.continueRequest', { requestId: event.requestId }).catch(failure => { if (!page.isClosed()) error('Fetch.continueRequest', failure); });
@@ -113,18 +132,21 @@ async function candidateCDP(page, origin, directory) {
       // Fetch.disable releases this session's paused requests; no server/browser/context cache state is changed.
       await session.send('Fetch.disable').catch(failure => { if (!page.isClosed()) error('Fetch.disable', failure); });
       await Promise.allSettled([...pending]);
-      session.off('Fetch.requestPaused', paused); session.off('Page.frameNavigated', navigated);
+      session.off('Fetch.requestPaused', paused); session.off('Page.frameNavigated', navigated); session.off('Network.loadingFailed', failed);
       await session.detach().catch(failure => { if (!page.isClosed()) error('CDPSession.detach', failure); });
-      files.clear(); html = undefined; security = undefined;
+      files.clear(); cancels.clear(); html = undefined; security = undefined;
       receipt.disposed = true; installed.delete(page);
     })();
     return cleanup;
   };
   const closed = () => { void dispose(); };
   Object.defineProperty(receipt, 'dispose', { value: dispose });
-  session.on('Fetch.requestPaused', paused); session.on('Page.frameNavigated', navigated); page.once('close', closed);
+  session.on('Fetch.requestPaused', paused); session.on('Page.frameNavigated', navigated); session.on('Network.loadingFailed', failed);
+  page.once('close', closed);
   try {
     await session.send('Page.enable');
+    // Only to hear which requests the browser cancelled (loadingFailed); it changes no cache behaviour.
+    await session.send('Network.enable');
     topFrame = (await session.send('Page.getFrameTree')).frameTree.frame.id;
     await session.send('Fetch.enable', { patterns, handleAuthRequests: false });
     installed.set(page, receipt);
