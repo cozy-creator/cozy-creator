@@ -141,15 +141,11 @@ pub fn room(device: i32) -> Result<Room> {
     let total = owner.total.load(Ordering::Acquire);
     Ok(Room {
         capacity: total.min(owner.capacity()),
-        working_live: live_working(&state),
+        working_live: state.working_live(),
         pinned: owner.held.load(Ordering::Acquire),
         weights_resident: owner.pages.load(Ordering::Acquire),
         free: headroom(owner, owner.spare(free), 0),
     })
-}
-
-fn live_working(state: &State) -> usize {
-    state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch).map(|block| block.capacity).sum()
 }
 
 #[derive(Clone, Debug)]
@@ -482,7 +478,7 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     // UNet peak squeezed its VAE decode at 6 GiB into 64 bands (run 32599).
     let (now, peak) = owner.note_held();
     let held = phase.as_ref().map_or(peak, |phase| now.max(peak.min(phase.bytes)));
-    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
+    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: state.working_live() + held })
 }
 
 impl Menu {

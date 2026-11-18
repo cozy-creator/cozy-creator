@@ -105,6 +105,12 @@ class Device:
         model component it belongs to; its small regions share pages (cr-317)."""
         return Region(self._native.region(bytes, source._native, set))
 
+    def fits(self, regions: Sequence[Region], more: int = 0) -> None:
+        """Raises `Exhausted`, with nothing mapped, when `regions` and `more` bytes held beside them
+        not in a Region yet could never be held at once: more than the card or its cap less this
+        process's live working memory and other uses' pins. A binding asks before it fills."""
+        self._native.fits([region._native for region in regions], more)
+
     def stats(self) -> DeviceStats:
         return self._native.stats()
 

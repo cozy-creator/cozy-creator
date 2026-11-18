@@ -226,6 +226,14 @@ impl PyDevice {
         source::bind(&bound, &region);
         Ok(PyRegion { region: Deferred::new(region) })
     }
+    /// Refuses (`Exhausted`, nothing mapped) `regions` and `more` bytes not in a Region yet, held
+    /// at once, when no reclaim could ever give them room (`varena::Device::fits`).
+    #[pyo3(signature = (regions, more = 0))]
+    fn fits(&self, py: Python<'_>, regions: Vec<PyRef<'_, PyRegion>>, more: usize) -> PyResult<()> {
+        let device = self.owner()?;
+        let regions: Vec<Arc<varena::Region>> = regions.iter().map(|region| Arc::clone(&region.region)).collect();
+        py.detach(|| device.fits(&regions, more)).map_err(|e| raise(py, e))
+    }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let device = self.owner()?;
         let stats = py.detach(|| device.stats()).map_err(|e| raise(py, e))?;

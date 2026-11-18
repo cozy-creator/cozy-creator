@@ -1,0 +1,1 @@
+TensorFS refuses a set of weights a model must hold at once before any of it loads, when the card or its cap could never hold them beside the live working memory and what other uses pin (`varena.Device.fits`). Filled partway, such a set only evicted every other model's weights before it failed. The Runtime asked this of the card itself until now (var-023).
