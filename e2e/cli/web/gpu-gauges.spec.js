@@ -157,16 +157,13 @@ test('gpu-gauges', { tag: '@solo' }, async ({ page, project, calcifer, cli, calc
   });
 });
 
-// GPU_MACHINE (release-gate/sessions/gpu-gauges.sh: a rental, SDXL renders on it one after another): Machines open from before the renders
-// to after them. Its row's GPU 0 bar reaches 50% during them, and once GAUGE_DONE (a file the session makes as the last render ends)
-// exists, falls to 10%; each look's bar, figures and limits logged twice a second to GAUGE_LOG; Machines and the rental's drawer at
-// 1440×900 and 1920×1080, paper and dark, 30 s into the renders and 15 s after them.
-test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, project }) => {
-  const name = process.env.GPU_MACHINE;
-  test.skip(!name, 'GPU_MACHINE names a rental');
-  test.setTimeout(1_200_000);
+/** Machines open on machine `name` from before its renders to after them (the GPU branch below, and its replay on a recording): its row's
+ *  GPU 0 bar reaches 50% while `rendering()`, and once `ended()`, falls to 10%; each look's bar, figures and limits logged twice a second
+ *  to `logTo`; Machines and the drawer at 1440×900 and 1920×1080, paper and dark, 30 s into the renders and 15 s after them. */
+async function underRenders({ page, project, name, rendering = () => true, ended, logTo }) {
   const row = page.locator(`.drawer li.runrow.machine[data-machine="${name}"]`);
   const busy = row.locator('.gauge[data-gpu="0"]').getByRole('meter', { name: 'GPU 0 busy' });
+  const busyNow = async () => Number(await busy.getAttribute('aria-valuenow'));
   const log = [];
   let phase = 'before';
   const looks = setInterval(async () => {
@@ -198,25 +195,67 @@ test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, proj
     await page.goto(project.url('machines'));
     await expect(busy, `${name}'s row shows GPU 0's busy share`).toBeVisible({ timeout: 120_000 });
     phase = 'waiting';
-    await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'busy during the renders', timeout: 600_000, intervals: [500] }).toBeGreaterThanOrEqual(50);
+    await expect.poll(async () => rendering() && (await busyNow()) >= 50, { message: 'busy during the renders', timeout: 600_000, intervals: [500] }).toBe(true);
     phase = 'during';
     // Its trace showing the rise.
     await page.waitForTimeout(30_000);
     await shoot('during');
     await drawer('during');
     phase = 'rendering';
-    if (process.env.GAUGE_DONE) await expect.poll(() => existsSync(process.env.GAUGE_DONE), { message: 'the renders ended', timeout: 900_000, intervals: [1_000] }).toBe(true);
+    await expect.poll(ended, { message: 'the renders ended', timeout: 900_000, intervals: [1_000] }).toBe(true);
     phase = 'falling';
-    await expect.poll(async () => Number(await busy.getAttribute('aria-valuenow')), { message: 'idle after the renders', timeout: 900_000, intervals: [500] }).toBeLessThanOrEqual(10);
+    await expect.poll(busyNow, { message: 'idle after the renders', timeout: 900_000, intervals: [500] }).toBeLessThanOrEqual(10);
     await page.waitForTimeout(15_000);
     phase = 'after';
     await shoot('after');
     await drawer('after');
   } finally {
     clearInterval(looks);
-    if (process.env.GAUGE_LOG) writeFileSync(process.env.GAUGE_LOG, log.map((look) => JSON.stringify(look)).join('\n') + '\n');
+    if (logTo) writeFileSync(logTo, log.map((look) => JSON.stringify(look)).join('\n') + '\n');
   }
   const during = log.filter((look) => ['waiting', 'during', 'rendering'].includes(look.phase)).map((look) => look.busy);
   expect(Math.max(...during), 'the bar rose during the renders').toBeGreaterThanOrEqual(50);
   expect(log.filter((look) => look.phase === 'after').every((look) => look.busy <= 30), 'and stayed down after').toBe(true);
+}
+
+// GPU_MACHINE (release-gate/sessions/gpu-gauges.sh: a rental, SDXL renders on it one after another, GAUGE_DONE a file the session makes as
+// the last one ends): `underRenders` on it, logged to GAUGE_LOG.
+test('gpu-gauges: a rental under a render', { tag: '@gpu' }, async ({ page, project }) => {
+  const name = process.env.GPU_MACHINE;
+  test.skip(!name, 'GPU_MACHINE names a rental');
+  test.setTimeout(1_200_000);
+  const done = process.env.GAUGE_DONE;
+  await underRenders({ page, project, name, ended: () => !done || existsSync(done), logTo: process.env.GAUGE_LOG });
+});
+
+// The GPU branch on this runner's machine, replaying what pod-session 44210368937's RTX 5060 Ti did under SDXL (cl-1191): twelve renders of
+// 10 s at 100% with a gap of 2 s between each (0%, then 8%, as the page saw), then 90 s idle, round and round. That run's page took a gap
+// for the end and judged the fall there; here the renders end only when the recording reaches its idle part.
+test('gpu-gauges: the rental branch on a recording', { tag: '@solo' }, async ({ page, project, calciferControl }) => {
+  test.setTimeout(900_000);
+  const GB = 2 ** 30;
+  const reading = (busy, watts, celsius, mhz) => ({ gpu: 0, busy_percent: busy, used_bytes: 11 * GB, total_bytes: 16 * GB, power_w: watts, power_limit_w: 180,
+    power_default_w: 180, temperature_c: celsius, sm_mhz: mhz, sm_mhz_limit: 3090, reasons: busy ? [] : ['idle'] });
+  const recording = [];
+  for (let render = 0; render < 12; render++) {
+    for (let second = 0; second < 10; second++) recording.push(reading(100, 173, 60 + Math.min(7, render), 2775));
+    recording.push(reading(0, 65, 46, 1200), reading(8, 28, 44, 1800));
+  }
+  const RENDERS_S = recording.length;
+  for (let second = 0; second < 90; second++) recording.push(reading(0, 11, 39, 180));
+  const file = test.info().outputPath('rental.jsonl');
+  writeFileSync(file, recording.map((one) => JSON.stringify(one)).join('\n') + '\n');
+  writeFileSync(calciferControl.config, withSamples(readFileSync(calciferControl.config, 'utf8'), file));
+  await calciferControl.stopMachine();
+  await calciferControl.startMachine();
+  // Where the recording is now, by the clock, as TensorD replays it.
+  const at = () => Math.floor(Date.now() / 1000) % recording.length;
+  await underRenders({
+    page, project, name: 'local',
+    // Early in the renders, so 30 s on is still in them.
+    rendering: () => at() < 60,
+    // The start of its idle part, so the fall and its looks are all in it.
+    ended: () => at() >= RENDERS_S && at() < RENDERS_S + 15,
+    logTo: test.info().outputPath('gauges.jsonl'),
+  });
 });
