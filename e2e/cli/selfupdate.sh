@@ -2,16 +2,17 @@
 # needs a newer cozy (cl-978).
 
 SU_ARCHIVE=cozy-x86_64-unknown-linux-gnu.tar.gz SU_LATEST='' SU_STORE='self_forward measured no store version' FW_HOME='' FW_TOOK=0
-# The Hub's software: 0.24's, and the Latest's (Runtime 0.46.0, TensorFS 0.25.1, its cozy; su_latest).
-SU_OLD=(--set software.runtime=0.45.2 --set software.tensorfs=0.24.2 --set software.cozy=) SU_NEW=()
+# The Hub's software: the line before the Latest's, and the Latest's (its cozy, Runtime and TensorFS; su_latest).
+SU_OLD=() SU_NEW=() SU_PREVIOUS_RUNTIME=''
 
-# self_forward: GitHub's Latest (0.25.0, for 0.26) updates to the candidate, as a person's would. Its Linux archive, checked against
+# self_forward: GitHub's Latest (su_latest) updates to the candidate, as a person's would. Its Linux archive, checked against
 # its release's sha256.sum, gets a home of its own (the candidate's is set aside: Calcifer's store goes one way), the Latest's
 # software, and a project with a completed run. A signed candidate (publish_run's release) then comes by the Latest's own `cozy update
 # <version>`, which checks its sigstore bundle. An RC build has no signed archive, so it goes in place as that update puts it after
 # the check (update.rs at v0.25.0): the binary kept as .cozy-previous, the candidate renamed over it, Calcifer restarted by the
 # service the Latest defined, and the Latest's client waiting for it. Then Calcifer runs the candidate, its first start on that home
-# ended within 300 s, the store is at the candidate's version (its old runs cut, cl-1003), the project opens, and its next run on
+# ended within 300 s, the store is at the candidate's version (its old runs cut where the version moves: cl-1003's hard cut; else
+# kept), the project opens, and its next run on
 # local as the Latest left it moves local to the candidate's own Runtime and completes (cl-1055); then a new one completes on the
 # candidate set. A failure before the candidate runs there puts the candidate's own home back.
 self_forward() {
@@ -86,19 +87,32 @@ FW_HOME=''
 echo "forward update: cozy $latest → $candidate: the update and Calcifer's first start on its home took $FW_TOOK s, its store version $latest_store → $(su_store)"
 
 in_project "$P" --json status > "$OUT/fw-status.json" 2>&1 || check "forward update: cozy $latest's project doesn't open on $candidate: $(tail -c 300 "$OUT/fw-status.json")"
-# Its run's history is cut with the store (cl-1003): not listed. (What a project's runs made stays in it: hard_cut.)
-in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'all(.runs[]; .id != $id)' "$OUT/fw-runs.json" > /dev/null \
-  || check "forward update: cozy $latest's run $id is still listed on $candidate, or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
+# Its run's history is cut where the store's version moves (cl-1003's hard cut: store.rs rebuilds 7 and 8 with their history
+# cut), else kept: listed. (What a project's runs made stays in it: hard_cut.)
+if [ "$latest_store" != "$cand_store" ]; then
+  in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'all(.runs[]; .id != $id)' "$OUT/fw-runs.json" > /dev/null \
+    || check "forward update: cozy $latest's run $id is still listed on $candidate across the store's cut ($latest_store → $cand_store), or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
+else
+  in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'any(.runs[]; .id == $id)' "$OUT/fw-runs.json" > /dev/null \
+    || check "forward update: cozy $latest's run $id isn't listed on $candidate, though its store's version $cand_store is the Latest's (no cut), or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
+fi
 # The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor, nothing moved by
-# hand. The next run in the Latest's own project (its old history cut, nothing of it pending: cl-1003) moves local to the candidate's
-# own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
-local moved_from temporary
+# hand. The next run in the Latest's own project (nothing of it pending) moves local to the candidate's
+# own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch. A patch of the Latest's line
+# (0.26.0 → 0.26.1) shares its Runtime minor: local is on it already, and the run moves nothing.
+local moved_from temporary patch=''
+[ "${latest%.*}" != "$(cut -d. -f1,2 <<< "${candidate%%[-+]*}")" ] || patch=1
 (machine_ready) || return 0
 moved_from=$(jq -r '.status.runtime' "$OUT/machine.json")
 in_project "$P" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
   || check "forward update: the next run in cozy $latest's project on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
-grep -q "Updating local.s Runtime from $moved_from to [^ ]* for this project" "$OUT/fw-moved.err" \
-  || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
+if [ -n "$patch" ]; then
+  ! grep -q "Updating local.s Runtime" "$OUT/fw-moved.err" \
+    || check "forward update: $candidate is a patch of cozy $latest's line, yet the run moved local's Runtime $moved_from: $(grep -m1 'Updating local' "$OUT/fw-moved.err")"
+else
+  grep -q "Updating local.s Runtime from $moved_from to [^ ]* for this project" "$OUT/fw-moved.err" \
+    || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
+fi
 temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/fw-moved.out" | tail -1)
 case $temporary in
   "$(realpath "$P")"/.vault-machine/scratch/*) ;;
@@ -161,11 +175,17 @@ fw_back() {
   echo "forward update: the candidate's own home is back"
 }
 
-# su_latest: GitHub's Latest cozy in SU_LATEST, and the Hub's software of its line in SU_NEW.
+# su_latest: GitHub's Latest cozy in SU_LATEST and the Hub's software of its line in SU_NEW; the line before it, the software
+# cozy-before runs, in SU_OLD and SU_PREVIOUS_RUNTIME. Each release's notes name its pair (e2e/releases.py), read at every run: a
+# promotion moves them.
 su_latest() {
-  [ -n "$SU_LATEST" ] || SU_LATEST=$(curl -fsSL --retry 3 https://github.com/cozy-creator/cozy-creator/releases/latest/download/dist-manifest.json \
-    | jq -r '.releases[] | select(.app_name == "cozy") | .app_version') || SU_LATEST=''
-  SU_NEW=(--set software.runtime=0.46.0 --set software.tensorfs=0.25.1 --set "software.cozy=$SU_LATEST")
+  local said
+  [ -n "$SU_LATEST" ] && return 0
+  said=$(python3 -I "$here/../releases.py" 2> "$OUT/su-releases.err") || { echo "su_latest: $(cat "$OUT/su-releases.err")"; return 1; }
+  eval "$said"
+  SU_LATEST=$LATEST SU_PREVIOUS_RUNTIME=$PREVIOUS_RUNTIME
+  SU_NEW=(--set "software.runtime=$LATEST_RUNTIME" --set "software.tensorfs=$LATEST_TENSORFS" --set "software.cozy=$LATEST")
+  SU_OLD=(--set "software.runtime=$PREVIOUS_RUNTIME" --set "software.tensorfs=$PREVIOUS_TENSORFS" --set software.cozy=)
   [ -n "$SU_LATEST" ]
 }
 
@@ -175,15 +195,15 @@ su_store() {
     "$HOME/.cozy/calcifer/state.db" 2> /dev/null || true
 }
 
-# self_update: this computer's cozy becomes the change built as a release of the line before the Latest (E2E_COZY_BEFORE, 0.24.99:
-# build.sh cozy-before), which runs no Runtime from 0.46. Its Hub first pins 0.24's software, so `cozy machine update local` naming
-# nothing puts local there, held by nothing; then the Latest's. isolated.sh's E2E_NEXT needs cozy-runtime>=0.46.0, which only a cozy
-# of 0.25's line or later runs.
+# self_update: this computer's cozy becomes the change built as a release of the line before the Latest (E2E_COZY_BEFORE, build.sh
+# cozy-before: 0.25.99 while 0.26.0 is Latest), which runs none of the Latest's Runtime minor. Its Hub first pins that line's
+# software (its newest release's), so `cozy machine update local` naming nothing puts local there, held by nothing; then the
+# Latest's. isolated.sh's E2E_NEXT needs the Latest's Runtime minor, which only a cozy of the Latest's line or later runs.
 #  - first, the candidate itself (above the Latest): `cozy update` naming nothing is refused cozy_downgrade, and stays.
 #  - held by hand: its install is refused runtime_held naming `cozy machine update local`, and cozy moves nothing.
 #  - its install folder read-only: refused once, naming `sudo cozy update`, and cozy moves nothing.
-#  - then, once the Latest reads the candidate's store (self_forward measures both: 0.25.0's is 7, 0.26's 8; until then a notice
-#    says so), its install says "Updating cozy from 0.24.99 to <Latest> for …" once, cozy and Calcifer become the Latest, and the install
+#  - then, once the Latest reads the candidate's store (self_forward measures both; until then a notice says so), its install says
+#    "Updating cozy from <cozy-before> to <Latest> for …" once, cozy and Calcifer become the Latest, and the install
 #    completes as it, local moving to its minor; and a run of it, in a project of the Latest's, completes on a Runtime that runs it.
 # The release is GitHub's Latest (signed by its release workflow, which no test build is): `cozy update`'s own source.
 self_update() {
@@ -204,23 +224,25 @@ if [ "${candidate%%[-+]*}" != "$latest" ] && [ "$(printf '%s\n%s\n' "${candidate
 fi
 install -m 755 "$E2E_COZY_BEFORE" "$COZY.new" && mv -f "$COZY.new" "$COZY" || { check "self update: cozy-before not installed"; return; }
 before=$(cozy --version | awk '{print $2}')
-[ "$before" = 0.24.99 ] || { check "self update: cozy-before says $before"; return; }
-# On 0.24's software, held by nothing: the Hub's pin, named by nothing.
+[ "${before%.*}" = "${PREVIOUS%.*}" ] && [ "$(printf '%s\n%s\n' "$before" "$latest" | sort -V | tail -1)" = "$latest" ] \
+  || { check "self update: cozy-before says $before, not of $PREVIOUS's line below the Latest $latest"; return; }
+# On the line before's software, held by nothing: the Hub's pin, named by nothing.
 su_hub "${SU_OLD[@]}" || return
-cozy --json machine update local -y > "$OUT/su-old.json" 2>&1 || { check "self update: local onto 0.24's software: $(tail -c 300 "$OUT/su-old.json")"; return; }
+cozy --json machine update local -y > "$OUT/su-old.json" 2>&1 || { check "self update: local onto $PREVIOUS's software: $(tail -c 300 "$OUT/su-old.json")"; return; }
 machine_ready
-jq -e '.status.runtime == "0.45.2" and .status.tensorfs == "0.24.2" and (.status.version | startswith("0.24.99"))' "$OUT/machine.json" > /dev/null \
-  || { check "self update: local runs $(jq -c '.status | {runtime, tensorfs, version}' "$OUT/machine.json"), not 0.24.99 on 0.45.2/0.24.2"; return; }
+jq -e --arg r "$PREVIOUS_RUNTIME" --arg t "$PREVIOUS_TENSORFS" --arg v "$before" \
+  '.status.runtime == $r and .status.tensorfs == $t and (.status.version | startswith($v))' "$OUT/machine.json" > /dev/null \
+  || { check "self update: local runs $(jq -c '.status | {runtime, tensorfs, version}' "$OUT/machine.json"), not $before on $PREVIOUS_RUNTIME/$PREVIOUS_TENSORFS"; return; }
 su_hub "${SU_NEW[@]}" || return
 
 # Held by hand: refused, nothing moved.
-cozy --json machine update local --runtime 0.45.2 -y > "$OUT/su-hold.json" 2>&1 || { check "self update: hold local: $(tail -c 300 "$OUT/su-hold.json")"; return; }
+cozy --json machine update local --runtime "$PREVIOUS_RUNTIME" -y > "$OUT/su-hold.json" 2>&1 || { check "self update: hold local: $(tail -c 300 "$OUT/su-hold.json")"; return; }
 machine_ready
 code=0; su_install held || code=$?
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/su-held.out" && grep -q 'cozy machine update local' "$OUT/su-held.out" && ! grep -q 'Updating cozy' "$OUT/su-held.out" \
   || check "self update: held local wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/su-held.out")"
 [ "$(cozy --version)" = "cozy $before" ] || check "self update: held, cozy moved to $(cozy --version)"
-# Let go: named by nothing on 0.24's pin, which it runs.
+# Let go: named by nothing on the line before's pin, which it runs.
 su_hub "${SU_OLD[@]}" || return
 cozy --json machine update local -y > "$OUT/su-unhold.json" 2>&1 || { check "self update: let local go: $(tail -c 300 "$OUT/su-unhold.json")"; return; }
 machine_ready
@@ -254,8 +276,9 @@ local P=$OUT/selfupdate-project
 mkdir -p "$P" && in_project "$P" --json new --unencrypted > "$OUT/su-new.json" 2>&1 || { check "self update: cozy new: $(tail -c 300 "$OUT/su-new.json")"; return; }
 RUN_PROJECT=$P cell su-run "$E2E_NEXT/echo" text=updated || true
 machine_ready
-jq -e '.status.runtime | test("^0\\.(4[6-9]|[5-9][0-9])\\.")' "$OUT/machine.json" > /dev/null \
-  || check "self update: after its run local runs Runtime $(jq -r .status.runtime "$OUT/machine.json"), not 0.46 or newer"
+local runtime; runtime=$(jq -r .status.runtime "$OUT/machine.json")
+[ "$(printf '%s\n%s\n' "${runtime%%[+]*}" "${LATEST_RUNTIME%.*}" | sort -V | tail -1)" = "${runtime%%[+]*}" ] \
+  || check "self update: after its run local runs Runtime $runtime, not ${LATEST_RUNTIME%.*} (the Latest's) or newer"
 }
 
 # su_hub <--set key=value>...: the isolated Hub restarted with this software, and Calcifer with it, which reads it afresh.
@@ -273,10 +296,10 @@ su_install() {
 
 # update_offer (cl-1069; Paul 11-16: "on the user's machine, when there is a new update available, and they start cozy creator, we
 # should ask them if they want to update, rather than forcibly updating them … that gives them the ability to remain on the older
-# version"): the change built as a release (cozy-before, 0.24.99) at a terminal (script's pty), GitHub's Latest served as
+# version"): the change built as a release (cozy-before: 0.25.99 while 0.26.0 is Latest) at a terminal (script's pty), GitHub's Latest served as
 # COZY_DOWNLOAD_URL, in a home of its own whose `calcifer` is a file: each command ends at once after the question
 # (calcifer_start_failed), and the suite's Calcifer and machine are never touched.
-#  - asked "cozy <Latest> is out (this is 0.24.99). Update now? [Y/n]"; `n` keeps 0.24.99, the command goes on, the next isn't asked;
+#  - asked "cozy <Latest> is out (this is <cozy-before>). Update now? [Y/n]"; `n` keeps it, the command goes on, the next isn't asked;
 #  - `--json`, or stdin not a terminal: nothing asked;
 #  - `y`: cozy becomes the Latest, its signed archive checked as `cozy update` checks it, and the command goes on.
 OF_HOME='' OF_URL=''
@@ -285,8 +308,9 @@ step "a newer release is offered at a terminal, never forced (cl-1069)"
 [ "${RUNNER_OS:-}" = Linux ] || { echo "update offer: Linux"; return; }
 [ -n "${E2E_COZY_BEFORE:-}" ] && [ -f "$E2E_COZY_BEFORE" ] || { check "update offer: no cozy-before (${E2E_COZY_BEFORE:-unset})"; return; }
 su_latest || { check "update offer: GitHub names no Latest cozy"; return; }
-local latest=$SU_LATEST rel=$RUNNER_TEMP/offer-release port=$((20000 + RANDOM % 20000)) server f
-local asked="cozy $latest is out (this is 0.24.99). Update now? [Y/n]"
+local latest=$SU_LATEST rel=$RUNNER_TEMP/offer-release port=$((20000 + RANDOM % 20000)) server f before
+before=$("$E2E_COZY_BEFORE" --version | awk '{print $2}')
+local asked="cozy $latest is out (this is $before). Update now? [Y/n]"
 rm -rf "$rel" && mkdir -p "$rel" || { check "update offer: $rel not made"; return; }
 for f in dist-manifest.json "$SU_ARCHIVE" "$SU_ARCHIVE.sigstore.jsonl"; do
   curl -fsSL --retry 3 -o "$rel/$f" "https://github.com/cozy-creator/cozy-creator/releases/download/v$latest/$f" \
@@ -300,9 +324,9 @@ of_fresh || { kill "$server" 2> /dev/null || true; return; }
 # `n`: kept, said, and the command goes on; not asked again.
 of_run declined 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
 grep -qF "$asked" "$OUT/offer-declined.out" || check "update offer: a terminal wasn't asked \"$asked\": $(tail -c 300 "$OUT/offer-declined.out")"
-grep -qF 'staying on cozy 0.24.99' "$OUT/offer-declined.out" || check "update offer: declined, it didn't say it stays on 0.24.99"
+grep -qF "staying on cozy $before" "$OUT/offer-declined.out" || check "update offer: declined, it didn't say it stays on $before"
 grep -qF 'error[calcifer_start_failed]' "$OUT/offer-declined.out" || check "update offer: declined, the command didn't go on"
-[ "$(of_version)" = "cozy 0.24.99" ] || check "update offer: declined, cozy is $(of_version)"
+[ "$(of_version)" = "cozy $before" ] || check "update offer: declined, cozy is $(of_version)"
 of_run again 'n\n' "$OF_HOME/.cozy/bin/cozy whoami"
 ! grep -qF 'is out' "$OUT/offer-again.out" || check "update offer: declined $latest, the next command was asked again"
 grep -qF 'error[calcifer_start_failed]' "$OUT/offer-again.out" || check "update offer: the next command didn't run: $(tail -c 300 "$OUT/offer-again.out")"
@@ -318,7 +342,7 @@ of_run stdin 'n\n' "$OF_HOME/.cozy/bin/cozy whoami < /dev/null"
 of_run updated 'y\n' "$OF_HOME/.cozy/bin/cozy whoami"
 grep -qF "$asked" "$OUT/offer-updated.out" || check "update offer: a fresh home wasn't asked \"$asked\""
 [ "$(of_version)" = "cozy $latest" ] || check "update offer: yes, cozy is $(of_version), not $latest: $(tail -c 400 "$OUT/offer-updated.out")"
-grep -qF "cozy 0.24.99 → $latest" "$OUT/offer-updated.out" || check "update offer: yes, the update didn't say cozy 0.24.99 → $latest"
+grep -qF "cozy $before → $latest" "$OUT/offer-updated.out" || check "update offer: yes, the update didn't say cozy $before → $latest"
 grep -qF 'error[calcifer_start_failed]' "$OUT/offer-updated.out" || check "update offer: yes, the command didn't go on"
 kill "$server" 2> /dev/null || true
 }
