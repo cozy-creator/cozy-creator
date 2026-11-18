@@ -9,6 +9,10 @@
 #   private_weights A model the local machine just uploaded, private, read by a run (cl-1009, the release gate's qwen-lora flow):
 #                   its run capability puts its executor on TensorD's own Hub gateway (cl-675), an origin TensorD declares
 #                   local for its executors and nothing a run or Hub answer names. 0.26.0 refused it at the model's load.
+#                   Then th-412 (the release coordinator, 11-18: "a run by the owning account can't resolve its own private
+#                   release by version"): that checkpoint as a private release (published, then unpublished, as a held
+#                   mirror is) which a function's default names by version. Its owner's run reads it; signed out, the run
+#                   says the release isn't published or its sender can't read it, and for which slot, never "no sign-in".
 #   token_scope     The token `tensorfs.configure` was given reaches the default endpoint's origin and no other (xs-202, the
 #                   11-15 design audit: TensorFS 0.25.1 sent it to whatever endpoint a call named). The candidate TensorFS, no machine.
 # TensorD is asked as any client holding the machine's authorization asks it (egress.py, a key `machine authorize` admits).
@@ -180,9 +184,40 @@ if run_submit "$dir" upload model upload "$dir/vae.safetensors:vae" "$model" --l
   elif cell private-weights "$here/script/parts.py" --model "vae=$model@$commit"; then
     J '.result.vae.part == "vae-private" and .result.transformer.part == "dit"' "$OUT/private-weights.json" \
       || check "private weights: not e2e/parts's transformer with $model's VAE: $(jq -c .result "$OUT/private-weights.json")"
+    private_default "$dir" "$model" "$commit"
   fi
 else
   check "private weights: model upload $model --on local: $(run_get "$dir" upload '.reason.message' | head -c 300)"
 fi
 cozy --json logout > "$dir/logout.json" 2>&1 || check "private weights: logout: $(tail -c 300 "$dir/logout.json")"
+[ ! -e "$dir/held" ] || private_default_signed_out "$dir"
+}
+
+# private_default <dir> <model> <commit> (th-412): held.py is parts.py with <model>@0.1.0, a private release of <commit>, as its
+# `vae` default; its owner's run, naming no model, reads it.
+private_default() {
+local dir=$1 model=$2 commit=$3 said
+sed "s|\"vae\": PIPELINE}|\"vae\": \"$model@0.1.0\"}|" "$here/script/parts.py" > "$dir/held.py"
+grep -q "\"vae\": \"$model@0.1.0\"" "$dir/held.py" || { check "private default: parts.py's defaults moved: held.py names no $model@0.1.0"; return; }
+cozy --json model publish "$model" 0.1.0 "$commit" -y > "$dir/publish.json" 2>&1 && cozy --json model unpublish "$model@0.1.0" > "$dir/unpublish.json" 2>&1 \
+  || { check "private default: publishing then unpublishing $model@0.1.0: $(tail -c 300 "$dir/publish.json" "$dir/unpublish.json" 2> /dev/null)"; return; }
+said=$(cozy --json model show "$model@0.1.0" 2> /dev/null | jq -r '[.. | objects | .visibility? // empty] | first // empty')
+[ "$said" = private ] || { check "private default: $model@0.1.0 reads ${said:-nothing} to its owner, not private"; return; }
+: > "$dir/held"
+if cell private-default "$dir/held.py"; then
+  J '.result.vae.part == "vae-private" and .result.transformer.part == "dit"' "$OUT/private-default.json" \
+    || check "private default: its owner's run read another VAE than $model@0.1.0's: $(jq -c .result "$OUT/private-default.json")"
+fi
+}
+
+# private_default_signed_out <dir>: the same run signed out fails in one line that is true of a signed-in sender too.
+private_default_signed_out() {
+local said
+ALLOW=model_resolution_failed cell private-default-out "$1/held.py" || true
+said=$(run_get "$OUT" private-default-out '.reason.message')
+case $said in
+  *"no sign-in"*) check "private default: signed out, the run still says no sign-in: $said" ;;
+  *"(this function's default \`vae\`) isn't published, or this run's sender can't read it"*) ;;
+  *) check "private default: signed out, the run said: ${said:-nothing} ($(run_get "$OUT" private-default-out .status))" ;;
+esac
 }
