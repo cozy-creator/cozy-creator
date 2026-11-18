@@ -166,6 +166,26 @@ kernels() {
   "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
   say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
 }
+# pod_speculates: $NAME runs a loaded prediction ahead (cl-1123 D, off by default since Paul 11-18): `dev = true` and
+# `[machine] speculate = true` in its config.toml over `cozy machine ssh` (RENT_ARGS=--ssh), read at its service's next start.
+pod_speculates() {
+  local script said='' _
+  script=$(cat <<'EOS'
+c=$HOME/.cozy/config.toml
+mkdir -p "${c%/*}" && touch "$c" || exit 1
+{ echo 'dev = true'; grep -v '^dev *=' "$c" | awk '/^speculate *=/ { next } { print } /^\[machine\]/ { print "speculate = true"; put = 1 }
+  END { if (!put) printf "\n[machine]\nspeculate = true\n" }'; } > "$c.new" && mv "$c.new" "$c" || exit 1
+head -1 "$c"; grep -x 'speculate = true' "$c"
+EOS
+)
+  # Right after a restart the pod's ssh can answer nothing (pod-session 43325104295).
+  for _ in 1 2 3 4 5 6; do
+    said=$(timeout 120 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" < /dev/null 2>&1)
+    grep -qx 'dev = true' <<< "$said" && grep -qx 'speculate = true' <<< "$said" && { say "$NAME speculates from its next start"; return 0; }
+    sleep 10
+  done
+  fail "$NAME's config.toml doesn't say speculate: $(tail -c 300 <<< "$said")"
+}
 # floor FILE KINDS: the transfer of KINDS (`downloading`, `uploading|downloading`) FILE reports last, when it is a link's
 # measure (16 MiB or more; a result's never) still in progress and under FLOOR_MBS MB/s. A finished or small transfer
 # judges nothing: a run's small input uploads report a few KiB/s.
