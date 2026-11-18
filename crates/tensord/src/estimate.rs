@@ -165,7 +165,8 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             (false, false) => (invocation.widths.clone(), invocation.package.clone()),
         };
         let running = matches!(record.state, State::Starting | State::Running);
-        // An encrypted project's: its function, models and stage are its project's. A plaintext project's are said, as `times` says them.
+        // An encrypted project's: its function, models and stage are its project's, as `api::calcifer::Run::outsider` rules for every
+        // outsider (cl-1242). A plaintext project's are said, as `times` says them.
         let private = invocation.local_private.as_ref().is_some_and(|scope| !scope.ordinary);
         let caller = |record: &Execution| {
             (record.submission.as_ref().map(|s| s.request_id.clone()))

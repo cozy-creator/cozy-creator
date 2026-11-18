@@ -1004,7 +1004,7 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             let listed: HashSet<String> = held.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
-            status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            status.runs = held.into_iter().filter_map(|run| self.held(run, projects)).collect();
             let mut waiters = vec![];
             // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
             for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
@@ -1023,11 +1023,12 @@ impl Machines {
                         on: progress.waiting_on.clone(),
                     });
                 }
+                let outside = outside(&project_run, projects);
                 status.runs.push(wire::LiveRun {
                     id: project_run.id.to_string(),
                     state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
-                    waiting: run.waiting.clone().unwrap_or_default(),
-                    run: Some(run),
+                    waiting: if outside { String::new() } else { run.waiting.clone().unwrap_or_default() },
+                    run: Some(if outside { run.outsider() } else { run }),
                     locked: false,
                 });
             }
@@ -1106,12 +1107,15 @@ impl Machines {
     }
 
     /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's, a locked
-    /// one's by its state alone.
-    fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
+    /// one's by its state alone, an encrypted one's to a reader not showing `projects` its own as an outsider may know it (cl-1242).
+    fn held(&self, run:v1::RunState, projects:&[String])->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
         let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
         // A locked project's (cl-1130): its state there, nothing of its project's.
         if crate::project::vault::hidden(&row.out_dir) { return Some(wire::LiveRun::locked(run.state)); }
+        if outside(&row, projects) {
+            return Some(wire::LiveRun {run:self.calcifer.record(&row).ok().map(|run| run.outsider()),id:run.id,state:run.state,waiting:String::new(),locked:false});
+        }
         let waiting = self.calcifer.runs_named_for(&run.waiting, Some(row.id.as_str()));
         Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting,locked:false})
     }
@@ -2628,6 +2632,12 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         ssh_sessions: frame.ssh_sessions,
         kept_alive_ms: (frame.kept_alive_unix_ms > 0).then_some(frame.kept_alive_unix_ms),
     }
+}
+
+/// Whether a reader showing `projects` reads `row` from outside its encrypted project (cl-1242): it gets only what any outsider may know
+/// of it (`Run::outsider`). A plaintext project's run, and Calcifer's own, are said whole to every reader on the account.
+fn outside(row: &crate::store::RunRow, projects: &[String]) -> bool {
+    row.project_root.as_deref().is_some_and(crate::project::vault::encrypted) && !projects.iter().any(|project| *project == row.owner)
 }
 
 /// Another client's run as the machine says it (cl-1193): what it runs and for whom, how far it is.
