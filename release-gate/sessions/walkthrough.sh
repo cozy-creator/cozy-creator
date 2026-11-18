@@ -137,6 +137,8 @@ stepof() { grep -oE '([0-9]+) ?(/|of) ?[0-9]+' <<< "$1" | head -1 | grep -oE '^[
 # page and where its seed reads; a cancel landing mid-run, by `cozy run ls`'s STATUS and PROGRESS, then the same box again.
 if has zero; then
   Z=$PJ/plain ZT=$HERE/fixtures/walkthrough/zero.py
+  # A fresh local has no Runtime pair of its own, and a script's `cozy-runtime>=…` locks the released one: given its pair first (W-S2).
+  DIR=$Z c z-update-local machine update local -y
   small=$W/out/small.jpg; ffmpeg -v error -y -i "$REF/seed.jpg" -vf scale=512:-2 "$small" 2> /dev/null || cp "$REF/seed.jpg" "$small"
   PAGE import "$Z" "$small" --name photo > "$W/out/z-photo.json" 2>&1
   zr() {  # zr <box>: a page render on local, its time said
