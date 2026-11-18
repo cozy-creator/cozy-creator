@@ -173,7 +173,7 @@ def main() -> int:
         counts["clean"] += mark == "CLEAN"
         counts["checker"] += checker
         counts["template"] += took == "both"
-        line = (f"{j.line()} checkerboard {'YES' if checker else 'no'} template {took} enhancer "
+        line = (f"{j.line()} template {took} enhancer "
                 f"{'-' if enhancer is None else f'{enhancer / 1000:.1f}s'}")
         print(f"{mark:5} {name} {im.width}x{im.height} {line}")
         print(f"      rewrite: {rewrite[:1500]}")
@@ -184,7 +184,7 @@ def main() -> int:
     if args.out:
         Path(args.out).write_text("name\tverdict\tmode\tclear\tsolid\tpartial\tedge\tgrey_noise\tcheckerboard\ttemplate\tenhancer_s\trewrite\n"
                                   + "\n".join(rows) + "\n")
-    print("of {cells}: {rgba} RGBA, {clean} clean, {checker} painted a checkerboard, {template} rewrites took the card's template"
+    print("of {cells}: {rgba} RGBA, {clean} clean, {template} rewrites took the card's template (checkerboards: by eye)"
           .format(**counts))
     return 0
 

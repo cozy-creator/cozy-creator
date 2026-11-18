@@ -1,0 +1,80 @@
+{
+ "cells": [
+  {
+   "name": "gate-qwen-otter",
+   "tree": "a",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "seed:=1000000005",
+    "megapixels:=1",
+    "prompt=This is an RGBA image with transparency. a stained-glass hummingbird suncatcher, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+   ],
+   "update": {
+    "runtime": "44408061031",
+    "tensorfs": "artifact:44404174235/tensorfs-wheel-42fb656b8629d53bbd59d39e761b0240e627f680",
+    "tensord": true
+   }
+  },
+  {
+   "name": "gate-qwen-knight",
+   "tree": "a",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "seed:=1000000005",
+    "megapixels:=1",
+    "prompt=This is an RGBA image with transparency. a translucent jellyfish lamp with glowing tendrils, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+   ]
+  },
+  {
+   "name": "gate-qwen-astronomer",
+   "tree": "a",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "seed:=1000000005",
+    "megapixels:=1",
+    "prompt=This is an RGBA image with transparency. a frosted glass astrolabe, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+   ]
+  },
+  {
+   "name": "card-woman-upsampled-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"This is an RGBA image with transparency. <p1> with the background removed, in the same pose. The image has alpha channel and the background is transparent.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "man-plain-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  }
+ ],
+ "alpha": [
+  "gate-qwen-otter",
+  "gate-qwen-knight",
+  "gate-qwen-astronomer",
+  "card-woman-upsampled-t",
+  "man-plain-t"
+ ],
+ "order": "one-way",
+ "need_s": 1800,
+ "max_failures": 2,
+ "install": [
+  "a"
+ ],
+ "relock": [
+  "a"
+ ]
+}
