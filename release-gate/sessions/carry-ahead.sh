@@ -237,6 +237,8 @@ carried() {
 MISMATCH=() ADOPTED=''
 # adopted: what TensorD's log last said of a run naming a predicted request.
 adopted() { grep -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | tail -1 | sed 's/.*INFO tensord::ahead: //'; }
+# timed <box>: its run's number and times, from its record.
+timed() { jq -r '"run \(.number), \(.status): accepted to started \(.started_at_ms - .accepted_at_ms) ms, execution \(.execution_ms) ms"' "$OUT/$1-run.json" 2> /dev/null; }
 # rendered <box> <digest> [&]: rendered on $NAME, it reused its picture there, the machine landed none of it while it was sent, and
 # it adopted its item.
 rendered() {
@@ -247,7 +249,7 @@ rendered() {
   record "$1" "$OUT/$1-run.json" || fail "$1 has no run record: $(tail -c 300 "$OUT/$1.txt")"
   logs
   grep -ho "reused [^\"]* already on $NAME" "$OUT/$1-run.json" "$OUT/$1-run.txt" | head -1 > "$OUT/$1-reused.txt"
-  say "$1: rendered in $((ended - began)) ms; its run: $(cat "$OUT/$1-reused.txt")"
+  say "$1: rendered in $((ended - began)) ms ($(timed "$1")); its run: $(cat "$OUT/$1-reused.txt")"
   [ -s "$OUT/$1-reused.txt" ] || MISMATCH+=("$1's run didn't find its picture on $NAME")
   [ -z "$(landed "$2" "$began" "$ended")" ] || MISMATCH+=("$NAME landed $1's picture again while it rendered")
   took=$(adopted)
@@ -299,7 +301,7 @@ print(at - int(re.search(r"guessed on \S+ in (\d+) ms", line).group(1)) - 2000, 
   record own "$OUT/own-run.json" || true
   logs
   took=$(adopted)
-  say "own: rendered in $((ended - began)) ms; $NAME landed $(objects "$began" "$ended" | wc -l) object writes meanwhile; its run there: ${took:-named no predicted request}"
+  say "own: rendered in $((ended - began)) ms ($(timed own)); $NAME landed $(objects "$began" "$ended" | wc -l) object writes meanwhile; its run there: ${took:-named no predicted request}"
   [[ $took == *"is the request"*"takes what it made ready"* ]] || MISMATCH+=("own's render didn't adopt its item: ${took:-it named none}")
   ADOPTED=$took
 }
