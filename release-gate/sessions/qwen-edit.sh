@@ -27,6 +27,20 @@ for tree in $(jq -r '[.arms[].tree, (.chain_arms // [])[].tree] | unique[]' <<<"
   kernels "$PACKAGES/$tree/qwen-image-2"
 done
 mkdir -p "$WORK/raw" "$OUT/records" "$OUT/runs" "$OUT/chains"
+cfg=$HOME/.cozy/config.toml
+mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
+{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+# `source_tree`: a packages_refs checkout whose packages a package from source takes its in-repo dependencies from
+# (Calcifer's `packages`, orbit-arcs.sh's way): qwen-image-2 takes birefnet before birefnet's release is on the Hub.
+ST=$(param source_tree '')
+if [ -n "$ST" ]; then
+  SOURCE=$(cd "$PACKAGES/$ST" && pwd) || fail "source_tree $ST: no packages_refs checkout"
+  awk -v source="$SOURCE" '
+    function ours() { print "packages = \"" source "\""; put = 1 }
+    /^packages *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
+    "$cfg" > "$cfg.next" && mv "$cfg.next" "$cfg" || fail "calcifer.packages not written"
+fi
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 # Each function as a machine will read it, before anything is rented (a package surface the static reader refuses
 # failed every run of session 44188228407's proof tree).
 while read -r tree fn; do
@@ -45,10 +59,6 @@ say "bench: $(ls "$FIX/inputs" | paste -sd' ')"
 "$PY" -I "$FIX/measure.py" --plan <(jq -c . <<<"$PARAMS") --work "$WORK" --out "$OUT/selftest" --selftest > "$OUT/selftest.txt" 2>&1 ||
   fail "measure.py: $(tail -c 400 "$OUT/selftest.txt")"
 
-cfg=$HOME/.cozy/config.toml
-mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
-{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
-cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
