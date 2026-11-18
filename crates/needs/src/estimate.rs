@@ -7,7 +7,7 @@
 //!   package, named): `warm_ms`, `cold_ms`, `peak_device_bytes`, `peak_host_bytes`, `budget_bytes`, `request` (its size), `gpu`,
 //!   `lane` and `scale` (`Row`). No value where nothing measured relates to the machine.
 //! - `pow(x, y)`: x to the power y.
-//! - `sum(list)`: its numbers added.
+//! - `sum(list)`: its numbers added; `min(x, y, …)`, `max(x, y, …)`: the least and the greatest.
 //!
 //! One evaluation of a request on a machine gives its size and its outputs. A function that declares no `ms` is timed by the platform's
 //! own default, its nearest row scaled (`References::time`); one that declares no `size` is sized by `JobSize::of`'s guess.
@@ -27,7 +27,7 @@ use crate::{compiled, first_line, named, value};
 
 /// What an `estimate` may say of a request beside its size.
 pub const OUTPUTS: [&str; 4] = ["ms", "cold_ms", "peak_device_bytes", "peak_host_bytes"];
-/// The helper that reads a function's benchmark rows.
+/// The helper that reads a function's benchmark rows. The others: `pow`, `sum`, `min`, `max` (`context`).
 pub(crate) const MEASURED: &str = "measured";
 
 /// A function's `estimate` as its interface declares it: its size variables and its outputs, by name, each one CEL expression.
@@ -326,6 +326,15 @@ fn context(request: &Value, machine: Option<(&JobSize, &Card)>, rows: HashMap<St
             _ => Err(cel::ExecutionError::function_error("pow", "pow(x, y) takes two numbers")),
         }
     });
+    for (name, pick) in [("min", f64::min as fn(f64, f64) -> f64), ("max", f64::max)] {
+        let _ = context.add_function(name, move |Arguments(args): Arguments| -> Result<cel::Value, cel::ExecutionError> {
+            let numbers: Option<Vec<f64>> = args.iter().map(real).collect();
+            match numbers.and_then(|numbers| numbers.into_iter().reduce(pick)) {
+                Some(n) => Ok(cel::Value::Float(n)),
+                None => Err(cel::ExecutionError::function_error(name, format!("{name}(x, y, …) takes numbers"))),
+            }
+        });
+    }
     let _ = context.add_function("sum", |Arguments(args): Arguments| -> Result<cel::Value, cel::ExecutionError> {
         let Some(cel::Value::List(items)) = args.first() else { return Err(cel::ExecutionError::function_error("sum", "sum(list) adds a list")) };
         items.iter().map(real).sum::<Option<f64>>().map(cel::Value::Float).ok_or_else(|| cel::ExecutionError::function_error("sum", "sum(list) adds numbers"))

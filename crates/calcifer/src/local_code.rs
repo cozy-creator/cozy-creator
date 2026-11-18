@@ -1555,15 +1555,20 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     if !interface(&document) {
         return Err(refuse("package_interface_invalid", "the describer's answer is not a package interface"));
     }
-    // A `needs` rule that isn't CEL over its function's own request stops here, at the read, never at a run (cl-1103).
-    if let Some(fault) = ::needs::faults(&document).into_iter().next() {
+    read_faults(&document)?;
+    Ok((said.trim_end().to_owned(), document))
+}
+
+/// A `needs` rule that isn't CEL over its function's own request stops at the read, never at a run (cl-1103), and so does an
+/// estimate's expression (cl-1286): the static describer's reading, and a run's (`runs::target`), which may be its machine's own.
+pub(crate) fn read_faults(document: &Value) -> Result<(), Error> {
+    if let Some(fault) = ::needs::faults(document).into_iter().next() {
         return Err(refuse("needs_rule_invalid", fault));
     }
-    // So does an estimate's expression (cl-1286).
-    if let Some(fault) = ::needs::estimate_faults(&document).into_iter().next() {
+    if let Some(fault) = ::needs::estimate_faults(document).into_iter().next() {
         return Err(refuse("estimate_invalid", fault));
     }
-    Ok((said.trim_end().to_owned(), document))
+    Ok(())
 }
 
 /// What each copy of local code last read as, in its project (None: the machine's), by the Runtime that read it, and whether it's

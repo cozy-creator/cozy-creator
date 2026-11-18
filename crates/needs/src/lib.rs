@@ -865,7 +865,7 @@ impl<'a> Checker<'a> {
                 Some(Kind::List(_) | Kind::Any) => Ok(Kind::Float),
                 _ => Err("`sum(list)` adds a list of numbers".into()),
             },
-            other if !matches!(self.mode, Mode::Rule) => Err(format!("`{other}` isn't something an estimate may call; it calls `measured`, `pow`, `sum`, and what a rule may")),
+            other if !matches!(self.mode, Mode::Rule) => Err(format!("`{other}` isn't something an estimate may call; it calls `measured`, `pow`, `sum`, `min`, `max`, and what a rule may")),
             other => Err(format!("`{other}` isn't something a rule may call; {MAY}")),
         }
     }
