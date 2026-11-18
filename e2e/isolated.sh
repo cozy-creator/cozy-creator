@@ -47,7 +47,7 @@ fi
 # sources take the selected SDK; deliberate old-floor/negative fixtures keep their own requirements and source selection.
 publish() {
   local copy=$seed/packages/${1##*/}
-  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy" || return 1
   [ -f "$copy/benchmarks.json" ] \
     || jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
   if [ "${2:-}" = cohort ]; then

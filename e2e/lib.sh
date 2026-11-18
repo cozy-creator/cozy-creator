@@ -342,7 +342,7 @@ calcifer_orphaned() {
   machine_ready
   pid=$(grep -o '"pid": *[0-9]*' "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null | grep -o '[0-9]*$')
   [ -n "$pid" ] || { check "no Calcifer pid to stop"; return 1; }
-  kill -TERM "$pid"
+  kill -TERM "$pid" || { check "SIGTERM $pid failed"; return 1; }
   for _ in $(seq 60); do kill -0 "$pid" 2> /dev/null || break; sleep 1; done
   ls -l /proc/*/fd 2> /dev/null | grep -c calcifer.lock > "$OUT/orphan-fds.txt" || true
   began=$(date +%s)
@@ -460,7 +460,7 @@ executor_reaped() {
   local executor
   executor=$(pgrep -n -f "cozy_runtime.internal.executor")
   [ -n "$executor" ] || { check "no idle executor to end"; return 1; }
-  kill -9 "$executor"
+  kill -9 "$executor" || { check "SIGKILL $executor failed"; return 1; }
   sleep 1
   if ps -o stat= -p "$executor" > /dev/null 2>&1; then
     check "the killed idle executor (pid $executor) is still in ps a second later: $(ps -o stat= -p "$executor")"
@@ -529,7 +529,8 @@ PY
 picture() {
   local file=$OUT/inputs/$1
   mkdir -p "$OUT/inputs"
-  [ -f "$file" ] || curl -fsSL -o "$file" "https://raw.githubusercontent.com/pytorch/vision/v0.24.0/gallery/assets/$1"
+  [ -f "$file" ] || curl -fsSL -o "$file" "https://raw.githubusercontent.com/pytorch/vision/v0.24.0/gallery/assets/$1" \
+    || { check "picture $1: not downloaded"; return 1; }
   echo "$file"
 }
 
