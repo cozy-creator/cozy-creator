@@ -58,6 +58,10 @@ if [ "$repo" = cozy-creator ]; then
     # wheel. Keyed by sources alone, a branch from before #3873 built the RC's TensorFS as 0.26.0 and every run reused it beside a
     # Runtime that floors on 0.27.0.dev<n>: the seed's lock_failed (xs-217).
     if [ "$what" = tensorfs ]; then sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1; fi
+    # And its dev number, the commit's first-parent count (dev-version.sh): the same sources merged in another order are another
+    # wheel. A branch that merged the RC into itself numbered dev3230 and was reused at dev3230 once the RC came first, beside a
+    # Runtime floored on dev3298: lock_failed (e2e 44326430980, xs-218).
+    if [ "$what" = tensorfs ]; then git -C "$src" rev-list --count --first-parent HEAD; fi
   } | sha256sum | cut -c1-40)
 fi
 # Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it, and outside
