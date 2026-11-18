@@ -18,24 +18,24 @@ gone() {
 
 # rental_idle_through_updates <machine> <rental id>: an idle rental that gets an update every 3 minutes (the RC follower's,
 # hougetsu's 23:27, 23:37, 23:49) still releases itself 15 minutes after its last use and is destroyed. Its last use is a
-# keepalive now; the updates name the Runtime it runs, so each is a whole update with nothing to install. Red before
-# cl-1203: each update restarted the idle clock.
+# keepalive now; each update sets the mode it has (`--mode dedicated`), which drains and restarts its service as an RC
+# update does, whatever the open RC's builds are. Red before cl-1203: each update restarted the idle clock.
 rental_idle_through_updates() {
-  local m=$1 r=$2 runtime d0 now moved=0
+  local m=$1 r=$2 d0 now moved= updated=0
   "$CLI" machine keepalive "$m" >"$RT/keepalive.out" 2>&1
   # Its Status carries the new deadline a moment later.
   for _ in 1 2 3 4 5 6; do
     d0=$(show "$m" deadline); (( ${d0:-0} >= $(date +%s%3N) + 840000 )) && break; sleep 5
   done
-  runtime=$(show "$m" runtime)
-  if [ -z "$d0" ] || [ "$d0" = 0 ] || [ -z "$runtime" ]; then
-    expect "rental-idle-through-updates" FAIL "$m reports no idle deadline or Runtime after a keepalive: $(tail -c 200 "$RT/keepalive.out")"
+  if [ -z "$d0" ] || [ "$d0" = 0 ]; then
+    expect "rental-idle-through-updates" FAIL "$m reports no idle deadline after a keepalive: $(tail -c 200 "$RT/keepalive.out")"
     return
   fi
   log "rental-idle-through-updates: $m idle until $(date -u -d "@$((d0 / 1000))" +%T), updates every 3 min"
   while now=$(date +%s%3N); (( now < d0 + 180000 )); do
     if (( now < d0 - 30000 )); then
-      "$CLI" --json machine update "$m" --runtime "$runtime" -y >>"$RT/updates.out" 2>&1
+      if "$CLI" --json machine update "$m" --mode dedicated -y >>"$RT/updates.out" 2>&1; then updated=$((updated + 1)); else
+        log "rental-idle-through-updates: an update failed: $(tail -c 200 "$RT/updates.out")"; fi
       local d; d=$(show "$m" deadline)
       [ -z "$d" ] || [ "$d" = 0 ] || [ "$d" = "$d0" ] || { moved=$d; log "rental-idle-through-updates: an update moved $m's deadline to $(date -u -d "@$((d / 1000))" +%T)"; }
     fi
@@ -43,8 +43,11 @@ rental_idle_through_updates() {
     sleep 180
   done
   for _ in $(seq 12); do gone "$r" && break; sleep 10; done
-  if gone "$r"; then
-    expect "rental-idle-through-updates" PASS "$m released itself at its idle deadline $(date -u -d "@$((d0 / 1000))" +%T) through updates every 3 min, and its Hub proved it gone"
+  if (( updated < 3 )); then
+    expect "rental-idle-through-updates" FAIL "only $updated of its updates went through, so the cell proves nothing: $(tail -c 200 "$RT/updates.out")"
+    gone "$r" || "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
+  elif gone "$r"; then
+    expect "rental-idle-through-updates" PASS "$m released itself at its idle deadline $(date -u -d "@$((d0 / 1000))" +%T) through $updated updates, and its Hub proved it gone"
   else
     expect "rental-idle-through-updates" FAIL "$m not released 5 min past its idle deadline $(date -u -d "@$((d0 / 1000))" +%T)${moved:+; the updates moved it to $(date -u -d "@$((moved / 1000))" +%T)}: state $(show "$m" state)"
     "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
