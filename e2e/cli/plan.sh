@@ -112,6 +112,7 @@ went=$(plan_machine near)
 # quoted there (`placed`; GPU session 43352204256: the second and third shots of one weren't planned, and went to the first of their
 # machines saying nothing). BiRefNet, as its isolated Hub publishes it, cuts out three stills: twice on stand-w, then on local or
 # stand-w. Each cut's run is placed (the first two on stand-w), and no job's line in Calcifer's diagnostics says it `isn't planned`.
+# A box renders only itself (cl-1192): each still is rendered first, on the machines its cut is sent to, as a user does.
 plan_published() {
 step "plan (cl-967): each job of a published tool is planned, and its run says where it went"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
@@ -122,6 +123,8 @@ jq -n --arg t "$tool" --arg r "$r" '[range(1; 4) as $i | (
   {name: "cut_\($i)", tool: "birefnet/remove_background", kind: "image", fields: {image: "<still_\($i)>"}})]' | boxes_in "$P" || return
 for at in 1 2 3; do
   on='["stand-w"]'; [ "$at" != 3 ] || on='["local","stand-w"]'
+  coming_go "still_$at" "$on"
+  coming_done "still_$at" 900
   coming_go "cut_$at" "$on"
   coming_done "cut_$at" 900
   job=$(status "$P" | jq -c --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a)] | last // empty')

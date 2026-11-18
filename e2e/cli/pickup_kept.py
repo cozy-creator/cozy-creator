@@ -87,19 +87,29 @@ def main() -> int:
     src_files = files_of(taken[0])
     seen["src_files"] = src_files
 
-    # next waits for hold, which takes HOLD_S; it picks up from <src.1>.
+    # next waits for hold, which takes HOLD_S; it picks up from <src.1>. A box renders only itself (cl-1192): hold is rendered first, as a
+    # user does, and next, asked while hold's take is on its way, waits for it.
     node("hold", "slow", {"seconds": HOLD_S})
     node("next", "shoot", {"summary": "After <hold>, then <look>."})
-    render = subprocess.Popen([os.environ["COZY"], "render", "next", "--pickup", f"<src.1>@{SEAM}", "--on", "local"], cwd=project,
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    holding = subprocess.Popen([os.environ["COZY"], "render", "hold", "--on", "local"], cwd=project,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     began = time.monotonic()
-    # Asked: hold running, next waiting on it.
     while time.monotonic() - began < 120:
         jobs = cast(list[Json], cast(Json, api("?assets=false").get("board") or {}).get("jobs", []))
         if any(job.get("asset") == "hold" and job.get("state") == "running" for job in jobs):
             break
         time.sleep(0.5)
     seen["hold_running_after_s"] = round(time.monotonic() - began, 1)
+    render = subprocess.Popen([os.environ["COZY"], "render", "next", "--pickup", f"<src.1>@{SEAM}", "--on", "local"], cwd=project,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Asked: next on the board, waiting on hold, its pickup of <src.1> taken in.
+    asked = time.monotonic()
+    while time.monotonic() - asked < 60:
+        jobs = cast(list[Json], cast(Json, api("?assets=false").get("board") or {}).get("jobs", []))
+        if any(job.get("asset") == "next" for job in jobs):
+            break
+        time.sleep(0.5)
+    seen["next_asked_after_s"] = round(time.monotonic() - asked, 1)
 
     # src deleted while next waits, and its window ends before hold is done.
     api("/assets/src", "DELETE")
@@ -110,6 +120,8 @@ def main() -> int:
 
     stdout, stderr = render.communicate(timeout=RUN_S)
     seen["render"] = {"code": render.returncode, "out": stdout[-1500:], "err": stderr[-1500:]}
+    held_out, held_err = holding.communicate(timeout=RUN_S)
+    check("hold_rendered", holding.returncode == 0, {"out": held_out[-500:], "err": held_err[-500:]})
     nexts = versions("next")
     last = nexts[-1] if nexts else {}
     seen["next_version"] = last
