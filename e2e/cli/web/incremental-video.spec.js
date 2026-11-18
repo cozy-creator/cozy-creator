@@ -81,19 +81,23 @@ function synced(file) {
   return { file, starts: starts(file), joins: colourSwitches(file).map(({ frame, from, to }) => ({ frame, offset_ms: toneOffset(pcm, from, to, frame) })) };
 }
 
-/** Every 100 ms, what Focus shows: the take's player once it plays, else the glimpse's shown element; its clock, and whether it has a frame. */
-function sample() {
-  const region = document.querySelector('[aria-label="Focused asset"]');
-  const live = region?.querySelector('video.live');
-  const glimpse = region?.querySelector('.glimpse video.shown');
-  const take = live && live.readyState >= 2 && !live.paused && !live.seeking ? live : null;
-  const el = take ?? glimpse ?? null;
-  window.__shown.push({
-    which: take ? 'take' : glimpse ? 'glimpse' : 'none',
-    rev: glimpse?.closest('.glimpse')?.getAttribute('data-rev') ?? null,
-    at: el ? el.currentTime : null,
-    drawn: Boolean(el && el.readyState >= 2),
-  });
+/** In the page, every 100 ms, what Focus shows: the take's player once it plays, else the glimpse's shown element; its clock, and whether it
+ *  has a frame. Run by `page.evaluate`: the page's CSP refuses an inline script. */
+function sampling() {
+  window.__shown = [];
+  window.__sampler = setInterval(() => {
+    const region = document.querySelector('[aria-label="Focused asset"]');
+    const live = region?.querySelector('video.live');
+    const glimpse = region?.querySelector('.glimpse video.shown');
+    const take = live && live.readyState >= 2 && !live.paused && !live.seeking ? live : null;
+    const el = take ?? glimpse ?? null;
+    window.__shown.push({
+      which: take ? 'take' : glimpse ? 'glimpse' : 'none',
+      rev: glimpse?.closest('.glimpse')?.getAttribute('data-rev') ?? null,
+      at: el ? el.currentTime : null,
+      drawn: Boolean(el && el.readyState >= 2),
+    });
+  }, 100);
 }
 
 test('incremental-video', async ({ page, project, api, cli }) => {
@@ -204,8 +208,7 @@ test('incremental-video', async ({ page, project, api, cli }) => {
     await expect.poll(() => region.locator('.glimpse video.shown').evaluate((el) => el.readyState >= 2).catch(() => false), { message: 'segment 1 here', timeout: RUN_MS }).toBe(true);
     await region.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
     await expect.poll(() => region.locator('.glimpse video.shown').evaluate((el) => !el.paused && el.currentTime > 0.2), { message: 'segment 1 plays' }).toBe(true);
-    await page.addScriptTag({ content: sample.toString() });
-    await page.evaluate(() => { window.__shown = []; window.__sampler = setInterval(() => sample(), 100); });
+    await page.evaluate(sampling);
     await expect.poll(async () => (await project.asset('shot'))?.prefixes?.length ?? 0, { message: 'its take', timeout: RUN_MS }).toBe(before + 1);
     await expect.poll(() => page.evaluate(() => window.__shown.filter((one) => one.which === 'take').length), { message: 'the take plays on', timeout: 60_000 }).toBeGreaterThan(20);
     const shown = await page.evaluate(() => { clearInterval(window.__sampler); return window.__shown; });
