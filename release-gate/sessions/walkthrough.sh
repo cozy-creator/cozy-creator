@@ -109,8 +109,20 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
 }
 has page && pageflow tour
 
+P=$W/garden
+# A tool by the id the palette lists it under (a dev home's may be namespaced).
+tid() { jq -r --arg t "$1" '[(.tools // .)[]?.id] | map(select(. == $t or endswith("/" + $t))) | first // $t' "$W/tools.json" 2> /dev/null || echo "$1"; }
+# media <name>: the box's newest take's file, kept in out/ and measured.
+media() {
+  local f; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image" or .key == "video") | .value | (.path // .file // .local // empty)' "$W/out/$1.render.json" 2> /dev/null | tail -1)
+  [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
+  [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.render.err" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
+  [ -n "$f" ] && [ -f "$f" ] || { echo "no file found"; return; }
+  cp "$f" "$W/out/$1.${f##*.}"
+  ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
+}
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle; then
+if has tools || has idle || has cancel; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -121,17 +133,6 @@ if has tools || has idle; then
 fi
 if has tools; then
   P=$W/garden
-  # A tool by the id the palette lists it under (a dev home's may be namespaced).
-  tid() { jq -r --arg t "$1" '[(.tools // .)[]?.id] | map(select(. == $t or endswith("/" + $t))) | first // $t' "$W/tools.json" 2> /dev/null || echo "$1"; }
-  # media <name>: the box's newest take's file, kept in out/ and measured.
-  media() {
-    local f; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image" or .key == "video") | .value | (.path // .file // .local // empty)' "$W/out/$1.render.json" 2> /dev/null | tail -1)
-    [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
-    [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.render.err" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
-    [ -n "$f" ] && [ -f "$f" ] || { echo "no file found"; return; }
-    cp "$f" "$W/out/$1.${f##*.}"
-    ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
-  }
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
   PAGE add "$P" sky --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a red kite over a green hill, morning light", "seed": 5}' > "$W/out/sky.add.json" 2>&1
@@ -174,6 +175,33 @@ if has tools; then
   DIR=$P c run-ls-tools run ls
   DIR=$W c machine-show-after machine show "$NAME"
   pageflow results
+fi
+# A Qwen render cancelled from the page near step 3, then the same box again (cozy-creator #3758: the executor kept warm): it completes,
+# starts fast, its peak normal. A warm-up render first, so the cancel lands on a warm executor as a user's would.
+if has cancel; then
+  P=$W/garden
+  PAGE add "$P" qr --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a stone bridge over a mountain river, autumn", "turbo": false, "megapixels": 1}' > "$W/out/qr.add.json" 2>&1
+  t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-warm.render.json" 2> "$W/out/qr-warm.render.err"
+  say "qr warm-up: exit $? in $((SECONDS - t1)) s"
+  t1=$SECONDS; PAGE render "$P" --on "$NAME" --queue qr > "$W/out/qr-cancel.render.json" 2>&1
+  cancelled=''
+  for _ in $(seq 1 600); do
+    PAGE asset "$P" qr > "$W/out/qr-poll.json" 2> /dev/null
+    jq -c --arg t $((SECONDS - t1)) '{t: $t, rendering: .asset.rendering, making: .asset.making}' "$W/out/qr-poll.json" >> "$W/out/qr-cancel.poll.ndjson" 2> /dev/null
+    step=$(jq -r '.asset.rendering | if type == "object" then (.step // .done // .steps_done // 0) elif type == "number" then . else 0 end' "$W/out/qr-poll.json" 2> /dev/null)
+    if [[ ${step%.*} =~ ^[0-9]+$ ]] && { [ "${step%.*}" -ge 3 ] || { (( $(awk -v s="$step" 'BEGIN{print (s > 0 && s < 1)}') )) && awk -v s="$step" 'BEGIN{exit !(s >= 0.075)}'; }; }; then
+      PAGE cancel "$P" qr > "$W/out/qr.cancel.json" 2>&1; cancelled="at $((SECONDS - t1)) s, rendering $step"; break
+    fi
+    sleep 0.5
+  done
+  say "qr cancelled ${cancelled:-never (no step 3 seen; last: $(tail -1 "$W/out/qr-cancel.poll.ndjson" | cut -c1-200))}"
+  sleep 10; DIR=$P c run-ls-after-cancel run ls
+  t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-after.render.json" 2> "$W/out/qr-after.render.err"; rc=$?
+  say "qr again after the cancel: exit $rc in $((SECONDS - t1)) s; $(media qr-after) $(tail -c 300 "$W/out/qr-after.render.err" | tr '\n' ' ')"
+  for r in $(cd "$P" && cozy --json run ls 2> /dev/null | jq -r '(.runs // .)[]? | (.name // .id)' | head -4); do
+    (cd "$P" && cozy --json run show "$r" --full) > "$W/out/run-$r.json" 2>&1 < /dev/null
+    say "run $r: $(jq -c '{status: (.status // .run.status), reason: ((.reason // .run.reason) | tostring | .[0:160]), created: (.created_at_ms // .run.created_at_ms), started: (.started_at_ms // .run.started_at_ms), settled: (.settled_at_ms // .run.settled_at_ms)}' "$W/out/run-$r.json" 2> /dev/null)"
+  done
 fi
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
 if has idle; then
