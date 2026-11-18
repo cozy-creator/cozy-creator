@@ -91,6 +91,9 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     // Its own appearance, as the page's switch sets it.
     for (const theme of ['paper', 'dark']) {
       await api.call('PUT', `/v1/projects/${encodeURIComponent(id)}/appearance`, { appearance: { theme } });
+      // The open page takes it at once (its `appearance` event) and fetches that theme's pictures: they arrive before it navigates
+      // (rental 44277530156: navigating as they began canceled 4 of them, each a candidate delivery error).
+      await themed(page, theme);
       await away(url);
       await expect(page.locator('.stage')).toBeVisible();
       await themed(page, theme);
