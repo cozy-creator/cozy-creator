@@ -654,15 +654,20 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
     if !owner.paged.on() || !matches!(chosen, Err(Error::Exhausted { .. } | Error::OutOfMemory { .. })) {
         return chosen;
     }
-    // var-030 section 8 (proof): no level can be given room, and working memory is the driver's to page. The
-    // coarsest level that fits with its largest allocation left to the driver runs (where rung 4 put a split's
-    // whole on host and asked room for its windows only); else the level nearest to fitting. What it lacks leaves
-    // the card: a slice is still cheaper than a page, so the level is not made coarser for it.
+    // var-030 section 8 (proof): no level can be given room, and working memory is the driver's to page, so a
+    // level runs all the same and what it lacks leaves the card. An allocation no finer level shrinks (the two
+    // finest levels' largest is the same: a split's whole output) pages at every level, so the coarsest level
+    // that fits beside it runs (where rung 4 put the whole on host and asked room for the windows only). Else
+    // the level nearest to fitting, the finest as a rule: a slice is cheaper than a page (`author.windows`).
     let menu = snapshot(device, owner, key, stream)?;
     let target = menu.target().max(least);
     let choices = &menu.plans[target..];
+    let whole = match choices {
+        [.., finer, finest] if finer.largest == finest.largest => finest.largest,
+        _ => 0,
+    };
     let nearest = choices.iter()
-        .find(|plan| plan.missing.saturating_sub(plan.largest) <= plan.after_idle.saturating_add(plan.streamed))
+        .find(|plan| whole != 0 && plan.missing.saturating_sub(whole) <= plan.after_idle.saturating_add(plan.streamed))
         .or_else(|| choices.iter().min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle)))
         .expect("copied menu");
     Ok(menu.selection(nearest, target, stream))
