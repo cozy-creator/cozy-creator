@@ -34,8 +34,9 @@ URL=$(cd "$RUN_PROJECT" && cozy --json open 2> "$OUT/open.err" | jq -r '.url // 
 
 # watched <run>: what `cozy run watch` says of a run once, as JSON.
 watched() { (cd "$RUN_PROJECT" && cozy --json run watch "$1" --once) 2> /dev/null | grep '^{' | tail -1; }
-# render <label> <box> <machine>: its render followed in the background, its events in $OUT/<label>.ndjson; the follower's pid printed.
-render() { (cd "$RUN_PROJECT" && exec cozy --json render "$2" --on "$3" --new -y) > "$OUT/$1.ndjson" 2> "$OUT/$1.err" & echo $!; }
+# render <label> <box> <machine>: its render followed in the background (stopping the follower never cancels it), its events in
+# $OUT/<label>.ndjson.
+render() { (cd "$RUN_PROJECT" && exec cozy --json render "$2" --on "$3" --new -y) > "$OUT/$1.ndjson" 2> "$OUT/$1.err" & }
 # run_of <fn>: this project's newest run of gpuwait.py's <fn> that hasn't ended, once there is one (up to 2 min): its number. A
 # render's own events name its run only once it's done.
 run_of() {
@@ -50,18 +51,20 @@ run_of() {
 }
 
 # stage <label> <machine> [gpu]: `holding` rendered on <machine> until it holds; then `waiting`, and, with `gpu`, until Calcifer says it
-# waits. Sets HOLDING_RUN and WAITING_RUN (their numbers) and WAITING_SAID (its `waiting`), and the followers' pids.
+# waits. Sets HOLDING_RUN and WAITING_RUN (their numbers) and WAITING_SAID (its `waiting`).
 stage() {
   local label=$1 machine=$2 gpu=${3:-} now
-  HOLDING_PID=$(render "$label-holding" holding "$machine")
+  render "$label-holding" holding "$machine"
   HOLDING_RUN=$(run_of hold) || fail "$label: holding's render made no run: $(tail -c 300 "$OUT/$label-holding.err")"
   for _ in $(seq 600); do
     watched "$HOLDING_RUN" | jq -r '.progress.stage // empty' | grep -qi holding && break
     [ "$(watched "$HOLDING_RUN" | jq -r '.status // empty')" = failed ] && fail "$label: holding failed: $(watched "$HOLDING_RUN" | jq -c .reason)"
     sleep 1
   done
-  say "$label: run $HOLDING_RUN holds $machine's GPU for ${HOLD}s"
-  WAITING_PID=$(render "$label-waiting" waiting "$machine")
+  local what=$machine
+  [ -z "$gpu" ] || what="$machine's GPU"
+  say "$label: run $HOLDING_RUN holds $what for ${HOLD}s"
+  render "$label-waiting" waiting "$machine"
   WAITING_RUN=$(run_of wait) || fail "$label: waiting's render made no run: $(tail -c 300 "$OUT/$label-waiting.err")"
   WAITING_SAID=''
   [ -n "$gpu" ] || return 0
@@ -76,14 +79,18 @@ stage() {
   [ -z "$(jq -r '.queue_position // empty' <<<"$now")" ] || fail "$label: run $WAITING_RUN only stands in line ($(jq -c '{queue_position, waiting, machine_state}' <<<"$now")): no run under way waits for the GPU"
   say "$label: run $WAITING_RUN waits: \"$WAITING_SAID\"; its stage \"$(jq -r '.progress.stage // "none"' <<<"$now")\""
 }
-# ended <label>: both renders ended, completed.
+# ended <label>: both renders ended (holding's `hold` and up to 10 min more), completed.
 ended() {
-  wait "$HOLDING_PID" "$WAITING_PID" 2> /dev/null
   local run status
   for run in "$HOLDING_RUN" "$WAITING_RUN"; do
-    status=$(watched "$run" | jq -r '.status // empty')
+    for _ in $(seq $((HOLD + 600))); do
+      status=$(watched "$run" | jq -r '.status // empty')
+      case $status in completed | failed | canceled) break ;; esac
+      sleep 1
+    done
     [ "$status" = completed ] || { say "FAIL $1: run $run $status: $(watched "$run" | jq -c .reason)"; RC=1; }
   done
+  say "$1: runs $HOLDING_RUN and $WAITING_RUN ended"
 }
 
 # pw <page> <pass|fail> [VAR=value…]: the cell's GPU branch with that page, its report as web.sh says it, judged as it's to end.
@@ -110,8 +117,8 @@ RENTING=$RENT
 RENT=true quote "$(param seconds 1500)"
 if [ "$RENTING" != true ]; then
   say "pre-flight: nothing rented; this runner's machine, which has no GPU: the page reads holding as it runs"
+  # This runner's machine on the session cozy's builds: a dev build follows no RC, so none is waited for.
   cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
-  for _ in $(seq 120); do [ "$(cozy machine show local --json 2> /dev/null | jq -r '.rc.state // empty')" = current ] && break; sleep 5; done
   stage dry local
   # Nothing waits here: each page reads holding as it runs, nothing of a wait asked of it, so red passes too.
   for page in "${PAGE_NAMES[@]}"; do pw "$page" pass WAIT_BOX=holding WAIT_RUN="$HOLDING_RUN" WAIT_MACHINE=local; done
