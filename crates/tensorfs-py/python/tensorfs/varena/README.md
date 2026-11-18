@@ -23,4 +23,4 @@ stream, stop submitting and call `vt.retire_stream(stream)`.
 See [the public contract](../../../../varena/PUBLIC-API.md) and [Torch offload](../../../../varena/TORCH-OFFLOAD.md), and the
 [Region](../../../../varena/examples/python_client.py) and [Cache](../../../../varena/examples/cache_application.py) examples.
 
-`tensorfs.varena._runtime` is private: the Runtime's source binding, weight pins, load continuations and cache owners.
+`tensorfs.varena._runtime` is private: the Runtime's source binding, weight pins, load continuations, cache owners and Caches (`Device.cache`: the same `Cache` as `Gpu.cache`, for an engine's K/V and state).
