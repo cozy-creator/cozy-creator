@@ -670,7 +670,7 @@ impl Runs {
             };
             this.local.prepared(&run);
             // A list's item that ended wants nothing more: what its list dropped for it ends too (`ahead::put`).
-            crate::ahead::lined(&this, &this.service.engine.caller_id(&run));
+            crate::ahead::ended(&this, &this.service.engine.caller_id(&run));
             if let Err(error) = ended {
                 crate::private_io::warning(&this.service.engine, &run, format_args!("preparation: {error}"));
             }

@@ -419,6 +419,15 @@ pub(crate) fn lined(runs: &Runs, id: &str) {
     }
 }
 
+/// The run its caller names `id` ended (made ready, failed or canceled): it holds nothing in the download line now (`LINED`), and what
+/// a list dropped for it ends.
+pub(crate) fn ended(runs: &Runs, id: &str) {
+    if hidden(id) {
+        lock(&LINED).remove(id);
+        settle(runs, |handed| handed.iter_mut().for_each(|handed| handed.waiting.retain(|waiting| waiting != id)));
+    }
+}
+
 /// `change` made to what is handed over, then each handover nothing new is still to line for ends what it dropped.
 fn settle(runs: &Runs, change: impl FnOnce(&mut Vec<Handed>)) {
     let done: Vec<Handed> = {
