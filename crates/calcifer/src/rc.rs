@@ -217,7 +217,7 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
 }
 
 /// Whether an update under `key` is one Calcifer made itself: to the RC, to this cozy's minor, for a package's floor.
-fn calcifers(key: &str) -> bool {
+pub(crate) fn calcifers(key: &str) -> bool {
     ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
 }
 

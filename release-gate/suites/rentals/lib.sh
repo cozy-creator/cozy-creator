@@ -23,10 +23,13 @@ settled() {
 # mucheng, 11-18, one queued before the candidate replaced it after); false unless the machine runs it then.
 put_tensord() {
   local want; want=$("$2" --version | awk '{print $2}')
-  settled "$1"
-  "$CLI" machine update "$1" --tensord "$2" -y >"$RT/tensord-$1.out" 2>&1
-  settled "$1"
-  [ "$(show "$1" version)" = "$want" ]
+  for _ in 1 2; do
+    settled "$1"
+    "$CLI" machine update "$1" --tensord "$2" -y >>"$RT/tensord-$1.out" 2>&1
+    settled "$1"
+    [ "$(show "$1" version)" = "$want" ] && return
+  done
+  return 1
 }
 # gone <rental id>: its Hub released it and proved it absent at its provider (`machine ls --history`: released).
 gone() {
