@@ -1,5 +1,5 @@
 """lm-construct's pod side (sessions/lm-construct.sh), run as root over `cozy machine ssh`:
-  evict    the store's weights out of the page cache (cold-start.sh's)
+  evict    the store's weights out of the page cache (as a cold start reads them)
   ceiling  TensorFS's own ceilings, from the newest executor environment: disk GB/s and pinned H2D GB/s to GPU 0
   end      every executor process ends (SIGTERM): the next run starts a new one
   break <checkpoint>    every fourth chunk of that checkpoint (`sha256:…`) emptied in place, its bytes kept aside: a

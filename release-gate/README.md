@@ -38,8 +38,9 @@ A session written for one issue's proof is deleted by the PR that closes the iss
 
 `attention` and `attention-corpus` are not tests: they measure the attention table the Runtime ships (xs-171,
 `suites/attention/README.md`), as do bench's `*.arms` rows. Every gate also holds each cell to the package contract
-(`suites/contract/check.py`). `escaped.tsv` lists the bugs that reached users and the cell each must pass
-(`verify.sh --release`).
+(`suites/contract/check.py`). `suites/progress/check.py` judges a run's event stream and its time left (cl-921,
+cl-1247); its own cells are gone, and it runs once the gate names the runs it reads (cl-1264). `escaped.tsv` lists the
+bugs that reached users and the cell each must pass (`verify.sh --release`).
 
 A suite is `suites/<name>/`: `cells.sh` (sourced in gate.sh: `cell`, `pkg`, `product`, `expect`, `log`, `$CLI`, `$M`, `$R`,
 `$REF`, and e2e/run.sh's `run_*`), an optional `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py) and
