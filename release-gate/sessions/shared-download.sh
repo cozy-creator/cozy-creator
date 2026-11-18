@@ -98,10 +98,14 @@ for cell in $(cut -f1 "$G/cells.tsv"); do cp "$G/machine.ndjson" "$G/$cell.machi
 tail -40 "$OUT/flow.log" | cut -c1-300 | sed 's/^/    /' >> "$R"
 [ "$code" = 0 ] || { RC=1; say "the spec failed ($code): flow.log"; }
 # The progress cells' verdict on these runs: this branch's judge, and the RC's (its judge and its page's stage map, as the RC has them).
-python3 -I "$ROOT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress.txt" 2>&1; green=$?
+python3 -I "$ROOT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress.txt" 2>&1
 python3 -I "$RCT/release-gate/suites/progress/check.py" "$G" "$SKU" > "$OUT/progress-rc.txt" 2>&1
 say "progress check on these runs, this branch's: $(tail -1 "$OUT/progress.txt"); the RC's: $(tail -1 "$OUT/progress-rc.txt")"
 grep -E '^(FAIL|note)' "$OUT/progress.txt" | sed 's/^/  /' | tee -a "$R"
+# What the RC's judge says of these runs that this branch's doesn't, and the reverse: the gate's change, on a real pod's runs. Both
+# judge these runs as gate cells, which they aren't (three renders at once behind their predictions), so what both say isn't this
+# session's verdict.
+diff <(grep '^FAIL' "$OUT/progress-rc.txt" | sort) <(grep '^FAIL' "$OUT/progress.txt" | sort) | grep '^[<>]' | sed 's/^</  the RC only:/; s/^>/  this branch only:/' | tee -a "$R"
 # `cozy machine show` from outside the project printed the download line: a machine's download is the machine's (cl-1205).
 grep -q "^download $MODEL " "$OUT/machine-show.txt" && say "cozy machine show $NAME, from outside the project: $(grep -m1 "^download $MODEL " "$OUT/machine-show.txt" | tr -s ' ')" ||
   { RC=1; say "FAIL cozy machine show $NAME, from outside the project, never listed download $MODEL"; }
@@ -110,6 +114,5 @@ for cell in $(cut -f1 "$G/cells.tsv" | grep -- '-warm$'); do
   said=$(grep '^{' "$G/$cell.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage // empty' | grep -i download | sort -u | head -3 | paste -sd';' -)
   [ -z "$said" ] && say "$cell: no download stage" || { RC=1; say "FAIL $cell: its weights here, it said $said"; }
 done
-[ "$green" = 0 ] || RC=1
 say "shared-download: $([ "$RC" = 0 ] && echo PASS || echo FAIL)"
 exit "$RC"
