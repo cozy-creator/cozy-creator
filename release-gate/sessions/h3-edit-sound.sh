@@ -41,8 +41,10 @@ ffmpeg -v error -y -ss 6.4 -i "$M/kelly.webm" -t 12.6 -c:v libx264 -crf 18 -pix_
   -movflags +faststart "$M/kelly.mp4" || fail "kelly plate"
 ffmpeg -v error -y -ss 8.25 -i "$M/crew.webm" -t 59.6 -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a copy \
   -movflags +faststart "$M/crew.mp4" || fail "crew plate"
+ffmpeg -v error -y -ss 8.25 -i "$M/crew.webm" -t 12.6 -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a copy \
+  -movflags +faststart "$M/opus.mp4" || fail "opus plate"
 ffmpeg -v error -y -i "$M/sintel-cover.jpg" -vf "crop=748:1000:330:250" -q:v 2 "$M/sintel.jpg" || fail "sintel"
-for p in kelly crew; do
+for p in kelly crew opus; do
   say "plate $p: $(ffprobe -v error -show_entries stream=codec_name,r_frame_rate,start_time,duration -of compact=p=0:nk=1 "$M/$p.mp4" | paste -sd' ')"
 done
 
@@ -75,6 +77,7 @@ say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .s
 
 run_page import "$M/kelly.mp4" --name kelly > "$OUT/import-kelly.txt" 2>&1 || fail "import kelly: $(cat "$OUT/import-kelly.txt")"
 run_page import "$M/crew.mp4" --name crew > "$OUT/import-crew.txt" 2>&1 || fail "import crew: $(cat "$OUT/import-crew.txt")"
+run_page import "$M/opus.mp4" --name opus > "$OUT/import-opus.txt" 2>&1 || fail "import opus: $(cat "$OUT/import-opus.txt")"
 run_page import "$M/sintel.jpg" --name sintel --description "Sintel, a young woman with short red hair, a grey laced top and leather arm wraps, a small dragon on her shoulder" \
   > "$OUT/import-sintel.txt" 2>&1 || fail "import sintel: $(cat "$OUT/import-sintel.txt")"
 SWAP='<sintel> takes the place of the man in the plate, keeping its scene, camera and his whole performance: pose, gestures, head motion, gaze, speech, lip movement and expressions.'
@@ -120,6 +123,7 @@ for c in $CELLS; do
     long-keep) cell long-keep "$PK" crew keep "$CREW" '<sintel> talks to the camera with the crew in the space station.' ;;
     long-regen) cell long-regen "$PK" crew regenerate "$CREW" '<sintel> talks to the camera with the crew in the space station.' ;;
     long-new) cell long-new "$PK" crew new "$CREW" '<sintel> talks to the camera with the crew in the space station.' ;;
+    keep-opus) cell keep-opus "$PK" opus keep "$CREW" '<sintel> talks to the camera with the crew in the space station.' ;;
     *) fail "no cell $c" ;;
   esac
 done
