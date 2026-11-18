@@ -87,7 +87,7 @@ pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placemen
                 let mut tried = assigned.clone();
                 tried[j] = Some(m);
                 let trial = evaluate(pictures, jobs, &order, &tried, now, &mut quotes);
-                if sooner(&trial.1, &best.1) && stays(&jobs[j], &best.0[j], &trial.0[j], now) {
+                if better(&trial, &best) && stays(&jobs[j], &best.0[j], &trial.0[j], now) {
                     (assigned, best, moved) = (tried, trial, true);
                 }
             }
@@ -163,6 +163,18 @@ fn evaluate(pictures: &[Picture], jobs: &[Job], order: &[usize], assigned: &[Opt
     let finishes: Vec<i64> = placed.iter().flatten().map(|(_, offer)| offer.finish_at_ms - now).collect();
     let score = (finishes.iter().copied().max().unwrap_or(0), finishes.iter().sum());
     (placed, score)
+}
+
+/// Whether plan `trial` beats `best`: it places more of the jobs, or as many and ends the whole sooner. A job a plan leaves unplaced
+/// (its machine can't run it: no room on its disk, cl-1269) never counts as finishing early.
+#[allow(clippy::type_complexity)]
+fn better(trial: &(Vec<Option<(usize, Offer)>>, (i64, i64)), best: &(Vec<Option<(usize, Offer)>>, (i64, i64))) -> bool {
+    let placed = |plan: &[Option<(usize, Offer)>]| plan.iter().flatten().count();
+    match placed(&trial.0).cmp(&placed(&best.0)) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => sooner(&trial.1, &best.1),
+    }
 }
 
 /// Whether `trial` ends the whole sooner than `best`, by more than a tie.

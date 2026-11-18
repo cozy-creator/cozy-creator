@@ -408,6 +408,14 @@ echo "disk room: cozy run with $name exited $code: ${said:0:400}"
 [ "$code" = 0 ] || check "disk room: cozy run of $tool with $name there failed: ${said:0:500}"
 grep -qE "This computer's disk is [0-9.]+(MB|GB) short for its models, so it runs on $name" <<< "$said" \
   || check "disk room: cozy run didn't say it went to $name for this computer's short disk: ${said:0:500}"
+# Sent at its next plan with stand-r in it (cl-1269: a plan moved it to local, which has no room, and left it unplaced): within a
+# minute, not when local happens to drop out of a plan.
+for _ in $(seq 120); do
+  job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "roomless")] | last // empty' 2> /dev/null || true)
+  [ -n "$(jq -r '.run // empty' <<< "${job:-null}" 2> /dev/null)" ] && break
+  sleep 0.5
+done
+[ -n "$(jq -r '.run // empty' <<< "${job:-null}" 2> /dev/null)" ] || check "disk room: roomless's render wasn't sent within a minute of $name taking cozy run: ${job:-no job}"
 coming_done roomless 900
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "roomless")] | last // empty')
 run=$(jq -r '.run // empty' <<< "${job:-null}")
@@ -427,7 +435,9 @@ J --arg m "$name" '[.runs[]? | select(.target | test("e2e-roomless"))] | length 
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] \
   || check "disk room: $(( ($(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ') - before) >> 20 )) MiB landed on this computer's small disk"
 # What placement weighed, for a red to read.
-grep -h "e2e/room\|roomless\|e2e-roomless" "$HOME"/.cozy/calcifer/calcifer.log* 2> /dev/null | cut -c1-600 > "$OUT/room-calcifer.log" || true
-cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/room-walk.log" 2> /dev/null || true
+cozy machine logs local calcifer --lines 0 --since 30m > "$OUT/room-calcifer.log" 2>&1 || true
+grep -E "roomless|stand-r|no room|short for|placed|wider" "$OUT/room-calcifer.log" | cut -c1-400 | tail -40 || true
+cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/room-walk.log" 2> /dev/null || echo "disk room: no walk log in $P"
+tail -n 60 "$OUT/room-walk.log" 2> /dev/null | cut -c1-400 || true
 timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
 }
