@@ -78,12 +78,12 @@ hw_serve
 rc=''
 for _ in $(seq 360); do
   hw_show > "$d/show-rc.json" 2> /dev/null || true
-  rc=$(jq -r '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")))] | first | .name // empty' "$d/show-rc.json" 2> /dev/null)
+  rc=$(jq -r '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")))] | first | .id // empty' "$d/show-rc.json" 2> /dev/null)
   [ -n "$rc" ] && break
   sleep 0.5
 done
 [ -n "$rc" ] || { check "hold wins: no RC update queued at stand-h's boot in 3 min: $(jq -c '{state, rc, jobs, status: (.status // {} | {phase, version, runtime})}' "$d/show-rc.json" | head -c 800)"; return; }
-echo "hold wins: at stand-h's boot Calcifer queued $rc: $(jq -c --arg rc "$rc" '.jobs[] | select(.name == $rc) | {status, waiting, target}' "$d/show-rc.json")"
+echo "hold wins: at stand-h's boot Calcifer queued $rc: $(jq -c --arg rc "$rc" '.jobs[] | select(.id == $rc) | {status, waiting, target}' "$d/show-rc.json")"
 
 code=0
 cozy --json machine update stand-h --runtime "$runtime" --tensorfs "$tensorfs" --tensord "$released" -y > "$d/hand.json" 2> "$d/hand.err" || code=$?
@@ -95,12 +95,12 @@ for _ in $(seq 600); do
   sleep 1
 done
 echo "hold wins: stand-h's updates:"
-jq -r '.jobs[]? | select(.kind == "update") | "  \(.name) \(.status): \(.target) \(.reason.message // "")"' "$d/show.json"
+jq -r '.jobs[]? | select(.kind == "update") | "  \(.id) \(.status): \(.target) \(.reason.message // "")"' "$d/show.json"
 echo "hold wins: stand-h runs $(jq -c '.status | {version, runtime, tensorfs}' "$d/show.json"); held $(jq -c '{held, unheld, rc}' "$d/show.json")"
-J --arg rc "$rc" '[.jobs[]? | select(.name == $rc)][0].status == "canceled"' "$d/show.json" \
-  || check "hold wins: the RC update $rc queued at boot wasn't canceled by the hand's: $(jq -c --arg rc "$rc" '[.jobs[]? | select(.name == $rc) | {status, reason}]' "$d/show.json")"
+J --arg rc "$rc" '[.jobs[]? | select(.id == $rc)][0].status == "canceled"' "$d/show.json" \
+  || check "hold wins: the RC update $rc queued at boot wasn't canceled by the hand's: $(jq -c --arg rc "$rc" '[.jobs[]? | select(.id == $rc) | {status, reason}]' "$d/show.json")"
 J '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and .status != "canceled")] | length == 0' "$d/show.json" \
-  || check "hold wins: an RC update ran past the hold: $(jq -c '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)"))) | {name, status}]' "$d/show.json")"
+  || check "hold wins: an RC update ran past the hold: $(jq -c '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)"))) | {id, status}]' "$d/show.json")"
 J --arg rt "$runtime" --arg tfs "$tensorfs" --arg v "$released" '.status.runtime == $rt and .status.tensorfs == $tfs and .status.version == $v' "$d/show.json" \
   || check "hold wins: stand-h runs $(jq -c '.status | {version, runtime, tensorfs}' "$d/show.json"), not the $held it was held on by hand"
 J --arg h "$held" '.held == $h and .unheld == null and .rc.state == "held"' "$d/show.json" \
