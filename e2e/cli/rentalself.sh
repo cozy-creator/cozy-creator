@@ -67,7 +67,7 @@ step "a rental whose first download stays under its lease's floor tells its Hub 
 local key minio
 key=$(cozy --json machine show local | jq -r '.controller_key // empty')
 [ -n "$key" ] || { check "slow link: machine show local names no controller key"; return; }
-minio=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+minio=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1) || true
 [ -n "$minio" ] || { check "slow link: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return; }
 slow_link_case slow 60 "$key" "$minio"
 slow_link_case paced 240 "$key" "$minio"
@@ -86,7 +86,8 @@ slow_link_case() {
     [ -z "$install" ] || { kill "$install" 2> /dev/null || true; wait "$install" 2> /dev/null || true; }
     [ -z "$pid" ] || { kill -KILL -- "-$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true; }
     kill "$standin" 2> /dev/null || true; wait "$standin" 2> /dev/null || true
-    sudo tc qdisc del dev lo root 2> /dev/null; sudo ip link set dev lo mtu 65536
+    sudo tc qdisc del dev lo root 2> /dev/null || true
+    sudo ip link set dev lo mtu 65536 || true
     timeout 60 "$COZY" --json machine end "$name" --force -y > "$d/end.json" 2>&1 || true
   }
   for _ in $(seq 60); do [ -s "$d/ready" ] && break; kill -0 "$standin" 2> /dev/null || break; sleep 0.5; done
@@ -110,7 +111,7 @@ slow_link_case() {
     sleep 1
   done
   [ "$code" = 0 ] || { check "slow link $case: machine add $name: $(tail -c 400 "$d/add.json") $(tail -c 400 "$d/machine.log")"; slow_link_quit; return; }
-  sudo tc qdisc del dev lo root 2> /dev/null
+  sudo tc qdisc del dev lo root 2> /dev/null || true
   sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio \
     && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate "${wide}mbit" burst 1mb latency 200ms \
     && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$4" 0xffff flowid 1:3 \
