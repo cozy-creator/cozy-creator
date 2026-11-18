@@ -155,10 +155,10 @@ impl Pool {
         self.ahead.loading.lock().unwrap().is_some()
     }
 
-    /// A machine whose idle GPU loads and runs predicted requests ahead: a dedicated one (a rental, or a computer its owner gave to
-    /// Cozy: `machine.mode`).
-    pub(crate) fn dedicated(&self) -> bool {
-        self.config.host.mode == HostMode::Dedicated
+    /// A machine whose idle GPU runs a loaded prediction ahead (cl-1123 D, `crate::speculate`): a dedicated one whose config turns it
+    /// on (`dev = true` and `machine.speculate`). None by default (Paul 11-18): a prediction is downloaded and loaded, never run.
+    pub(crate) fn speculates(&self) -> bool {
+        self.config.host.mode == HostMode::Dedicated && self.config.speculate
     }
 
     /// `actor`'s item `caller` is on a GPU now, its on-demand models built: a speculative run of it builds and loads nothing.

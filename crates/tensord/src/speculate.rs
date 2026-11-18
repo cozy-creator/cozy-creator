@@ -5,7 +5,11 @@
 //! under an id of its own (`ahead::SPECULATIVE`): no job, never listed, its outputs held here. A call sent as that request adopts it
 //! (`adopt`): one going goes on as the call, one finished is the call's at once. An edit ends it (`dropped`), and so does a call of
 //! any other request (`gpu_service::Pool::yield_to`): its executor told to stop at its next step, its GPU the call's at once; once the
-//! GPU is idle again it runs anew. Only on a dedicated machine (`machine.mode`), one at a time.
+//! GPU is idle again it runs anew. One at a time.
+//!
+//! Off by default (Paul 11-18: "I would stop short at actually doing the full run"; it "kind of violates a user's expectations"):
+//! only a dedicated machine whose config has `dev = true` and `[machine] speculate = true` runs one (`Pool::speculates`). Elsewhere
+//! `start` starts nothing, so no attempt is ever made and `adopt`, `dropped`, `listed`, `stopped` and `readiness` find none.
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
@@ -51,17 +55,16 @@ fn id(key: &str, n: u64) -> String {
     format!("{SPECULATIVE}{key}.{n}")
 }
 
-/// Its thread, once: a look at each engine event, and when a draft's `STILL` passes. None on a shared machine.
+/// Its thread, once: a look at each engine event, and when a draft's `STILL` passes. None unless the machine speculates.
 pub(crate) fn start(runs: &Arc<Runs>) {
     static STARTED: OnceLock<()> = OnceLock::new();
-    if runs.service.pool().is_none_or(|pool| !pool.dedicated()) {
+    if runs.service.pool().is_none_or(|pool| !pool.speculates()) {
         return;
     }
     let weak = Arc::downgrade(runs);
-    STARTED.get_or_init(|| {
-        if let Err(error) = std::thread::Builder::new().name("speculate".into()).spawn(move || serve(&weak)) {
-            tracing::warn!("predicted requests won't run ahead: {error}");
-        }
+    STARTED.get_or_init(|| match std::thread::Builder::new().name("speculate".into()).spawn(move || serve(&weak)) {
+        Ok(_) => tracing::info!("predicted requests run ahead here (dev: machine.speculate)"),
+        Err(error) => tracing::warn!("predicted requests won't run ahead: {error}"),
     });
 }
 
