@@ -296,7 +296,7 @@ if has tools; then
     (cd "$P" && cozy --json lora ls klein --limit 10) > "$W/lora-klein.json" 2>&1 < /dev/null
     KLEIN_LORA=$(jq -r '[.. | objects | select(((.family // "") | test("klein")) and ((.ref // .model // .name // "") | test("/"))) | (.ref // .model // .name)] | first // empty' "$W/lora-klein.json" 2> /dev/null)
     DIR=$P c describe-klein run flux.3-klein/image --describe
-    KLEIN_MODEL=$(grep -aoE 'default [a-z0-9_.-]+/[a-z0-9_.-]+@[0-9.a-z]+' "$W/cli/describe-klein.txt" | head -1 | cut -d' ' -f2)
+    KLEIN_MODEL=$(awk '$1 == "model:" {for (i = 1; i <= NF; i++) if ($i == "(default") {sub(/\)$/, "", $(i + 1)); print $(i + 1); exit}}' "$W/cli/describe-klein.txt")
     say "Klein LoRA from the catalog: ${KLEIN_LORA:-none found}; Klein's base model: ${KLEIN_MODEL:-unknown}"
     sed -e "s#{klein_lora}#${KLEIN_LORA:-none/none}#g" -e "s#{klein_model}#${KLEIN_MODEL:-black-forest-labs/flux.3-klein}#g" "$STEPS" > "$W/steps.json"; STEPS=$W/steps.json
   fi
