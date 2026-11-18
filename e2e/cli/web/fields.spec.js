@@ -216,6 +216,10 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     mkdirSync(shots, { recursive: true });
     await page.screenshot({ path: join(shots, 'qwen-model-picker.png') });
     await picker.locator('button[data-model-slot="matte"]').click();
+    // cl-1258: Matte lists its default and nothing else; it never says it has no choices above the one it offers.
+    const matte = picker.locator('section.model-picker-slot[data-model-slot="matte"]');
+    await expect(matte.locator('.model-picker-choices [role="radio"]'), 'Matte: its default, listed').toHaveCount(1);
+    await expect.soft(matte.getByText("Compatible choices aren't available for this slot."), "Matte: no 'no choices' line over its default").toHaveCount(0);
     await page.screenshot({ path: join(shots, 'qwen-model-picker-matte.png') });
     await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
     for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
