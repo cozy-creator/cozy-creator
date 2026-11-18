@@ -229,10 +229,10 @@ if has lora; then
   lora_look
 fi
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict || has lora; then
+if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict || has lora || has cold; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
-  ! has lora || for p in flux.3-klein fibo-2 krea-2; do kernels "$SOURCE/$p"; done
+  ! { has lora || has cold; } || for p in flux.3-klein fibo-2 krea-2; do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
   RENTING=$RENT
   quote "$(param seconds 3600)"
@@ -618,8 +618,123 @@ phase_lora() {
   DIR=$P c lora-machine-after machine show "$NAME"; DIR=$P c lora-models-after model ls --on "$NAME"
   grep -aE '^(version|runtime|tensorfs) ' "$W/cli/lora-machine-after.txt" | tr -s ' ' | sed 's/^/    machine: /' >> "$R"
 }
+# Cold (the coordinator, 11-18, after 44389586877's first run failed `[unhandled_exception]: Building: attention cuda:0 sm89
+# sageattention`): does a first FLUX.3 Klein run with prompt upsampling fail that way on any fresh pod, with no LoRA; then in a new
+# executor on the same pod (the machine's service started again), without a LoRA and with one; then Fibo's and Krea 2's boxes with a LoRA
+# of their family, each beside its twin. Each run's events are kept with this runner's clock (out/<name>.ndjson), its record read for
+# its executor, its stages and its attention kernels, and the machine's log around it.
+note() { echo "::notice title=walkthrough $1::$(tr '\n' ' ' <<< "$2" | cut -c1-1200)"; say "NOTE $1: $2"; }
+# jrun <name> <tool> <args…>: one `cozy --json run` on the rental, each event line led by this runner's clock.
+jrun() {
+  local n=$1 tool=$2 t0 rc run before after; shift 2
+  mkdir -p "$W/out/$n" "$W/records"
+  before=$(newest); t0=$(ms)
+  ( cd "$P" && timeout "${TO:-2400}" cozy --json run "$tool" "$@" --on "$NAME" -o "$W/out/$n" 2> "$W/out/$n.err" < /dev/null |
+      while IFS= read -r line; do printf '%s %s\n' "$EPOCHREALTIME" "$line"; done > "$W/out/$n.ndjson"; exit "${PIPESTATUS[0]}" )
+  rc=$?
+  printf '%s\t%s\t%s\tcozy --json run %s %s --on %s\n' "$n" "$rc" "$(( $(ms) - t0 ))" "$tool" "$*" "$NAME" >> "$W/cli/times.tsv"
+  run=$(sed 's/^[0-9.]* {/{/' "$W/out/$n.ndjson" 2> /dev/null | grep -a '^{' | jq -r 'select(.run.number != null and (.run.kind // "call") == "call") | (.run.name // .run.id)' 2> /dev/null | tail -1)
+  if [ -z "$run" ]; then after=$(newest); [ "$after" = "$before" ] || run=$after; fi
+  : > "$W/records/$n.json"
+  [ -z "$run" ] || (cd "$P" && cozy --json run watch "$run" --once --full) > "$W/records/$n.raw" 2>&1 < /dev/null
+  [ -z "$run" ] || grep -a '^{' "$W/records/$n.raw" 2> /dev/null | tail -1 > "$W/records/$n.json"
+  [ -z "$run" ] || (cd "$P" && timeout 60 cozy run watch "$run" --once) > "$W/out/$n.watch.txt" 2>&1 < /dev/null
+  say "$n: cozy run $tool $* --on $NAME: exit $rc in $(( $(ms) - t0 )) ms, run ${run:-none (no run made)}: $(lrec "$n")"
+  say "$n executor: $(jexec "$n")"
+  say "$n events: $(jtimeline "$n")"
+  [ "$rc" = 0 ] || { say "$n NOT COMPLETED (exit $rc): $(jq -r '"Run \(.name) \(.status) [\(.reason.code // "?")]: \(.reason.message // "?")"' "$W/records/$n.json" 2> /dev/null); stderr: $(tail -c 500 "$W/out/$n.err" | tr '\n' ' ')"
+    jq -r '.reason.detail // empty' "$W/records/$n.json" 2> /dev/null | tail -14 | cut -c1-260 | sed 's/^/    /' | tee -a "$R"; }
+  return "$rc"
+}
+# jexec <name>: the run's executor and what it built, from its record: its process, how long before the run it began (0: made for this
+# run), each stage's start after the executor's and its length, the attention kernels as the record lists them, the kernels compiled.
+jexec() {
+  jq -c '(.measurements.execution.executor.started_unix_ms // null) as $e | {
+    pid: [.measurements.execution.gpus[]?.pid], executor_started_unix_ms: $e,
+    executor_before_run_s: (if $e then (((.started_at_ms // 0) - $e) / 100 | round / 10) else null end),
+    executor_legs_ms: (.measurements.execution.executor.legs_ms // null),
+    prepared_after_executor_s: (if $e and .measurements.execution.construction.prepared_unix_ms then ((.measurements.execution.construction.prepared_unix_ms - $e) / 100 | round / 10) else null end),
+    stages: [(.measurements.attribution.stages // {}) | to_entries | sort_by(.value.started_unix_ms)[] | "\(.key): +\(((.value.started_unix_ms - ($e // .value.started_unix_ms)) / 100 | round) / 10) s after the executor, for \(((.value.ended_unix_ms - .value.started_unix_ms) / 100 | round) / 10) s"],
+    settled_after_executor_s: (if $e then (((.settled_at_ms // 0) - $e) / 100 | round / 10) else null end),
+    attention: [.measurements.execution.gpus[]? | .attention | "impl \(.impl // ""): " + ([.kernels[]? | "\(.kernel) \(.line // .state)"] | join("; "))],
+    kernels: [.measurements.execution.gpus[]? | .kernels[]? | "\(.kernel) \(.source) \(.compile_ms // 0) ms"],
+    kernel_notes: [.measurements.observations[]? | select(.name | test("kernel")) | "\(.name)=\(.value) at stage \(.fields.stage // "") step \(.fields.step // "")"]}' "$W/records/$1.json" 2> /dev/null | cut -c1-1800
+}
+# jtimeline <name>: from its events as they came: the first sight of each stage after the executor's start, and the upsampler's first token.
+jtimeline() {
+  local e; e=$(jq -r '.measurements.execution.executor.started_unix_ms // .started_at_ms // 0' "$W/records/$1.json" 2> /dev/null)
+  sed 's/^\([0-9.]*\) {/{"_clock": \1, /' "$W/out/$1.ndjson" 2> /dev/null | grep -a '^{' | jq -c --argjson e "${e:-0}" 'select((.progress // .run.progress // null) != null) | (.progress // .run.progress) as $p | {clock: ._clock, at: $p.at_ms, stage: $p.stage, done: $p.completed, total: $p.total, unit: ($p.unit // "")}' 2> /dev/null > "$W/out/$1.progress.ndjson"
+  jq -rs --argjson e "${e:-0}" '
+    def after($x): if $x.at and $x.at > 0 then (($x.at - $e) / 100 | round / 10) else (($x.clock * 1000 - $e) / 100 | round / 10) end;
+    (group_by(.stage) | map(min_by(.clock)) | sort_by(.clock) | map("\(.stage) +\(after(.)) s") | join(", ")) as $stages |
+    ([.[] | select((.unit == "tokens") and (.done // 0) >= 1)] | min_by(.clock)) as $t |
+    "\(length) progress events; first sight of each stage after the executor: \($stages); first token: \(if $t then "\($t.stage) +\(after($t)) s (\($t.done) of \($t.total))" else "no progress event counts tokens" end)"' "$W/out/$1.progress.ndjson" 2> /dev/null | cut -c1-1500
+}
+# jlogs <name>: the machine's own log around the run: a time window and a line bound, the lines that tell of kernels kept apart.
+jlogs() {
+  cozy machine logs "$NAME" --since "${2:-4m}" -n 1500 < /dev/null > "$W/out/$1.machine.log" 2>&1
+  grep -aiE 'sage|kernel|probe|compil|crash|Building|attention' "$W/out/$1.machine.log" | tail -45 | cut -c1-300 > "$W/out/$1.kernel-lines.log"
+  say "$1: the machine's log, $(wc -l < "$W/out/$1.machine.log") lines of the last ${2:-4m}; its lines about kernels ($(wc -l < "$W/out/$1.kernel-lines.log")):"
+  sed 's/^/    log: /' "$W/out/$1.kernel-lines.log" >> "$R"
+}
+# The machine's service started again: its executors end with it, the kernels it compiled stay on its disk.
+restarted() {
+  local t0 rc i; t0=$(ms)
+  (cd "$P" && timeout 300 cozy machine update "$NAME" --gpu-memory-limit off -y) > "$W/cli/restart-$1.txt" 2>&1 < /dev/null; rc=$?
+  for i in $(seq 1 120); do [ "$(state "$NAME")" = ready ] && break; sleep 1; done
+  say "restart $1: cozy machine update $NAME --gpu-memory-limit off -y: exit $rc, ready $(( $(ms) - t0 )) ms on: $(grep -v '^\s*$' "$W/cli/restart-$1.txt" | tail -2 | tr '\n' ' ' | cut -c1-240)"
+}
+phase_cold() {
+  local w; w=$(param lora_words 'a hand-painted wooden shop sign that reads "COZY BAKERY" in large ornate letters, hanging over a cobblestone street, morning light')
+  local a twin picture fam tool l first second one
+  DIR=$P c cold-machine-before machine show "$NAME"
+  # 1. The first run on the fresh pod: Klein's box, no LoRA, every default (prompt upsampling on).
+  jrun cold-plain flux.3-klein/image "instructions=$w" seed=7; a=$?
+  jlogs cold-plain 5m
+  if [ "$a" = 0 ]; then
+    twin=cold-plain
+    note "1 cold first run, no LoRA" "PASSED on $NAME: $(jexec cold-plain)"
+  else
+    note "1 cold first run, no LoRA" "FAILED on $NAME: $(jq -r '"Run \(.name) \(.status) [\(.reason.code // "?")]: \(.reason.message // "?")"' "$W/records/cold-plain.json" 2> /dev/null); $(jexec cold-plain)"
+    local again; jrun cold-plain-again flux.3-klein/image "instructions=$w" seed=7; again=$?; twin=cold-plain-again
+    note "1 the same run again, right after" "exit $again on $NAME: $(jq -r '"\(.name) \(.status) \(.reason.message // "")"' "$W/records/cold-plain-again.json" 2> /dev/null); $(jexec cold-plain-again)"
+  fi
+  # A new executor on the same pod, the kernels now compiled once here: without a LoRA (another seed: no answer from memory), then,
+  # the service started again, with the LoRA at seed 7: the as-typed pair's LoRA picture.
+  restarted plain
+  jrun restarted-plain flux.3-klein/image "instructions=$w" seed=9 || { jlogs restarted-plain 2m; jrun restarted-plain-again flux.3-klein/image "instructions=$w" seed=9; }
+  restarted lora
+  picture=restarted-lora
+  jrun restarted-lora flux.3-klein/image "instructions=$w" seed=7 --lora "$LORA" || { jlogs restarted-lora 2m; picture=restarted-lora-again; jrun restarted-lora-again flux.3-klein/image "instructions=$w" seed=7 --lora "$LORA"; }
+  note "1 new executors on the same pod" "no LoRA: $(jq -r '"\(.name) \(.status) \(.reason.message // "")"' "$W/records/restarted-plain.json" 2> /dev/null); with the LoRA: $(jq -r '"\(.name) \(.status) \(.reason.message // "")"' "$W/records/restarted-lora.json" 2> /dev/null); executors: $(jq -c '[.measurements.execution.gpus[]?.pid, .measurements.execution.executor.started_unix_ms]' "$W/records/$twin.json" "$W/records/restarted-plain.json" "$W/records/restarted-lora.json" 2> /dev/null | tr '\n' ' ')"
+  # 2. The as-typed turbo pair: the LoRA's picture beside its twin, the same seed and words.
+  ldiff turbo-default "$picture" "$twin"
+  note "2 as-typed turbo pair" "$(grep -a 'DIFF turbo-default' "$R" | tail -1 | cut -c10-700)"
+  # 3. Fibo's and Krea 2's boxes with a LoRA of their family, bare, each beside its twin. Fibo's box has an upsampler too: its first
+  # run is its package's first on this pod, with the LoRA when Klein's cold run passed, without it when it failed.
+  for fam in fibo krea; do
+    tool=fibo-2/image; [ "$fam" = fibo ] || tool=krea-2/image
+    l=$(param "lora_$fam" '')
+    if [ -z "$l" ]; then say "lora $fam: no LoRA named for it: nothing to run"; continue; fi
+    DIR=$P c "lora-show-$fam" lora show "$l"
+    say "lora $fam: $l: $(grep -aE '^(kind|adapter) ' "$W/cli/lora-show-$fam.txt" | tr -s ' ' | tr '\n' ';' | cut -c1-300)"
+    first=lora second=plain; [ "$a" = 0 ] || { first=plain; second=lora; }
+    for one in $first $second; do
+      if [ "$one" = lora ]; then jrun "lora-$fam" "$tool" "instructions=$w" seed=7 --lora "$l" || { jlogs "lora-$fam" 2m; jrun "lora-$fam-again" "$tool" "instructions=$w" seed=7 --lora "$l"; }
+      else jrun "plain-$fam" "$tool" "instructions=$w" seed=7 || { jlogs "plain-$fam" 2m; jrun "plain-$fam-again" "$tool" "instructions=$w" seed=7; }; fi
+    done
+    first=lora-$fam; [ -n "$(lpic "$first")" ] || first=lora-$fam-again
+    second=plain-$fam; [ -n "$(lpic "$second")" ] || second=plain-$fam-again
+    ldiff "$fam" "$first" "$second"
+    note "3 $fam" "$tool --lora $l: $(jq -r '"\(.name) \(.status) \(.reason.message // "")"' "$W/records/lora-$fam.json" 2> /dev/null), LoRA on $(jq -c '[.measurements.models[]? | select((.adapters // []) | length > 0) | .slot]' "$W/records/$first.json" 2> /dev/null); $(grep -a "DIFF $fam " "$R" | tail -1 | cut -c10-600)"
+  done
+  DIR=$P c cold-runs run ls
+  sed -n 1,20p "$W/cli/cold-runs.txt" | cut -c1-220 | sed 's/^/    runs: /' >> "$R"
+  DIR=$P c cold-machine-after machine show "$NAME"
+  grep -aE '^(version|runtime|tensorfs) ' "$W/cli/cold-machine-after.txt" | tr -s ' ' | sed 's/^/    machine: /' >> "$R"
+}
 # The phases in the order asked (`order`): a short session pays for what matters most first. `results` is the page's look at the boxes.
-for ph in $(param order 'predict relock updates tools cancel seeds results lora lost'); do
+for ph in $(param order 'predict relock updates tools cancel seeds results lora cold lost'); do
   case $ph in
     results) { has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results ;;
     *) ! has "$ph" || "phase_$ph" ;;
