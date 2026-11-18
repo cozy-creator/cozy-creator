@@ -1,0 +1,10 @@
+[
+  {
+    "classes": ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"],
+    "note": "Hand-written. A VisionLM's vision tower and multi-token-prediction head are their own components, so a call fetches only what it runs (Paul: \"yes good idea\"). Each part's keys are the state dict of the module the Runtime makes its root: Transformers' vision model, and cozy_runtime.lm.Draft (whose root has a child mtp).",
+    "parts": [
+      {"component": "vision", "prefix": "model.visual.", "stored": ""},
+      {"component": "mtp", "prefix": "mtp.", "stored": "mtp."}
+    ]
+  }
+]

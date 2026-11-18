@@ -2,7 +2,8 @@
 //! generated from upstream's own converter; this file recognizes a source by its tables' key
 //! sets and applies a table row by row: `rename | view -> take(axis, idx) | permute -> shape`,
 //! then the component's `cast`. A quantized carrier, folded into one encoded tensor (`carriers`),
-//! is only renamed. Nothing model-specific lives here.
+//! is only renamed. A class stored as several components is split by `converters/splits.json`
+//! ([`split`]). Nothing model-specific lives here.
 
 use platform::durable::FileAt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -313,10 +314,70 @@ pub(crate) fn tables() -> &'static [Table] {
     })
 }
 
-/// The built-in tables' digest: an import is what its source's bytes and these tables make.
+/// The built-in tables' and splits' digest: an import is what its source's bytes and these make.
 pub fn tables_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| crate::sha256::hex_digest(TABLES.join("\0").as_bytes()))
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0{SPLITS}", TABLES.join("\0")).as_bytes()))
+}
+
+/// The Transformers classes stored as several components.
+const SPLITS: &str = include_str!("../../converters/splits.json");
+
+/// A class whose root component ([`super::ROOT_COMPONENT`]) is stored with some of its source keys in components of
+/// their own, so a call fetches only the components it runs.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Split {
+    pub classes: Vec<String>,
+    pub parts: Vec<SplitPart>,
+    /// Why: for people.
+    #[serde(rename = "note")]
+    _note: String,
+}
+
+/// The root's source keys under `prefix`, stored in `component` with `prefix` replaced by `stored`: the state dict of
+/// the module that reads them.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SplitPart {
+    pub component: String,
+    pub prefix: String,
+    pub stored: String,
+}
+
+impl SplitPart {
+    /// The upstream key of a key this part stores.
+    pub(crate) fn upstream_key(&self, key: &str) -> Option<String> {
+        key.strip_prefix(self.stored.as_str()).map(|rest| format!("{}{rest}", self.prefix))
+    }
+}
+
+/// How `class` is split, when it is.
+pub(crate) fn split_of(class: &str) -> Option<&'static Split> {
+    static PARSED: std::sync::OnceLock<Vec<Split>> = std::sync::OnceLock::new();
+    let splits = PARSED.get_or_init(|| serde_json::from_str(SPLITS).expect("the built-in splits"));
+    splits.iter().find(|s| s.classes.iter().any(|c| c == class))
+}
+
+/// Moves each planned tensor of a root whose source class is split ([`Split`]) and whose key is under a part's prefix
+/// into that part's component, after the root's tensors; each keeps its construction order. It composes with any table
+/// that wrote the root (Qwen3.6-35B-A3B's experts): it reads only the planned keys. Only a model with no pipeline: a
+/// pipeline's component of such a class (a text encoder) is read as one.
+pub(crate) fn split(set: &SourceSet, r: &Recognized, identity: &dyn Fn(&Group) -> String, planned: &mut [Planned]) {
+    let root = super::ROOT_COMPONENT;
+    if set.plain.iter().any(|p| [super::PIPELINE_FILE, super::MODULAR_INDEX].contains(&p.path.as_str())) {
+        return;
+    }
+    let named = (r.claims.iter().map(|c| (c.name.clone(), c.group))).chain(r.unclaimed.iter().map(|g| (identity(&set.groups[*g]), *g)));
+    let class = named.filter(|(name, g)| name == root && set.groups[*g].folder.is_empty()).find_map(|(_, g)| set.class_of(&set.groups[g]));
+    let Some(split) = class.as_deref().and_then(split_of) else { return };
+    for p in planned.iter_mut().filter(|p| p.component == root) {
+        if let Some(part) = split.parts.iter().find(|s| p.key.starts_with(s.prefix.as_str())) {
+            p.key = format!("{}{}", part.stored, &p.key[part.prefix.len()..]);
+            p.component = part.component.clone();
+        }
+    }
+    planned.sort_by_key(|p| split.parts.iter().position(|s| s.component == p.component).map_or(0, |i| i + 1));
 }
 
 // ------------------------------------------------------------------------------ recognition

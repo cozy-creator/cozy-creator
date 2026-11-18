@@ -11,7 +11,9 @@
 //!    (`carriers`). Recognize from safetensors headers alone: a built-in table claims a group
 //!    when its key set is the table's, and a table whose layout headers cannot tell only when the
 //!    file declares one of its producers (`engine`). A layout nothing recognizes is refused unless
-//!    the caller names [`engine::AS_IS`], which stores every group as it is.
+//!    the caller names [`engine::AS_IS`], which stores every group as it is. A root whose class is
+//!    split (`converters/splits.json`: Qwen3.5's `vision` and `mtp`) puts those keys in their own
+//!    components ([`engine::split`]).
 //! 4. Map every other file ([`layout`]): `model_index.json` becomes the pipeline, a component's
 //!    config its structured config, the other run files in its folder its assets; README,
 //!    LICENSE, images, code and docs stay repo files. A table's pinned reference supplies the
@@ -46,7 +48,7 @@ use crate::format::{
 use crate::store::Error;
 use crate::writer::{Data, PartData, Source, Writer};
 
-pub(crate) use engine::{tables, AS_IS};
+pub(crate) use engine::{split_of, tables, AS_IS};
 pub use engine::tables_digest;
 pub(crate) use order::constructor_order;
 pub use remote::Access;
@@ -608,7 +610,8 @@ fn documents(
 ///   configs), else `""`.
 /// - In a component's folder, the first of [`CONFIGS`] is its config, and the other run files
 ///   ([`run_data`]) its assets.
-/// - Every other file is a repo file. A component with no tensors, config or assets is none.
+/// - Every other file is a repo file. A component with no tensors, config or assets is none; one with
+///   tensors and no folder (a split's part) has no config, no assets and the unknown class.
 pub(crate) fn layout(
     mut files: BTreeMap<String, Vec<u8>>,
     tensored: &[String],
@@ -965,6 +968,9 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let identity = |g: &source::Group| component(&g.folder, &g.stem);
     let mut ignored = Vec::new();
     let mut planned = engine::plan(&set, tables, &recognized, &identity, &mut ignored)?;
+    if !as_is {
+        engine::split(&set, &recognized, &identity, &mut planned);
+    }
     let (mut files, mut filled, mut versions) = documents(&set, &recognized, &planned, req, &area)?;
     let sources: BTreeMap<String, &source::Group> = (recognized.claims.iter())
         .map(|c| (c.name.clone(), &set.groups[c.group]))

@@ -225,7 +225,7 @@ read them.
 
 | Model | Upstream name | Stored name | Measured reason |
 |---|---|---|---|
-| — | — | — | No deviations. |
+| Qwen3.5 VL (`Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`; `converters/splits.json`) | `model.visual.<k>`, `mtp.<k>` in the root `model` | component `vision` `<k>`; component `mtp` `mtp.<k>` | A text-only call fetches no vision tower (0.91 GB of Qwen3.5-9B's 19.3 GB in bf16), a call that drafts nothing no MTP head (0.49 GB). Each part is the state dict of the module that reads it (Transformers' vision model; the Runtime's `lm.Draft`). `tfs export --safetensors` writes the upstream names. |
 
 ## 5. Dtypes
 
