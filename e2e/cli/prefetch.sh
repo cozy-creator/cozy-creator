@@ -482,6 +482,7 @@ coming_done measured 600
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "measured")] | last // empty')
 run=$(jq -r '.run // empty' <<< "${job:-null}")
 if [ -n "$run" ] && J '.state == "done"' <<< "$job"; then
+  echo "$P" > "$OUT/gpuless-measured.at"
   run_show "$OUT" gpuless-measured "$run"
   echo "prefetch gpuless: measured's render $run: $(jq -c '{machine, status, execution_ms, placed: (.placed | {machine, basis, warm, fetch_bytes, prepare_ms, finish_s: ((.finish_at_ms - .quoted_at_ms) / 1000)})}' "$OUT/gpuless-measured.json" 2> /dev/null)"
   J '.machine == "local" and .placed.basis == "reference"' "$OUT/gpuless-measured.json" \
