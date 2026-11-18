@@ -1,7 +1,8 @@
 """analyze.py FRAMES_PY OUT PAIRS_JSON: each pair of one request's renders, one window (`one`) and windowed (`r`), against
 each other and against the plate they came from. PAIRS_JSON: [{"pair", "plate", "one", "r", "spans": [[a, b], ...]}] with the
 windowed arm's latent spans. Writes OUT/<pair>.json and, per pair, frames/<pair>/ (plate | one | r at 960x540), crops/<pair>/
-(one | r | the plate's region, at the output's own pixels) and diff/<pair>/ (|one - r| luma x4) at the start, middle and end
+(one | r | the plate's region, at the output's own pixels), upper/<pair>/ (one, r, plate stacked: the
+upper middle, the faces) and diff/<pair>/ (|one - r| luma x4) at the start, middle and end
 and at each overlap's first, middle and last frame, plus temporal-<pair>.png (each frame's change from the last).
 
 Latent frame l covers video frames from 2.5 l (l < 2, the VAE's first 5 frames) or 5 + 3.4 (l - 2) on (17 frames a 5-latent
@@ -168,10 +169,19 @@ for p in json.load(open(pairs_path)):
     crop = f"crop={cw}:{ch}:{ox}:{oy}"
     pcrop = f"crop={round(cw * pw / w)}:{round(ch * ph / h)}:{bx}:{by}"
     full = {"one": pick(one, at, cw, ch, crop), "r": pick(r, at, cw, ch, crop), "plate": pick(plate, at, cw, ch, pcrop)}
+    # The upper middle, where the faces are: x 15-80%, y 0-45% of the frame, at the output's pixels up to 1664 wide; one, r and
+    # the plate stacked (upper/).
+    ux, uw, uh = round(0.15 * w) // 2 * 2, round(0.65 * w) // 2 * 2, round(0.45 * h) // 2 * 2
+    sw = min(uw, 1664) // 2 * 2
+    sh = round(uh * sw / uw) // 2 * 2
+    pu = f"crop={round(uw * pw / w)}:{round(uh * ph / h)}:{round(ux * pw / w)}:0"
+    upper = {"one": pick(one, at, sw, sh, f"crop={uw}:{uh}:{ux}:0"), "r": pick(r, at, sw, sh, f"crop={uw}:{uh}:{ux}:0"),
+             "plate": pick(plate, at, sw, sh, pu)}
     gray = np.array([0.299, 0.587, 0.114])
     for tag, k in tags.items():
         png(os.path.join(out, "frames", name, f"{tag}-f{k}.png"), np.concatenate([small[x][k] for x in ("plate", "one", "r")], axis=1))
         png(os.path.join(out, "crops", name, f"{tag}-f{k}.png"), np.concatenate([full[x][k] for x in ("one", "r", "plate")], axis=1))
+        png(os.path.join(out, "upper", name, f"{tag}-f{k}.png"), np.concatenate([upper[x][k] for x in ("one", "r", "plate")], axis=0))
         d = np.abs(small["one"][k].astype(np.float64) @ gray - small["r"][k].astype(np.float64) @ gray) * 4
         png(os.path.join(out, "diff", name, f"{tag}-f{k}.png"), np.repeat(np.clip(d, 0, 255).astype(np.uint8)[..., None], 3, axis=2))
     result["crop"] = {"output_xy": [ox, oy], "size": [cw, ch]}
