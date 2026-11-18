@@ -13,13 +13,13 @@
 # `h3 regenerate` line logs. Records go to records/ (not the ledger: the trees' code isn't their version's).
 # The pod ends after the last cell; then, on the runner, fixtures/h3-refine-layout/analyze.py compares each pair.
 # params: runtime, tensorfs (wheels, https://…#sha256=<hex>), source, start, prompt, cells, sheet (true: the source's contact
-# sheet), max_failures (2), need_s (5400). (`cap` is lib.sh's dollar cap.)
+# sheet, 30 frames from sheet_from s every sheet_step s), max_failures (2), need_s (5400). (`cap` is lib.sh's dollar cap.)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/h3-refine-layout FRAMES_PY=$(cd "$HERE/.." && pwd)/frames.py
 CELLS=$(param cells "warm r-1440 one-1440 r-1080 one-1080 r-2160 one-2160") MOST=$(param max_failures 2)
 SOURCE=$(param source "https://upload.wikimedia.org/wikipedia/commons/1/10/Tears_of_Steel_in_4k_-_Official_Blender_Foundation_release.webm")
-START=$(param start 0) PROMPT=$(param prompt "") SHEET=$(param sheet false)
+START=$(param start 0) PROMPT=$(param prompt "") SHEET=$(param sheet false) SHEET_FROM=$(param sheet_from 0) SHEET_STEP=$(param sheet_step 10)
 [ -n "$PROMPT" ] || fail "no prompt"
 [[ $START =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "start $START"
 for tool in ffmpeg ffprobe curl jq uv unzip; do command -v "$tool" > /dev/null || fail "no $tool"; done
@@ -69,8 +69,9 @@ done
 ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -vf "fps=2/3,scale=480:-2,tile=4x3" -frames:v 1 "$OUT/clip-sheet.jpg" || fail "clip sheet"
 if [ "$SHEET" = true ]; then
   for i in $(seq 0 29); do
-    ffmpeg -nostdin -v error -y -ss $((i * 10)) -i "$WORK/source" -frames:v 1 -vf "scale=320:-2,drawtext=text='$((i * 10))':x=8:y=8:fontsize=28:fontcolor=yellow" \
-      "$WORK/s$(printf %02d "$i").png" 2> /dev/null || ffmpeg -nostdin -v error -y -ss $((i * 10)) -i "$WORK/source" -frames:v 1 -vf scale=320:-2 "$WORK/s$(printf %02d "$i").png"
+    at=$((SHEET_FROM + i * SHEET_STEP))
+    ffmpeg -nostdin -v error -y -ss "$at" -i "$WORK/source" -frames:v 1 -vf "scale=320:-2,drawtext=text='$at':x=8:y=8:fontsize=28:fontcolor=yellow" \
+      "$WORK/s$(printf %02d "$i").png" 2> /dev/null || ffmpeg -nostdin -v error -y -ss "$at" -i "$WORK/source" -frames:v 1 -vf scale=320:-2 "$WORK/s$(printf %02d "$i").png"
   done
   ffmpeg -nostdin -v error -y -i "$WORK/s%02d.png" -vf tile=6x5 -frames:v 1 "$OUT/source-sheet.jpg" || say "no source sheet"
 fi
