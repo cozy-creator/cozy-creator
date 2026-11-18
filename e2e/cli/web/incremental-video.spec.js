@@ -103,8 +103,16 @@ test('incremental-video', async ({ page, project, api, cli }) => {
   await expect.poll(() => canvasVisible(page, 'shot')).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
-  const render = async () => {
+  // `more`, words added to its summary first: the stand-in takes no seed, so the same words again keep the take they made and render nothing.
+  const render = async (more) => {
     await focus(page, 'shot');
+    if (more) {
+      const was = (await project.asset('shot')).fields.summary;
+      await region.getByRole('textbox', { name: 'Summary', exact: true }).click();
+      await page.keyboard.press('ControlOrMeta+End');
+      await page.keyboard.type(more);
+      await expect.poll(async () => (await project.asset('shot'))?.fields?.summary, { message: 'its summary saved', timeout: 30_000 }).toBe(was + more);
+    }
     const before = (await project.asset('shot'))?.prefixes?.length ?? 0;
     await region.getByRole('button', { name: 'Render', exact: true }).click();
     let run;
@@ -187,7 +195,7 @@ test('incremental-video', async ({ page, project, api, cli }) => {
   });
 
   await test.step('in Focus, through segments 2 and 3 and its take landing, its clock runs on and it always has a frame', async () => {
-    const { before } = await render();
+    const { before } = await render(' Then the harbour.');
     await region.locator('.here-side .take.making').first().click();
     await expect.poll(() => region.locator('.glimpse video.shown').evaluate((el) => el.readyState >= 2).catch(() => false), { message: 'segment 1 here', timeout: RUN_MS }).toBe(true);
     await region.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
