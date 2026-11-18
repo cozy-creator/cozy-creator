@@ -305,9 +305,11 @@ in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json
 before=$(envs_in "$HOME/.cozy")
 RUN_PROJECT=$other cell second-parts "$script" || return 0
 after=$(envs_in "$HOME/.cozy")
-# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none waited on the machine's download of a model
+# (`waiting_on`, cl-1205), none installed dependencies.
 grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or ((.waiting_on // []) | length > 0)
       or (.stage | test("installing dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
 [ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
