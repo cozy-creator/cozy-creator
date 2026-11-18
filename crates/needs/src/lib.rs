@@ -169,12 +169,12 @@ impl Wants {
 pub const ON_DEMAND: &str = "its on-demand models";
 
 /// What a call of `entrypoint` in the interface `document` wants of its models, by slot, given what its rules say of the request
-/// (`answers`; none, for a call sent with no request). A function that loads models waits for each slot but an on-demand one, and
-/// for one whose rule holds; one whose rule doesn't hold is never fetched; the rest of its on-demand slots are its extras. One that
-/// loads none and calls others (an orchestrator, H3's `generate`; Orbit, whose `render_shot` is H3's, one of `others`): for each
-/// function it calls (`callees`), what that one waits for is waited for when its rule says this request calls it, and is `either`
-/// when no rule answers, of which what they all read is waited for; the rest of each is an extra. A called function's own rules
-/// read its own request, which only its call brings (Orbit builds H3's in code): none of them answers here.
+/// (`answers`; none, for a call sent with no request): its own slots and its calls' (cl-1281). Of its own it waits for each slot but
+/// an on-demand one, and for one whose rule holds; one whose rule doesn't hold is never fetched; the rest of its on-demand slots are
+/// its extras. For each function it calls (`callees`: H3's `generate` calls its segments; Orbit's `render_shot` is H3's, one of
+/// `others`), what that one waits for is waited for when its rule says this request calls it, and is `either` when no rule answers,
+/// of which what they all read is waited for; the rest of each is an extra. A called function's own rules read its own request,
+/// which only its call brings (Orbit builds H3's in code): none of them answers here.
 pub fn wants(document: &Value, others: &[Other<'_>], entrypoint: &str, answers: &Answers) -> Wants {
     let mut wants = Wants::default();
     let Some(entry) = api::interface::entrypoint(document, entrypoint) else { return wants };
@@ -184,7 +184,6 @@ pub fn wants(document: &Value, others: &[Other<'_>], entrypoint: &str, answers: 
         if !extras.is_empty() {
             wants.extras.push((ON_DEMAND.to_owned(), extras));
         }
-        return wants;
     }
     let (packages, unasked) = (Packages { own: document, others }, Answers::default());
     for callee in callees(document, others, entrypoint, &answers.unneeded) {
@@ -231,15 +230,19 @@ fn split(entry: &Value, answers: &Answers, behind: &str) -> (Vec<String>, Vec<St
     (needed, extras)
 }
 
-/// The functions that construct a model and that `entrypoint` of `document`, loading none itself, calls: those its `calls` name (the
-/// Runtime's static reading, through its own helpers), its package's own or one of `others`' (cl-1123: Orbit's `render_shot`, H3's),
-/// and theirs in turn, in each package's order, its own first (cl-1077: H3's `edit` brought `upscale`'s upscaler). Another package's
-/// is named behind its distribution (`minimax-h3/ref2va_segment`). One that declares no `calls` may call any internal one of its
-/// package. One its rules say the request doesn't call (`uncalled`) is left out, and what only it reaches.
+/// The functions that construct a model and that `entrypoint` of `document` calls: those its `calls` name (the Runtime's static
+/// reading, through its own helpers), its package's own or one of `others`' (cl-1123: Orbit's `render_shot`, H3's), and theirs in
+/// turn, in each package's order, its own first (cl-1077: H3's `edit` brought `upscale`'s upscaler). Another package's is named
+/// behind its distribution (`minimax-h3/ref2va_segment`). One that declares no `calls` and has no model of its own may call any
+/// internal one of its package. One its rules say the request doesn't call (`uncalled`) is left out, and what only it reaches.
 pub fn callees(document: &Value, others: &[Other<'_>], entrypoint: &str, uncalled: &BTreeSet<String>) -> Vec<String> {
     let packages = Packages { own: document, others };
     let constructs = |entry: &Value| api::interface::models(entry).iter().any(|slot| slot["weights"].as_bool() != Some(true));
-    let reached = api::interface::entrypoint(document, entrypoint).filter(|entry| entry.get("calls").is_some()).map(|root| {
+    let root = api::interface::entrypoint(document, entrypoint);
+    if root.is_some_and(|entry| entry.get("calls").is_none() && !api::interface::models(entry).is_empty()) {
+        return vec![];
+    }
+    let reached = root.filter(|entry| entry.get("calls").is_some()).map(|root| {
         let (mut reached, mut pending) = (BTreeSet::new(), vec![(None, root)]);
         while let Some((package, entry)) = pending.pop() {
             for call in entry["calls"].as_array().into_iter().flatten() {
@@ -281,20 +284,21 @@ pub struct Resolved {
     pub extras: Vec<(String, Selected)>,
 }
 
-/// `wants` as checkpoints, each slot by `resolve` (its checkpoint and the components read of it; none: it reads nothing here): what
-/// the call waits for is what every function of its `either` reads, each one resolved whole (one that doesn't is left out), and
-/// each needed slot's; then each group of extras. Each checkpoint once in each, with the components any of its slots reads.
-pub fn resolved(wants: &Wants, resolve: impl Fn(&str) -> Option<(String, Vec<String>)>) -> Resolved {
+/// `wants` as checkpoints, each slot by `resolve`: its checkpoint with the components read of it, then each LoRA its request puts on
+/// it, whole (cl-1281: a slot's LoRAs are fetched as its model is); none: it reads nothing here. What the call waits for is what
+/// every function of its `either` reads, each one resolved whole (one that doesn't is left out), and each needed slot's; then each
+/// group of extras. Each checkpoint once in each, with the components any of its slots reads.
+pub fn resolved(wants: &Wants, resolve: impl Fn(&str) -> Option<Selected>) -> Resolved {
     let selected = |slots: &[String]| {
         let mut selected = Selected::new();
-        joined(&mut selected, slots.iter().filter_map(|slot| resolve(slot.as_str())).collect());
+        joined(&mut selected, slots.iter().filter_map(|slot| resolve(slot.as_str())).flatten().collect());
         selected
     };
     let each: Vec<Selected> = (wants.either.iter())
-        .filter_map(|slots| slots.iter().map(|slot| resolve(slot.as_str())).collect::<Option<Selected>>())
+        .filter_map(|slots| slots.iter().map(|slot| resolve(slot.as_str())).collect::<Option<Vec<Selected>>>())
         .map(|all| {
             let mut one = Selected::new();
-            joined(&mut one, all);
+            joined(&mut one, all.into_iter().flatten().collect());
             one
         })
         .collect();

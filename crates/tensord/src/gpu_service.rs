@@ -338,15 +338,25 @@ impl Plan {
             None => raw().map(|source| (source.manifest.clone(), source.components.clone())),
         }
     }
+    /// What slot `path` reads: its checkpoint and components (`selected`), then each LoRA its request stacks on it, whole (its adapter
+    /// view's, cl-1281): a slot's LoRAs are needed as its model is.
+    pub(crate) fn reads(&self, path: &str) -> Option<crate::access::Selected> {
+        let mut reads = vec![self.selected(path)?];
+        let view = self.slots.iter().find(|slot| slot.binding.model_binding_path == path).and_then(|slot| slot.view.as_ref());
+        reads.extend(view.into_iter().flat_map(|view| &view.selections).map(|lora| (lora.checkpoint.clone(), vec![])));
+        Some(reads)
+    }
     /// What a call of it loads (`access::Needs`, cl-1102): what it wants of its slots by its rules (`needs::wants`, cl-1103: every
     /// slot but an on-demand one and those the request's rules say it reads are needed, its raw weights too; its other on-demand
-    /// slots are extras, which a stage may read), as its checkpoints.
+    /// slots are extras, which a stage may read), as its checkpoints. A slot of a function it calls is that one's plan's
+    /// (`Runs::needs`).
     pub(crate) fn needs(&self, wants: &needs::Wants) -> crate::access::Needs {
-        let unresolved: Vec<&String> = wants.needed.iter().filter(|slot| self.selected(slot).is_none()).collect();
+        let own = format!("{}.models.", self.entrypoint);
+        let unresolved: Vec<&String> = wants.needed.iter().filter(|slot| slot.starts_with(&own) && self.selected(slot).is_none()).collect();
         if !unresolved.is_empty() {
             tracing::warn!("plan {}: no checkpoint here for {unresolved:?}, which its request needs", self.id);
         }
-        crate::access::Needs::of(needs::resolved(wants, |slot| self.selected(slot)))
+        crate::access::Needs::of(needs::resolved(wants, |slot| self.reads(slot)))
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name, so its first call waits on no download (cl-790).
