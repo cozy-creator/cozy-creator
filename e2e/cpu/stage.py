@@ -4,7 +4,7 @@ that folder, copied beside it, and so on through what those take. The Runtime it
 a wheel or a source folder, and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
 folder; prints nothing when it takes no first-party package. <dest>/unpublished.txt names each first-party dependency whose
 requirement the production Hub's index can't meet yet: a committed lock pins only what a machine can fetch, so it leaves that one
-out until the gated publish puts it there (cli.sh's lock cell stages it by path and compares the rest)."""
+out until the gated publish puts it there (cli.sh's lock cell resolves it from the suite's Hub and compares the rest)."""
 
 import platform
 import re

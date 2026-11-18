@@ -13,8 +13,8 @@ first line that differs and exits 1, or exits 0.
 
 A committed lock pins only what a machine can fetch: each file it names at production's index must be one the Hub serves (a
 HEAD each, not followed: a redirect to storage is served, a 4xx isn't), and a first-party dependency the Hub doesn't have yet
-(`--unpublished`, stage.py's, which the made lock resolved by path) is no committed lock's: its entries, and every package only
-it brings in, are left out of the made one before they're compared.
+(`--unpublished`, stage.py's; the made lock resolved it from the suite's Hub, the checkout's build) is no committed lock's: its
+entries, and every package only it brings in, are left out of the made one before they're compared.
 """
 
 from __future__ import annotations
