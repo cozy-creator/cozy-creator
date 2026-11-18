@@ -127,6 +127,29 @@ current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$
 RENT_ARGS=--ssh
 quote "$NEED"
 rent
+# PROOF ONLY (var-030 section 8): paging is judged on a host with room for it. `min_cores` and `min_ram_gib` (the smaller of
+# MemTotal and the container's memory.max): a host below them is ended by name and another rented, `host_tries` in all.
+# `cozy machine rent` takes no host size, so the session looks after the boot.
+MINC=$(param min_cores 0) MINR=$(param min_ram_gib 0) TRIES=$(param host_tries 3) HOST_SIZE='? ?'
+for try in $(seq "$TRIES"); do
+  hw=''
+  for _ in 1 2 3 4 5 6; do
+    hw=$(timeout 90 cozy machine ssh "$NAME" 'echo "$(nproc) $(awk "/^MemTotal/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) $(cat /sys/fs/cgroup/memory.max 2> /dev/null || echo max)"' < /dev/null 2> /dev/null |
+      grep -E '^[0-9]+ [0-9]+ ' | tail -1)
+    [ -z "$hw" ] || break; sleep 10
+  done
+  read -r cores ram cg <<< "${hw:-0 0 max}"
+  [[ $cg =~ ^[0-9]+$ ]] && [ $((cg >> 30)) -lt "$ram" ] && ram=$((cg >> 30))
+  HOST_SIZE="$cores $ram"
+  say "host $NAME: $cores cores, $ram GiB of RAM for the container (asked at least $MINC cores, $MINR GiB)"
+  if [ "$cores" -ge "$MINC" ] && [ "$ram" -ge "$MINR" ]; then break; fi
+  [ "$try" -lt "$TRIES" ] || fail "no host with $MINC cores and $MINR GiB in $TRIES rentals"
+  timeout 120 cozy machine end "$NAME" -y > "$OUT/end-small-$try.txt" 2>&1
+  for _ in $(seq 36); do gone "$RID" && break; sleep 5; done
+  gone "$RID" || fail "$NAME, too small, did not end"
+  say "ended $NAME (too small) and verified gone; renting again"
+  order; ready
+done
 jq -e '.status.gpus | length == 1' "$OUT/show.json" > /dev/null || fail "not one GPU"
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: nothing starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
@@ -346,7 +369,7 @@ declare -A RUNS=() DONE=()
 # run <cell> <name> <budget>: the cell's request once under <budget> (the cap, or `off` for its uncapped twin), as <name>.
 run() {
   local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
-  local mem procmib hostgrow hostpeak hostsys h2d d2h fills mg
+  local mem procmib hostgrow hostpeak hostsys h2d d2h fills ceil mg
   local -a args
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   mapfile -t args < <(jq -r '.args[]' <<< "$c")
@@ -382,6 +405,7 @@ run() {
   echo "$procmib $hostgrow $hostpeak $hostsys $h2d $d2h" > "$OUT/$name.mem"
   mg=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.working_allocator // empty)
     | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add)" end' "$OUT/$name.json" 2> /dev/null)
+  ceil=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.ceiling.h2d_gbps // empty) | max // "?"' "$OUT/$name.json" 2> /dev/null)
   fills=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.moved // empty | to_entries[] | .value.bytes // 0) | add // 0 | . / 1e9 | . * 10 | floor / 10' "$OUT/$name.json" 2> /dev/null)
   row "$name"
   steps=$(jq -r '"step 1 \(.phases.step1_s // "-") s, steady \(.phases.steady_s // "-") s x\(.phases.steps // "-")"' <<< "$ROW" 2> /dev/null)
@@ -411,7 +435,7 @@ run() {
   RUNS[$name]=${N:-}; DONE[$name]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
-  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
+  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | host ${HOST_SIZE% *} cores ${HOST_SIZE#* } GiB | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB; the link measured ${ceil:-?} GB/s in) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
   # The switch must have taken: a managed cell whose record says it was off measures nothing this session is for.
   if [ "$name" = "$k" ] && [ "$MANAGED" = true ] && [[ ${mg:-none} == "on 0,"* ]]; then fail "$name ran with managed working memory off: $mg"; fi
   publish "$name" "$verdict" "$why"
