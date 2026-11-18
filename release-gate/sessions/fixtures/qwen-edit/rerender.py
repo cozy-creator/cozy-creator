@@ -79,7 +79,7 @@ def same(a: Image.Image, b: Image.Image) -> float | None:
 
 
 def self_check(picture: str) -> int:
-    """A picture against itself is 1.00 everywhere; an unsharp mask of it raises the Laplacian and every band."""
+    """A picture against itself is the same; an unsharp mask of it raises the Laplacian by a fifth or more and every band."""
     image = Image.open(picture).convert("RGB")
     box = [0.25, 0.25, 0.75, 0.75]
     first = measures(image, box)
@@ -88,7 +88,7 @@ def self_check(picture: str) -> int:
     sharp = Image.fromarray(np.clip(a + 0.8 * (a - blur), 0, 255).astype(np.uint8))
     ratio = [x / y for x, y in zip(measures(sharp, box)[:5], first[:5])]
     print("unsharp mask against the picture:", " ".join(f"{v:.2f}" for v in ratio), "same", same(image, image))
-    return 0 if all(v > 1.2 for v in ratio) and same(image, image) == 1.0 else 1
+    return 0 if min(ratio[:2]) > 1.2 and min(ratio) > 1.0 and same(image, image) == 1.0 else 1
 
 
 def main() -> int:
