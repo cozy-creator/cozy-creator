@@ -46,11 +46,10 @@ ran() {
   jq -e '.rows[0]' "$OUT/$1.json" > /dev/null || fail "$1 returned no row: $(head -c 400 "$OUT/$1.json")"
 }
 
-ran host-cache
-say "probe: $(jq -c '.rows[0].probe' "$OUT/host-cache.json")$(jq -r '.rows[0].host // empty | " · " + .' "$OUT/host-cache.json")"
-ran runtime-cache
-say "runtime-cache: $(jq -c '.rows[0] | del(.case)' "$OUT/runtime-cache.json")"
+# host-cache and runtime-cache passed on both cards (44405240305, 44405244533) and their code is unchanged since: by the
+# owner's rule they don't run again. kv-tiers asks the probe itself; its line comes first.
 ran kv-tiers
+say "probe: $(jq -c '.rows[0].probe' "$OUT/kv-tiers.json")$(jq -r '.rows[0].host // empty | " · " + .' "$OUT/kv-tiers.json")"
 ran batch-shapes
 {
   jq -r '.rows[0] | "K/V \(.layout.kv_gib) GiB (\(.layout.tokens) tokens, \(.layout.attn_layers) layers, \(.layout.parts) parts) · link: H2D \(.h2d_gb_s // "?") GB/s, D2H \(.d2h_gb_s // "?") GB/s · stand-in: \(.standin.model), \(.standin.bytes_step / 1e9 * 100 | round / 100) GB a step\(if .host then " · host tier: " + .host else "" end)\(if .cleanup then " · cleanup: " + .cleanup else "" end)"' "$OUT/kv-tiers.json"
