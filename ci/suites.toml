@@ -176,7 +176,7 @@ slow = ["crates/calcifer/src/slow.rs", "crates/calcifer/src/store*", "crates/cal
 typed-calls = ["crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs", "e2e/cli/typedcalls.sh", "e2e/cli/typed-calls/**"]
 dev-start = ["crates/calcifer/src/maintenance_source.rs", "crates/calcifer/src/update.rs", "scripts/dev-local.sh", "e2e/cli/devstart.sh"]
 hold-wins = ["crates/calcifer/src/rc.rs", "crates/calcifer/src/update.rs", "crates/calcifer/src/floor.rs",
-  "crates/tensord/src/machine/update.rs", "crates/tensord/src/api/machine_update.rs", "e2e/cli/holdwins.sh", "e2e/cli/rentalself/**"]
+  "crates/tensord/src/machine/update.rs", "crates/tensord/src/api/machine_update.rs", "e2e/cli/holdwins.sh", "e2e/cli/uplink.py", "e2e/cli/rentalself/**"]
 projectvault-nofuse = ["crates/project-mount/**", "crates/project-vault/**", "e2e/cli/projectvault.sh"]
 projectvault-static = ["crates/project-mount/**", "e2e/cli/projectvault.sh", "e2e/cli/install-vault-driver.sh", "e2e/vault-provider/**"]
 web-1 = ["web/**", "crates/calcifer/src/page*", "crates/calcifer/src/page/**", "crates/calcifer/src/events.rs",

@@ -1,16 +1,17 @@
 # hold_wins (cl-1196). Found 11-17 on a rented RTX 4090, beerus: `cozy machine update beerus --runtime 0.47.0 --tensorfs 0.26.0
 # --tensord 0.26.0` held it by hand, and the RC update Calcifer queued at its boot ran anyway: beerus ended on 0.27.0-dev and Runtime
 # 0.48.0.dev2319, while `machine ls` and `show` said "held by hand on runtime 0.47.0". The hand's update staged nothing and reached
-# beerus first; the RC's, staging the RC's cozy, came after, and beerus ran it next.
+# beerus first; the RC's, staging the RC's 99 MB cozy over the laptop's uplink, came after, and beerus ran it next.
 # A dev home's rental (`dev = true`), stood in by `cozy machine serve --rental` on this runner against a stood-in Hub
 # (rentalself/standin.py) whose lease grants this computer's key, as a Hub grants the devices of the account that rented it; its
-# image is the newest release's, as a worker image is: GitHub's Latest cozy, PyPI's newest Runtime and TensorFS. Recorded as a
-# rental this computer ordered, it boots, and Calcifer queues its move to the open RC (rc-<x>'s prerelease). Then held by hand on
+# image is the newest release's, as a worker image is: GitHub's Latest cozy, PyPI's newest Runtime and TensorFS. Calcifer reaches it
+# through a laptop's uplink (uplink.py, 1 MiB/s). Recorded as a rental this computer ordered, it boots, and Calcifer queues its
+# move to the open RC (rc-<x>'s prerelease), whose cozy it stages, as beerus's was. Then held by hand on
 # that release, as beerus was: it stays on it, the RC update canceled and never run, and `machine show` says it is held on what it
 # runs. Then its hold names another Runtime, as beerus's store kept it: `machine show` and `machine ls` say what it runs. Linux, a
 # GitHub runner; its own shard.
 here_holdwins=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-HW_DIR='' HW_CFG='' HW_SAVED='' HW_PID='' HW_STANDIN='' HW_PORT='' HW_HUB='' HW_PROVIDER='' HW_CA=''
+HW_DIR='' HW_CFG='' HW_SAVED='' HW_PID='' HW_STANDIN='' HW_UPLINK='' HW_PORT='' HW_HUB='' HW_PROVIDER='' HW_CA=''
 
 hold_wins() {
 step "a hand update supersedes the RC update queued at a rental's boot, and machine show says what it runs (cl-1196)"
@@ -24,7 +25,7 @@ cozy restart > "$OUT/holdwins-back.txt" 2>&1 || check "hold wins: Calcifer didn'
 }
 
 hw_cell() {
-local d=$HW_DIR v runtime tensorfs released key fp code rc held
+local d=$HW_DIR v runtime tensorfs released key fp code rc held relay
 v=$(cozy --version | awk '{print $2}')
 [[ $v == *-dev+g* ]] || { check "hold wins: cozy $v is no RC build, with no RC to follow"; return; }
 runtime=$(curl -fsSL --retry 3 https://pypi.org/pypi/cozy-runtime/json | jq -r '.info.version // empty')
@@ -46,6 +47,9 @@ python3 "$here_holdwins/rentalself/standin.py" serve "$d" held > "$d/standin.log
 for _ in $(seq 60); do [ -s "$d/ready" ] && break; kill -0 "$HW_STANDIN" 2> /dev/null || break; sleep 0.5; done
 read -r HW_HUB HW_PROVIDER HW_CA < "$d/ready" 2> /dev/null || { check "hold wins: the stand-in Hub didn't start: $(tail -c 400 "$d/standin.log")"; return; }
 HW_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+python3 "$here_holdwins/uplink.py" "$d/uplink.port" "$HW_PORT" 1048576 > "$d/uplink.log" 2>&1 & HW_UPLINK=$!
+for _ in $(seq 20); do [ -s "$d/uplink.port" ] && break; sleep 0.5; done
+relay=$(cat "$d/uplink.port" 2> /dev/null) && [ -n "$relay" ] || { check "hold wins: the uplink didn't start: $(tail -c 300 "$d/uplink.log")"; return; }
 
 # Added once for its address and fingerprint, then recorded as a rental this computer ordered, in a dev home, with it down.
 hw_serve
@@ -57,7 +61,7 @@ done
 [ -s "$d/leaf.der" ] || { check "hold wins: the rental never served on $HW_PORT: $(tail -c 800 "$d/machine.log")"; return; }
 fp=$(sha256sum < "$d/leaf.der" | cut -c1-64)
 for _ in $(seq 60); do
-  code=0; cozy --json machine add stand-h "127.0.0.1:$HW_PORT" --fingerprint "sha256:$fp" > "$d/add.json" 2>&1 || code=$?
+  code=0; cozy --json machine add stand-h "127.0.0.1:$relay" --fingerprint "sha256:$fp" > "$d/add.json" 2>&1 || code=$?
   [ "$code" = 0 ] && break
   sleep 1
 done
@@ -69,35 +73,34 @@ hw_store "UPDATE machines SET kind = 'rental', rental_id = 'rental-holdwins', hu
 { echo 'dev = true'; grep -v '^dev *=' "$HW_SAVED"; } > "$HW_CFG"
 hw_start || return
 
-# It boots, and Calcifer queues its move to the RC: the run the hand's supersedes.
+# It boots, and Calcifer queues its move to the RC, a job of the machine's (`machine show`): the run the hand's supersedes.
 hw_serve
 rc=''
 for _ in $(seq 360); do
-  hw_runs "$d/runs-rc.json"
-  rc=$(jq -r '[.runs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")))] | first | .name // empty' "$d/runs-rc.json" 2> /dev/null)
+  hw_show > "$d/show-rc.json" 2> /dev/null || true
+  rc=$(jq -r '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")))] | first | .name // empty' "$d/show-rc.json" 2> /dev/null)
   [ -n "$rc" ] && break
   sleep 0.5
 done
-[ -n "$rc" ] || { check "hold wins: no RC update queued at stand-h's boot in 3 min: $(head -c 400 "$d/runs-rc.json") $(hw_show | jq -c '{state, rc, status: (.status // {} | {phase, version, runtime})}')"; return; }
-echo "hold wins: at stand-h's boot Calcifer queued $rc: $(jq -c --arg rc "$rc" '.runs[] | select(.name == $rc) | {status, target}' "$d/runs-rc.json")"
+[ -n "$rc" ] || { check "hold wins: no RC update queued at stand-h's boot in 3 min: $(jq -c '{state, rc, jobs, status: (.status // {} | {phase, version, runtime})}' "$d/show-rc.json" | head -c 800)"; return; }
+echo "hold wins: at stand-h's boot Calcifer queued $rc: $(jq -c --arg rc "$rc" '.jobs[] | select(.name == $rc) | {status, waiting, target}' "$d/show-rc.json")"
 
 code=0
 cozy --json machine update stand-h --runtime "$runtime" --tensorfs "$tensorfs" --tensord "$released" -y > "$d/hand.json" 2> "$d/hand.err" || code=$?
 [ "$code" = 0 ] || check "hold wins: the hand's update ($held): exit $code: $(tail -c 300 "$d/hand.json") $(tail -c 300 "$d/hand.err")"
 # Every update of it settled, and it ready on what the last left.
 for _ in $(seq 600); do
-  hw_runs "$d/runs.json"
-  J '[.runs[]? | select(.kind == "update" and (.status == "queued" or .status == "in_progress"))] | length == 0' "$d/runs.json" && break
+  hw_show > "$d/show.json" 2> /dev/null && J '[.jobs[]? | select(.kind == "update" and (.status == "queued" or .status == "in_progress"))] | length == 0
+    and .state == "ready" and .status.phase == "ready" and (.status.update // "") == ""' "$d/show.json" && break
   sleep 1
 done
-for _ in $(seq 180); do hw_show > "$d/show.json" && J '.state == "ready" and .status.phase == "ready" and (.status.update // "") == ""' "$d/show.json" && break; sleep 1; done
 echo "hold wins: stand-h's updates:"
-jq -r '.runs | sort_by(.number)[] | select(.kind == "update") | "  \(.name) \(.status): \(.target) \(.reason.message // "")"' "$d/runs.json"
+jq -r '.jobs[]? | select(.kind == "update") | "  \(.name) \(.status): \(.target) \(.reason.message // "")"' "$d/show.json"
 echo "hold wins: stand-h runs $(jq -c '.status | {version, runtime, tensorfs}' "$d/show.json"); held $(jq -c '{held, unheld, rc}' "$d/show.json")"
-J --arg rc "$rc" '[.runs[] | select(.name == $rc)][0].status == "canceled"' "$d/runs.json" \
-  || check "hold wins: the RC update $rc queued at boot wasn't canceled by the hand's: $(jq -c --arg rc "$rc" '.runs[] | select(.name == $rc) | {status, reason}' "$d/runs.json")"
-J '[.runs[] | select(.kind == "update" and (.target | test("\\(RC\\)")) and .status != "canceled")] | length == 0' "$d/runs.json" \
-  || check "hold wins: an RC update ran past the hold: $(jq -c '[.runs[] | select(.kind == "update" and (.target | test("\\(RC\\)"))) | {name, status}]' "$d/runs.json")"
+J --arg rc "$rc" '[.jobs[]? | select(.name == $rc)][0].status == "canceled"' "$d/show.json" \
+  || check "hold wins: the RC update $rc queued at boot wasn't canceled by the hand's: $(jq -c --arg rc "$rc" '[.jobs[]? | select(.name == $rc) | {status, reason}]' "$d/show.json")"
+J '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)")) and .status != "canceled")] | length == 0' "$d/show.json" \
+  || check "hold wins: an RC update ran past the hold: $(jq -c '[.jobs[]? | select(.kind == "update" and (.target | test("\\(RC\\)"))) | {name, status}]' "$d/show.json")"
 J --arg rt "$runtime" --arg tfs "$tensorfs" --arg v "$released" '.status.runtime == $rt and .status.tensorfs == $tfs and .status.version == $v' "$d/show.json" \
   || check "hold wins: stand-h runs $(jq -c '.status | {version, runtime, tensorfs}' "$d/show.json"), not the $held it was held on by hand"
 J --arg h "$held" '.held == $h and .unheld == null and .rc.state == "held"' "$d/show.json" \
@@ -153,6 +156,7 @@ hw_down() {
 
 hw_quit() {
   hw_down
+  [ -z "$HW_UPLINK" ] || { kill "$HW_UPLINK" 2> /dev/null || true; wait "$HW_UPLINK" 2> /dev/null || true; HW_UPLINK=''; }
   [ -z "$HW_STANDIN" ] || { kill "$HW_STANDIN" 2> /dev/null || true; wait "$HW_STANDIN" 2> /dev/null || true; HW_STANDIN=''; }
 }
 
@@ -174,5 +178,4 @@ hw_start() {
   return 1
 }
 
-hw_runs() { cozy --json run ls --all --on stand-h --limit 0 > "$1" 2> /dev/null || true; }
 hw_show() { timeout 60 "$COZY" --json machine show stand-h 2> /dev/null; }
