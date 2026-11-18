@@ -207,11 +207,23 @@ product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCEN
 # set leased (21.4 GiB) beside 1.2 GiB of decode slots, its vision tower's split found no room, and that refusal ended the
 # call where a refused allocation streams it. Red on a card with 22.7-23.6 GiB of room (a 4090 with 22.8); with less
 # (22.5), the slots were refused first and it ran.
+# cr-332: where the expander decodes streamed (Transformers' loop), its embedding table gathers its rows on the host
+# once it leaves the device. The rc/0.27.0 head refilled the 2.37 GiB table whole 685 times in 1,573 tokens on a 4090
+# (2.90 tokens/s against 4.77, pod-session 44223589609). A cell whose expander filled one block over 4 times fails.
+h3i_table() {
+  local c=$1${TWIN:-} n
+  judged "$c" || return 0
+  n=$(run_get "$OUT" "$c" '[.measurements.memory.stats.varena[]?.stats.trace[]? | select(.set | endswith("/model")) | .block]
+    | group_by(.) | map(length) | max // 0')
+  expect "$c-table" "$([ "${n:-x}" -le 4 ] 2>/dev/null && echo PASS || echo FAIL)" "the expander's most-filled block: ${n:-no record} fills"
+}
 product_minimax_h3_image() {
   cell h3i "$(pkg minimax-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 35))
+  h3i_table h3i
   cell h3i-edit "$(pkg minimax-h3-image generate)" seed:=$((R + 36)) \
     instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
     references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+  h3i_table h3i-edit
 }
 product_ltx_2_5() {
   cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
