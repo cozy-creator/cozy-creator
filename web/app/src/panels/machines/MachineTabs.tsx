@@ -9,7 +9,7 @@ import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { downloadWait, lineWords, runName as runLabel, waitWords, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
-import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waits, working } from "./activity"
+import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, useOwnRun, waitersWords, waitingWords, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 import "./MachineTabs.css"
@@ -72,7 +72,9 @@ function Face({ machine, doing }: { machine: Machine; doing: Doing[] }) {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string; activity: Operation[] }) {
+function Row({ doing, boxes, to, activity, project }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string; activity: Operation[]; project: string | null }) {
+  // A run of the open project as its box reads it, current through its wait (cl-1263); the machine's copy for any other.
+  const own = useOwnRun(doing.kind === "run" ? doing.run : undefined, project)
   if (doing.kind === "boot")
     return (
       <li className="doing">
@@ -124,7 +126,8 @@ function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, 
       </li>
     )
   }
-  const { run, on } = doing
+  const { on } = doing
+  const run = own ?? doing.run
   const fraction = run.progress?.done_fraction
   const going = working(run, on)
   // Waiting on downloads, it says so and leads to each, which alone shows how far it is (cl-1205).
@@ -201,7 +204,7 @@ function Activity({ machine, doing, boxes, to, chip, projectId, readable, locked
       {doing.length ? (
         <ul>
           {doing.map((one) => (
-            <Row key={one.key} doing={one} boxes={boxes} to={to} activity={ownActivity(machine, readable ? projectId : null)} />
+            <Row key={one.key} doing={one} boxes={boxes} to={to} activity={ownActivity(machine, readable ? projectId : null)} project={readable ? projectId : null} />
           ))}
         </ul>
       ) : (

@@ -8,7 +8,7 @@ import { useProjectId, useTo } from "../../app/project"
 import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
 import { downloadWait, lineWords, runName as runLabel, waitWords, workWords } from "../runs/words"
-import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
+import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, useOwnRun, waitersWords, waitingWords, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
@@ -44,7 +44,9 @@ function OperationRow({ operation }: { operation: Operation }) {
 
 function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: Operation[]; project: string | null; boxes: Map<number, string> }) {
   const to = useTo()
-  const run: Run | null | undefined = held.run
+  // A run of the open project as its box reads it, current through its wait (cl-1263); the machine's copy for any other.
+  const run: Run | null | undefined = useOwnRun(held.run, project)
+  const own = Boolean(run && project && run.project_id === project)
   const state = held.state
   const going = state === "running"
   if (held.locked || !run || (run.project_id && run.project_id !== project)) {
@@ -60,7 +62,8 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
   // Waiting on downloads, it says so and leads to each, which alone shows how far it is (cl-1205).
   const downloads = on?.kind === "download" ? downloadsOf(activity, run) : []
   const fraction = run.progress?.done_fraction
-  const waiting = held.waiting || run.waiting
+  // Its own reason as its box reads it; another's as the machine named it to this reader.
+  const waiting = own ? run.waiting : held.waiting || run.waiting
   const said = on
     ? waitingWords(downloads.length ? downloads : [on])
     : going || downloadWait(run)

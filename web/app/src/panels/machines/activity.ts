@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { machinesQuery } from "../../api/queries"
+import { machinesQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { ClientRun, Machine, Operation, Run } from "../../api/calcifer"
 import { leftWords, shown, span } from "../format"
@@ -167,6 +167,23 @@ export function fetchedWords(operation: Operation): string {
 export const fractionOf = (operation: Operation) => (operation.bytes_total ? operation.bytes_done / operation.bytes_total : undefined)
 
 /** What `run` waits on, kept by the machines' stream: a box says it while it waits. */
+/** The run a machine's row shows (cl-1263): a run of the open `project` as its box reads it, the page's own copy, which each `run.updated`
+ *  keeps current and a resync or reconnect reads again (Connection `readAll`). The machine list's copy moves only on `machine.updated`,
+ *  which a run's waiting or progress never sends, so a row read from it stood still through a wait its box counted down ("about 3 min",
+ *  2, 1). Any other run, another project's, a locked or encrypted one's an outsider sees, or another computer's, keeps the machine's
+ *  copy: this reads no project's runs but the reader's own. Which rows there are is still the machine's list. */
+export function useOwnRun(run: Run | null | undefined, project: string | null | undefined): Run | null | undefined {
+  const { client } = useConnection()
+  const own = Boolean(run && project && run.project_id === project)
+  const { data } = useQuery({
+    ...runQuery(client, own ? project! : "", own ? run!.number : 0),
+    enabled: own,
+    placeholderData: own ? run! : undefined,
+    staleTime: Number.POSITIVE_INFINITY,
+  })
+  return own ? (data ?? run) : run
+}
+
 export function useWaitsOn(run: Run | undefined): Operation | undefined {
   const { client } = useConnection()
   const { data } = useQuery({
