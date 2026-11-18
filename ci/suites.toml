@@ -181,6 +181,8 @@ lines = ["crates/tensord/src/line.rs", "crates/tensord/src/queue.rs", "crates/te
 log-since = ["crates/platform/src/gzip.rs", "e2e/cli/since.sh"]
 answers = ["crates/tensord/src/execution.rs", "crates/tensord/src/api/machine_status.rs", "crates/tensord/src/runs/read.rs",
   "e2e/cli/control.sh", "e2e/cli/slow-sync.c"]
+held-memo = ["crates/tensord/src/journal.rs", "crates/tensord/src/journal/**", "crates/tensord/src/objects.rs",
+  "crates/tensord/src/project_objects.rs", "crates/tensord/src/call_memo.rs", "e2e/cli/heldmemo.sh", "e2e/cli/project/counted.py"]
 slow = ["crates/calcifer/src/slow.rs", "crates/calcifer/src/store*", "crates/calcifer/src/store/**", "crates/calcifer/src/hub/**",
   "e2e/cli/slow.sh", "e2e/cli/statedb.sh"]
 typed-calls = ["crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs", "e2e/cli/typedcalls.sh", "e2e/cli/typed-calls/**"]
