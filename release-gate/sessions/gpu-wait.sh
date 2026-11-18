@@ -28,6 +28,8 @@ PW=$OUT/playwright-test
 npm install -s --prefix "$PW" @playwright/test@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install @playwright/test: $(tail -c 300 "$OUT/npm.log")"
 # The boxes, in the session's project: `holding` holds `hold` seconds, `waiting` waits for its GPU.
 printf 'holding:\n  %s/hold:\n    seconds: %s\nwaiting:\n  %s/wait: {}\n' "$FIX" "$HOLD" "$FIX" > "$RUN_PROJECT/boxes.yaml"
+# And a `waiting-<page>` box for each page, which that page's cell renders once it has loaded (cl-1263): one render per box at a time.
+for page in "${PAGE_NAMES[@]}"; do printf 'waiting-%s:\n  %s/wait: {}\n' "$page" "$FIX" >> "$RUN_PROJECT/boxes.yaml"; done
 (cd "$RUN_PROJECT" && cozy --json apply -f boxes.yaml) > "$OUT/apply.json" 2>&1 || fail "cozy apply: $(tail -c 300 "$OUT/apply.json")"
 URL=$(cd "$RUN_PROJECT" && cozy --json open 2> "$OUT/open.err" | jq -r '.url // empty')
 [ -n "$URL" ] || fail "the project's page: $(tail -c 300 "$OUT/open.err")"
@@ -100,6 +102,50 @@ ended() {
   say "$1: runs $HOLDING_RUN and $WAITING_RUN ended"
 }
 
+# holds <label> <machine>: `holding` rendered on <machine> until it holds it. Sets HOLDING_RUN.
+holds() {
+  render "$1-holding" holding "$2"
+  HOLDING_RUN=$(run_of hold) || fail "$1: holding's render made no run: $(tail -c 300 "$OUT/$1-holding.err")"
+  follow "$1-holding" "$HOLDING_RUN"
+  for _ in $(seq 600); do
+    watched "$HOLDING_RUN" | jq -r '.progress.stage // empty' | grep -qi holding && break
+    [ "$(watched "$HOLDING_RUN" | jq -r '.status // empty')" = failed ] && fail "$1: holding failed: $(watched "$HOLDING_RUN" | jq -c .reason)"
+    sleep 1
+  done
+  say "$1: run $HOLDING_RUN holds $2 for ${HOLD}s"
+}
+# rows <page> <machine> <enforce|plumbing>: the page's cell renders its own `waiting-<page>` once its page has loaded, so what that run
+# waits for reaches the page after it opened (cl-1263), and reads its box, its machine's tab and its queue. Its errors are sorted:
+# the row checks (a row begins with its box's words; a row says what the run says now), candidate delivery (the harness counting
+# requests the page itself canceled, the gate's own finding, said beside and judging nothing), and any other. Enforced (a rental's
+# GPU wait, whose reason comes after the run's last lifecycle event, so a row read from the machine list's copy never has it): a page
+# named red must fail its rows and nothing else, every other page pass them. Either way any other error fails the session.
+rows() {
+  local page=$1 machine=$2 mode=$3 errors="$OUT/page-$1.errors" rows delivery other
+  pw "$page" judge WAIT_BOX="waiting-$page" WAIT_RENDER="waiting-$page" WAIT_DIR="$RUN_PROJECT" WAIT_MACHINE="$machine"
+  jq -r '.. | objects | select(has("errors")) | .errors[]? | .message // empty | split("\n")[0]' "$OUT/web/report-$page.json" 2> /dev/null | sort -u > "$errors"
+  rows=$(grep -cE 'begins with what its box says|says what the run says now' "$errors")
+  delivery=$(grep -c 'candidate delivery errors' "$errors")
+  other=$(grep -vcE 'begins with what its box says|says what the run says now|candidate delivery errors' "$errors")
+  say "page $page: $rows row checks failed, $other other failures (exit $PW_CODE); candidate delivery errors: $([ "$delivery" = 0 ] && echo none || echo "counted, the harness's")"
+  [ "$other" = 0 ] || { say "FAIL page $page: $(grep -vE 'begins with what its box says|says what the run says now|candidate delivery errors' "$errors" | head -2 | tr '\n' ' ')"; RC=1; }
+  [ "$mode" = enforce ] || return 0
+  if [ "$page" = red ]; then
+    [ "$rows" -gt 0 ] && say "page red: its rows fail, as they must ($(grep -E 'begins with|says what the run' "$errors" | tr '\n' ' '))" \
+      || { say "FAIL page red: its rows pass, so it proves nothing"; RC=1; }
+  else
+    [ "$rows" = 0 ] && say "page $page: its rows pass" || { say "FAIL page $page: its rows: $(grep -E 'begins with|says what the run' "$errors" | tr '\n' ' ')"; RC=1; }
+  fi
+}
+# all_ended <label>: every run of the session's project ended, `holding` and each page's `waiting-<page>` (its hold and up to 10 min).
+all_ended() {
+  for _ in $(seq $((HOLD + 600))); do
+    [ -z "$( (cd "$RUN_PROJECT" && cozy --json run ls --limit 50) 2> /dev/null | jq -r '(.runs? // [.]) | .[]? | select(.status as $s | ["completed", "failed", "canceled"] | index($s) | not) | .number' 2> /dev/null | head -1)" ] && break
+    sleep 2
+  done
+  say "$1: the session's runs ended"
+}
+
 # pw <page> <pass|fail> [VAR=value…]: the cell's GPU branch with that page, its report as web.sh says it, judged as it's to end.
 pw() {
   local page=$1 want=$2 code dist=(); shift 2
@@ -112,7 +158,10 @@ pw() {
   cp "$OUT/web/report.json" "$OUT/web/report-$page.json" 2> /dev/null
   node "$WEB/report.js" "$OUT/web/report-$page.json" gpu-wait > "$OUT/page-$page.report" 2>&1
   sed 's/^/    /' "$OUT/page-$page.report" >> "$R"
-  if [ "$want" = fail ]; then
+  PW_CODE=$code
+  if [ "$want" = judge ]; then
+    :
+  elif [ "$want" = fail ]; then
     [ "$code" != 0 ] && say "page $page: fails, as it must ($(grep -m1 -E '^FAILED' "$OUT/page-$page.report" | cut -c1-200))" \
       || { say "FAIL page $page: passes, so it proves nothing"; RC=1; }
   else
@@ -126,26 +175,11 @@ if [ "$RENTING" != true ]; then
   say "pre-flight: nothing rented; this runner's machine, which has no GPU: the page reads holding as it runs"
   # This runner's machine on the session cozy's builds: a dev build follows no RC, so none is waited for.
   cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
-  # `holding` alone holds this machine's CPU. Each page's cell renders `waiting` once its page has loaded (WAIT_RENDER), so it stands in
-  # line and says why only after the page opened: rows that read the machine list's copy of it stand still, rows that read its own copy
-  # follow (cl-1263). A page named red must fail.
-  render dry-holding holding local
-  HOLDING_RUN=$(run_of hold) || fail "dry: holding's render made no run: $(tail -c 300 "$OUT/dry-holding.err")"
-  follow dry-holding "$HOLDING_RUN"
-  for _ in $(seq 600); do
-    watched "$HOLDING_RUN" | jq -r '.progress.stage // empty' | grep -qi holding && break
-    sleep 1
-  done
-  say "dry: run $HOLDING_RUN holds local for ${HOLD}s"
-  for page in "${PAGE_NAMES[@]}"; do
-    pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RENDER=waiting WAIT_DIR="$RUN_PROJECT" WAIT_MACHINE=local
-  done
-  # Every run ended: `holding`, then each `waiting` a page rendered.
-  for _ in $(seq $((HOLD + 600))); do
-    [ -z "$( (cd "$RUN_PROJECT" && cozy --json run ls --limit 50) 2> /dev/null | jq -r '(.runs? // [.]) | .[]? | select(.status as $s | ["completed", "failed", "canceled"] | index($s) | not) | .number' 2> /dev/null | head -1)" ] && break
-    sleep 2
-  done
-  say "dry: the runs ended"
+  # `holding` alone holds this machine's CPU, and each page renders its own box behind it: the stage's plumbing, its rows read but
+  # not enforced (a CPU wait's reason comes or not as TensorD's queue says it, pre-flight 44307867239).
+  holds dry local
+  for page in "${PAGE_NAMES[@]}"; do rows "$page" local plumbing; done
+  all_ended dry
   exit "$RC"
 fi
 GUARD_ALSO=own guard
@@ -161,14 +195,12 @@ gpus=$(jq '.status.gpus // [] | length' "$OUT/show-rc.json")
 say "on the session's build: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name) \(.memory_bytes / 1073741824 | floor) GiB"] | join(", "))' "$OUT/show-rc.json")"
 # Each tool once, its environment and model here, so the wait is the GPU's alone.
 for f in hold wait; do step "warm-$f" run "$FIX/$f" seconds:=1 --on "$NAME" || fail "$f didn't run on $NAME"; done
-stage gpu "$NAME" gpu
-for page in "${PAGE_NAMES[@]}"; do
-  pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE="$NAME" WAIT_SAID="$WAITING_SAID"
-done
-# Still waiting once every page has looked: what each saw was the wait, not what came after it.
-[ -n "$(watched "$WAITING_RUN" | jq -r '.waiting // empty')" ] || { say "FAIL: run $WAITING_RUN stopped waiting before the pages had looked: hold longer"; RC=1; }
-ended gpu
+holds gpu "$NAME"
+for page in "${PAGE_NAMES[@]}"; do rows "$page" "$NAME" enforce; done
+# Still held once every page has looked: each page's run waited for the GPU throughout.
+[ "$(watched "$HOLDING_RUN" | jq -r '.status // empty')" = in_progress ] || { say "FAIL: run $HOLDING_RUN let the GPU go before the pages had looked: hold longer"; RC=1; }
+all_ended gpu
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
 { echo "## gpu-wait on $NAME ($SKU)"; grep -E '^[0-9:]+ (gpu|page|FAIL|PASS)' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-[ "$RC" = 0 ] && say "PASS: the wait said on the face, the tab and the queue by every page but red"
+[ "$RC" = 0 ] && say "PASS: each page's rows read: red's fail, every other's pass"
 exit "$RC"
