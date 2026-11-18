@@ -1,6 +1,6 @@
 # Required rows of escaped.tsv that a release's gates did not run, each accepted by name. `verify.sh --release` counts a line only
-# for the release it names and prints it in full; never for a row that ran and failed. A line not of five filled, tab-separated
-# columns refuses the release.
+# for the set it names (`cozy=<x.y.z>,runtime=<x.y.z>,tensorfs=<x.y.z>`, the gated set's versions less suffixes) and prints it in
+# full; never for a row that ran and failed. A line not of five filled, tab-separated columns refuses the release.
 # row	why it was not run	accepted by	date	release
-h3-u2-short-sparse	no H100 pair was rented; the group, Sol and exchange code is untouched since Runtime v0.47.1 (git diff v0.47.1..rc/0.27.0 over author/_group.py, internal/parallel/, attention_sol*.py, attention_ulysses.py, seam.py: no change)	the release coordinator	2026-11-18	0.27.0
-h3-u2-short-exchange	no H100 pair was rented; the group, Sol and exchange code is untouched since Runtime v0.47.1 (git diff v0.47.1..rc/0.27.0 over author/_group.py, internal/parallel/, attention_sol*.py, attention_ulysses.py, seam.py: no change)	the release coordinator	2026-11-18	0.27.0
+h3-u2-short-sparse	no H100 pair was rented; the group, Sol and exchange code is untouched since Runtime v0.47.1 (git diff v0.47.1..rc/0.27.0 over author/_group.py, internal/parallel/, attention_sol*.py, attention_ulysses.py, seam.py: no change)	the release coordinator	2026-11-18	cozy=0.27.0,runtime=0.48.0,tensorfs=0.27.0
+h3-u2-short-exchange	no H100 pair was rented; the group, Sol and exchange code is untouched since Runtime v0.47.1 (git diff v0.47.1..rc/0.27.0 over author/_group.py, internal/parallel/, attention_sol*.py, attention_ulysses.py, seam.py: no change)	the release coordinator	2026-11-18	cozy=0.27.0,runtime=0.48.0,tensorfs=0.27.0
