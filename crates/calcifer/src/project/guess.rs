@@ -515,9 +515,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     let mut spec = super::predicted(&renderer, made, request, seed, source)?;
     // Its files as its run lists them (cl-1123), for every project, an encrypted one's too: the item is its render's request to the byte.
     // They go to its machine behind the item, its plan reading none of them (44065133454: a first write held the edit's guess 1.4 s),
-    // and behind every run's carry, only to one of this account's own, by a run's link and through a run's check (`Calcifer::trusted`,
-    // `Calcifer::carried_ahead`; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What really matters is that
-    // we can trust the remote machine as safe").
+    // and behind every run's carry, by a run's link and through a run's check, an encrypted project's only to one of this account's own
+    // (`Calcifer::ahead_link`, `Calcifer::carried_ahead`; Paul, 11-18: "even for encrypted projects, sending ahead of time is fine. What
+    // really matters is that we can trust the remote machine as safe").
     let (inputs, staged) = super::predicted_inputs(&project.folder, &asking.lock, &spec);
     spec.inputs = inputs;
     let encrypted = crate::private_io::of_path(dir)?.is_some_and(|scope| !scope.storage.ordinary);
