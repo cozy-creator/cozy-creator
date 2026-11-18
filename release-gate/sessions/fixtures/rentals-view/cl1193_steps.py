@@ -25,6 +25,6 @@ class Stepped(msgspec.Struct):
 def cl1193_steps(ctx: Context, payload: Steps, tel: Telemetry) -> Stepped:
     with tel.stage("stepping"):
         for i in range(payload.steps):
+            ctx.progress(i, payload.steps)
             time.sleep(payload.seconds)
-            ctx.progress(i + 1, payload.steps)
     return Stepped(payload.steps)
