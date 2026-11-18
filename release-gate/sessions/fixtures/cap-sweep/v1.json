@@ -15,8 +15,7 @@
     "duration:=20",
     "seed:=30009"
    ],
-   "max_s": 5400,
-   "twin": true
+   "max_s": 5400
   },
   {
    "name": "ltx-hardest",
@@ -29,8 +28,7 @@
     "first_frame={pic1}",
     "seed:=30010"
    ],
-   "max_s": 5400,
-   "twin": true
+   "max_s": 5400
   },
   {
    "name": "ltx-default",

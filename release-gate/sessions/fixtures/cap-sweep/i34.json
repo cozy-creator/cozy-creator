@@ -61,8 +61,7 @@
     "prompt_upsampling:=true",
     "seed:=30049"
    ],
-   "max_s": 3000,
-   "twin": true
+   "max_s": 3000
   },
   {
    "name": "moss-gen-hardest-control",
@@ -85,8 +84,7 @@
     "megapixels:=2",
     "seed:=30051"
    ],
-   "max_s": 2700,
-   "twin": true
+   "max_s": 2700
   },
   {
    "name": "fibo-gen-hardest",
@@ -134,8 +132,7 @@
     "megapixels:=4",
     "seed:=30055"
    ],
-   "max_s": 2700,
-   "twin": true
+   "max_s": 2700
   },
   {
    "name": "sdxl-upscale",
@@ -145,8 +142,7 @@
     "image={pic1}",
     "seed:=30056"
    ],
-   "max_s": 2700,
-   "twin": true
+   "max_s": 2700
   },
   {
    "name": "moss-upscale",
@@ -156,8 +152,7 @@
     "image={pic1}",
     "seed:=30057"
    ],
-   "max_s": 2700,
-   "twin": true
+   "max_s": 2700
   },
   {
    "name": "klein-upscale",
@@ -167,8 +162,7 @@
     "image={pic1}",
     "seed:=30058"
    ],
-   "max_s": 2700,
-   "twin": true
+   "max_s": 2700
   },
   {
    "name": "birefnet-hardest",

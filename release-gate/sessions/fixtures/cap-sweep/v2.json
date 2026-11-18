@@ -61,8 +61,7 @@
     "denoise:=1.0",
     "seed:=30016"
    ],
-   "max_s": 3600,
-   "twin": true
+   "max_s": 3600
   },
   {
    "name": "seedvr2-1080p-5s",
