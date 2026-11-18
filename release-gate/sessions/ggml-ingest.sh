@@ -65,7 +65,10 @@ IFS=, read -ra pure <<<"$PURE"
 types=("${lanes[@]^^}")
 for t in "${pure[@]}"; do types+=("pure:$t"); done
 SCALE=$(param scale 1); [[ $SCALE =~ ^[1-9]$ ]] || fail "scale: 1 to 9"
+# In BG, so the trap stops it: left running, its ssh held the step's output open for its timeout after the pod had ended
+# (44392334657).
 there "SCALE=$SCALE bash /w/pod.sh $LLAMA $LLAMA_SUM $HFREPO ${types[*]} > /w/out/pod.out 2>&1" $((10800 * SCALE)) < /dev/null & LLAMA_PID=$!
+BG="$BG $LLAMA_PID"
 
 # 1. Ours. The package staged first: its lock and the candidates over it are settled before the model's download.
 pod_install stage "$PACKAGES/$TREE/$PACKAGE"
