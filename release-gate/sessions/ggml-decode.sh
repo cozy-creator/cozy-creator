@@ -68,6 +68,10 @@ there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 record() { local n; n=$(runno "$1"); [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> /dev/null; }
 STORY='Write a long, detailed story about a lighthouse keeper who finds a message in a bottle. Keep writing until you are stopped.'
 FAILED=()
+# fresh <step>: TensorD drained and restarted (a settings-only update), so no executor of another package holds a model on
+# the GPU while this one measures (each package runs in its own executor: 44290207312's qwen3 runs fell to Transformers'
+# loop beside the drive's resident lane).
+fresh() { step "fresh-$1" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $1"; }
 # ran <step>: the step's run used this machine's candidate Runtime and TensorFS, not its lock's pair (TensorD says so when
 # it falls back); else the session ends here, before it spends the pod on runs that measure the wrong wheels.
 ran() {
@@ -77,10 +81,12 @@ ran() {
 lane() {
   local label=$1 ref=$2
   step "pull-$label" model install "$ref" --on "$NAME" || return 1
+  fresh "speed-$label"
   step "speed-$label" run "$FIX/drive/decode" --model "model=$ref" --on "$NAME" || { ran "speed-$label"; return 1; }
   ran "speed-$label"
   record "speed-$label"
   say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json")"
+  fresh "decode-$label"
   step "decode-$label" run "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0 --on "$NAME" ||
     { ran "decode-$label"; return 1; }
   ran "decode-$label"
@@ -101,6 +107,7 @@ for pair in "${lanes[@]:1}"; do
   same=$(python3 -c "import sys; a, b = (open(p).read().split() for p in sys.argv[1:]); n = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b))); print(f'{n} of {len(a)} words alike')" \
     "$OUT/caption-$reflabel.txt" "$OUT/caption-$label.txt")
   say "caption $label against $reflabel: $same"
+  fresh "logits-$label"
   step "logits-$label" run "$FIX/drive/logits" --model "reference=$refref" --model "model=$ref" --on "$NAME" ||
     { say "FAILED: logits $label"; FAILED+=("logits-$label"); continue; }
   record "logits-$label"
