@@ -2701,6 +2701,10 @@ impl Pool {
     pub(crate) fn choose(&self, root: u64, width: u32, wait_ms: Option<u64>) {
         self.allocations.choose(root, width as usize, wait_ms);
     }
+    /// When dispatch next re-plans an open root's told GPU wait, absent events (`Allocations::told_due`).
+    pub(crate) fn told_due(&self) -> Option<std::time::Instant> {
+        self.allocations.told_due()
+    }
     /// `Context.release_gpus()` of a root: its lane ends now; its next step queues again at
     /// its original place.
     pub(crate) fn release(&self, engine: &Engine, root: u64) {

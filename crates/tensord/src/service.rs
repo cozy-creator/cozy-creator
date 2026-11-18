@@ -365,8 +365,10 @@ impl Service {
             if let Err(error) = self.dispatch_ready() {
                 tracing::warn!("dispatch observation: {error}");
             }
-            // Dispatch wakes on events only: an arrival, an exit, a cancel, freed room.
-            self.engine.wait_activity(epoch, None);
+            // Dispatch wakes on events: an arrival, an exit, a cancel, freed room; and when a told GPU wait says its next minute
+            // (cl-1233), as nothing else does while the runs ahead only compute.
+            let due = self.pool().and_then(|pool| pool.told_due());
+            self.engine.wait_activity(epoch, due.map(|due| due.saturating_duration_since(std::time::Instant::now())));
         }
     }
     /// Sweep disk caches each `SWEEP_EVERY` (what each keeps goes once unused that long), the first once its packages are

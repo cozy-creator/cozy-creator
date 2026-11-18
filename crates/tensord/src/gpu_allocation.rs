@@ -14,6 +14,7 @@ use std::{
     collections::BTreeMap,
     ops::Range,
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 /// Per GPU, the oldest request waiting for it in this dispatch pass.
@@ -52,10 +53,10 @@ struct Root {
     started: bool,
     /// The blocker its newest reported wait named, until it binds.
     reported: Option<Option<u64>>,
-    /// While open, about how long until it starts, ms, as `choose` last said (None: not known); and in whole minutes as its newest
-    /// reported wait said it, which a change of reports again.
+    /// While open, about how long until it starts, ms, as `choose` last said (None: not known); and as its newest reported wait
+    /// said it, and when: a change of its minute reports again.
     wait_ms: Option<u64>,
-    told: Option<u64>,
+    told: Option<(u64, Instant)>,
     holders: usize,
 }
 /// A root's lane, or the request it waits behind and what holds it. `new`: the first answer
@@ -86,6 +87,11 @@ pub(crate) struct Permit {
 /// A wait in whole minutes, nearest, as a person is told it.
 fn minutes(wait_ms: Option<u64>) -> Option<u64> {
     wait_ms.map(|ms| (ms + 30_000) / 60_000)
+}
+
+/// How long a wait of `ms` counts down before `minutes` says one less; None once it says 0.
+fn next_minute(ms: u64) -> Option<Duration> {
+    (ms >= 30_000).then(|| Duration::from_millis((ms + 30_000) % 60_000 + 1))
 }
 
 impl Table {
@@ -187,11 +193,23 @@ impl Allocations {
         let mut table = self.table.lock().unwrap();
         let width = width.clamp(1, table.gpus.len().max(1));
         if let Some(entry) = table.roots.get_mut(&root).filter(|r| !r.started && r.lane.is_none()) {
-            if entry.width != width || minutes(wait_ms) != entry.told {
+            if entry.width != width || minutes(wait_ms) != minutes(entry.told.map(|(ms, _)| ms)) {
                 entry.reported = None;
             }
             (entry.width, entry.wait_ms) = (width, wait_ms);
         }
+    }
+    /// When the soonest told wait of an open root says its next minute, counted down from when it was told (cl-1233): dispatch
+    /// re-plans then, since nothing else wakes it while the runs ahead only compute. One already due is not again: a wait that
+    /// didn't count down (a holder past its time) waits for an event. None: no root waits a known time of a minute or more.
+    pub(crate) fn told_due(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let table = self.table.lock().unwrap();
+        (table.roots.values())
+            .filter(|r| !r.started && r.lane.is_none())
+            .filter_map(|r| r.told.and_then(|(ms, at)| Some(at + next_minute(ms)?)))
+            .filter(|due| *due > now)
+            .min()
     }
     /// About how long open `root` waits for its GPUs, ms, as `choose` last said; None: not known.
     pub(crate) fn wait_ms(&self, root: u64) -> Option<u64> {
@@ -270,7 +288,7 @@ impl Allocations {
         let entry = table.roots.get_mut(&root).expect("a registered root");
         let new = entry.reported.replace(behind) != Some(behind);
         if new {
-            entry.told = minutes(entry.wait_ms);
+            entry.told = entry.wait_ms.map(|ms| (ms, Instant::now()));
         }
         drop(table);
         if !yielded.is_empty() {
