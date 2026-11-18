@@ -18,6 +18,8 @@ say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 RC=0 RID='' NAME='' WD='' BG='' DL='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
+# ON: the pod of the session that runs this one (`on_this`): this one neither quotes, rents, guards, claims nor ends a pod.
+ON=${ON:-}
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
@@ -120,6 +122,7 @@ derived_zero() { pod_derived_zero "$DERIVED"; }
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
 # orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
 claim() {
+  [ -z "$ON" ] || return 0
   local r
   for r in $(own); do
     [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
@@ -232,7 +235,7 @@ step() {
 # quote. No read for GUARD_BLIND s ends them too. Nothing else in the account is touched: other sessions' pods are in the same listing.
 GUARD_STEP=20 GUARD_END_S=120 GUARD_BLIND=300 GUARD_ALSO=''
 guard() {
-  [ -z "$WD" ] || return 0
+  [ -z "$WD" ] && [ -z "$ON" ] || return 0
   ( blind=0
     while :; do
       sleep "$GUARD_STEP"
@@ -267,6 +270,7 @@ billed() {
 # the Hub's one price an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the
 # seconds. Ends the $0 pre-flight unless RENT=true.
 quote() {
+  [ -z "$ON" ] || { say "on $ON, the pod of the session that runs this one: no quote"; return 0; }
   local need=$1; shift
   local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus gb
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
@@ -349,5 +353,17 @@ ready() {
   grep -E '^(version|runtime|tensorfs|GPU 0|disk free) ' "$OUT/show$i.txt" | tee -a "$R"
 }
 
-# rent: one rental, ordered and booted ($RID, its machine $NAME), under the guard.
-rent() { order; ready; }
+# rent: one rental, ordered and booted ($RID, its machine $NAME), under the guard. Under ON, that pod.
+rent() {
+  [ -z "$ON" ] || { NAME=$ON; say "on $NAME, the pod of the session that runs this one"; return 0; }
+  order; ready
+}
+
+# on_this <session> <params JSON>: another session run on this session's pod after its own work, one boot and one download for
+# both: its files in $OUT/<session>, its results said here; it fails this one when it fails.
+on_this() {
+  say "$1 on $NAME"
+  ON=$NAME OUT=$OUT/$1 PARAMS=$2 bash "$(dirname "${BASH_SOURCE[0]}")/$1.sh" > "$OUT/$1.log" 2>&1; local rc=$?
+  sed "s/^/$1: /" "$OUT/$1/results.txt" >> "$R" 2> /dev/null
+  [ "$rc" = 0 ] || { say "FAIL: $1 on $NAME"; RC=1; }
+}

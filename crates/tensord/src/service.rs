@@ -812,9 +812,11 @@ impl Service {
         let mut waits = self.waits.lock().unwrap();
         let (_, said) = waits.entry(record.id.clone()).or_insert_with(|| (std::time::Instant::now(), String::new()));
         if said.as_str() != why {
+            // Said again only when what it waits on changes, not its bytes so far (cl-1185: 134 lines a second while a download moved).
+            let moved = gist(said) != gist(why);
             why.clone_into(said);
             drop(waits);
-            if !why.is_empty() { tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}"); }
+            if moved && !why.is_empty() { tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}"); }
         }
     }
     /// Run `record` went: if it waited, this machine's log says how long, and for what last.
@@ -859,4 +861,9 @@ impl Service {
         let plan = self.plan(pool, record)?;
         pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, width, claims, calls, admit)
     }
+}
+
+/// What a waiting reason says without its counts (`52GB to download`, `215MB of 18GB`, `305 of 484 pieces`): its words.
+fn gist(why: &str) -> String {
+    why.chars().filter(|c| !c.is_ascii_digit() && *c != '.').collect()
 }

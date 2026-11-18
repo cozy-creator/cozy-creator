@@ -176,6 +176,18 @@ impl Import {
     }
 }
 
+/// What another run's work here that `run` (its caller's id) may be behind is, in words: the download or install going for other
+/// runs with the most left, `minimaxai/minimax-h3's download for run-1b589…, 40 GB left` (cl-1185). None: none goes.
+pub(crate) fn ahead_of(run: &str) -> Option<String> {
+    let operations = operations();
+    let busiest = (operations.values())
+        .filter(|operation| operation.ended.is_none() && !operation.runs.is_empty() && !operation.runs.contains_key(run))
+        .max_by_key(|operation| operation.total.saturating_sub(operation.done))?;
+    let runs: Vec<&str> = busiest.runs.keys().map(String::as_str).collect();
+    let left = busiest.total.saturating_sub(busiest.done);
+    Some(format!("{}'s {} for {} to finish, {} left", busiest.subject, busiest.kind.word(), runs.join(", "), crate::reclaim::size(left)))
+}
+
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
 /// The repositories each run (by its caller's id) waits to download now.
 pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {

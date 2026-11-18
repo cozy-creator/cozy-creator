@@ -1038,9 +1038,9 @@ fn child_intent(module: &str, export: &str, input: &Value) -> String {
 
 /// One byte to every calling attempt's nudge socket each time anything moved: its calls re-poll.
 fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
-    let mut seen = engine.activity_epoch();
+    let mut seen = engine.observed_epoch();
     loop {
-        seen = engine.wait_activity(seen, None);
+        seen = engine.wait_observed(seen, None);
         let Some(calls) = calls.upgrade() else {
             return;
         };

@@ -65,6 +65,15 @@ pub(crate) mod priority {
     }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
+    /// What a resolve or a plan reads of a checkpoint at `order` (its header and structure, a few KiB): a run's goes ahead of every
+    /// run's weights, as software does, so a cold run's resolve never waits behind another run's download (cl-1185, PRO6-37's 29 s
+    /// behind 52 GB of H3). A background order's (fetched ahead, a guess, a prepare, kept) stays in its band: it never jumps a run.
+    pub(crate) fn metadata(order: u64) -> u64 {
+        match order < tensorfs::fetch::BACKGROUND {
+            true => order.min(SOFTWARE),
+            false => order,
+        }
+    }
     /// Whether `order` is a caller's guess's (`prepare`, or kept for later): no run's, so it gives way to every run's, in the
     /// install line too (cl-1104).
     pub(crate) fn prefetch(order: u64) -> bool {
@@ -196,7 +205,9 @@ impl Machine {
         let (header, components) = (header.clone(), components.map(<[String]>::to_vec));
         self.block(stop, async move {
             let want = |components| Want { components, priority, progress: progress.as_deref() };
-            let structure = fetcher.pull_header(&origin, &header, &want(Some(&[]))).await?;
+            // Its structure is what a resolve reads: ahead of the weights in line (`priority::metadata`).
+            let shape = Want { components: Some(&[]), priority: priority::metadata(priority), progress: progress.as_deref() };
+            let structure = fetcher.pull_header(&origin, &header, &shape).await?;
             if components.as_deref() == Some(&[]) {
                 return Ok(structure);
             }

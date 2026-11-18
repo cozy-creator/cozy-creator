@@ -106,7 +106,10 @@ pub(crate) struct Engine {
     active: Mutex<HashMap<String, Halt>>,
     owned: Mutex<HashSet<String>>,
     progress: Mutex<HashMap<String, ProgressSnapshot>>,
-    activity: Mutex<u64>,
+    /// Wake cursors: what dispatch and other schedulers wait on (a run's state, a fetch settled, room freed), and anything a
+    /// follower reads, observations too (progress, waiting reasons, words). An observation moves only the second (cl-1185): a
+    /// progress tick never wakes dispatch, which logged and re-planned on each byte.
+    activity: Mutex<(u64, u64)>,
     activity_changed: Condvar,
     /// What holds a memoizable run's success for its signer (`call_memo`), once configured.
     memo: OnceLock<Weak<crate::objects::Objects>>,
@@ -247,7 +250,7 @@ impl Engine {
             active: Mutex::new(HashMap::new()),
             owned: Mutex::new(HashSet::new()),
             progress: Mutex::new(HashMap::new()),
-            activity: Mutex::new(0),
+            activity: Mutex::new((0, 0)),
             activity_changed: Condvar::new(),
             memo: OnceLock::new(),
             settled: OnceLock::new(),
@@ -916,33 +919,58 @@ impl Engine {
 
     /// In-process wake cursor, separate from durable execution/status revisions.
     pub(crate) fn activity_epoch(&self) -> u64 {
-        *self.activity.lock().unwrap()
+        self.activity.lock().unwrap().0
     }
 
     /// Optional duration bounds observation only; it never changes execution state.
     pub(crate) fn wait_activity(&self, observed: u64, wait: Option<Duration>) -> u64 {
+        self.wait_epoch(observed, wait, |(activity, _)| activity)
+    }
+
+    /// The cursor a follower waits on: every activity, and every observation (`notify_observed`).
+    pub(crate) fn observed_epoch(&self) -> u64 {
+        self.activity.lock().unwrap().1
+    }
+
+    /// `wait_activity` for a follower: woken by observations too.
+    pub(crate) fn wait_observed(&self, observed: u64, wait: Option<Duration>) -> u64 {
+        self.wait_epoch(observed, wait, |(_, any)| any)
+    }
+
+    fn wait_epoch(&self, observed: u64, wait: Option<Duration>, of: fn((u64, u64)) -> u64) -> u64 {
         let epoch = self.activity.lock().unwrap();
-        if *epoch != observed || *epoch == u64::MAX {
-            return *epoch;
+        if of(*epoch) != observed || of(*epoch) == u64::MAX {
+            return of(*epoch);
         }
         let epoch = match wait {
             Some(wait) => {
                 self.activity_changed
-                    .wait_timeout_while(epoch, wait, |epoch| *epoch == observed)
+                    .wait_timeout_while(epoch, wait, |epoch| of(*epoch) == observed)
                     .unwrap()
                     .0
             }
             None => self
                 .activity_changed
-                .wait_while(epoch, |epoch| *epoch == observed)
+                .wait_while(epoch, |epoch| of(*epoch) == observed)
                 .unwrap(),
         };
-        *epoch
+        of(*epoch)
     }
 
     pub(crate) fn notify_activity(&self) {
         let mut epoch = self.activity.lock().unwrap();
-        *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
+        // Never wrap or reuse a wake cursor.
+        *epoch = (epoch.0.saturating_add(1), epoch.1.saturating_add(1));
+        self.activity_changed.notify_all();
+        drop(epoch);
+        crate::activity::status_changed();
+    }
+
+    /// What a follower reads changed, nothing a scheduler waits on (progress, a waiting reason, words): its followers and the
+    /// Status hear it; dispatch sleeps on (cl-1185).
+    pub(crate) fn notify_observed(&self) {
+        let mut epoch = self.activity.lock().unwrap();
+        epoch.1 = epoch.1.saturating_add(1);
         self.activity_changed.notify_all();
         drop(epoch);
         crate::activity::status_changed();
@@ -1128,7 +1156,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity();
+        self.notify_observed();
         Ok(())
     }
 
@@ -1191,7 +1219,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity(); // wakes event long-polls; nothing durable is written
+        self.notify_observed(); // wakes event long-polls; nothing durable is written
         Ok(())
     }
 
@@ -1296,7 +1324,7 @@ impl Engine {
             }
             outputs.entry((frame.output.clone(), frame.index)).or_default().push_str(&frame.delta);
         }
-        self.notify_activity();
+        self.notify_observed();
     }
 
     /// Run `id`'s text outputs past what a follower has heard of each (`heard`, bytes): each
@@ -1376,7 +1404,7 @@ impl Engine {
             },
         );
         drop((progress, journal));
-        self.notify_activity();
+        self.notify_observed();
         Ok(())
     }
 

@@ -136,8 +136,9 @@ async fn look(watching: &Watching) -> Result<v1::StatusFrame, Error> {
                 .map_err(|_| Error::unavailable("private_storage_stopped", "private workspace verification stopped"))?
                 .map_err(|_| Error::forbidden("private_storage_locked", "the private project is locked"))?;
         }
-        // Read before the records: activity meanwhile is read again at the next look.
-        let epoch = runs.service.engine.activity_epoch();
+        // Read before the records: activity meanwhile is read again at the next look. Observations count: a queued root's
+        // `bytes_left` is its weights' progress (cl-1185).
+        let epoch = runs.service.engine.observed_epoch();
         let kept = read.lock().unwrap().clone();
         let held = match kept.filter(|(at, _)| *at == epoch) {
             Some((_, held)) => held,
