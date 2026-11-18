@@ -86,8 +86,8 @@ def plan(frames: int, rate: Fraction, beats: list[int]) -> dict[str, object]:
     for index, (start, p) in enumerate(zip(starts, plans)):
         assert p.sample_frames % 17 == 5 and p.sample_frames <= MAX_FRAMES, ("grid", index, p.sample_frames)
         assert p.prefix_frames == (22 if index else 0), ("carry", index, p.prefix_frames)
-        assert index + 1 == len(plans) or p.cut == 0, ("cut before the last", index)
-        assert p.sample_frames - p.prefix_frames - p.cut == p.delivered_frames, ("cut", index)
+        assert (index + 1 == len(plans)) == (p.cut is not None), ("a cut on a segment but the last", index)
+        assert p.sample_frames - p.prefix_frames - (p.cut or 0) == p.delivered_frames, ("cut", index)
         if index + 1 == len(plans):
             assert start + p.sample_frames - p.prefix_frames - length == p.cut, ("past the plate", index, p.cut)
         window = windows[index].get("Plate")
@@ -165,7 +165,13 @@ def main() -> None:
         json.dump(summary, out, indent=1)
     print(f"{total} plates (1 frame to {MOST_S} s at {', '.join(RATES)} fps, one beat and two), "
           f"{len(readers)} guide reads: {len(fails)} failures, {summary['seconds']} s")
-    for line in fails[:20]:
+    kinds: dict[str, int] = {}
+    for line in fails:
+        kind = line.split(": ", 1)[1].split(",")[0][:60]
+        kinds[kind] = kinds.get(kind, 0) + 1
+    for kind, count in sorted(kinds.items(), key=lambda item: -item[1]):
+        print(f"FAIL x{count}: {kind}")
+    for line in fails[:10]:
         print("FAIL", line)
     sys.exit(1 if fails else 0)
 
