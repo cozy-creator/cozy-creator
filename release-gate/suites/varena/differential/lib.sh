@@ -7,7 +7,8 @@ diff_copy() {
   local copy=$ARMS/$2/$1 module to
   rm -rf "$copy"; mkdir -p "$copy"
   tar -C "$PKGS/$1" --exclude=.venv --exclude=__pycache__ -cf - . | tar -C "$copy" -xf - || return 1
-  grep -rlE --include='*.py' '^ *memoize=' "$copy" | xargs -r sed -i -E '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d'
+  { grep -rlE --include='*.py' 'memoize=' "$copy" || true; } |
+    xargs -r sed -i -E -e '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d' -e 's/, *memoize=True//; s/memoize=True, *//'
   module=$(sed -n 's/^object = "\([a-z0-9_]*\):.*/\1/p' "$copy/package.toml")
   if [ -d "$copy/$module" ]; then
     to=$copy/$module/gate_hook.py; printf '\nfrom . import gate_hook  # noqa: E402, F401\n' >> "$copy/$module/__init__.py"
