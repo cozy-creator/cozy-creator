@@ -10,7 +10,8 @@
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (`tensorfs`, `runtime`: wheel sources
 # as lib.sh `wheel_from` takes; the Runtime a native dev build carrying `_ggml`).
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
-# (3600); built (a pod-session run that built llama.cpp on a runner: below); the ride-along's decode, make, model and tree.
+# (3600); built (a pod-session run that built llama.cpp on a runner: below); skus and quoted (preflight.sh pick_offer); the
+# ride-along's decode, make, model and tree.
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -26,13 +27,23 @@ say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version
 # its LM head kept bf16, beside int8).
 # llama.cpp's side built on the runner first (compiling and linking need no GPU): a build that can't link fails here, at $0,
 # not on a pod (44297995601). `arch` names the card's target where the SKU doesn't.
+arch_of() {
+  case $1 in
+    rtx-5090* | rtx-5080* | rtx-5070* | rtx-5060* | rtx-pro-6000*) echo 120a-real ;;
+    rtx-4090* | rtx-4080* | rtx-4070* | rtx-4060* | rtx-6000-ada | l4 | l40*) echo 89-real ;;
+    rtx-3090* | rtx-3080* | rtx-3070* | rtx-3060* | rtx-a4000 | rtx-a5000 | rtx-a6000 | a40) echo 86-real ;;
+    *) return 1 ;;
+  esac
+}
 ARCH=$(param arch '')
-[ -n "$ARCH" ] || case $SKU in
-  rtx-5090* | rtx-5080* | rtx-5070* | rtx-5060* | rtx-pro-6000*) ARCH=120a-real ;;
-  rtx-4090* | rtx-4080* | rtx-4070* | rtx-4060* | rtx-6000-ada | l4 | l40*) ARCH=89-real ;;
-  rtx-3090* | rtx-3080* | rtx-3070* | rtx-3060* | rtx-a4000 | rtx-a5000 | rtx-a6000 | a40) ARCH=86-real ;;
-  *) fail "arch: no target known for $SKU" ;;
-esac
+if [ -z "$ARCH" ]; then
+  IFS=, read -ra cards <<<"$(param skus "$SKU")"
+  for s in "${cards[@]}"; do
+    a=$(arch_of "$s") || fail "arch: no target known for $s"
+    [ -z "$ARCH" ] || [ "$a" = "$ARCH" ] || fail "skus: $s is $a, not $ARCH (one target a session)"
+    ARCH=$a
+  done
+fi
 # `built`: a pod-session run whose report says a runner built this llama.cpp for this target (this tree's $0 pre-flight):
 # a rented dispatch naming it builds nothing again, so its quote comes minutes after the dispatch, not a build later
 # (44392328972 quoted 13 min in, at a price that had moved from the pre-flight's).
@@ -66,8 +77,9 @@ if [ -n "$DECODE$MAKE" ]; then
 fi
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
+pick_offer
 quote "$(param seconds 3600)"
-rent
+offer_rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
 step candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the pod's TensorFS and Runtime"
 cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
