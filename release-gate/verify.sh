@@ -9,7 +9,7 @@
 # accepts it by name for this release: such a row is printed in full, never passed over.
 set -euo pipefail
 RELEASE=; [ "${1:-}" != --release ] || { RELEASE=1; shift; }
-[ $# -gt 0 ] || { sed -n '2,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -gt 0 ] || { sed -n '2,9s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 dirs=() tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for e in "$@"; do
   if [[ $e =~ ^[0-9]+$ ]]; then
@@ -44,10 +44,15 @@ if [ -n "$RELEASE" ]; then
   # as suite packages reads it) or carries a Runtime other than the last release's (PyPI's newest cozy-runtime); one it
   # can't read is required.
   # escaped-accepted.tsv: <row> <why it was not run> <who accepted it> <date> <release>, tab-separated, all five filled: a line
-  # that isn't refuses the release. A line counts only for the cozy release it names (this set's, less any -dev or build
-  # suffix), so an acceptance never carries to the next release, and never for a row that ran and failed in one of these gates.
+  # that isn't refuses the release. A line counts only for the set it names, `cozy=<x.y.z>,runtime=<x.y.z>,tensorfs=<x.y.z>`
+  # (this set's versions less any -dev, .dev or build suffix), so an acceptance never carries to a later release of any of the
+  # three (a Runtime-only gate keeps the released cozy), and never for a row that ran and failed in one of these gates.
   missing= pref=$(jq -r '.packages_ref // ""' <<< "$first") crt=$(jq -r '.runtime // ""' <<< "$first") released=
-  release=$(jq -r '.cozy // ""' <<< "$first"); release=${release%%[-+]*}
+  release=
+  for k in cozy runtime tensorfs; do
+    v=$(jq -r --arg k "$k" '.[$k] // ""' <<< "$first"); v=${v%%[-+]*}; v=${v%%.dev*}
+    [ -n "$v" ] && release="$release${release:+,}$k=$v" || { release=; break; }
+  done
   accepted=$(dirname "$0")/escaped-accepted.tsv
   bad=$(awk -F'\t' 'function ok(s) { return s ~ /^[^ \r]/ && s ~ /[^ \r]$/ }
     !/^#/ && NF && !(NF == 5 && ok($1) && ok($2) && ok($3) && ok($4) && ok($5)) {printf " %d", NR}' "$accepted" 2>/dev/null || true)
