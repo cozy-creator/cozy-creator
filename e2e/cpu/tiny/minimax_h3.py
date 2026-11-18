@@ -12,12 +12,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import tempfile
 from collections.abc import Callable
+from fractions import Fraction
 from importlib.resources import files
 from pathlib import Path
 from typing import Protocol, cast
 
 import numpy as np
+import numpy.typing as npt
 import tensorfs
 import torch
 from cozy_runtime.author import Config
@@ -316,6 +319,80 @@ def told(*said: str) -> Check:
     return check
 
 
+def _frames(files: list[Path]) -> list[int]:
+    """Each video output's frame count: a Runtime raw snapshot's, else the file's."""
+    import av
+    from av.error import FFmpegError
+
+    counts = []
+    for path in files:
+        facts = path.with_suffix(path.suffix + ".json")
+        if path.suffix == ".raw" and facts.exists():
+            counts.append(int(json.loads(facts.read_text())["shape"][0]))
+            continue
+        try:
+            with av.open(str(path)) as media:
+                if media.streams.video:
+                    counts.append(sum(1 for packet in media.demux(media.streams.video[0]) if packet.size))
+        except FFmpegError:  # the latents
+            continue
+    return counts
+
+
+def _sound(path: Path) -> tuple[npt.NDArray[np.float32], int]:
+    """An MP4's sound as decoded, `(channels, samples)` from its first frame's time on, and its rate."""
+    import av
+
+    with av.open(str(path)) as media:
+        picture, heard = media.streams.video[0], media.streams.audio[0]
+        origin = (picture.start_time or 0) * Fraction(picture.time_base.numerator, picture.time_base.denominator)
+        rate, first = heard.codec_context.sample_rate, 0
+        parts: list[npt.NDArray[np.generic]] = []
+        for frame in media.decode(heard):
+            data = frame.to_ndarray()
+            if not parts and frame.pts is not None:
+                at = frame.pts * Fraction(frame.time_base.numerator, frame.time_base.denominator)
+                first = round((at - origin) * rate)
+            parts.append(data if frame.format.is_planar else data.reshape(-1, len(frame.layout.channels)).T)
+    wave = np.concatenate(parts, axis=1).astype(np.float32)
+    return (np.pad(wave, ((0, 0), (first, 0))) if first > 0 else wave[:, -first:]), rate
+
+
+def as_long(frames: int, *also: Check) -> Check:
+    """The edit's video is its plate's `frames`, no more (se-163), and each of `also` holds."""
+
+    def check(result: Json, outputs: list[Path]) -> str | None:
+        if (counts := _frames(outputs)) != [frames]:
+            return f"the video is {counts} frames, not the plate's {frames}"
+        return next((problem for more in also if (problem := more(result, outputs))), None)
+
+    return check
+
+
+def kept(frames: int) -> Check:
+    """An edit that keeps its plate's sound (`clip(frames)`): its plate's frames over the plate's own soundtrack, sample
+    for sample."""
+
+    def check(result: Json, outputs: list[Path]) -> str | None:
+        if problem := as_long(frames)(result, outputs):
+            return problem
+        video = next((path for path in outputs if path.suffix != ".raw" and _frames([path])), None)
+        if video is None:
+            return "the video is a raw snapshot, not an MP4 holding the plate's sound"
+        with tempfile.TemporaryDirectory() as folder:
+            theirs, rate = _sound(clip(frames)(Path(folder)))
+        mine, made = _sound(video)
+        span = frames * rate // 24
+        if made != rate or mine.shape[0] != theirs.shape[0] or mine.shape[1] < span:
+            return (f"its sound is {mine.shape} at {made} Hz, not the plate's {theirs.shape[0]} channels at {rate} Hz "
+                    f"over {span} samples")
+        if not np.array_equal(mine[:, :span], theirs[:, :span]):
+            return f"its sound is not the plate's: up to {float(np.abs(mine[:, :span] - theirs[:, :span]).max()):.4f} apart"
+        return None
+
+    return check
+
+
 #: The preparation jobs a tiny (AdaLN-pruned) H3 cannot feed.
 _FULL_ONLY: list[Cell] = [{"entry": job, "name": "lane", "payload": {}, "skip": _FULL} for job in (
     "bf16-full", "bf16-pruned", "fp8-pruned", "curve-pruned", "retable", "select-adaln-weights", "compute-adaln-tables",
@@ -350,7 +427,13 @@ CELLS: list[Cell] = [
      "files": {"video.file": clip(25)}},
     # cl-1078, Paul 11-16: "I think the video edit mode should also get a summary, as well as beats, just like how video
     # nodes get summary + beats." The summary and both beats reach H3 as a shot's do, its VFX edit LoRA on Ref2VA.
-    {"entry": "edit", "name": "beats", "payload": _EDIT, "files": {"plate": clip(120)}, "check": told(*_EDIT_SAID)},
+    # se-163, Paul 11-17 (xs-199): "generate those 345 frames and discard the final 5 frames from the final video", so an
+    # edit is its plate's frames (124 sampled, 120 kept); and "'keep' would mean we don't even generate any audio, and
+    # instead use the original videos' audio entirely, un-edited": a 100-frame plate's edit keeps its sound bit for bit.
+    {"entry": "edit", "name": "beats", "payload": _EDIT, "files": {"plate": clip(120)},
+     "check": as_long(120, told(*_EDIT_SAID))},
+    {"entry": "edit", "name": "keep", "payload": {**_EDIT, "audio": "keep"}, "files": {"plate": clip(100)},
+     "check": kept(100)},
     {"entry": "regenerate_shot", "name": "native", "payload": _REGENERATE,
      "files": {"video": clip(25)}},
     # The refine overlay on every rank (5ac8a48e armed it on rank 0 alone).
