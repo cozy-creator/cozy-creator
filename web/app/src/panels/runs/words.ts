@@ -190,9 +190,18 @@ export const waitWords = (waiting: string | null | undefined, boxOf?: (run: numb
  *  its drawer and the run list say whole (`waitWords`). */
 export const waitFor = (waiting: string | null | undefined) => sentence(waitReason(waiting).split(", ")[0])
 
-/** It waits on downloads its progress names (cl-1205's typed `waiting_on`): its box and tile say `Waiting for download`, its rows its
- *  stage, `Waiting for Sdxl to download`, and never its machine's own reason over them, so a download wait reads one way. */
+/** It waits on downloads its progress names (cl-1205's typed `waiting_on`): its box and tile say `Waiting for download`; its rows, its
+ *  drawer and the run list its stage, `Waiting for Sdxl to download`, and never its machine's reason over it, whose bytes are the
+ *  download's to show (Paul: the jobs waiting "don't need to independently report the progress"), so a download wait reads one way. */
 export const downloadWait = (run: Run) => Boolean(run.progress?.waiting_on?.length)
+
+/** What a waiting run waits for, whole, as a row says it: a download wait its stage (`downloadWait`), any other its reason
+ *  (`waitWords`). None while it waits for nothing. */
+export function waitLine(run: Run): string {
+  if (!downloadWait(run)) return waitWords(run.waiting)
+  const own = run.progress?.stage.split(/\s+\/\s+/).at(-1)?.trim()
+  return own ? stageName(own) : "Waiting for download"
+}
 
 /** What it's doing, as a person reads it: what it waits for while it waits (cl-1197; Paul read a 96 s wait for GPUs, shown as its stage
  *  "Preparing, time left unknown", as stuck), else its stage and what it counts, `Rendering, step 6 of 8, 3s left`, `Rewriting the
@@ -213,10 +222,10 @@ export function long(run: Run, now: number): boolean {
   return now - began > 10_000 || (secondsLeft(run) ?? 0) > 10
 }
 
-/** Its stage, how far, and how fast bytes move; what it waits on says first. */
+/** Its stage, how far, and how fast bytes move; what it waits on says first, a download wait by its stage alone (`downloadWait`). */
 export function progressWords(run: Run): string {
   const progress = run.progress
-  const wait = waitWords(run.waiting)
+  const wait = downloadWait(run) ? "" : waitWords(run.waiting)
   if (!progress) return wait || sentence(run.machine_state ?? "")
   const parts = [stageWords(progress)]
   parts.push(countWords(progress))

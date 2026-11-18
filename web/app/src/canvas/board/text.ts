@@ -44,21 +44,26 @@ export function width(text: string, size: number, mono = false, bold = false): n
   return measured
 }
 
-/** One line, cut to `room` with an ellipsis at a grapheme boundary. */
-export function ellipsis(text: string, room: number, size: number, mono = false, bold = false): string {
+/** One line, cut to `room` with an ellipsis at a grapheme boundary; with `words`, after its last whole word that fits, so it never ends
+ *  mid-word (cl-1197: "Waiting for Sdxl to down…"), unless its first word alone is too long. */
+export function ellipsis(text: string, room: number, size: number, mono = false, bold = false, words = false): string {
   if (room <= 0) return ""
   if (width(text, size, mono, bold) <= room) return text
-  const key = `${font(size, mono, bold)}\u0000${room}\u0000${text}`
+  const key = `${font(size, mono, bold)}\u0000${room}\u0000${words ? "w" : "g"}\u0000${text}`
   const held = cuts.get(key)
   if (held !== undefined) return held
-  const parts = [...segmenter.segment(text)].map((part) => part.segment)
-  let low = 0, high = parts.length
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2)
-    if (width(parts.slice(0, mid).join("") + "…", size, mono, bold) <= room) low = mid
-    else high = mid - 1
+  const most = (parts: string[], join: (n: number) => string) => {
+    let low = 0, high = parts.length
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2)
+      if (width(join(mid) + "…", size, mono, bold) <= room) low = mid
+      else high = mid - 1
+    }
+    return low ? join(low) + "…" : ""
   }
-  const cut = low ? parts.slice(0, low).join("") + "…" : ""
+  const whole = text.trim().split(/\s+/)
+  const graphemes = [...segmenter.segment(text)].map((part) => part.segment)
+  const cut = (words && most(whole, (n) => whole.slice(0, n).join(" ").replace(/[,;:.]$/, ""))) || most(graphemes, (n) => graphemes.slice(0, n).join(""))
   if (cuts.size >= MEASURED_MOST) cuts.clear()
   cuts.set(key, cut)
   return cut
