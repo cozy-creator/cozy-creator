@@ -1103,11 +1103,14 @@ async fn fetch_file(
     let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
     let mut from = appended.filter(|_| follows).unwrap_or(0);
+    // The revision before, where it is now: a project keeps it in its `files/` once it landed (`project::landed`), and nothing of it
+    // is left at `dest`. Read from there, every revision of a project's run was downloaded whole (cl-1210).
+    let before = item.path.as_deref().and_then(|path| crate::project::vault::resolve_path(path).ok()).unwrap_or_else(|| dest.to_owned());
     loop {
         let prepare_began = Instant::now();
         let prepared = blocking({
-            let (part, dest, length, digest) = (part.clone(), dest.to_owned(), item.length, item.digest.clone());
-            move || prepare(&part, &dest, from, length, &digest)
+            let (part, before, length, digest) = (part.clone(), before.clone(), item.length, item.digest.clone());
+            move || prepare(&part, &before, from, length, &digest)
         })
         .await;
         let (held, copied) = match prepared {
@@ -1227,9 +1230,9 @@ async fn blocking<T: Send + 'static>(
 const HELD: &str = ".part.held";
 
 /// The `part` this revision's `length` bytes are read into, the stretches of it in place, and how many of its first bytes were
-/// copied from `dest` (its `.held` says them, `kept <n>`, a line no stretch is): an earlier attempt's for the same bytes kept as it
-/// left them (its `.held` names `digest`), else a fresh one, its first `from` copied from `dest`.
-fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<(Vec<(u64, u64)>, u64)> {
+/// copied from `before`, the file of the revision before it (its `.held` says them, `kept <n>`, a line no stretch is): an earlier
+/// attempt's for the same bytes kept as it left them (its `.held` names `digest`), else a fresh one, its first `from` copied.
+fn prepare(part: &Path, before: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<(Vec<(u64, u64)>, u64)> {
     let journal = suffixed(part, ".held");
     let named = format!("{digest} {length}");
     let kept = std::fs::read_to_string(&journal).ok().filter(|kept| kept.lines().next() == Some(named.as_str()));
@@ -1244,7 +1247,7 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> st
     let _ = std::fs::remove_file(part);
     let mut file = std::fs::File::create(part)?;
     if from > 0 {
-        let copied = std::io::copy(&mut std::fs::File::open(dest)?.take(from), &mut file)?;
+        let copied = std::io::copy(&mut std::fs::File::open(before)?.take(from), &mut file)?;
         if copied != from {
             return Err(std::io::Error::other(
                 "the file is shorter than what extends it",
