@@ -40,6 +40,12 @@ FLOORS = {'host-sdxl': 0.20}
 MARGIN = 0.03
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
 BUDGET, KEEP = 0.25, 5
+# se-155 (Paul 11-17: Qwen Image 2.1 "soft, with artifacts at 200%"): Qwen-Image-2.1's stock VAE decoder prints a fixed 2-px
+# pattern, one pixel of every 2x2 a level or two dark (`dots`), as Diffusers' does; madebyollin's texture-fix decoder, the
+# package's default since 0.15.0rc5, cuts it about tenfold. A qwen-image-2 picture whose pattern passes DOTS levels fails.
+# Pod-session 44237459562, 170 renders at 2 and 4 MP: stock 0.36-1.01 at the package's settings (0.24 at the lowest, CFG 3),
+# texture-fix 0.02-0.11.
+DOTS = 0.20
 _clip: 'tuple[CLIPModel, CLIPProcessor, ModuleType] | None' = None
 
 
@@ -116,6 +122,26 @@ def rgb(path: str) -> Image.Image:
     return im.convert('RGB')
 
 
+def dots(path: str) -> float:
+    """The decoder's 2-px pattern, in 8-bit levels: each 2x2 sublattice position's mean of luminance minus its 4x4 box
+    average, over the 2x2 blocks that are wholly opaque; their mean |offset|. A flat field or a transparent background
+    holds none."""
+    im = Image.open(path)
+    y = np.asarray(im.convert('L'), dtype=np.float64)
+    h, w = y.shape[0] // 2 * 2, y.shape[1] // 2 * 2
+    pad = np.pad(y, ((2, 1), (2, 1)), mode='reflect')
+    c = np.pad(pad.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    hp = (y - (c[4:, 4:] - c[:-4, 4:] - c[4:, :-4] + c[:-4, :-4])[: y.shape[0], : y.shape[1]] / 16)[:h, :w]
+    keep = np.ones((h // 2, w // 2), dtype=bool)
+    if im.mode in ('RGBA', 'LA'):
+        a = np.asarray(im.getchannel('A'))[:h, :w] == 255
+        keep = a[0::2, 0::2] & a[0::2, 1::2] & a[1::2, 0::2] & a[1::2, 1::2]
+    if keep.sum() < 4096:
+        return 0.0
+    m = np.array([[hp[i::2, j::2][keep].mean() for j in range(2)] for i in range(2)])
+    return float(np.abs(m - m.mean()).mean())
+
+
 def frames(path: str, n: int = 3) -> list[Image.Image]:
     d = tempfile.mkdtemp()
     dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
@@ -164,6 +190,13 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             flat = [round(float(np.asarray(im, dtype=np.float32).std()), 2) for im in ims]
             if flat and min(flat) < 2.0:
                 fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
+            if run and 'qwen-image-2' in run.target and f.endswith(('.png', '.webp')):
+                level = dots(f)
+                if level > DOTS:
+                    fails.append(f'dots {name}: {os.path.basename(f)} carries a 2-px dot grid of {level:.2f} levels, over {DOTS}: '
+                                 "Qwen-Image-2.1's stock VAE decoder (se-155)")
+                else:
+                    notes.append(f'dots {name}: {level:.2f} levels')
     names = [line.split('\t')[0] for line in open(os.path.join(out, 'cells.tsv'))]
     made, mentions = sources(out, names)
     for line in open(os.path.join(out, 'cells.tsv')):
