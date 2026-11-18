@@ -193,6 +193,8 @@ impl Drop for Canceling {
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
+    /// The GPUs it waits for, while `waiting` is that wait, as its machine said it (cl-1247).
+    gpus: Option<::api::calcifer::GpuWait>,
     /// Its place in its machine's line while it waits there, as the machine says it (1 next).
     place: Option<u32>,
     progress: Option<Progress>,
@@ -1490,7 +1492,7 @@ impl Calcifer {
         let Some(live) = live.get(id) else {
             return vec![];
         };
-        let waiting = live.waiting.clone().map(|reason| Event::Waiting { reason });
+        let waiting = live.waiting.clone().map(|reason| Event::Waiting { reason, gpus: live.gpus });
         let progress = live
             .progress
             .clone()
@@ -1796,21 +1798,28 @@ impl Calcifer {
 
     /// The run waits no longer: its record says so, and its followers hear an empty reason.
     fn not_waiting(&self, id: &RunId) {
-        let cleared = lock(&self.live)
-            .get_mut(id)
-            .and_then(|live| live.waiting.take());
+        let cleared = lock(&self.live).get_mut(id).and_then(|live| {
+            live.gpus = None;
+            live.waiting.take()
+        });
         if cleared.is_some() {
             let reason = String::new();
-            let _ = self.events.send((id.clone(), Event::Waiting { reason }));
+            let _ = self.events.send((id.clone(), Event::Waiting { reason, gpus: None }));
         }
     }
 
     pub(crate) fn waiting(&self, id: &RunId, reason: String) {
+        self.waits(id, reason, None);
+    }
+
+    /// It waits `reason`, and for `gpus` when that's a wait for GPUs its machine said (cl-1247): followers hear both when either changes.
+    fn waits(&self, id: &RunId, reason: String, gpus: Option<::api::calcifer::GpuWait>) {
         let mut live = lock(&self.live);
         let entry = live.entry(id.clone()).or_default();
-        if entry.waiting.as_ref() != Some(&reason) {
+        if entry.waiting.as_ref() != Some(&reason) || entry.gpus != gpus {
             entry.waiting = Some(reason.clone());
-            let _ = self.events.send((id.clone(), Event::Waiting { reason }));
+            entry.gpus = gpus;
+            let _ = self.events.send((id.clone(), Event::Waiting { reason, gpus }));
         }
     }
 
@@ -2882,11 +2891,23 @@ impl Calcifer {
                     if self.wait_said(id, &reason) {
                         batch.logs.push((frame.at_ms, "stage".into(), format!("{reason}, {left}")));
                     }
-                    self.waiting(id, format!("{reason}, {left}"));
+                    // Said typed too, from this frame alone: how many GPUs and its machine's time for them (cl-1247).
+                    self.waits(id, format!("{reason}, {left}"), Some(::api::calcifer::GpuWait { width: gpu.width, left_ms: gpu.left_ms }));
+                    // A wait its machine can't time leaves its time left not known: never the 0 s of a first phase held (cl-1247).
+                    if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
+                        clock.waits_for_gpus(gpu.left_ms > 0);
+                    }
                 }
                 Frame::Gpu(gpu) => {
-                    if gpu.state == "grant" {
-                        lock(&self.live).entry(id.clone()).or_default().width = gpu.width;
+                    {
+                        let mut live = lock(&self.live);
+                        let live = live.entry(id.clone()).or_default();
+                        if gpu.state == "grant" {
+                            live.width = gpu.width;
+                        }
+                        if let Some(clock) = live.clock.as_mut() {
+                            clock.has_gpus();
+                        }
                     }
                     self.not_waiting(id)
                 }
@@ -3564,7 +3585,12 @@ fn time_left(clock: &mut eta::Clock, progress: &mut Progress) {
     let shown = clock.shown(store::now_ms() as f64);
     progress.eta_s = shown.map(|(left, ..)| left);
     progress.eta_confidence = shown.map(|(_, confidence, _)| confidence);
-    progress.eta_basis = Some(shown.map_or(::api::calcifer::EtaBasis::FirstRun, |(.., basis)| basis));
+    // Not known while it waits for GPUs its machine can't time (cl-1247), which is no first run.
+    progress.eta_basis = match shown {
+        Some((.., basis)) => Some(basis),
+        None if clock.gpus_unknown() => None,
+        None => Some(::api::calcifer::EtaBasis::FirstRun),
+    };
 }
 
 /// A picture's size as a run's input asks it: its `megapixels`, else its `width` by its `height`.

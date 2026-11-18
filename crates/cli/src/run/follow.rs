@@ -745,7 +745,7 @@ impl View {
             {
                 self.status("saving its outputs")
             }
-            Event::Waiting { reason } => {
+            Event::Waiting { reason, .. } => {
                 self.waiting = Some(reason.clone()).filter(|r| !r.is_empty());
                 self.show();
             }

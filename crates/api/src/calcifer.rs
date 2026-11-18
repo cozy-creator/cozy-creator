@@ -911,6 +911,15 @@ pub struct MachineEstimate {
     pub ready_ms: Option<u64>,
 }
 
+/// A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how
+/// many, and about how long until they're free, as its machine times it (cl-1187); 0: it can't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GpuWait {
+    pub width: u32,
+    pub left_ms: u64,
+}
+
 /// One event of a run's stream.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RunEvent"))]
@@ -971,9 +980,13 @@ pub enum Event {
     Call { sequence_number: u64, call: Call },
     #[serde(rename = "run.progress")]
     Progress { progress: Progress },
-    /// Why the run waits now; an empty reason: it waits no longer.
+    /// Why the run waits now; an empty reason: it waits no longer. `gpus`: it waits for GPUs, as its machine said (cl-1247).
     #[serde(rename = "run.waiting")]
-    Waiting { reason: String },
+    Waiting {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gpus: Option<GpuWait>,
+    },
     /// Its results coming here once it ended, each second until they land (`Run::arriving`).
     #[serde(rename = "run.arriving")]
     Arriving { progress: Progress },
