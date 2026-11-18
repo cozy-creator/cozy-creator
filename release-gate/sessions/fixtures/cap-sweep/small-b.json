@@ -1,0 +1,251 @@
+{
+ "tree": "rc",
+ "cap": "off",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+ "need_s": 4300,
+ "floor_mb_s": 25,
+ "stall_s": 600,
+ "push_each": false,
+ "cells": [
+  {
+   "name": "h3-gen-cold",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}]",
+    "seed:=40083"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "h3-gen-warm",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}]",
+    "seed:=40084"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "h3-shot-cold",
+   "target": "minimax-h3/render_shot",
+   "args": [
+    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40085}"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "h3-shot-warm",
+   "target": "minimax-h3/render_shot",
+   "args": [
+    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40086}"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "h3-edit-cold",
+   "target": "minimax-h3/edit",
+   "args": [
+    "--file",
+    "plate={clip5}",
+    "beats:=[{\"description\": \"heavy snow falls over the whole scene\", \"duration\": 5}]",
+    "seed:=40087"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "h3-edit-warm",
+   "target": "minimax-h3/edit",
+   "args": [
+    "--file",
+    "plate={clip5}",
+    "beats:=[{\"description\": \"heavy snow falls over the whole scene\", \"duration\": 5}]",
+    "seed:=40088"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "h3-up-cold",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "to=1080p",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo"
+   ],
+   "max_s": 1500,
+   "restart": true
+  },
+  {
+   "name": "h3-up-warm",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "to=1080p",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo, in the evening"
+   ],
+   "max_s": 1500
+  },
+  {
+   "name": "orbit-cold",
+   "target": "orbit/orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=40091"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "orbit-warm",
+   "target": "orbit/orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=40092"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "seedvr2-img-cold",
+   "target": "seedvr2/upscale_image",
+   "args": [
+    "--file",
+    "image={seed}",
+    "resolution=1080p",
+    "seed:=40093"
+   ],
+   "max_s": 900,
+   "restart": true
+  },
+  {
+   "name": "seedvr2-img-warm",
+   "target": "seedvr2/upscale_image",
+   "args": [
+    "--file",
+    "image={seed}",
+    "resolution=1080p",
+    "seed:=40094"
+   ],
+   "max_s": 900
+  },
+  {
+   "name": "seedvr2-up-cold",
+   "target": "seedvr2/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "seed:=40095"
+   ],
+   "max_s": 1500,
+   "restart": true
+  },
+  {
+   "name": "seedvr2-up-warm",
+   "target": "seedvr2/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "seed:=40096"
+   ],
+   "max_s": 1500
+  },
+  {
+   "name": "relayvsr-up-cold",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "seed:=40097"
+   ],
+   "max_s": 900,
+   "restart": true
+  },
+  {
+   "name": "relayvsr-up-warm",
+   "target": "relayvsr/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "seed:=40098"
+   ],
+   "max_s": 900
+  },
+  {
+   "name": "ltx-cold",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo, slow push-in, ambient sound",
+    "resolution=720p",
+    "seed:=40099"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "ltx-warm",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo, slow push-in, ambient sound",
+    "resolution=720p",
+    "seed:=40100"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "pan2-cold",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
+    "duration:=5",
+    "seed:=40101"
+   ],
+   "max_s": 1500,
+   "restart": true
+  },
+  {
+   "name": "pan2-warm",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
+    "duration:=5",
+    "seed:=40102"
+   ],
+   "max_s": 1500
+  },
+  {
+   "name": "h3i-gen-cold",
+   "target": "minimax-h3-image/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=4",
+    "seed:=40103"
+   ],
+   "max_s": 1500,
+   "restart": true
+  },
+  {
+   "name": "h3i-gen-warm",
+   "target": "minimax-h3-image/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=4",
+    "seed:=40104"
+   ],
+   "max_s": 1500
+  }
+ ]
+}

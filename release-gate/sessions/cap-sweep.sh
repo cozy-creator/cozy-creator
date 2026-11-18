@@ -9,12 +9,14 @@
 # run's record and by the pod's nvidia-smi | memoized | throttled | where it stood | why`.
 # params:
 #   tree       the packages_refs checkout the functions run from (required)
-#   cap        the GPU's limit (6GiB)
+#   cap        the GPU's limit (6GiB), or `off`: uncapped, no twins (cl-1284's measured table rows)
 #   runtime    the Runtime wheel, https://…#sha256=<hex> (required)
 #   tensorfs   the TensorFS wheel, likewise (required); the pod's TensorD is this session's cozy
 #   cells      [{"name", "target" ("<package>/<function>"), "args" ([inputs and flags]),
 #              "max_s" (optional: the run is canceled this long in, and said to be unfinished, not failed),
-#              "after" (optional: runs only if that cell completed), "unless" (optional: only if that cell did not)}]
+#              "after" (optional: runs only if that cell completed), "unless" (optional: only if that cell did not),
+#              "restart" (optional: the pod's service restarts first, so the cell is its function's first call on a
+#              fresh executor: a cold row)}]
 #              in args: {seed} {lighthouse} {teapot} are 1024x1024 pictures, {pic1}..{pic16} 2048x2048 ones, {depth} and
 #              {lines} a grey and an edge map of {seed}, {long} an 8192x1024 picture, {clip1} 1 s of 640x360, {clip5} and
 #              {clip15} 1344x768 at 24 fps with a tone, {clip5q} {clip5} at 2560x1440, {digits} 65,000 characters of
@@ -22,11 +24,12 @@
 #   need_s     the session's seconds from its start, which the cap in USD must buy (3600), at most 19800: a hosted job
 #              ends at 6 h with nothing kept
 #   stall_s    how long a run's progress may stand before the pod's GPU and disk are read (1800)
+#   push_each  push each cell's row to the ledger as it ends (true); false: all of them once, after the last cell
 #   file       a JSON file in this checkout holding all of these (lib.sh)
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree '') CAPV=$(param cap 6GiB) RW=$(param runtime '') TW=$(param tensorfs '') CELLS=$(param cells '[]')
-STALL=$(param stall_s 1800) NEED=$(param need_s 3600)
-[[ $CAPV =~ ^[0-9]+[MG]iB$ ]] || fail "cap $CAPV"
+STALL=$(param stall_s 1800) NEED=$(param need_s 3600) PUSH_EACH=$(param push_each true)
+[[ $CAPV =~ ^[0-9]+[MG]iB$ || $CAPV = off ]] || fail "cap $CAPV"
 [[ $STALL =~ ^[0-9]+$ && $NEED =~ ^[0-9]+$ ]] || fail "stall_s $STALL, need_s $NEED"
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: a hosted job ends at 6 h with nothing kept; split the session"
 END_AT=$(( $(date +%s) + NEED ))
@@ -109,7 +112,8 @@ if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
 fi
 step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$RWF" --tensorfs "$TWF" --gpu-memory-limit "$CAPV" -y ||
   fail "update: $(tail -c 300 "$OUT/update.txt")"
-WANT=$(( ${CAPV%[MG]iB} << 20 )); [[ $CAPV != *GiB ]] || WANT=$(( ${CAPV%GiB} << 30 ))
+WANT=0
+[ "$CAPV" = off ] || { WANT=$(( ${CAPV%[MG]iB} << 20 )); [[ $CAPV != *GiB ]] || WANT=$(( ${CAPV%GiB} << 30 )); }
 said=''
 for _ in $(seq 60); do
   cozy machine show "$NAME" --json > "$OUT/show-capped.json" 2> /dev/null
@@ -226,6 +230,10 @@ for line in sys.stdin:
         mem['card_peak_mib'] = int(open(os.path.join(out, name + '.smi')).read().strip())
     except (OSError, ValueError):
         mem['card_peak_mib'] = None
+    try:
+        mem['host_hwm_bytes'] = int(open(os.path.join(out, name + '.hwm')).read().strip()) * 1024
+    except (OSError, ValueError):
+        mem['host_hwm_bytes'] = None
     allocs = [s.get('working_allocator') or {} for s in stats]
     mem['ooms'] = sum(a.get('ooms') or 0 for a in allocs if isinstance(a, dict))
     mem['reclaim_s'] = round(sum(a.get('reclaim_ns') or 0 for a in allocs if isinstance(a, dict)) / 1e9, 1)
@@ -254,29 +262,36 @@ publish() {
   python3 -I "$ONE.py" "$OUT" "${GITHUB_RUN_ID:-local}" "$2" "$3" <<< "$ROW" > "$ONE.row" 2>> "$OUT/rows.err" && [ -s "$ONE.row" ] ||
     { say "$1: its row was not made ($(tail -c 200 "$OUT/rows.err" | tr '\n' ' '))"; return 0; }
   cat "$ONE.row" >> "$OUT/measured.jsonl"
+  [ "$PUSH_EACH" = true ] || return 0
   timeout 240 python3 -I "$LEDGER" append "$ONE.row" >> "$OUT/ledger-cells.log" 2>&1 ||
     say "$1: its row was not pushed ($(tail -c 200 "$OUT/ledger-cells.log" | tr '\n' ' '))"
 }
 ran=0 completed=0 failed=0 unfinished=0 skipped=0 LOST=''
 # run <cell> <name> <budget>: the cell's request once under <budget> (the cap, or `off` for its uncapped twin), as <name>.
 run() {
-  local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
+  local k=$1 name=$2 budget=$3 c target most limit left N st smi hwm steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
   local -a args
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   mapfile -t args < <(jq -r '.args[]' <<< "$c")
   for i in "${!args[@]}"; do
     args[$i]=$(expand "${args[$i]}")
     # A twin of a cell that completed asks with another seed: the same one is the call memo's to answer.
-    if [ "$budget" = off ] && [ "${ENDED[$k]:-}" = completed ]; then
+    if [ "$name" != "$k" ] && [ "${ENDED[$k]:-}" = completed ]; then
       [[ ${args[$i]} =~ ^seed:=([0-9]+)$ ]] && args[$i]="seed:=$((BASH_REMATCH[1] + 500000))"
       [[ ${args[$i]} =~ \"seed\":([0-9]+) ]] && args[$i]=${args[$i]/"\"seed\":${BASH_REMATCH[1]}"/"\"seed\":$((BASH_REMATCH[1] + 500000))"}
     fi
   done
   target=$(jq -r .target <<< "$c") left=$(( END_AT - $(date +%s) ))
   most=$(jq -r '.max_s // 0' <<< "$c"); limit="its $most s cap"
-  [ "$budget" != off ] || { most=$TWIN_S; limit="a twin's $TWIN_S s"; }
+  [ "$name" = "$k" ] || { most=$TWIN_S; limit="a twin's $TWIN_S s"; }
   if [ "$most" = 0 ] || [ "$most" -gt $((left - 300)) ]; then most=$((left - 300)); limit="the session's $NEED s"; fi
   rm -f "$OUT/$name.capped" "$OUT/$name.stuck"
+  if [ "$name" = "$k" ] && [ "$(jq -r '.restart // false' <<< "$c")" = true ]; then
+    # Every executor ends with the service, so this call is its function's first on a fresh one; the page cache stays.
+    step "restart-$name" machine update "$NAME" --gpu-memory-limit "$budget" -y || say "$name: the restart: $(tail -c 300 "$OUT/restart-$name.txt")"
+    for _ in $(seq 60); do [ "$(state "$NAME")" = ready ] && break; sleep 5; done
+    gpuwatch
+  fi
   pod 'wc -l < /var/tmp/ab-gpu.log > /var/tmp/cap-sweep.mark' > /dev/null
   watch "$name" "$most" "$limit"
   cd "$PACKAGES/$TREE" || fail "no tree for $name"
@@ -287,8 +302,11 @@ run() {
   [ -z "$N" ] || cozy run watch "$N" --once --json --full > "$OUT/$name.json" 2> /dev/null
   cd "$OUT" || fail "no $OUT"
   st=$(jq -r '.status // "none"' "$OUT/$name.json" 2> /dev/null); st=${st:-none}
-  smi=$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"card\" {gsub(\",\", \"\"); if (\$4 + 0 > m) m = \$4 + 0} END {print m + 0}"')
+  # The card's peak MiB, and the host side: the largest resident high-water mark (kB) of a GPU process the reader saw.
+  read -r smi hwm <<< "$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"card\" {gsub(\",\", \"\"); if (\$4 + 0 > m) m = \$4 + 0}
+    \$2 == \"pid\" && \$6 == \"hwm\" {if (\$7 + 0 > h) h = \$7 + 0} END {print m + 0, h + 0}"')"
   [[ ${smi:-0} =~ ^[1-9][0-9]*$ ]] && echo "$smi" > "$OUT/$name.smi" || smi=unread
+  [[ ${hwm:-0} =~ ^[1-9][0-9]*$ ]] && echo "$hwm" > "$OUT/$name.hwm"
   row "$name"
   steps=$(jq -r '"step 1 \(.phases.step1_s // "-") s, steady \(.phases.steady_s // "-") s x\(.phases.steps // "-")"' <<< "$ROW" 2> /dev/null)
   read -r total ex peak memo throttled stood < <(jq -r '[.measurements, (.calls[]?.measurements)] as $m
@@ -313,7 +331,7 @@ run() {
       | ($r.phases.steady_s // $r.phases.step1_s) as $s | (($p.b | tonumber) - ($p.a | tonumber)) as $n
       | if $s and $n > 0 then "\($n) steps of this stage left at \($s) s each: about \($n * $s | floor) s more" else "no step rate in its record" end' 2> /dev/null); $why"
   fi
-  [ "$budget" = off ] || ENDED[$k]=$st
+  [ "$name" != "$k" ] || ENDED[$k]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
   say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
@@ -341,7 +359,7 @@ for k in "${names[@]}"; do
   [ -n "${ENDED[$k]:-}" ] || continue
   if [ "${ENDED[$k]}" = failed ] || [ "$(jq -r --arg k "$k" 'map(select(.name == $k)) | first | .twin // false' <<< "$CELLS")" = true ]; then twins+=("$k"); fi
 done
-if [ "${#twins[@]}" -gt 0 ] && [ -z "$LOST" ] && [ $(( END_AT - $(date +%s) )) -gt 900 ]; then
+if [ "$CAPV" != off ] && [ "${#twins[@]}" -gt 0 ] && [ -z "$LOST" ] && [ $(( END_AT - $(date +%s) )) -gt 900 ]; then
   step uncap machine update "$NAME" --gpu-memory-limit off -y || say "lifting the cap: $(tail -c 300 "$OUT/uncap.txt")"
   said=''
   for _ in $(seq 60); do
@@ -362,5 +380,7 @@ if [ "${#twins[@]}" -gt 0 ] && [ -z "$LOST" ] && [ $(( END_AT - $(date +%s) )) -
     say "the cap was not lifted (machine show says ${said:-nothing} bytes): no uncapped twin ran"
   fi
 fi
+[ "$PUSH_EACH" = true ] || [ ! -s "$OUT/measured.jsonl" ] || timeout 300 python3 -I "$LEDGER" append "$OUT/measured.jsonl" >> "$OUT/ledger-cells.log" 2>&1 ||
+  say "the rows were not pushed ($(tail -c 200 "$OUT/ledger-cells.log" | tr '\n' ' '))"
 say "SWEEP at $CAPV on $NAME: $ran ran: $completed completed, $failed failed, $unfinished unfinished at their caps; $skipped not run"
 say "measured.jsonl: $(wc -l < "$OUT/measured.jsonl") rows"
