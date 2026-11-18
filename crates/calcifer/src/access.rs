@@ -496,10 +496,15 @@ impl Machines {
             (Some(entry), Some(request)) => ::needs::answers(entry, request),
             _ => ::needs::Answers::default(),
         };
-        let wants = ::needs::wants(&document, &[], &spec.entrypoint, &answers);
-        let planned: BTreeSet<&str> = (wants.needed.iter())
-            .chain(wants.either.iter().flatten())
-            .chain(wants.extras.iter().flat_map(|(_, slots)| slots))
+        let mut wants = vec![::needs::wants(&document, &[], &spec.entrypoint, &answers)];
+        // The walk stops at a function that loads models itself; the functions it calls, but those its rules say this request
+        // doesn't, read theirs under the same capability.
+        if !callable.models.is_empty() {
+            let callees = ::needs::callees(&document, &[], &spec.entrypoint, &answers.unneeded);
+            wants.extend(callees.iter().map(|callee| ::needs::wants(&document, &[], callee, &::needs::Answers::default())));
+        }
+        let planned: BTreeSet<&str> = (wants.iter())
+            .flat_map(|wants| wants.needed.iter().chain(wants.either.iter().flatten()).chain(wants.extras.iter().flat_map(|(_, slots)| slots)))
             .map(String::as_str)
             .collect();
         let own = (interface.callables.iter()).flat_map(|callable| &callable.models).filter(|slot| planned.contains(slot.path.as_str()));
