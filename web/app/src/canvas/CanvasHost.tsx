@@ -50,8 +50,6 @@ const fitOver = () => {
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 /** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
-/** Entering or leaving Focus: the camera's move and the other boxes' fade with it (cl-1198), at once for a reader who asks for less motion. */
-const focusMs = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : HERE_MS)
 /** How long the wheel stays still before the canvas takes it again after Focus: a trackpad's glide goes on after the hand has left. */
 const WHEEL_QUIET_MS = 200
 
@@ -355,10 +353,8 @@ function Canvas({
     const travel = focusTravel.current
     if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get()) return
     const pane = stage.current?.querySelector(".canvas-root")?.getBoundingClientRect()
-    const others = (ms: number) => flow.fade.hide(flow.byName(travel.owner.name)?.id ?? null, ms)
     // No room to draw in on: Focus shows where it is, never held hidden.
     if (!room || room.width <= 0 || room.height <= 0 || !pane) {
-      others(0)
       store.focusEntering.set(false)
       return
     }
@@ -376,11 +372,8 @@ function Canvas({
       if (!sameView(flow.getViewport(), viewport)) void flow.setViewport(viewport)
       store.focusEntering.set(false)
     }
-    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same. The other boxes fade out
-    // as it moves (Paul, 11-17), each from where it is.
-    const ms = focusMs()
-    others(ms)
-    glide(flow.setViewport(viewport, { duration: ms }), arrived)
+    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
+    glide(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
@@ -413,8 +406,6 @@ function Canvas({
       setShut(true)
       store.focusEntering.set(Boolean(focusTravel.current))
       store.focusedName.set(name)
-      // Nowhere to move to: the other boxes go with no move.
-      if (!focusTravel.current) flow.fade.hide(flow.byName(name)?.id ?? null, 0)
     },
     [store, flow, setHoming],
   )
@@ -440,9 +431,6 @@ function Canvas({
     store.focusEntering.set(false)
     store.focusedName.set(null)
     if (palette !== null) setShut(palette)
-    // The other boxes come back as the canvas moves back, each from where it is.
-    const ms = back ? focusMs() : 0
-    flow.fade.show(ms)
     if (!back) return
     setHoming(true)
     if (store.projectId) saveViewport(store.projectId, back)
@@ -458,7 +446,7 @@ function Canvas({
       visit.current = null
       setHoming(false)
     }
-    glide(flow.setViewport(back, { duration: ms }), home)
+    glide(flow.setViewport(back, { duration: HERE_MS }), home)
   }, [store, flow, setHoming, glide])
   const leaveHere = useCallback(() => {
     const name = store.inPlace?.name ?? store.focusedName.get()

@@ -1,6 +1,5 @@
 import type { Box } from "../graph"
 import { Camera, type Fit, type Point, type Viewport } from "./Camera"
-import { Fade } from "./Fade"
 
 /** A card's logical geometry. It outlives its display objects: culling never loses a position, a selection or a drag. */
 export interface CanvasNode {
@@ -31,8 +30,6 @@ const cellsOf = (box: Box) => {
 /** The canvas the page talks to: every card's geometry and selection, a grid to find them by place, and the camera. */
 export class Board {
   readonly camera: Camera
-  /** The other boxes' opacity as Focus opens and closes. */
-  readonly fade = new Fade()
   private nodes: CanvasNode[] = []
   private byId = new Map<string, CanvasNode>()
   private names = new Map<string, string>()

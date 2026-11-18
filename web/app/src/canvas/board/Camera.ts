@@ -10,9 +10,6 @@ export interface Fit { bounds: readonly Box[]; padding?: Padding; minZoom?: numb
 export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 4
 
-/** A camera move's curve, easeInOutSine, over its time from 0 to 1: what's timed with a move (Focus's fade) follows it too. */
-export const glide = (t: number) => t >= 1 ? 1 : t <= 0 ? 0 : (1 - Math.cos(Math.PI * t)) / 2
-
 const same = (a: Viewport, b: Viewport) => a.x === b.x && a.y === b.y && a.zoom === b.zoom
 const valid = (view: Viewport) => Number.isFinite(view.x) && Number.isFinite(view.y) && Number.isFinite(view.zoom) && view.zoom > 0
 const GESTURES = ["drag", "pinch", "wheel", "decelerate"] as const
@@ -122,7 +119,7 @@ export class Camera {
       this.animation = { resolve }
       viewport.animate({
         position: { x: (viewport.screenWidth / 2 - target.x) / target.zoom, y: (viewport.screenHeight / 2 - target.y) / target.zoom },
-        scale: target.zoom, time: duration, ease: (time: number, from: number, by: number, total: number) => from + by * glide(time / total), removeOnInterrupt: true,
+        scale: target.zoom, time: duration, ease: "easeInOutSine", removeOnInterrupt: true,
         callbackOnComplete: () => { this.place(target); this.finish(true) },
       })
       viewport.dirty = true
