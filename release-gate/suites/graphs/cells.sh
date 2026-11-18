@@ -1,4 +1,4 @@
-# Suite `graphs` (gate.sh --suite graphs; tracker design cuda-graph-correctness.md; cr-287, cr-300, cr-283): CUDA graphs
+# Suite `graphs` (gate.sh --suite graphs; tracker design cuda-graph-correctness.md; cr-287, cr-300, cr-283, cr-333): CUDA graphs
 # held to their calls as written, bit for bit, on a dev machine: `dev = true` in the pod's config.toml (over SSH), which
 # TensorD sends in each executor's Start, so the Runtime audits every 16th replay of a region. Repeats run a package
 # copy with memoization out, so a second request computes; equal output bytes mean a replay equals the call as written.
@@ -12,6 +12,12 @@
 #                       idle (its device reads answered by its call as written) and replays, its image byte-identical
 #   graphs-klein-283    Klein upsampled on cr-283's prompt and seed (gate 44006460875 run 17, rtx-4090): a decode graph
 #                       that differs names its cause in the record (analyze.py fails the cell either way)
+#   graphs-lm-again-*   the describer (Qwen3.5-9B) asked 8 prompts at once, then again in the same executor with a longer
+#                       system prompt: its decode slots regrow, so the second call records and checks its graphs anew
+#                       (cr-333: MiniMax-H3-Image's expander failed its second call `device_fault`; pod-session 44244508049)
+#   graphs-lm-checks    no decode graph's check, in any record here, saved more than 64 MiB beyond its decode state (a dev
+#                       machine's `decode.partial_restore`). Runtime 0.48.0.dev2326 to dev2333 saved every key buffer whole:
+#                       153 MiB for Klein's one row (gate 44205178562), 10 GiB for 16 rows of Qwen3.8-27B (cr-333)
 #   graphs-h3-upscale-* Regenerate-2K of a 5 s plate at 1080p, three prompts: the latent upscaler captures its graph (its
 #                       scale embedding was a pageable host copy, refused: gate 44167820873)
 #   graphs-audit        replays were audited against their calls as written, and no P-H3-Image or Anima record differed
@@ -111,6 +117,26 @@ fi
 cell graphs-klein-283 "$(pkg flux.3-klein generate_turbo)" prompt_upsampling:=true seed:=241107249 \
   prompt="a vintage tin robot playing a saxophone on a small stage in a smoky jazz club"
 log "graphs-klein-283: decode $(jq -c '[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | {lm: .key, captures: .value.decode.captures, replays: .value.decode.replays, refused: .value.decode.refused, partial: .value.decode.partial_restore}]' graphs-klein-283.json 2>/dev/null)"
+if gwant graphs-lm; then
+  # lrules <n>: n short rules, about 8 tokens each. The second call's 75 more are past one window of 256 positions, the
+  # step its slots' capacity grows by, so it drops the first call's slots and records its graphs again.
+  lrules() { local i out=; for i in $(seq "$1"); do out+="Rule $i: keep to what the request names. "; done; echo "$out"; }
+  lasks=$(jq -cn --arg a "$OBJECT" --arg b "$SCENE" --arg c "$CHAR" '[range(8) | {text: "Request \(. + 1): \([$a, $b, $c][. % 3]), view \(. + 1)"}]')
+  lask() {
+    cell "$1" "$(pkg qwen3 ask)" --model model=qwen/qwen3.5-9b@0.2.0 prompts:="$lasks" max_tokens:=256 seed:=$((R + 631)) \
+      system="Expand each request into one caption of about 60 words (take $R). $(lrules "$2")"
+  }
+  lask graphs-lm-again-1 75
+  lask graphs-lm-again-2 150
+  ldecode='[.measurements.residency.graphs // {} | to_entries[] | select(.value.decode) | .value.decode] | first // {}'
+  lnew=$(( $(gfact graphs-lm-again-2 "$ldecode | .captures // 0") - $(gfact graphs-lm-again-1 "$ldecode | .captures // 0") ))
+  lrefused=$(jq -r "$ldecode | .refused // [] | join(\" | \")" graphs-lm-again-2.json 2>/dev/null)
+  # A call that started its own executor is a first call: its record has an `executor start` stage.
+  lfresh=$(gfact graphs-lm-again-2 '[.report.measured[]?.stages[]? | select(.name == "executor start")] | length')
+  [ "$lfresh" = 0 ] && [ "$lnew" -gt 0 ] && [ -z "$lrefused" ] &&
+    expect graphs-lm-again PASS "the second call, in the first's executor, recorded $lnew decode graphs and kept them" ||
+    expect graphs-lm-again FAIL "the second call: new executor $lfresh, decode graphs recorded $lnew, refused: ${lrefused:-none}"
+fi
 if gwant graphs-h3; then
   gplate=$(box graphs_plate "$(plate 5)" "A test pattern with a tone")
   for i in 1 2 3; do
@@ -122,6 +148,15 @@ if gwant graphs-h3; then
   [ "$captures" -gt 0 ] && [ -z "$refused" ] && expect graphs-h3-upscaler PASS "the latent upscaler captured $captures graphs" ||
     expect graphs-h3-upscaler FAIL "the latent upscaler captured $captures; refused: ${refused:-none}"
 fi
+# What each decode graph's check saved beyond its decode state, as a dev machine's record says it ("N more tensors put back
+# (X KiB)"): the slots a step writes, never a key buffer (cr-333).
+lsaved=$(cat graphs-*.json 2>/dev/null | jq -s -r '[.[] | .. | objects | .partial_restore? // empty | .[] | strings
+  | capture("put back \\((?<n>[0-9]+) (?<u>[KMG])iB\\)") | (.n | tonumber) * {K: 1024, M: 1048576, G: 1073741824}[.u]]
+  | "\(length) \(max // 0)"')
+read -r lchecks lmost <<< "${lsaved:-0 0}"
+[ "${lchecks:-0}" -gt 0 ] && [ "${lmost:-0}" -le $((64 << 20)) ] &&
+  expect graphs-lm-checks PASS "$lchecks decode checks, the largest saved $((lmost >> 10)) KiB beyond its decode state" ||
+  expect graphs-lm-checks FAIL "$lchecks decode checks said what they saved; the largest $((${lmost:-0} >> 20)) MiB beyond its decode state (64 MiB at most)"
 audited=0 mismatched=()
 for f in graphs-*.json; do
   [ -f "$f" ] || continue
