@@ -26,7 +26,10 @@
 #              commit in its lane, converted on the pod. `base` (a Hub model, release or checkpoint) supplies what the
 #              source lacks (a DiT-only file's text encoder and VAE), in the upload's lane, or the release's `base_lane`
 #              checkpoint. `commit` names one already made: a rerun skips it.
-#   lanes      more lanes written from the bf16 commit by `recipes`' recipe (a Hub package, or ./<dir> of the checkout)
+#   lanes      more lanes written from the bf16 commit by `recipes`' recipe (a Hub package, or ./<dir> of the checkout); an item
+#              {"lane", "from"} is written from that lane's upload instead
+#   prepare    {function, lane}: a package function (./<dir>/<fn>) run on the bf16 commit, `cozy run <fn> <commit> <model>`,
+#              whose commit in `lane` (bf16) the lanes are then written from (pan2's curve form)
 #   call       {function, request, slot?, strength?, lanes?}: one run on each commit (of `lanes` only, if given) before
 #              publishing: a model as model.<slot>= (model), a LoRA as --lora <ref>,<strength> (1). ./<dir>/<fn> runs
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
@@ -66,7 +69,8 @@ released() {
 
 # mirror <i>: mirrors[i] uploaded, called, tagged and published (unless held); 1 on its first failure.
 mirror() {
-  local it m kind verb page slug version strength j k v u lane c n N fn req pulled='' bf16='' from commits=() calls=() args
+  local it m kind verb page slug version strength j k v u lane c n N fn req pulled=' ' bf16='' from src commits=() calls=() args
+  local -A up=()
   it=$(jq -c ".[$1]" <<<"$MIRRORS"); m=$(jq -r .model <<<"$it"); kind=$(jq -r '.kind // "model"' <<<"$it")
   page=$(jq -r .page <<<"$it"); version=$(jq -r '.version // ""' <<<"$it"); slug=${m//\//-} from=$(jq -r '.from // "bf16"' <<<"$it")
   verb=model; [ "$kind" = model ] || verb=lora
@@ -94,17 +98,34 @@ mirror() {
       fi
     fi
     [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: ${c:-no commit} is no $lane commit"; return 1; }
-    commits+=("$c"); calls+=("$lane=$c"); [ "$lane" != "$from" ] || bf16=$c
+    commits+=("$c"); calls+=("$lane=$c"); up[$lane]=$c; [ "$lane" != "$from" ] || bf16=$c
     say "COMMIT $m $lane $c"
   done
-  for lane in $(jq -r '.lanes // [] | .[]' <<<"$it"); do
+  # prepare {function, lane}: the package function that writes the lanes' source from the `from` upload, as
+  # `cozy run <function> <from commit> <model>` (pan2's curve form), in its lane (bf16).
+  fn=$(jq -r '.prepare.function // ""' <<<"$it")
+  if [ -n "$fn" ]; then
+    lane=$(jq -r '.prepare.lane // "bf16"' <<<"$it")
+    [ -n "$bf16" ] || { say "MIRROR FAILED: $m: prepare needs a $from upload"; return 1; }
+    step "prepare-$slug" run "$fn" "$m@$bf16" "$m" --on "$NAME" &&
+      c=$(made "prepare-$slug") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: prepare $fn"; return 1; }
+    commits+=("$c"); calls+=("$lane=$c"); up[$lane]=$c; bf16=$c
+    say "COMMIT $m $lane $c (prepare $fn)"
+  fi
+  # A lane is written from the `from` upload, or `{"lane", "from"}` from that lane's upload (H3's int8 from its text
+  # encoder on the release's int8 lane: the recipe keeps the DiTs' encoding and encodes the encoder alone).
+  for ((j = 0; j < $(jq '.lanes // [] | length' <<<"$it"); j++)); do
+    u=$(jq -c ".lanes[$j]" <<<"$it")
+    lane=$(jq -r 'if type == "string" then . else .lane end' <<<"$u")
+    src=$bf16; k=$(jq -r 'if type == "object" then .from // "" else "" end' <<<"$u")
+    [ -z "$k" ] || src=${up[$k]:-}
     v=$(jq -r '.recipes // ""' <<<"$it"); [[ $v != ./* ]] || v=$TREE/${v#./}
-    [ -n "$bf16" ] && [ -n "$v" ] || { say "MIRROR FAILED: $m: lane $lane needs a $from upload and recipes"; return 1; }
-    [ -n "$pulled" ] || step "pull-$slug" model install "$m@$bf16" --on "$NAME" || { say "MIRROR FAILED: $m: pull"; return 1; }
-    pulled=1
-    step "$lane-$slug" model quantize "$m@$bf16" --lane "$lane" --package "$v" --on "$NAME" &&
+    [ -n "$src" ] && [ -n "$v" ] || { say "MIRROR FAILED: $m: lane $lane needs a ${k:-$from} upload and recipes"; return 1; }
+    [[ $pulled == *" $src "* ]] || step "pull-$slug-$j" model install "$m@$src" --on "$NAME" || { say "MIRROR FAILED: $m: pull"; return 1; }
+    pulled+="$src "
+    step "$lane-$slug" model quantize "$m@$src" --lane "$lane" --package "$v" --on "$NAME" &&
       c=$(made "$lane-$slug") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: lane $lane"; return 1; }
-    commits+=("$c"); calls+=("$lane=$c"); say "COMMIT $m $lane $c"
+    commits+=("$c"); calls+=("$lane=$c"); say "COMMIT $m $lane $c (from $src)"
   done
   fn=$(jq -r '.call.function // ""' <<<"$it")
   for v in "${calls[@]}"; do
