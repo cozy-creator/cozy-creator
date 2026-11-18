@@ -194,35 +194,48 @@ fi
 # Predict (#3932): the rental ready, a Qwen Image 2.1 box and a Klein box made and their words written, the project shown as an open
 # page holds it, nothing rendered: within about a minute the rental installs the packages and fetches their models ahead, and `local`
 # (this GPU-less runner) receives nothing; then Render starts without a fresh download. Each 10 s: what the pod and local hold.
-if has predict; then
+phase_predict() {
   ms() { date +%s%3N; }
-  holds() { cozy model ls --on "$1" < /dev/null 2> /dev/null | awk 'NR > 1 && $1 == "'"$1"'" {print $2}' | sort | paste -sd, -; }
+  holds() { cozy model ls --on "$1" < /dev/null 2> /dev/null | awk -v m="$1" 'NR > 1 && $1 == m {sz = ""; if (match($0, /[0-9.]+ (B|KiB|MiB|GiB)/)) sz = substr($0, RSTART, RLENGTH); print $2 " " sz}' | sort | paste -sd, -; }
+  PAGE import "$P" "$REF/seed.jpg" --name photo > "$W/out/predict-photo.json" 2>&1
   DIR=$P c predict-local-before model ls --on local; DIR=$P c predict-pod-before model ls --on "$NAME"
   t0=$(ms)
   PAGE add "$P" pq --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a paper lantern festival on a river at night, wide shot"}' > "$W/out/pq.add.json" 2>&1
   PAGE add "$P" pk --tool "$(tid flux.3-klein/image)" --fields '{"instructions": "a paper lantern festival on a river at night, oil painting"}' > "$W/out/pk.add.json" 2>&1
-  ( timeout 240 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/predict-show.json" 2>&1 ) & shown=$!
-  for i in $(seq 1 24); do
+  say "predict: boxes pq (Qwen Image 2.1) and pk (Klein) written, nothing rendered; the project shown as an open page holds it"
+  ( timeout 330 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/predict-show.json" 2>&1 ) & shown=$!
+  local i edited=''
+  for i in $(seq 1 30); do
     sleep 10
-    printf '%s\t+%ss\tpod: %s\tlocal: %s\tpod jobs: %s\n' "$(date -u +%T)" $(( ($(ms) - t0) / 1000 )) "$(holds "$NAME")" "$(holds local)" \
-      "$(cozy machine show "$NAME" < /dev/null 2> /dev/null | grep -aiE '^(running|queued|activity|installing|downloading)' | tr -s ' ' | tr '\n' ';' | cut -c1-200)" >> "$W/predict.tsv"
+    # An edit that cuts a download: at +120 s pq comes to mention a picture, so its text-to-image enhancer is no longer what it needs.
+    if [ "$i" = 12 ]; then
+      PAGE set "$P" pq --fields '{"instructions": "<photo> as a paper lantern festival on a river at night"}' > "$W/out/pq.set.json" 2>&1
+      edited=$(( ($(ms) - t0) / 1000 )); say "predict: pq edited at +${edited}s to mention <photo> (its i2i enhancer now, not t2i)"
+    fi
+    printf '%s\t+%ss\tpod: %s\tlocal: %s\tpod: %s\n' "$(date -u +%T)" $(( ($(ms) - t0) / 1000 )) "$(holds "$NAME")" "$(holds local)" \
+      "$(cozy machine show "$NAME" < /dev/null 2> /dev/null | grep -aiE '^(running|queued|activity|installing|downloading|disk use)' | tr -s ' ' | tr '\n' ';' | cut -c1-240)" >> "$W/predict.tsv"
   done
   wait "$shown" 2> /dev/null
-  cut -c1-400 "$W/predict.tsv" | sed 's/^/    predict: /' >> "$R"
+  cut -c1-520 "$W/predict.tsv" | sed 's/^/    predict: /' >> "$R"
+  cozy machine logs "$NAME" tensorfs --since 8m -n 400 < /dev/null 2>&1 | grep -aiE 'refused|nothing wants|cancel|cut|landed|pe-t2i|pe-i2i|expander' | tail -40 | cut -c1-260 > "$W/predict-tensorfs.log"
+  sed 's/^/    predict tensorfs: /' "$W/predict-tensorfs.log" | tail -25 >> "$R"
   DIR=$P c predict-local-after model ls --on local; DIR=$P c predict-pod-after model ls --on "$NAME"
-  say "predict: local holds $(holds local | tr ',' '\n' | grep -c .) model(s) after (before: $(awk 'NR > 1 && $1 == "local"' "$W/cli/predict-local-before.txt" | wc -l)); the pod $(holds "$NAME")"
+  say "predict: local after: $(holds local | tr ',' '\n' | grep -c .) model(s) (before: $(awk 'NR > 1 && $1 == "local"' "$W/cli/predict-local-before.txt" | wc -l))"
+  local b t1 rc r
   for b in pq pk; do
     t1=$(ms); timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$b" > "$W/out/$b.render.json" 2> "$W/out/$b.render.err"; rc=$?
-    say "predict: $b rendered after the guess: exit $rc in $(( ($(ms) - t1) / 1000 )) s; $(tail -c 200 "$W/out/$b.render.err" | tr '\n' ' ')"
+    r=$(cd "$P" && cozy run ls < /dev/null 2> /dev/null | awk -v t="$([ "$b" = pq ] && echo qwen-image-2/image || echo flux.3-klein/image)" 'NR > 1 && $2 ~ t {print $1; exit}')
+    [ -z "$r" ] || (cd "$P" && cozy --json run watch "$r" --full) > "$W/out/$b-watch.ndjson" 2>&1 < /dev/null
+    say "predict: $b rendered after the guess: exit $rc in $(( ($(ms) - t1) / 1000 )) s, run ${r:-?}; its events name downloading $(grep -aciE '"downloading|downloading ' "$W/out/$b-watch.ndjson" 2> /dev/null) time(s), installing $(grep -aciE 'installing' "$W/out/$b-watch.ndjson" 2> /dev/null); $(tail -c 200 "$W/out/$b.render.err" | tr '\n' ' ')"
   done
   DIR=$P c predict-runs run ls
-  sed -n 2,3p "$W/cli/predict-runs.txt" | cut -c1-300 | sed 's/^/    predict: /' >> "$R"
+  sed -n 2,5p "$W/cli/predict-runs.txt" | cut -c1-300 | sed 's/^/    predict: /' >> "$R"
   DIR=$P c predict-pod-final model ls --on "$NAME"
-fi
+}
 # Relock (W-D1; `cozy update` restarts Calcifer): in the ENCRYPTED project, a render going on the rental, then one on `local`, Calcifer
 # restarted as an update does, the project unlocked again: does the take land, was the run canceled or did it finish, what does the box
 # say while locked and after, is anything lost.
-if has relock; then
+phase_relock() {
   G=$PJ/garden
   PAGE import "$G" "$REF/seed.jpg" --name photo > "$W/out/garden-photo.json" 2>&1
   relock() {  # relock <label> <machine> <box> <tool> <fields>
@@ -246,11 +259,11 @@ if has relock; then
   }
   relock rental "$NAME" lockedsdxl sdxl/image '{"instructions": "a hot air balloon over a lavender field", "megapixels": 4, "seed": 21}'
   relock local local lockedcut birefnet/remove_background '{"image": "<photo>"}'
-fi
+}
 # Updates (coordinator, 11-18: after `machine update` said completed, a render's first run waited 342 s; after a settings-only update the
 # pod refused connections ~3 min): each update timed, `machine show` until it answers ready, then a small run's created → accepted →
 # started; any gap over 5 s keeps the pod's own logs at once.
-if has updates; then
+phase_updates() {
   ms() { date +%s%3N; }
   upd() {
     local arm=$1 t0 t1 first='' rc run gap; shift
@@ -277,8 +290,8 @@ if has updates; then
   upd limit-off --gpu-memory-limit off
   upd limit-20 --gpu-memory-limit 20GiB
   upd limit-back --gpu-memory-limit off
-fi
-if has tools; then
+}
+phase_tools() {
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
   if jq -e 'any(.[]; .name == "sky")' "$STEPS" > /dev/null; then
@@ -351,18 +364,19 @@ if has tools; then
     jq -e '(.status // .run.status) == "failed"' "$f" > /dev/null 2>&1 || continue
     say "record ${f##*/}: $(jq -c '{target: (.target // .run.target), reason: ((.reason // .run.reason) | tostring | .[0:220])}' "$f" 2> /dev/null); credential words: $(grep -aoiE '"[a-z_]*(sign|credential|token|grant|auth|bearer|account)[a-z_]*": *("[^"]{0,40}"|true|false|null|[0-9]+)' "$f" | sort -u | head -8 | tr '\n' ' ')"
   done
-fi
+}
 # A Qwen render cancelled from the page near step 3, then the same box again (cozy-creator #3758: the executor kept warm): it completes,
 # starts fast, its peak normal. A warm-up render first, so the cancel lands on a warm executor as a user's would.
-if has cancel; then
-  PAGE add "$P" qr --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a stone bridge over a mountain river, autumn", "turbo": false, "megapixels": 1}' > "$W/out/qr.add.json" 2>&1
+phase_cancel() {
+  local CT CF; CT=$(param cancel_tool qwen-image-2/image) CF=$(param cancel_fields '{"instructions": "a stone bridge over a mountain river, autumn", "turbo": false, "megapixels": 1}')
+  PAGE add "$P" qr --tool "$(tid "$CT")" --fields "$CF" > "$W/out/qr.add.json" 2>&1
   t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-warm.render.json" 2> "$W/out/qr-warm.render.err"
   say "qr warm-up: exit $? in $((SECONDS - t1)) s"
   t1=$SECONDS; PAGE render "$P" --on "$NAME" --queue qr > "$W/out/qr-cancel.render.json" 2>&1
   cancelled=''
   first=''
   for _ in $(seq 1 1200); do
-    line=$(going "$P" 'qwen-image-2/image')
+    line=$(going "$P" "$CT")
     printf '%s\t%s\n' "$((SECONDS - t1))" "$line" >> "$W/out/qr-cancel.poll.tsv"
     if [ -n "$line" ]; then
       first=${first:-$SECONDS}; step=$(stepof "$line")
@@ -380,10 +394,10 @@ if has cancel; then
     (cd "$P" && cozy --json run watch "$r" --full) > "$W/out/run-$r.json" 2>&1 < /dev/null
     say "run $r: $(jq -c '{status: (.status // .run.status), reason: ((.reason // .run.reason) | tostring | .[0:160]), created: (.created_at_ms // .run.created_at_ms), started: (.started_at_ms // .run.started_at_ms), settled: (.settled_at_ms // .run.settled_at_ms)}' "$W/out/run-$r.json" 2> /dev/null)"
   done
-fi
+}
 # Seeds (cozy-creator #3772, Paul: "you can only memoize when you have a fixed seed"): a box with no seed rendered three times, three
 # seeds and three pictures, none from memory; `cozy render <box> -n 3`, three seeds; a box at seed 42 twice, the second from memory.
-if has seeds; then
+phase_seeds() {
   PAGE add "$P" free --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo"}' > "$W/out/free.add.json" 2>&1
   for i in 1 2 3; do
     t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" free > "$W/out/free-$i.render.json" 2> "$W/out/free-$i.render.err"
@@ -406,10 +420,9 @@ if has seeds; then
     say "cozy run sdxl/generate --lora $lora: exit $?: $(tail -3 "$W/cli/cli-sdxl-lora.txt" | tr '\n' ' ' | cut -c1-300)"
   else say "no SDXL LoRA found by cozy lora ls --family sdxl: $(head -c 300 "$W/cli/lora-sdxl.txt")"; fi
   say "seeds: $(jq -c '{name: .asset.name, versions: [.versions[]? | {v: (.version // .number // .id), seed: (.seed // .fields.seed // .request.seed // .call.seed // null), memo: (.memoized // .memo // null)}]}' "$W/out/seeds-assets.json" 2> /dev/null | tr '\n' ' ' | cut -c1-900)"
-fi
-{ has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results
+}
 # A machine lost mid-run: a long SDXL render going, the rental ended under it; what the box, the run and the CLI then say.
-if has lost; then
+phase_lost() {
   PAGE add "$P" lost --tool "$(tid sdxl/image)" --fields '{"instructions": "a sprawling city of glass towers at dusk, aerial view", "megapixels": 16, "seed": 4}' > "$W/out/lost.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lost > "$W/out/lost.render.json" 2>&1
   for _ in $(seq 1 600); do line=$(going "$P" 'sdxl/image'); [ -z "$line" ] || break; sleep 1; done
@@ -420,7 +433,14 @@ if has lost; then
   say "lost: after $((SECONDS - t0)) s the box says $(jq -c '{failure: .asset.failure, making: .asset.making, rendering: .asset.rendering}' "$W/out/lost-after.json" 2> /dev/null | cut -c1-500)"
   DIR=$P c run-ls-lost run ls
   say "lost: run ls: $(sed -n 2p "$W/cli/run-ls-lost.txt" | cut -c1-300)"
-fi
+}
+# The phases in the order asked (`order`): a short session pays for what matters most first. `results` is the page's look at the boxes.
+for ph in $(param order 'predict relock updates tools cancel seeds results lost'); do
+  case $ph in
+    results) { has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results ;;
+    *) ! has "$ph" || "phase_$ph" ;;
+  esac
+done
 # Its idle release: nothing asked of it for its 15 idle minutes, it ends by itself.
 if has idle; then
   t0=$SECONDS
