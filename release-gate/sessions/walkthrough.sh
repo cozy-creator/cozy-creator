@@ -196,7 +196,15 @@ fi
 # (this GPU-less runner) receives nothing; then Render starts without a fresh download. Each 10 s: what the pod and local hold.
 phase_predict() {
   ms() { date +%s%3N; }
-  holds() { cozy model ls --on "$1" < /dev/null 2> /dev/null | awk -v m="$1" 'NR > 1 && $1 == m {sz = ""; if (match($0, /[0-9.]+ (B|KiB|MiB|GiB)/)) sz = substr($0, RSTART, RLENGTH); print $2 " " sz}' | sort | paste -sd, -; }
+  # holds <machine>: each model it holds, `name held/own`: `model ls`'s size is bytes HELD, its `shared` the part another model shares, so a
+  # slot's own bytes are held less shared (the coordinator, 11-18: two enhancers' 889 MiB were all shared, never either one whole).
+  holds() { cozy model ls --on "$1" < /dev/null 2> /dev/null | awk -v m="$1" '
+    function bytes(t,   n, u) { n = t + 0; u = t; sub(/^[0-9.]+ /, "", u); return n * (u == "GiB" ? 2^30 : u == "MiB" ? 2^20 : u == "KiB" ? 2^10 : 1) }
+    function human(b) { return b >= 2^30 ? sprintf("%.1fG", b / 2^30) : b >= 2^20 ? sprintf("%.0fM", b / 2^20) : sprintf("%.0fK", b / 2^10) }
+    NR > 1 && $1 == m { line = $0; n = 0
+      while (match(line, /[0-9.]+ (B|KiB|MiB|GiB)/)) { v[++n] = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH) }
+      held = n >= 1 ? bytes(v[1]) : 0; shared = n >= 2 ? bytes(v[2]) : 0
+      print $2 " " human(held) "/" human(held - shared) }' | sort | paste -sd, -; }
   PAGE import "$P" "$REF/seed.jpg" --name photo > "$W/out/predict-photo.json" 2>&1
   DIR=$P c predict-local-before model ls --on local; DIR=$P c predict-pod-before model ls --on "$NAME"
   t0=$(ms)
@@ -226,7 +234,13 @@ phase_predict() {
     t1=$(ms); timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$b" > "$W/out/$b.render.json" 2> "$W/out/$b.render.err"; rc=$?
     r=$(cd "$P" && cozy run ls < /dev/null 2> /dev/null | awk -v t="$([ "$b" = pq ] && echo qwen-image-2/image || echo flux.3-klein/image)" 'NR > 1 && $2 ~ t {print $1; exit}')
     [ -z "$r" ] || (cd "$P" && cozy --json run watch "$r" --full) > "$W/out/$b-watch.ndjson" 2>&1 < /dev/null
-    say "predict: $b rendered after the guess: exit $rc in $(( ($(ms) - t1) / 1000 )) s, run ${r:-?}; its events name downloading $(grep -aciE '"downloading|downloading ' "$W/out/$b-watch.ndjson" 2> /dev/null) time(s), installing $(grep -aciE 'installing' "$W/out/$b-watch.ndjson" 2> /dev/null); $(tail -c 200 "$W/out/$b.render.err" | tr '\n' ' ')"
+    # What it downloaded on its critical path is its record's `measurements.weights` (`needs`), never a count of words in this file: a
+    # watch of a settled run holds only its final record. Its install, a run of its own just before it: how long from accepted to settled.
+    local need inst
+    need=$(grep -a '^{' "$W/out/$b-watch.ndjson" | tail -1 | jq -r '[.. | objects | select(has("measurements")) | .measurements.weights // empty][0] // {} | "had \((.has // 0) / 1e9 | . * 10 | round / 10) GB, downloaded \((.needs // 0) / 1e9 | . * 10 | round / 10) GB on its way, extras \((.extras // 0) / 1e9 | . * 10 | round / 10) GB"' 2> /dev/null)
+    inst=$(cd "$P" && cozy run ls < /dev/null 2> /dev/null | awk -v t="$([ "$b" = pq ] && echo qwen-image-2 || echo flux.3-klein)" 'NR > 1 && $0 ~ "install local/" t {print $1; exit}')
+    [ -z "$inst" ] || inst="$inst $(cd "$P" && cozy --json run watch "$inst" --full < /dev/null 2> /dev/null | grep -a '^{' | tail -1 | jq -r '[.. | objects | select(has("accepted_at_ms") and has("settled_at_ms"))][0] | "settled \(.settled_at_ms - .accepted_at_ms) ms after accepted"' 2> /dev/null)"
+    say "predict: $b rendered after the guess: exit $rc in $(( ($(ms) - t1) / 1000 )) s, run ${r:-?}: ${need:-no weights measurement}; its install ${inst:-not found}; $(tail -c 200 "$W/out/$b.render.err" | tr '\n' ' ')"
   done
   DIR=$P c predict-runs run ls
   sed -n 2,5p "$W/cli/predict-runs.txt" | cut -c1-300 | sed 's/^/    predict: /' >> "$R"
