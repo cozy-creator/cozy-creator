@@ -395,7 +395,7 @@ pub(crate) struct Publisher {
 const FRESH: Duration = Duration::from_secs(10 * 60);
 
 /// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
-const RESOLVE: &str = "resolve-v6";
+const RESOLVE: &str = "resolve-v7";
 
 /// What a capability's reads resolved to (`Publisher::resolve`), by it and the name and hardware asked, and when: kept `ASKED_FOR`.
 static ASKED: std::sync::LazyLock<Mutex<HashMap<String, Arc<Mutex<Option<(Instant, Answer)>>>>>> = std::sync::LazyLock::new(Mutex::default);
@@ -846,7 +846,7 @@ impl Publisher {
             // alone, asked once however many plans want it at once (cl-1123: a list item's slots resolve while its code installs, and
             // its plan after reads them here).
             let key = json!([RESOLVE, capability.identity(), named.model, named.release, named.lane, hardware.gpus, hardware.plain,
-                hardware.components, hardware.free_vram.is_some()]).to_string();
+                hardware.components, hardware.capacity, hardware.context, hardware.rows, hardware.step.is_some()]).to_string();
             let asked = {
                 let mut held = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // One being asked stays; one older than it is kept for goes.
@@ -867,10 +867,11 @@ impl Publisher {
             Answer::ask(&self.machine, source, &named, hardware)?
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
-            // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
-            // memory still picks, and a slot's that reads only some components (xs-191) are each their own.
+            // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076), v6 a 4-bit floor's by free memory; a
+            // 4-bit floor's answer, which its fit picks (the card's capacity and the call's K/V, rows and step room, measured or
+            // not: xs-213), and a slot's that reads only some components (xs-191) are each their own.
             let key = json!([RESOLVE, origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain,
-                hardware.components, hardware.free_vram.is_some()]);
+                hardware.components, hardware.capacity, hardware.context, hardware.rows, hardware.step.is_some()]);
             let name = key.to_string();
             let held = service.engine.read_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
@@ -1661,6 +1662,12 @@ impl Publisher {
         let entry = api::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
+        // The function's measured step room on this card (`estimate::peak`): its runs here, at any size (a slot resolves before its
+        // request is sized). It is its main model's (another slot's step is not the function's peak); none yet, or another slot,
+        // each lane's header estimate stands.
+        let function = crate::journal::function_key(&installation.package, &request.entrypoint);
+        let runs = service.engine.run_times(&function, api::estimate::HISTORY).unwrap_or_default();
+        let step = api::estimate::peak(&runs, &api::machine::JobSize::default()).map(|bytes| bytes as u64);
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1695,11 +1702,19 @@ impl Publisher {
                 named.lane = request.lane.clone();
             }
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only; a lane fits on the
-            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint). Free memory lowers only a
-            // 4-bit floor's lane: H3's int8 on a 5090 was served nvfp4 for not fitting its free bytes (cl-1076).
+            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint). Fit lowers only a 4-bit floor's
+            // lane: H3's int8 on a 5090 was served nvfp4 for not fitting its free bytes (cl-1076), and the Hub isn't told the
+            // floor. It is the card's capacity and the step room (selection rule 8, xs-213); a Hub before rule 8 reads the free bytes.
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let free_vram = (slot["min_bits"] == 4).then(|| gpu.free_vram(degree)).flatten();
-            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
+            let fits = slot["min_bits"] == 4;
+            let hardware = tensorfs::fetch::Hardware {
+                plain,
+                components: slot_components(slot),
+                capacity: fits.then(|| gpu.capacity(degree)).flatten(),
+                step: step.filter(|_| fits && Some(slot) == main),
+                free_vram: fits.then(|| gpu.free_vram(degree)).flatten(),
+                ..hardware.clone()
+            };
             let source = request.hub(&format!("the model for {path}"))?;
             // What it waits on shows: the Hub's grant of the run's reads, each attempt it doesn't answer (cl-1189), then the Hub's answer.
             let began = std::time::Instant::now();

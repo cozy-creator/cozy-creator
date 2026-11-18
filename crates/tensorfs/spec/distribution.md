@@ -30,16 +30,25 @@ a commit is named by its id.
 ## 2. Reading
 
 ```text
-GET  B/v1/models/<org>/<name>/resolve?release=&lane=&gpus=&free_vram=&plain=&components=   200 {release, lane, commit, header, reasons} | 404
+GET  B/v1/models/<org>/<name>/resolve?release=&lane=&gpus=&capacity=&context=&rows=&step=&free_vram=&plain=&components=
+                                                            200 {release, lane, commit, header, reasons} | 404
 GET  B/blobs/<aa>/<bb>/<hex>    [Range: bytes=a-b]          200 | 206 | 302/303/307 + Location | 404
 HEAD B/blobs/<aa>/<bb>/<hex>                                200 + Content-Length | 404
 ```
 
 - Resolve names one commit: of `release` (none: the newest), in `lane`, else what the hardware runs and fits:
-  `gpus`, each GPU's compute capability (`8.9`) or Apple Metal family (`apple9`), none for the CPU, and
-  `free_vram`, the free bytes on the smallest; `plain=true` takes plain lanes only (code that runs no encoded
-  tensor); `components=a,b`, the components the consumer reads, which are all of a lane its fit counts. `reasons` say
-  what was passed over.
+  `gpus`, each GPU's compute capability (`8.9`) or Apple Metal family (`apple9`), none for the CPU;
+  `plain=true` takes plain lanes only (code that runs no encoded tensor); `components=a,b`, the components the
+  consumer reads, which are all of a lane its fit counts. `reasons` say what was passed over.
+- Fit (selection rule 8) only ranks lanes, never refuses one. `capacity` is the bytes of the smallest GPU: its total,
+  or the software cap below it, never what is free. A lane fits when what it holds there is at most `capacity`: each
+  component read, by its header's `decode` numbers (cozytensors.md §4) its decode bytes, `kv` for each of `context`
+  tokens (the K/V the call holds at most, every row's; absent: 0) and `state` for each of `rows` (the rows decoding at
+  once; absent: 1), else its stored bytes; and the step room: `step`, the call's measured peak working bytes on that
+  card, else each component's `step` for each row. The best-ranked lane that fits serves; none fitting, the best lane
+  serves, paged, and `reasons` say so.
+- `free_vram`, the free bytes on the smallest GPU, is what a client before rule 8 sends instead: a lane fits when its
+  stored bytes are at most that, and none fitting, the first in the 4-bit order serves. With `capacity`, it is ignored.
 - A client walks commit (tree) → its repo files and header → that header's chunks and assets. It MUST check every
   object's length and SHA-256 before it admits it.
 - A commit no release names, and its objects, a server serves only to members of the model's organization.

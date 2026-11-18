@@ -417,6 +417,8 @@ pub(crate) struct FunctionRead {
 struct Ran {
     compute_ms: u64,
     load_ms: u64,
+    /// Its own and its calls' highest working peak (`call_memory`'s `working_peak_bytes`); 0: none measured.
+    peak_bytes: u64,
 }
 
 impl Ran {
@@ -434,6 +436,11 @@ impl Ran {
             .optional()
             .map_err(db_error)?;
         let (mut idle, mut running, mut builds, mut loads) = (lane_waits(tx, &root.id)?, vec![], vec![], vec![]);
+        let peak = |measured: Option<&[u8]>| -> u64 {
+            let measured: Option<Value> = measured.and_then(|m| serde_json::from_slice(m).ok());
+            measured.and_then(|m| m["memory"]["working_peak_bytes"].as_u64()).unwrap_or(0)
+        };
+        let peak_bytes = calls.iter().map(|(_, measured)| peak(measured.as_deref())).fold(peak(own.as_deref()), u64::max);
         let mut spent = |record: &Execution, measured: Option<&[u8]>, idle: &mut Vec<Span>| {
             let start = (record.starting_at_ms > 0).then_some((record.starting_at_ms, record.started_at_ms));
             let build = built(measured);
@@ -462,6 +469,7 @@ impl Ran {
         Ok(Ran {
             compute_ms: root.executed_ms.saturating_sub(lost),
             load_ms: covered(&within(&loads, (root.accepted_at_ms, root.finished_at_ms))),
+            peak_bytes,
         })
     }
 }
@@ -795,6 +803,7 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS root_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL,load_ms INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS root_times_function ON root_times(function,execution);
             CREATE TABLE IF NOT EXISTS cold_times(execution INTEGER PRIMARY KEY REFERENCES executions(id));
+            CREATE TABLE IF NOT EXISTS root_peaks(execution INTEGER PRIMARY KEY REFERENCES executions(id),bytes INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS function_reads(function TEXT NOT NULL,checkpoint TEXT NOT NULL,model TEXT NOT NULL,components TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(function,checkpoint));
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
@@ -1888,7 +1897,7 @@ pub(crate) fn cleared_note() -> Adjustment {
 
 fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {
     for table in ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
-        "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"] {
+        "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times", "root_peaks"] {
         tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
     }
     tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
@@ -2241,22 +2250,27 @@ impl Journal {
             params![record.id, function, record.width, size, ran.compute_ms as i64, ran.load_ms as i64],
         )
         .map_err(db_error)?;
+        if ran.peak_bytes > 0 {
+            tx.execute("INSERT OR REPLACE INTO root_peaks(execution,bytes) VALUES(?1,?2)", params![record.id, ran.peak_bytes.min(i64::MAX as u64) as i64])
+                .map_err(db_error)?;
+        }
         Ok(())
     }
 
     /// The newest `limit` times of `function` here (`function_key`), newest first.
     pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
         let mut statement = self.connection
-            .prepare("SELECT r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL FROM root_times r LEFT JOIN cold_times c ON c.execution=r.execution WHERE r.function=?1 ORDER BY r.execution DESC LIMIT ?2")
+            .prepare("SELECT r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL,COALESCE(p.bytes,0) FROM root_times r LEFT JOIN cold_times c ON c.execution=r.execution LEFT JOIN root_peaks p ON p.execution=r.execution WHERE r.function=?1 ORDER BY r.execution DESC LIMIT ?2")
             .map_err(db_error)?;
         let rows = statement
             .query_map(params![function, limit.min(i64::MAX as usize) as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, bool>(4)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, bool>(4)?, row.get::<_, i64>(5)?))
             })
             .map_err(db_error)?;
         rows.map(|row| {
-            let (width, size, ms, load_ms, cold) = row.map_err(db_error)?;
-            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold })
+            let (width, size, ms, load_ms, cold, peak) = row.map_err(db_error)?;
+            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold,
+                peak_bytes: peak.max(0) as u64 })
         })
         .collect()
     }
@@ -2296,20 +2310,22 @@ impl Journal {
     /// Each timed function's newest `limit` times here, newest first (`StatusFrame::times`).
     pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
         let mut statement = self.connection
-            .prepare("SELECT r.function,r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY function ORDER BY execution DESC) AS n FROM root_times) r LEFT JOIN cold_times c ON c.execution=r.execution WHERE r.n <= ?1 ORDER BY r.function, r.execution DESC")
+            .prepare("SELECT r.function,r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL,COALESCE(p.bytes,0) FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY function ORDER BY execution DESC) AS n FROM root_times) r LEFT JOIN cold_times c ON c.execution=r.execution LEFT JOIN root_peaks p ON p.execution=r.execution WHERE r.n <= ?1 ORDER BY r.function, r.execution DESC")
             .map_err(db_error)?;
         let rows = statement
             .query_map(params![limit.min(i64::MAX as usize) as i64], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, bool>(5)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, bool>(5)?,
+                    row.get::<_, i64>(6)?))
             })
             .map_err(db_error)?;
         let mut timed: Vec<api::machine::Timed> = vec![];
         for row in rows {
-            let (function, width, size, ms, load_ms, cold) = row.map_err(db_error)?;
+            let (function, width, size, ms, load_ms, cold, peak) = row.map_err(db_error)?;
             if timed.last().is_none_or(|last| last.function != function) {
                 timed.push(api::machine::Timed { function, runs: vec![], reads: vec![] });
             }
-            let run = RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold };
+            let run = RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold,
+                peak_bytes: peak.max(0) as u64 };
             timed.last_mut().expect("pushed").runs.push(run);
         }
         Ok(timed)

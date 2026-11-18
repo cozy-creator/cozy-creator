@@ -616,8 +616,9 @@ impl Writer {
             .map(|c| c.expect("every chunk is laid"))
             .collect();
         let mut metadata = (self.base.as_ref()).map_or_else(Metadata::new, |b| b.header().metadata.clone());
-        // What wrote the base did not write this one.
+        // What wrote the base did not write this one, and its tensors may differ.
         metadata.remove(crate::format::Provenance::KEY);
+        metadata.remove(crate::format::DECODE);
         metadata.extend(self.metadata.clone());
         if let Some(hook) = &self.before_commit {
             hook(&mut metadata, &components);

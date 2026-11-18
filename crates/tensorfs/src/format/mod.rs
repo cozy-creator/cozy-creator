@@ -24,7 +24,7 @@ pub use doc::{is_digest, segment};
 pub use model::{check_file, model_name};
 pub use dtype::Dtype;
 pub use encode::{GlobalScale, NibbleOrder};
-pub use doc::{Pipeline, CONFIG_FILE};
+pub use doc::{Pipeline, CONFIG_FILE, DECODE};
 pub use value::{Config, ConfigValue, Value};
 
 pub(crate) const HEADER_FORMAT: &str = "cozytensors/1";

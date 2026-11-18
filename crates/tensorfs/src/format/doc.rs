@@ -97,6 +97,10 @@ impl Provenance {
     pub const KEY: &'static str = "provenance";
 }
 
+/// What a decode step of each language-model component holds (`metadata.decode`, spec §4), which
+/// the Runtime writes with a lane and a lane rule reads; a writer never carries it over from a base.
+pub const DECODE: &str = "decode";
+
 impl PartialEq for Header {
     fn eq(&self, other: &Header) -> bool {
         (&self.chunks, &self.pipeline, &self.components, &self.metadata)

@@ -156,6 +156,13 @@ location  = [chunk_index, offset, length]
   source, plan}`): the package release and recipe that wrote it, the recipe's fingerprint (the digest of its plan's
   canonical form; of a code hook, its identity with that release), the source header's id and the plan. No reader
   needs it to load a lane, a malformed one is ignored, and a writer never carries it over from a base.
+- **`decode`** (`{<component>: {bytes, kv, state, step}}`): what a decode step of a language model's component holds,
+  written by the Runtime with each lane of a model that decodes, so a lane rule reads numbers and no architecture
+  (distribution.md §2): `bytes`, the stored bytes a decode step reads (its language layers, token table, head and
+  draft layer, not a vision tower); `kv`, the K and V bytes one token adds at 16 bits, every attention layer's; `state`,
+  one row's recurrent state bytes (each gated-delta layer's); `step`, an estimate of one row's working bytes beside
+  them, until a measured one replaces it. Each a non-negative integer; a malformed entry is none. A lane without it
+  counts its stored bytes. A writer never carries it over from a base: its tensors may differ.
 - **`family`** (`{name, form, reference, components}`): the model family an ingest verified the checkpoint as, written
   only when verified. Every base component's keys and shapes are one `form` of the family's canonical components
   (`canonical`, or a declared edit such as H3's `curve` and `pruned` DiTs), read from its pinned `reference`. Where a
@@ -748,11 +755,12 @@ an object reference that merely appears inside metadata is not a dependency. Sam
 additional required dependencies in the existing chunk, asset or tree-file slots. They MUST NOT require an old
 reader, copier or collector to discover a new kind of reference edge.
 
-**Profile.** What a header holds, as `selection.json` reads it: `{family, bits, bytes, kinds}`. A tensor's kind is
-its encoding scheme or, for plain tensors, its dtype; `bytes` sums all tensor locations, `kinds` lists the unique
-names. Its family is the table's family of the kind with the fewest bits (an nvfp4 header that keeps sensitive
-layers in int8 is 4 bits); of equal bits, the most stored bytes, then lexical kind order. A header holding an
-encoded kind the table does not name has no family (empty, 0 bits).
+**Profile.** What a header holds, as `selection.json` reads it: `{family, bits, bytes, kinds, decode}`. A tensor's
+kind is its encoding scheme or, for plain tensors, its dtype; `bytes` sums all tensor locations, `kinds` lists the
+unique names, `decode` is the header's `decode` numbers (§4), each with its component's stored bytes. Its family is
+the table's family of the kind with the fewest bits (an nvfp4 header that keeps sensitive layers in int8 is 4 bits);
+of equal bits, the most stored bytes, then lexical kind order. A header holding an encoded kind the table does not
+name has no family (empty, 0 bits).
 
 ## 8. Versioning
 

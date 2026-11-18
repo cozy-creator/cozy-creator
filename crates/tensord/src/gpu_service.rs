@@ -1488,8 +1488,16 @@ impl Pool {
             .map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         tensorfs::fetch::Hardware { gpus, ..Default::default() }
     }
+    /// The first `degree` GPUs' least capacity: each one's memory, or the `gpu_memory_limit` below
+    /// it, never what is free (xs-213: a lane's fit is what it holds against the card it holds it on).
+    pub(crate) fn capacity(&self, degree: u32) -> Option<u64> {
+        let limit = self.config.gpu_memory_limit.unwrap_or(u64::MAX);
+        self.devices.iter().take(degree as usize).filter_map(|d| self.inventory(&d.entry))
+            .map(|g| g.memory_bytes.min(limit)).filter(|bytes| *bytes > 0).min()
+    }
     /// The first `degree` GPUs' least free bytes, counting what idle peers hold: they give it back
-    /// when asked, so it is room a new model can plan on. Only a 4-bit floor's lane resolves by it.
+    /// when asked, so it is room a new model can plan on. What a Hub before rule 8 fits a 4-bit
+    /// floor's lane by.
     pub(crate) fn free_vram(&self, degree: u32) -> Option<u64> {
         self.devices.iter().take(degree as usize).filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min()
     }
@@ -5220,10 +5228,11 @@ pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply:
     }
 }
 
-/// The call's memory: torch's high-water marks over the call and varena's record of the request
-/// kept whole as `stats`, as its executor measured them, and `driver`, each GPU's bytes in use as
-/// NVML read them from the call's start to its reply (the release gate's peak VRAM). None when
-/// nothing was measured.
+/// The call's memory: torch's high-water marks over the call, the most of them beside what it held
+/// at its start (`working_peak_bytes`: the lane rule's measured step room, `estimate::peak`), and
+/// varena's record of the request kept whole as `stats`, as its executor measured them, and `driver`,
+/// each GPU's bytes in use as NVML read them from the call's start to its reply (the release gate's
+/// peak VRAM). None when nothing was measured.
 fn call_memory(reply: &Frame, driver: &[platform::gpu::Used]) -> Option<serde_json::Value> {
     if reply.memory.is_none() && reply.metrics.is_none() && driver.is_empty() {
         return None;
@@ -5231,7 +5240,8 @@ fn call_memory(reply: &Frame, driver: &[platform::gpu::Used]) -> Option<serde_js
     let metrics = reply.metrics.clone().unwrap_or_default();
     let known = |v: Option<i64>| v.and_then(|v| u64::try_from(v).ok()).map(serde_json::Value::from);
     let fields = [("peak_allocated_bytes", known(metrics.peak_vram_bytes)),
-        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("stats", reply.memory.clone().map(serde_json::Value::Object)),
+        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("working_peak_bytes", known(metrics.working_peak_vram_bytes)),
+        ("stats", reply.memory.clone().map(serde_json::Value::Object)),
         ("driver", (!driver.is_empty()).then(|| serde_json::json!(driver)))];
     Some(fields.into_iter().filter_map(|(key, value)| Some((key.to_string(), value?))).collect())
 }
