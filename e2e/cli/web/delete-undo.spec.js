@@ -83,7 +83,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   };
   /** `name` gone: from the canvas at once (from its press), from the API, and the history says so. */
   const gone = async (name, how) => {
-    expect.soft(await offIn(name, how), `${how}: ${name} off the canvas at once, in ms`).toBeLessThan(1000);
+    expect.soft(await offIn(name, how), `${how}: ${name} off the canvas at once, in ms`).toBeLessThan(500);
     await expect.poll(() => project.asset(name), { message: `${how}: ${name} out of the API` }).toBeUndefined();
     await expect.poll(async () => (await history()).some((entry) => entry.words === `Deleted ${name}` && !entry.undone), { message: `${how}: the history says "Deleted ${name}"` }).toBe(true);
   };
@@ -136,7 +136,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await back('d2', "the top bar's Undo");
     await watch('d2');
     await page.keyboard.press('ControlOrMeta+Shift+z');
-    expect.soft(await offIn('d2', 'Redo'), 'Redo takes d2 off the canvas at once, in ms').toBeLessThan(1000);
+    expect.soft(await offIn('d2', 'Redo'), 'Redo takes d2 off the canvas at once, in ms').toBeLessThan(500);
     await expect.poll(() => project.asset('d2'), { message: 'Redo deletes d2 again' }).toBeUndefined();
   });
 
