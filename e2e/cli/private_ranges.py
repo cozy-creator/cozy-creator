@@ -280,8 +280,16 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
                                          'fields': {'video': '<vault_range_source:0-24>'}}))  # cast: the new asset's JSON
     assert made['name'] == asset, 'the render fixture asset was not created'
     receipt['stage'] = 'cold_private_tool_discovery'
-    tools = cast(Tools, api('GET', '/v1/tools?' + urlencode({'project': project_id})))['tools']  # cast: the tool list's JSON
-    assert any(row['id'] == tool and row.get('local') for row in tools), 'cold discovery did not return the private tool'
+    # A list answers at once with the tools it knows (cl-1168, #3747, on this RC by #3770): this code, never read, is read past the first
+    # list, its landing told as `tools.changed`, and a list after that has it, as the page asks again.
+    began, lists = time.monotonic(), [0]
+
+    def listed() -> list[ToolRow]:
+        lists[0] += 1
+        return cast(Tools, api('GET', '/v1/tools?' + urlencode({'project': project_id})))['tools']  # cast: the tool list's JSON
+
+    wait_for(listed, lambda tools: any(row['id'] == tool and row.get('local') for row in tools), 'cold discovery did not return the private tool')
+    receipt['private_tool_listed'] = {'lists': lists[0], 'ms': round((time.monotonic() - began) * 1000)}
     copies = view / '.vault-calcifer/code'
     shared_code = home / 'calcifer/code'
     markers = [marker.encode()]
