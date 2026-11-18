@@ -357,8 +357,8 @@ impl Lifecycle {
         Ok(self.deadline(&state))
     }
 
-    /// When a keepalive last restarted the idle clock, while the clock still counts from it: no job, transfer or update since, and
-    /// nothing working (cl-1193). 0: none.
+    /// When a keepalive last restarted the idle clock, while the clock still counts from it: no job or transfer since, and nothing
+    /// working (cl-1193). 0: none.
     pub(crate) fn kept_alive_ms(&self) -> i64 {
         let kept = self.kept_alive.load(Ordering::Acquire);
         if kept == 0 {
