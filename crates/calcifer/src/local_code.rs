@@ -1492,11 +1492,12 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
 pub(crate) async fn read_source(api: &Arc<Api>, code: &LocalCode, hub: &str) -> Result<(String, Value), Error> {
     let home = api.machines.hubs.home();
     copied(home, code)?;
-    let (package, document) = match static_kept(home, code, hub, None) {
+    let describer = Box::pin(describer_of(api, code, hub)).await?;
+    let (package, document) = match static_kept(home, code, hub, &describer) {
         Some(known) => known,
         None => {
             let known = Box::pin(read_interface(api, code, &On::Any, hub, None)).await?;
-            keep_static(home, code, hub, None, &known);
+            keep_static(home, code, hub, &describer, &known);
             known
         }
     };
@@ -1528,28 +1529,41 @@ async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Resu
         return Ok(found);
     }
     let home = api.machines.hubs.home();
-    if let Some(known) = static_kept(home, code, hub, runtime.as_deref()) {
+    let describer = crate::stages::stage("locked", describer_of(api, code, hub)).await?;
+    if let Some(known) = static_kept(home, code, hub, &describer) {
         *held = Some((known.clone(), false));
         return Ok(known);
     }
     let known = crate::stages::stage("describer", read_interface(api, code, on, hub, runtime.clone())).await?;
-    keep_static(home, code, hub, runtime.as_deref(), &known);
+    keep_static(home, code, hub, &describer, &known);
     *held = Some((known.clone(), false));
     Ok(known)
 }
 
 /// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
-/// place in it, the Hub its lock is for and the Runtime that read it, in its project's own storage (else the machine's). A restart
-/// reads again only what changed.
-fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<PathBuf> {
-    let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
-    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("described"), "described").ok()?;
+/// place in it, the Hub its lock is for and the describer that read it (`describer_of`). A restart reads again only what changed. The
+/// machine's, shared by every unencrypted project as their locks are (cl-1011; cl-1123: each fresh project described Orbit again,
+/// 4.3–4.6 s of its first guess, 44217220516); an encrypted project's own, in its storage, never the shared one.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, describer: &str) -> Option<PathBuf> {
+    let key = Digest::of(format!("{}\n{}\n{hub}\n{describer}", code.tree, code.at).as_bytes());
+    let scope = crate::private_io::current().filter(|scope| !scope.storage.ordinary);
+    let dir = crate::private_io::cache(scope.as_ref(), home.calcifer().join("described"), "described").ok()?;
     Some(dir.join(format!("{}.json", &hex(&key)[..32])))
 }
 
+/// What reads `code` statically (`describe_with`): the Runtime the lock of its copy for `hub` names, else its plain bounds
+/// (`describer_requirement`). A static reading is this one's, whatever Runtime a machine runs.
+async fn describer_of(api: &Arc<Api>, code: &LocalCode, hub: &str) -> Result<String, Error> {
+    let hubs = &api.machines.hubs;
+    let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
+    let (dir, _) = locked(hubs.home(), code, hubs, &origin).await?;
+    let project = Project::read(dir)?;
+    describer_requirement(&project.root, locked_runtime(&project.root).as_deref())
+}
+
 /// The static reading kept for this tree, said used now.
-fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
-    let path = static_file(home, code, hub, runtime)?;
+fn static_kept(home: &Home, code: &LocalCode, hub: &str, describer: &str) -> Option<(String, Value)> {
+    let path = static_file(home, code, hub, describer)?;
     let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
     let package = kept["package"].as_str()?.to_owned();
     let document = kept["interface"].take();
@@ -1558,12 +1572,12 @@ fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) 
 }
 
 /// Keeps a static reading, and only the newest 512.
-fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, (package, document): &(String, Value)) {
+fn keep_static(home: &Home, code: &LocalCode, hub: &str, describer: &str, (package, document): &(String, Value)) {
     const KEPT: usize = 512;
     if !interface(document) {
         return;
     }
-    let Some(path) = static_file(home, code, hub, runtime) else { return };
+    let Some(path) = static_file(home, code, hub, describer) else { return };
     let Some(dir) = path.parent() else { return };
     let kept = serde_json::json!({ "package": package, "interface": document });
     // A reading that can't be kept is read again after the next restart.

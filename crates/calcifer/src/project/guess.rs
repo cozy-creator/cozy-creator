@@ -354,7 +354,13 @@ enum Guessed {
 #[allow(clippy::too_many_arguments)]
 async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking) -> Guessed {
     let stages = Arc::new(Mutex::new(crate::stages::Stages::default()));
-    crate::stages::recorded(stages.clone(), staged(api, project, host, hub, folder, on, boxed, asking, &stages)).await
+    let (name, began) = (boxed.0.clone(), std::time::Instant::now());
+    let guessed = crate::stages::recorded(stages.clone(), staged(api, project, host, hub, folder, on, boxed, asking, &stages)).await;
+    // One made says its stages as it goes; one not made, here.
+    if !matches!(guessed, Guessed::Made(..)) && began.elapsed() >= SLOW {
+        tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name}'s guess took {} ms: {}", began.elapsed().as_millis(), lock(&*stages).said());
+    }
+    guessed
 }
 
 #[allow(clippy::too_many_arguments)]
