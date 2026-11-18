@@ -112,6 +112,13 @@ if [ -n "$DECODE$MAKE" ]; then
     on_candidates "speed-$label"
     n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
     say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
+    # How often a step reads a plain output head: one short sampled call after the timed ones, told and never judged.
+    if step "heads-$label" run "$DFIX/drive/head_reads" --model "model=$ref" --on "$NAME"; then
+      n=$(runno "heads-$label")
+      say "head reads $label: $( (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""')"
+    else
+      say "head reads $label: no count ($(tail -n 2 "$OUT/heads-$label.txt" | tr '\n' ' ' | cut -c1-200))"
+    fi
   done
 fi
 
