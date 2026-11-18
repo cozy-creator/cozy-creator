@@ -19,6 +19,7 @@
 #   llama     llama.cpp's tag (b12466) and llama_sha256 its source archive's digest
 #   tensorfs, runtime   wheel sources (required)
 #   have      space-separated lane=org/name@sha256:… already written: pulled, not quantized again
+#   also      space-separated label:TYPE=org/name@sha256:… lanes already written, compared too (below)
 #   seconds   what the cap must buy (5400)
 #   scale     multiplies the pod's phase deadlines (1; 2 for the 35B MoE)
 . "$(dirname "$0")/lib.sh"
@@ -101,11 +102,19 @@ done
 checks=(source)
 for lane in "${lanes[@]}"; do [ -z "${REF[$lane]:-}" ] || checks+=("$lane"); done
 for t in "${pure[@]}"; do checks+=("pure:$t"); done
+# `also`: space-separated label:TYPE=org/name@sha256:… lanes already written, each pulled and compared with llama-quantize's
+# file of TYPE beside the lanes (an earlier write of one, to tell an intermittent fault from a systematic one).
+declare -A TYPE=()
+for e in $(param also ''); do
+  lt=${e%%=*} label=${e%%:*}; TYPE[$label]=${lt#*:} REF[$label]=${e#*=}
+  step "pull-$label" model install "${REF[$label]}" --on "$NAME" || fail "pull $label ${REF[$label]}"
+  checks+=("$label")
+done
 ready() {  # ready <check>: the pod.log line that says llama.cpp's side made its input
   case $1 in
     source) there "grep -q '^[0-9:]* download .* took' /w/out/pod.log" 60 < /dev/null ;;
     pure:*) there "grep -q '^[0-9:]* llama-quantize --pure ${1#pure:} took' /w/out/pod.log" 60 < /dev/null ;;
-    *) there "grep -q '^[0-9:]* llama-quantize ${1^^} took' /w/out/pod.log" 60 < /dev/null ;;
+    *) there "grep -q '^[0-9:]* llama-quantize ${TYPE[$1]:-${1^^}} took' /w/out/pod.log" 60 < /dev/null ;;
   esac
 }
 judge() {  # judge <check>: compare.py on it, its lines into the report
@@ -113,7 +122,7 @@ judge() {  # judge <check>: compare.py on it, its lines into the report
   case $1 in
     source) ;;
     pure:*) arg="$1=/w/pure-${1#pure:}.gguf" ;;
-    *) arg="$1=${REF[$1]}:/w/${1^^}.gguf" ;;
+    *) arg="$1=${REF[$1]}:/w/${TYPE[$1]:-${1^^}}.gguf" ;;
   esac
   there "PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL $arg" 7200 \
     < /dev/null > "$OUT/compare-${1/:/-}.jsonl" 2> "$OUT/compare-${1/:/-}.err"; code=$?

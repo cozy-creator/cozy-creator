@@ -12,8 +12,9 @@ llama.cpp's converter moves some of Qwen3.5's rows (`_LinearAttentionVReorderBas
 `in_proj_z` (`attn_qkv_gate`) and `in_proj_b` with `in_proj_a` (`ssm_beta_alpha`); a routed expert's weights stack per
 layer, a fused gate and up split in two. Each row is quantized alone, so ours compare after the same row moves.
 `ssm_out` is `out_proj` with its columns reordered, which moves elements between blocks: ours is checked to be ggml-ref/1
-of `out_proj` as stored, and ggml-ref/1 of those columns reordered against llama's. One JSON line per check; exit 1 on
-any difference.
+of `out_proj` as stored, and ggml-ref/1 of those columns reordered against llama's. A tensor that differs is also judged
+against ggml-ref/1 of the stored source read again here (`ours_is_ref`, `llama_is_ref`), naming the side that left it.
+One JSON line per check; exit 1 on any difference.
 """
 
 from __future__ import annotations
@@ -224,6 +225,10 @@ def main() -> int:
                         continue
                     got = ref(name, block, values(pieces, True))
                 if found := differs(t.name, name, got, want):
+                    # Which side left the source: ggml-ref/1 of the source as stored here, read now, against both. Ours
+                    # alone off it is our quantize's read or write; llama's alone off it is llama's or the encoder's.
+                    again = got if columns else ref(name, block, values(pieces, False))
+                    found |= {"ours_is_ref": got == again, "llama_is_ref": want == again}
                     bad.append(found)
         row: dict[str, object] = {"check": "pure" if pure else "lane", "lane": label, "gguf": os.path.basename(path),
                                   "quantized": sum(counts.values()), "types": counts,
