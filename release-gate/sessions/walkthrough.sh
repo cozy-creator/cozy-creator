@@ -129,7 +129,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # going <project dir> <target regex>: the newest run of it that `cozy run ls` says is running, its whole line (status and progress).
-going() { (cd "$1" && cozy run ls < /dev/null 2> /dev/null) | awk -v t="$2" 'NR > 1 && $2 ~ t && $4 ~ /^running/ {print; exit}'; }
+going() { (cd "$1" && cozy run ls < /dev/null 2> /dev/null) | awk -v t="$2" 'NR > 1 && $2 ~ t && $4 ~ /^(in_progress|running)/ {print; exit}'; }
 # stepof <run ls line>: the step it is at, from its progress (`3/40`, `step 3 of 40`), else 0.
 stepof() { grep -oE '([0-9]+) ?(/|of) ?[0-9]+' <<< "$1" | head -1 | grep -oE '^[0-9]+' || echo 0; }
 # Zero ($0, this computer's CPU; coordinator 11-18, cl-1271): Render on a box that has a take and unchanged inputs (BiRefNet, which takes
