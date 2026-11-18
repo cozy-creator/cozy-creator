@@ -232,6 +232,5 @@
    "tree": "fx",
    "fn": "generate_turbo"
   }
- ],
- "source_tree": "fx"
+ ]
 }
