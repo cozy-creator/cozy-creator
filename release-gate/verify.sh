@@ -43,10 +43,15 @@ if [ -n "$RELEASE" ]; then
   # A row naming packages is required only when the set changes one (its version at the set's packages_ref is a prerelease,
   # as suite packages reads it) or carries a Runtime other than the last release's (PyPI's newest cozy-runtime); one it
   # can't read is required.
-  # escaped-accepted.tsv: <row> <why it was not run> <who accepted it> <date> <release>. A line counts only for the cozy
-  # release it names (this set's, less any -dev or build suffix), so an acceptance never carries to the next release.
+  # escaped-accepted.tsv: <row> <why it was not run> <who accepted it> <date> <release>, tab-separated, all five filled: a line
+  # that isn't refuses the release. A line counts only for the cozy release it names (this set's, less any -dev or build
+  # suffix), so an acceptance never carries to the next release, and never for a row that ran and failed in one of these gates.
   missing= pref=$(jq -r '.packages_ref // ""' <<< "$first") crt=$(jq -r '.runtime // ""' <<< "$first") released=
   release=$(jq -r '.cozy // ""' <<< "$first"); release=${release%%[-+]*}
+  accepted=$(dirname "$0")/escaped-accepted.tsv
+  bad=$(awk -F'\t' 'function ok(s) { return s ~ /^[^ \r]/ && s ~ /[^ \r]$/ }
+    !/^#/ && NF && !(NF == 5 && ok($1) && ok($2) && ok($3) && ok($4) && ok($5)) {printf " %d", NR}' "$accepted" 2>/dev/null || true)
+  [ -z "$bad" ] || { echo "escaped-accepted.tsv: line$bad: not <row> <why it was not run> <who accepted it> <date> <release>, tab-separated, all five filled" >&2; exit 1; }
   required() {
     local p v
     [ -n "$1" ] || return 0
@@ -67,17 +72,18 @@ if [ -n "$RELEASE" ]; then
     [ -n "$row" ] && [ "${row:0:1}" != "#" ] || continue
     WHY=
     if ! required "${when:-}"; then echo "escaped $row ($issue) not required: $WHY" >&2; continue; fi
-    hit=
+    hit= failed=
     for d in "${dirs[@]}"; do
+      awk -F'\t' -v r="$row" '$1 == r && $2 == "FAIL" {f = 1} END {exit !f}' "$d/expect.tsv" 2>/dev/null && failed=$d
       sku=$(cat "$d/baseline-key" 2>/dev/null); sku=${sku%-$(paste -sd- "$d/suites" 2>/dev/null)}
       [[ $sku == @($skus) ]] || continue
       awk -F'\t' -v r="$row" '$1 == r && $2 == "PASS" {f = 1} END {exit !f}' "$d/expect.tsv" 2>/dev/null && { hit="$sku: $d"; break; }
     done
-    took=$(awk -F'\t' -v r="$row" -v v="$release" '$1 == r && $5 == v && v != "" {print "not run: " $2 "; accepted by " $3 ", " $4 ", for " $5; exit}' \
-      "$(dirname "$0")/escaped-accepted.tsv" 2>/dev/null || true)
+    took=$(awk -F'\t' -v r="$row" -v v="$release" '($1 "") == r && ($5 "") == v && v != "" {print "not run: " $2 "; accepted by " $3 ", " $4 ", for " $5; exit}' \
+      "$accepted" 2>/dev/null || true)
     if [ -n "$hit" ]; then echo "escaped $row ($issue) PASS on $hit${WHY:+ (required: $WHY)}" >&2
-    elif [ -n "$took" ]; then echo "escaped $row ($issue) ACCEPTED on no SKU ($skus): $took" >&2
-    else missing="$missing $row($skus, $issue${WHY:+; $WHY})"; fi
+    elif [ -n "$took" ] && [ -z "$failed" ]; then echo "escaped $row ($issue) ACCEPTED on no SKU ($skus): $took" >&2
+    else missing="$missing $row($skus, $issue${WHY:+; $WHY}${took:+${failed:+; accepted as not run, but it failed in $failed}})"; fi
   done < "$(dirname "$0")/escaped.tsv"
   [ -z "$missing" ] || { echo "a release gate must pass every escaped bug's cell, or escaped-accepted.tsv accept it for $release; not passed here:$missing" >&2; exit 1; }
 fi
