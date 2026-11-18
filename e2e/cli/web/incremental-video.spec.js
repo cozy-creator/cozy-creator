@@ -260,7 +260,19 @@ test('incremental-video seeks', { tag: '@engines' }, async ({ page, project, cli
   const seen = [];
   for (const join of clips.slice(1)) {
     for (const frame of [join - 1, join, join + 12]) {
-      await live.evaluate((el, t) => new Promise((done) => { el.pause(); el.addEventListener('seeked', () => requestAnimationFrame(() => requestAnimationFrame(done)), { once: true }); el.currentTime = t; }), (frame + 0.5) / FPS);
+      // Its picture is read once the frame it sought is on screen. `seeked` says the clock is there; the picture follows by a presented
+      // frame, later still just after a take opened (e2e 44243147622: the clock at 3:23 over the opening frame's picture).
+      await live.evaluate((el, t) => new Promise((done) => {
+        let read = false;
+        const drawn = () => { if (!read) { read = true; requestAnimationFrame(() => requestAnimationFrame(done)); } };
+        el.pause();
+        el.addEventListener('seeked', () => {
+          // The next frame presented is the one sought; one presented before `seeked` was heard brings no other.
+          if (el.requestVideoFrameCallback) el.requestVideoFrameCallback(drawn);
+          setTimeout(drawn, 500);
+        }, { once: true });
+        el.currentTime = t;
+      }), (frame + 0.5) / FPS);
       const pixels = screenshotPixels(await live.screenshot());
       // The row through the picture's middle: where its colour runs is the picture; the white run in it is the bar.
       const y = Math.floor(pixels.height / 2), row = [];
