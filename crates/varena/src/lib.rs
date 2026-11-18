@@ -300,6 +300,9 @@ pub(crate) struct Packs {
     packs: std::collections::BTreeMap<u64, Pack>,
     open: std::collections::HashMap<String, u64>,
     granularity: usize,
+    /// Unmapped page handles a reclaim for a packed fill freed: that fill maps them, with no create
+    /// and no release, as an unpacked region's refill takes its evicted neighbour's handle (`into`).
+    spare: Vec<u64>,
 }
 
 impl Packs {
@@ -347,6 +350,12 @@ impl Packs {
             if pack.pages[page].0.is_some() {
                 continue;
             }
+            if let Some(handle) = self.spare.pop() {
+                pack.pages[page].0 = Some(handle);
+                gpu.driver().map(pack.ptr + (page * granularity) as u64, granularity, handle)?;
+                made.push(page);
+                continue;
+            }
             match gpu.create(granularity) {
                 Ok(handle) => {
                     // Custody before map, as a region's fill records it: a failed map poisons.
@@ -361,6 +370,7 @@ impl Packs {
                         let _ = gpu.driver().release(handle);
                         gpu.pages.fetch_sub(granularity, Ordering::AcqRel);
                     }
+                    self.release_spare(gpu)?;
                     return Err(failure);
                 }
             }
@@ -368,12 +378,24 @@ impl Packs {
         for page in span {
             pack.pages[page].1 += 1;
         }
+        self.release_spare(gpu)?;
+        Ok(())
+    }
+
+    /// Spare handles no fill took go back to the driver.
+    fn release_spare(&mut self, gpu: &Device) -> Result<()> {
+        for handle in self.spare.drain(..) {
+            gpu.driver().release(handle)?;
+            gpu.pages.fetch_sub(self.granularity, Ordering::AcqRel);
+            gpu.released.fetch_add(self.granularity as u64, Ordering::AcqRel);
+        }
         Ok(())
     }
 
     /// The region leaves its pages: each no resident region is left on is unmapped and released.
     /// The bytes released.
-    fn drop_backing(&mut self, gpu: &Device, at: (u64, usize), bytes: usize) -> Result<usize> {
+    /// `keep`: up to that many freed handles stay as spares for the packed fill this reclaim serves.
+    fn drop_backing(&mut self, gpu: &Device, at: (u64, usize), bytes: usize, keep: usize) -> Result<usize> {
         let (granularity, span) = (self.granularity, self.span(at, bytes));
         let pack = self.packs.get_mut(&at.0).expect("live pack");
         let mut released = 0;
@@ -382,9 +404,13 @@ impl Packs {
             slot.1 = slot.1.checked_sub(1).expect("packed page count underflow");
             if slot.1 == 0 && let Some(handle) = slot.0.take() {
                 gpu.driver().unmap(pack.ptr + (page * granularity) as u64, granularity)?;
-                gpu.driver().release(handle)?;
-                gpu.pages.fetch_sub(granularity, Ordering::AcqRel);
-                gpu.released.fetch_add(granularity as u64, Ordering::AcqRel);
+                if self.spare.len() < keep {
+                    self.spare.push(handle);
+                } else {
+                    gpu.driver().release(handle)?;
+                    gpu.pages.fetch_sub(granularity, Ordering::AcqRel);
+                    gpu.released.fetch_add(granularity as u64, Ordering::AcqRel);
+                }
                 released += granularity;
             }
         }
@@ -1056,9 +1082,13 @@ impl Device {
     fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize, into: Option<u64>) -> Result<()> {
         let prefetched = state.entries[&id].prefetched;
         let bytes = state.entries[&id].bytes;
+        // A packed fill takes freed pages as spares: its pages missing are what it may keep.
+        let keep = into.and_then(|to| state.entries.get(&to)).filter(|to| to.handle.is_none())
+            .and_then(|to| to.packed.map(|at| state.packs.missing(at, to.bytes) / self.granularity()))
+            .unwrap_or(0);
         let into = into.filter(|to| state.entries[&id].packed.is_none()
             && state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.packed.is_none() && to.bytes == bytes));
-        let size = self.release_backing_counted(state, id, completed, into)?;
+        let size = self.release_backing_counted(state, id, completed, into, keep)?;
         if prefetched {
             state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
             if let Some(entry) = state.entries.get(&id) {
@@ -1074,13 +1104,13 @@ impl Device {
     /// Unmap a completed, unpinned region's pages and release them, or map them at `into`, an
     /// absent region of its size: a refill then costs a remap, never a release and a create. A
     /// retired region's address goes too.
-    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>) -> Result<usize> {
+    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>, keep: usize) -> Result<usize> {
         let entry = state.entries.get(&id).expect("candidate in the table");
         let (ptr, size, handle) = (entry.ptr, entry.bytes, entry.handle.expect("mapped candidate"));
         if let Some(at) = entry.packed {
             // Its pages go only once no resident region is left on them: what it frees may be less
             // than its size, and reclaim counts what it freed.
-            let freed = match state.packs.drop_backing(self, at, size) {
+            let freed = match state.packs.drop_backing(self, at, size, keep) {
                 Ok(freed) => freed,
                 Err(error) => return Err(poison(state, error)),
             };
@@ -1470,7 +1500,7 @@ impl Region {
             return Ok(false);
         }
         let _context = self.gpu.driver().enter()?;
-        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None)?;
+        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None, 0)?;
         Ok(true)
     }
 
