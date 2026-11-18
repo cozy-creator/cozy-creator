@@ -58,18 +58,23 @@ const recordPan = (page) => page.evaluate(() => {
   const frame = document.querySelector('.focus-viewer .focus-image-transform');
   const seen = [], quit = new AbortController();
   const at = () => Math.round(performance.now() * 10) / 10;
-  const drawn = () => { const m = new DOMMatrix(getComputedStyle(frame).transform); seen.push({ t: at(), drawn: [Math.round(m.e), Math.round(m.f)] }); };
-  const observer = new MutationObserver(drawn);
+  const now = () => { const m = new DOMMatrix(getComputedStyle(frame).transform); return [Math.round(m.e), Math.round(m.f)]; };
+  // What React wrote (the style attribute) and what's drawn from it (the computed transform), and the drawn one each frame.
+  const set = () => (frame.style.transform.match(/-?[\d.]+(?=px)/g) ?? []).slice(0, 2).map((n) => Math.round(Number(n)));
+  const observer = new MutationObserver(() => seen.push({ t: at(), set: set(), drawn: now() }));
   observer.observe(frame, { attributes: true, attributeFilter: ['style'] });
+  let raf = 0;
+  const sample = () => { seen.push({ t: at(), frame: now() }); raf = requestAnimationFrame(sample); };
+  raf = requestAnimationFrame(sample);
   for (const type of ['pointermove', 'pointerup']) addEventListener(type, (event) => seen.push({ t: at(), [type]: [event.clientX, event.clientY] }), { capture: true, signal: quit.signal });
-  window.__panStop = () => { observer.disconnect(); quit.abort(); return seen; };
+  window.__panStop = () => { observer.disconnect(); cancelAnimationFrame(raf); quit.abort(); return seen; };
 }).then(() => ({ stop: () => page.evaluate(() => window.__panStop()) }));
 
 /** The pan's record: kept with the cell, and it never went back against the pointer, on either axis. */
 function panWent(seen, sign, what) {
   test.info().annotations.push({ type: `pan: ${what}`, description: JSON.stringify(seen) });
   console.log(`pan, ${what}: ${JSON.stringify(seen)}`);
-  const drawn = seen.filter((one) => one.drawn).map((one) => one.drawn);
+  const drawn = seen.filter((one) => one.drawn || one.frame).map((one) => one.drawn ?? one.frame);
   const back = drawn.findIndex((now, i) => i > 0 && [0, 1].some((axis) => (now[axis] - drawn[i - 1][axis]) * sign[axis] < -1));
   expect.soft(back, `${what}: drawn only the way the pointer went, never back (${drawn.map((one) => one.join(',')).join(' → ')})`).toBe(-1);
 }
