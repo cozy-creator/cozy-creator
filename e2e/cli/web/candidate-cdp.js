@@ -66,22 +66,26 @@ async function candidateCDP(page, origin, directory) {
   // answer: the browser says so (Network.loadingFailed, canceled), and answering it fails `Invalid InterceptionId`. That is no
   // delivery failure, so it is counted in `aborted`, by path. Any other failed answer stays an error.
   const cancels = new Map();
-  const cancelled = networkId => {
-    if (!networkId) return Promise.resolve(false);
-    let entry = cancels.get(networkId);
-    if (!entry) { entry = {}; entry.seen = new Promise(done => { entry.done = done; }); cancels.set(networkId, entry); }
-    return Promise.race([entry.seen, new Promise(done => setTimeout(done, 2000, false))]);
+  const entry = id => {
+    let e = cancels.get(id);
+    if (!e) { e = { said: '' }; e.seen = new Promise(done => { e.done = done; }); cancels.set(id, e); }
+    return e;
   };
-  const failed = ({ requestId, canceled }) => {
-    if (!canceled) return;
-    const entry = cancels.get(requestId);
-    if (entry) entry.done(true); else cancels.set(requestId, { seen: Promise.resolve(true), done() {} });
+  const cancelled = id => id ? Promise.race([entry(id).seen, new Promise(done => setTimeout(done, 2000, false))]) : Promise.resolve(false);
+  const failed = ({ requestId, canceled, errorText, blockedReason }) => {
+    const e = entry(requestId);
+    e.said = `${blockedReason ?? errorText}${canceled ? ', cancelled' : ''}`;
+    if (canceled) e.done(true);
   };
   const paused = event => {
     const task = handle(event).catch(async failure => {
-      if (/Invalid InterceptionId/.test(String(failure?.message)) && await cancelled(event.networkId)) {
-        receipt.aborted.push({ path: new URL(event.request.url).pathname, resource: event.resourceType });
-        return;
+      if (/Invalid InterceptionId/.test(String(failure?.message))) {
+        if (await cancelled(event.networkId)) {
+          receipt.aborted.push({ path: new URL(event.request.url).pathname, resource: event.resourceType });
+          return;
+        }
+        // Not one the browser said was cancelled: an error still, with what it did say.
+        failure = new Error(`${failure.message} (the browser said: ${event.networkId ? cancels.get(event.networkId)?.said || 'nothing of it in 2 s' : 'no network id'})`);
       }
       if (!closing && !page.isClosed()) error('Fetch.requestPaused', failure);
       // Failed candidate delivery stays a failed receipt; unblock only this request with its real response.
