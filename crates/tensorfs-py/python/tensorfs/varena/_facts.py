@@ -84,6 +84,20 @@ class CacheStats(TypedDict):
     ready_bytes: int
 
 
+class HostCacheStats(TypedDict):
+    reserved_bytes: int
+    mapped_bytes: int
+
+
+class HostAddressing(TypedDict):
+    attribute: int | None
+    attribute_error: str | None
+    same_address: bool | None
+    registration_error: str | None
+    supported: bool
+    why: str | None
+
+
 class CacheOwnerFacts(TypedDict):
     id: int
     registered: bool
