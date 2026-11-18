@@ -8,8 +8,8 @@
 //! A box's machine is the one placement would send its render to (`placement::soonest`, by what each machine has of it), of the
 //! machines that serve now: nothing is started, rented or waited for to hold a guess. It stays where it is guessed unless another
 //! would finish it clearly sooner (`plan::clearly_sooner`), and its render stays there by the same rule (`Walk::plan`), so the
-//! machine made ready is the one Render picks (`well_placed`). A machine its render would run on its CPU (`not_simply`) gets nothing
-//! ahead.
+//! machine made ready is the one Render picks (`well_placed`). A box no machine can run (`Offer::unable`) has no guess, as its
+//! render would wait (cl-1279).
 //!
 //! What a guess fetches (`item`) is decided here, with nothing installed and no package code run (`Host::foreseen`, cl-1103; Paul,
 //! 11-17: "calcifer says 'okay, I'm going to send machine-A this request, so I should tell it to download the required files'"): the
@@ -381,20 +381,21 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
     let serves = |offer: &placement::Offer| offer.ready_at_ms.is_none() && matches!(&offer.machine, On::Machine(name) if api.machines.live_frame(name).is_some());
     let Some(offers) = offers.into_iter().next() else { return Guessed::Unknown(Cow::Borrowed("no machine quoted it")) };
     let up: Vec<placement::Offer> = offers.into_iter().filter(serves).collect();
-    let Some(soonest) = placement::soonest(&up, now) else { return Guessed::Unknown(Cow::Borrowed("no machine that serves now runs it")) };
+    let Some(soonest) = placement::soonest(&up, now) else {
+        return match placement::unable(&up) {
+            Some(held) => Guessed::Nothing(Cow::Owned(placement::unable_line(held, "render"))),
+            None => Guessed::Unknown(Cow::Borrowed("no machine that serves now runs it")),
+        };
+    };
     let held = api.machines.lists.guessed_on(folder, &name).map(On::Machine);
     let held = held.and_then(|held| up.iter().find(|offer| offer.fits && offer.machine == held));
     let chosen = match held {
         Some(held) if !plan::clearly_sooner(soonest, held, now) => held,
         _ => soonest,
     };
-    // Where its render would go, and whether it would simply run there, as a render's placement judges both (`super::well_placed`,
-    // `super::not_simply`; cl-1123: a runner with no GPU took 20 GiB for a dragged Qwen box its render would run on its CPU).
+    // Where its render would go, as a render's placement judges it (`super::well_placed`).
     let function = package.maker().ok().flatten().map(|renderer| renderer.function).unwrap_or_default();
     let chosen = &super::well_placed(api, &up, chosen, hub, Some(&package), &function, &made, now);
-    if let Some(why) = super::not_simply(api, chosen, job.gpu) {
-        return Guessed::Nothing(Cow::Owned(format!("{why}, so nothing goes there ahead of it")));
-    }
     let On::Machine(machine) = &chosen.machine else { return Guessed::Nothing(Cow::Owned(format!("it would go to {}, no one machine", chosen.machine))) };
     // An encrypted project's guess goes only where its files and code may go ahead (`Calcifer::sealed_from`): to a computer added by
     // address nothing of it goes, its draft request included, until Paul rules such a computer trusted (cl-1123). Its render isn't held.

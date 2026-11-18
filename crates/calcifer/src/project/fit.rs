@@ -54,6 +54,9 @@ static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<Lane>)>>> = LazyLo
 /// A checkpoint as a Hub card lists it in one lane.
 #[derive(Clone, Debug)]
 struct Lane {
+    /// Its lane's name where it is the one asked or pinned (cl-1279: what its function's benchmark rows are read at); empty for the
+    /// smallest, taken for its size alone.
+    name: String,
     /// `sha256:<hex>` of its tree.
     checkpoint: String,
     /// Its whole closure.
@@ -212,7 +215,7 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     let placed = placed(api, hub, package, release, function).await?;
     let here = run_ms as f64;
     let references = crate::placement::references_for(api, [job], vec![]);
-    let (rent, away) = recommended(&references, &job.function, &job.size, &placed.offers, (!cpu).then_some(here))?;
+    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::lane_of(&job.models), &placed.offers, (!cpu).then_some(here))?;
     let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
@@ -284,7 +287,7 @@ fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Plac
         return ran.min_by(|a, b| a.1.total_cmp(&b.1));
     };
     let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
-    let (rent, ms) = recommended(&references, target, &size_of(made), &placed.offers, took_s.map(|s| s * 1e3))?;
+    let (rent, ms) = recommended(&references, target, &size_of(made), "", &placed.offers, took_s.map(|s| s * 1e3))?;
     Some((rent.card, ms / 1e3))
 }
 
@@ -544,10 +547,10 @@ fn rent_for(machine: &::api::hub::types::RentalPlacementMachine) -> RentFor {
 /// source's) measured (`References::measured`, never a speed-scaled guess) that run it in under a third of `here_ms` and a minute sooner
 /// (with no GPU here, `None`: any), the cheapest a render (its price times its time there); of those as cheap, the faster. And its time
 /// there, ms.
-fn recommended(references: &References, function: &str, size: &JobSize, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
+fn recommended(references: &References, function: &str, size: &JobSize, lane: &str, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
     let cost = |(offer, ms): &(&RentFor, f64)| offer.usd_micros_per_hour as f64 * ms;
     (offers.iter())
-        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size)?.0)))
+        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size, lane)?.0)))
         .filter(|(_, ms)| here_ms.is_none_or(|here| here > SLOWER * ms && here - ms > LONGER_S * 1e3))
         .min_by(|a, b| cost(a).total_cmp(&cost(b)).then(a.1.total_cmp(&b.1)))
         .map(|(offer, ms)| (offer.clone(), ms))
@@ -588,22 +591,25 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     let reader = api.machines.hubs.reader(hub).ok()?;
     let card = tokio::time::timeout(HUB_LATE, reader.get_model(&model_id.org, &model_id.name)).await.ok()?.ok()?;
     let found = match (&checkpoint, &release) {
-        (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
-            .find(|held| &held.checkpoint == checkpoint)
-            .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
-            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (held.id.clone(), held.bytes, held.header.clone()))),
+        (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.iter()))
+            .find(|(_, held)| &held.checkpoint == checkpoint)
+            .map(|(name, held)| (name.clone(), held.checkpoint.clone(), held.bytes, held.header.clone()))
+            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (String::new(), held.id.clone(), held.bytes, held.header.clone()))),
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
                 None => api::release::newest_listed(&card.releases, |held| &held.version),
             };
             release
-                .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))
-                .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
+                .and_then(|release| {
+                    let asked = lane.and_then(|lane| Some((lane.to_owned(), release.lanes.get(lane)?)));
+                    asked.or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes).map(|held| (String::new(), held)))
+                })
+                .map(|(name, held)| (name, held.checkpoint.clone(), held.bytes, held.header.clone()))
         }
     };
-    let found = (found.filter(|(_, bytes, _)| *bytes > 0))
-        .map(|(checkpoint, bytes, header)| Lane { checkpoint, bytes: bytes as u64, header: Some(header).filter(|header| !header.sha256.is_empty()) });
+    let found = (found.filter(|(_, _, bytes, _)| *bytes > 0))
+        .map(|(name, checkpoint, bytes, header)| Lane { name, checkpoint, bytes: bytes as u64, header: Some(header).filter(|header| !header.sha256.is_empty()) });
     SIZED.lock().expect("sized lock").insert(key, (Instant::now(), found.clone()));
     found
 }
@@ -676,7 +682,7 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => lane.bytes,
         };
-        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components });
+        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components, lane: lane.name.clone() });
     }
     models
 }

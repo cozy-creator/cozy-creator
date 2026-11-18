@@ -1114,7 +1114,7 @@ pub struct EstimateJob {
     pub size: JobSize,
     /// The user's GPU count; 0: the machine chooses.
     pub gpus: u32,
-    /// It builds a model on a GPU, itself or a call it makes: a machine with none can't run it.
+    /// It builds a model on a GPU, itself or a call it makes: a machine with none takes it only on a time that stands on something.
     pub gpu: bool,
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
@@ -1156,6 +1156,10 @@ pub struct ModelRef {
     /// fetches. None: all it reads of it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<String>,
+    /// The lane it runs at, as the Hub's placement or its slot names it; empty: the machine's pick, unknown here. Its function's
+    /// benchmark rows are read at this lane (cl-1279).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lane: String,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -1230,7 +1234,7 @@ pub struct Quote {
     pub key: String,
     /// It can run here at all; one that can't has no times.
     pub fits: bool,
-    /// Why it can't: `gpu_lost`, `machine_disk_full` (its weights, the disk).
+    /// Why it can't: `gpu_lost`, `no_gpu` (none, and nothing measured says it runs without one), `machine_disk_full` (its weights, the disk).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Reason>,
     /// With `machine_disk_full`, the bytes its disk lacks for them, after all the store could free (cl-1175).

@@ -59,6 +59,7 @@ pub(super) async fn benchmarks(State(api): State<Arc<Api>>, Path(id): Path<Strin
                 cold_ms: median(&cold),
                 ran_on: Some(BenchmarkRanOn { cozy: cozy.clone(), runtime: String::new() }),
                 note: format!("{} warm runs in project {named}", warm.len()),
+                ..Benchmark::default()
             })
         })
         .collect();

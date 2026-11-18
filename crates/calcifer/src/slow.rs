@@ -178,9 +178,9 @@ impl Calcifer {
             }
         };
         let size = v1::JobSize::of(&Value::Object(asked.clone()));
-        let (warm_ms, _) = references.time(&row.target, &gpu, &size)?;
+        let (warm_ms, _) = references.time(&row.target, &gpu, &size, &row.spec.lane)?;
         // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
-        let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
+        let (total_ms, basis) = match references.measured(&row.target, &gpu, &size, &row.spec.lane) {
             Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("{whose} benchmark of an {card}")),
             None => (warm_ms, format!("an estimate from {whose} benchmarks on other cards, scaled to an {card}")),
         };

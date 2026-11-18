@@ -193,6 +193,17 @@ pub struct Queued {
     /// None of its machines has room on its disk for its models (cl-1175): it waits, nothing of it downloaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_room: Option<NoRoom>,
+    /// Its machines have no GPU, and nothing measured says it runs without one (cl-1279): it waits, nothing of it sent or downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_gpu: Option<NoGpu>,
+}
+
+/// A render waiting because its machines have no GPU and nothing measured says its function runs without one (cl-1279).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NoGpu {
+    /// Why, once: `This computer has no GPU, and nothing measured says this runs without one: render it on a new rental.`
+    pub line: String,
 }
 
 /// A render waiting because none of its machines has room on its disk for its models (cl-1175).

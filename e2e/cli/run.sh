@@ -827,7 +827,7 @@ case $SHARD in
   # machine, which its box then says is ready; a failed guess is tried again or says why it stays failed; an encrypted project's
   # draft doesn't go ahead to a computer added by address, a plain one's does, nor is its job waiting on one machine prepared there
   # (cl-1123).
-  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_disk prefetch_retry prefetch_sealed prefetch_sealed_demand logs" ;;
+  prefetch) parts="prefetch_switch prefetch_ready prefetch_quoted prefetch_yields prefetch_load prefetch_local prefetch_gpuless prefetch_disk prefetch_retry prefetch_sealed prefetch_sealed_demand logs" ;;
   # A failed guess tried again or saying why it stays failed, and a guess's install on the machine's activity (cl-1104), alone.
   prefetch-retry) parts="prefetch_retry logs" ;;
   entrypoints) parts="entrypoints open_outside hint_commands" ;;

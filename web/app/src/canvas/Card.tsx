@@ -353,6 +353,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
+  // Its machines have no GPU, and nothing measured says it runs without one (cl-1279): why, and where to rent one.
+  if (view.noGpu) {
+    return (
+      <div className="status mak">
+        {view.noGpu.line} <Act label="Machines" onClick={store.askMachine} />
+      </div>
+    )
+  }
   if (view.queued || view.asked !== undefined) return null
   // A failure is its toast; unavailable media is labelled by the media view.
   return null

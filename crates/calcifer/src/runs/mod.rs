@@ -617,9 +617,10 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
             }
-            // Room for its weights on none of them: refused before anything downloads, with the rental its asker may choose instead.
+            // None of them can run it (no room for its weights, no GPU for a function nothing measured says runs without one): refused before
+            // anything downloads, with the rental its asker may choose instead.
             if let Err(e) = &chosen
-                && e.code == "machine_disk_full"
+                && matches!(e.code.as_str(), "machine_disk_full" | "machine_no_gpu")
                 && !estimates
             {
                 return Err(e.clone().next(format!("cozy run {} … --on new", ask.target)));
@@ -668,7 +669,10 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         submit.on = on.clone();
     }
     api::calcifer::local_usable(&submit.on.to_string())?;
-    if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
+    // What its machines quoted placed it by what says it runs there (cl-1279); local code, which none quotes, goes where it's named.
+    if offers.is_empty()
+        && let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none())
+    {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
     }
     // A GPU this computer would run it poorly on, said as a render's box says it, never asked (cl-897).
