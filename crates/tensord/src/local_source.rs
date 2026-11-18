@@ -517,6 +517,11 @@ impl LocalSources {
         let _ = fs::remove_dir(&home); // Only an empty home; never erase unknown entries.
     }
 
+    /// The package the local code manifest `digest` (`sha256:<hex>`) of this signer's is, and its release, read before it installs.
+    pub(crate) fn named(&self, actor: &str, digest: &str) -> Option<(String, String)> {
+        open_manifest(&self.objects, actor, digest).ok().map(|(manifest, _)| (manifest.package, manifest.release))
+    }
+
     /// This signer's installation of the manifest `digest` (`sha256:<hex>`).
     /// `stage` hears what is built: nothing for an environment this machine holds. While
     /// another run's install holds the installer, run `run` is told it waits for that run. Its

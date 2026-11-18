@@ -60,6 +60,15 @@ const LET_GO: Duration = Duration::from_secs(5);
 /// What each prepare item's run needs here, by its caller's id (`needs`): what its Status weighs it by once it ended (`standing`).
 static NEEDS: LazyLock<Mutex<HashMap<String, Vec<crate::journal::FunctionRead>>>> = LazyLock::new(Mutex::default);
 
+/// Each listed item's local code's interface as its caller read it, by its run's id (`v1::Predicted::interface`): what its slots are
+/// resolved by while its code installs (cl-1123).
+static INTERFACES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> = LazyLock::new(Mutex::default);
+
+/// List item `id`'s local code's interface as its caller read it, if it said one.
+pub(crate) fn interface(id: &str) -> Option<Vec<u8>> {
+    lock(&INTERFACES).get(id).cloned()
+}
+
 /// Each listed item's request, by its run's id: its identity as a call of it would have it (`runs::identity`).
 static PREDICTED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
@@ -208,8 +217,11 @@ pub(crate) fn put(
     let mut identities = vec![];
     let mut sent = vec![];
     let requests: Vec<v1::RunRequest> = (items.into_iter())
-        .map(|v1::Predicted { key, spec }| {
+        .map(|v1::Predicted { key, spec, interface }| {
             let id = format!("{prefix}{key}");
+            if let Some(interface) = interface {
+                lock(&INTERFACES).insert(id.clone(), interface.get().as_bytes().to_vec());
+            }
             identities.push((id.clone(), crate::runs::identity(spec.clone()).unwrap_or_default()));
             if let Some(value) = crate::runs::identity_value(spec.clone()) {
                 lock(&IDENTIFIED).insert(id.clone(), value);
@@ -271,6 +283,7 @@ pub(crate) fn put(
         predicted.retain(|id, _| named.contains(id) || kept.contains(id));
     }
     lock(&IDENTIFIED).retain(|id, _| named.contains(id) || kept.contains(id));
+    lock(&INTERFACES).retain(|id, _| named.contains(id));
     lock(&EXTRAS).retain(|id, stop| {
         let named = named.contains(id);
         if !named {

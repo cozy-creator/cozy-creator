@@ -257,6 +257,11 @@ fn now_ms() -> i64 {
 }
 
 impl Capability {
+    /// What names this capability alone, for what is kept for it and never another's (`Publisher::resolve`'s answers).
+    pub(crate) fn identity(&self) -> String {
+        tensorfs::sha256::hex_digest(format!("{}\n{}\n{}", self.actor, self.origin, self.secret).as_bytes())
+    }
+
     /// `actor`'s at `hub`, given `hub.capability` unless the one held was signed later; one that
     /// grants more is redeemed before its runs read. None for a request that carries none. A
     /// capability signed for another workload key (this machine's TensorD started again since) is

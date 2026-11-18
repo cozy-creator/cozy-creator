@@ -1066,6 +1066,10 @@ pub struct Predicted {
     /// The caller's name for it: an upcoming job's key, the one its run is sent under.
     pub key: String,
     pub spec: RunSpec,
+    /// Local code's interface as its caller read it statically, none for a release (cl-1123): the machine resolves its slots and
+    /// fetches its needs while it installs the code, which its own reading waits on. Never the request: not in its identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<Json>,
 }
 
 // ---- Estimate -------------------------------------------------------------------------------

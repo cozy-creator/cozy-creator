@@ -379,9 +379,13 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 /// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
 const RESOLVE: &str = "resolve-v6";
 
+/// What a capability's reads resolved to (`Publisher::resolve`), by it and the name and hardware asked, and when: kept `ASKED_FOR`.
+static ASKED: std::sync::LazyLock<Mutex<HashMap<String, Arc<Mutex<Option<(Instant, Answer)>>>>>> = std::sync::LazyLock::new(Mutex::default);
+const ASKED_FOR: Duration = Duration::from_secs(300);
+
 /// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
 /// it was then (free VRAM moves; the first answer's stands).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Answer {
     release: String,
     lane: String,
@@ -810,9 +814,27 @@ impl Publisher {
             return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
-        let answer = if source.capability.is_some() {
-            // An account's earlier read does not authorize this capability's frozen root set.
-            Answer::ask(&self.machine, source, &named, hardware)?
+        let answer = if let Some(capability) = &source.capability {
+            // An account's earlier read does not authorize this capability's frozen root set: what this one read is kept a while for it
+            // alone, asked once however many plans want it at once (cl-1123: a list item's slots resolve while its code installs, and
+            // its plan after reads them here).
+            let key = json!([RESOLVE, capability.identity(), named.model, named.release, named.lane, hardware.gpus, hardware.plain,
+                hardware.components, hardware.free_vram.is_some()]).to_string();
+            let asked = {
+                let mut held = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // One being asked stays; one older than it is kept for goes.
+                held.retain(|_, answer| answer.try_lock().map_or(true, |answer| answer.as_ref().is_none_or(|(at, _)| at.elapsed() < ASKED_FOR)));
+                held.entry(key).or_default().clone()
+            };
+            let mut asked = asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match asked.as_ref().filter(|(at, _)| at.elapsed() < ASKED_FOR) {
+                Some((_, answer)) => answer.clone(),
+                None => {
+                    let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                    *asked = Some((Instant::now(), answer.clone()));
+                    answer
+                }
+            }
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
             // Only anonymous reads fill it. v5 held lanes free memory lowered (cl-1076); a 4-bit floor's answer, which
