@@ -45,14 +45,22 @@ there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 record() { local n; n=$(runno "$1"); [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> /dev/null; }
 STORY='Write a long, detailed story about a lighthouse keeper who finds a message in a bottle. Keep writing until you are stopped.'
 FAILED=()
+# ran <step>: the step's run used this machine's candidate Runtime and TensorFS, not its lock's pair (TensorD says so when
+# it falls back); else the session ends here, before it spends the pod on runs that measure the wrong wheels.
+ran() {
+  ! grep -qE "it runs on (that series|that|its lock's)|wheel carries no kernels" "$OUT/$1.txt" ||
+    fail "$1 did not run on the candidate wheels: $(grep -oE "warning: [^.]*(it runs on [^;]*|wheel carries no kernels[^)]*\))" "$OUT/$1.txt" | head -1)"
+}
 lane() {
   local label=$1 ref=$2
   step "pull-$label" model install "$ref" --on "$NAME" || return 1
-  step "speed-$label" run "$FIX/drive/decode" --model "model=$ref" --on "$NAME" || return 1
+  step "speed-$label" run "$FIX/drive/decode" --model "model=$ref" --on "$NAME" || { ran "speed-$label"; return 1; }
+  ran "speed-$label"
   record "speed-$label"
   say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json")"
   step "decode-$label" run "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0 --on "$NAME" ||
-    return 1
+    { ran "decode-$label"; return 1; }
+  ran "decode-$label"
   record "decode-$label"
   say "decode $label: $(grep -o '[0-9]* tokens after [0-9]*: [^"]*' "$OUT/decode-$label.json" | head -1)"
   say "decode $label kernels: $(jq -c '[.. | objects | select(has("gemm")) | .gemm] | unique' "$OUT/decode-$label.json" 2> /dev/null | cut -c1-400)"
