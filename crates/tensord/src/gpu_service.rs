@@ -127,6 +127,9 @@ pub(crate) struct GpuConfig {
     /// graphs' replays.
     #[serde(default)]
     pub dev: bool,
+    /// A dev machine's `machine.speculate` (cl-1123 D): a dedicated one runs a loaded prediction ahead (`crate::speculate`).
+    #[serde(default)]
+    pub speculate: bool,
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,

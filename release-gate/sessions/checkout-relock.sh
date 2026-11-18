@@ -32,12 +32,16 @@ awk -v source="$SOURCE" '
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 kernels "$SOURCE/$PKG"
 say "cozy $V, a dev home on $SOURCE; $PKG needs $(grep -o '"cozy-runtime[^"]*"' "$SOURCE/$PKG/pyproject.toml"), its lock $(grep -A1 '^name = "cozy-runtime"' "$SOURCE/$PKG/uv.lock" | tail -1)"
+# Off by default since Paul 11-18: the pod runs a draft ahead only with its config's dev knob (`pod_speculates`, over ssh).
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote "$(param need_s 4200)"
 rent
-# Moved to the RC's builds as the dev home moves a rental at boot, then held there by hand with this session's TensorD, dedicated (a
-# draft runs ahead only there): a new RC build moves nothing on the pod.
+# Moved to the RC's builds as the dev home moves a rental at boot, then held there by hand with this session's TensorD, dedicated and
+# speculating (a draft runs ahead only there): a new RC build moves nothing on the pod.
 for _ in $(seq 72); do [ "$(cozy machine show "$NAME" --json 2> /dev/null | jq -r '.rc.state // empty')" = current ] && break; sleep 5; done
 [ "$(cozy machine show "$NAME" --json | jq -r '.rc.state // empty')" = current ] || step rc machine update "$NAME" -y || fail "$NAME didn't move to the RC"
+pod_speculates
 step held machine update "$NAME" --tensord "$(command -v cozy)" --mode dedicated -y || fail "the pod refused the session's TensorD"
 cozy machine show "$NAME" --json > "$OUT/held.json"
 [ "$(jq -r '.rc.state // empty' "$OUT/held.json")" = held ] || fail "$NAME isn't held: $(jq -c .rc "$OUT/held.json")"

@@ -159,7 +159,7 @@ fn run_machine(
     mut ready: crate::machine::supervise::Ready,
     listeners: Option<crate::machine::net::Listeners>,
 ) -> io::Result<()> {
-    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, dev, .. } = config;
+    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, dev, speculate, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
     if mode == ::api::config::MachineMode::Shared {
@@ -327,6 +327,7 @@ fn run_machine(
             "toolchain": crate::machine::toolchain::dir(&engine),
             "gpu_samples": gpu_samples,
             "dev": dev,
+            "speculate": speculate,
             "broken": broken.as_ref().map(|broken| format!("broken: {}", broken.message)),
         });
         let config = serde_json::from_value::<crate::gpu_service::GpuConfig>(config)

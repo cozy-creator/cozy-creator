@@ -7,7 +7,8 @@
 #   3. in flight: the box rendered while its draft runs: the render adopts the run going.
 #   4. preempt:   another model's call (SDXL) sent while a draft runs: it gets the GPU at once (under 50 ms), the run told to stop.
 #   5. no trace:  the project lists only the session's own five runs, and no speculative run moved the idle deadline.
-# The pod runs the session's TensorD, Runtime and TensorFS, checked before every step (load-ahead.sh). params:
+# Speculation is off by default (Paul 11-18): the session turns it on in the pod's config.toml (`dev = true`, `[machine] speculate =
+# true`) before its restart. The pod runs the session's TensorD, Runtime and TensorFS, checked before every step (load-ahead.sh). params:
 #   tree     a packages_refs checkout whose qwen-image-2 runs, its rules with it (`-f packages_refs=pk=<ref>`, tree pk): a dev home
 #   update   `cozy machine update` flags beside its TensorD: a dev build's Runtime and TensorFS, `artifact:<run id>:<artifact>[:<repo>]`
 #   other    the call that takes the GPU during a draft's run (default sdxl/generate)
@@ -39,6 +40,9 @@ if [ -n "$TREE" ]; then
   cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
   kernels "$SOURCE/qwen-image-2"
 fi
+# Off by default since Paul 11-18: the pod speculates only with its config's dev knob (`pod_speculates`, over ssh).
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote "$(param need_s 3000)"
 rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" "${UPDATE[@]}" -y || fail "the pod refused the session's software"
@@ -97,6 +101,7 @@ ours fetch
 step fetch run "$TOOL" --on "$NAME" instructions="$PROMPT" megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first call"
 ours other-fetch
 step other-fetch run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=4 || fail "the other call's fetch"
+pod_speculates
 step restart machine update "$NAME" --mode dedicated -y || fail "the restart"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$NAME isn't ready after its restart"
 ours shown
