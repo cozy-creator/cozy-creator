@@ -60,13 +60,13 @@ reader() {
   LINK=$(jq -r .url "$OUT/open.txt")
   until=$(($(date +%s) + wait)) W=''
   while [ -z "$W" ]; do
-    [ "$(date +%s)" -lt "$until" ] || fail "no rental another computer ordered ran cl1193 in ${wait}s"
+    [ "$(date +%s)" -lt "$until" ] || fail "no rental of the account ran cl1193 in ${wait}s"
     sleep 15
-    # Its run names cl1193; a machine before cl-1193 names no computer for a run, so one that does is the worker's too.
-    W=$(cozy machine ls --json 2> /dev/null | jq -r '[.machines[] | select(.state != "ended" and .ordered == false
-      and any(.status.others[]?; ((.function // "") | test("cl1193")) or (.client // "") != ""))][0].name // empty')
+    # Its run names cl1193 (the worker's TensorD is this session's cozy): the account's other rentals are listed alike (cl-1224).
+    W=$(cozy machine ls --json 2> /dev/null | jq -r '[.machines[] | select(.kind == "rental" and .state != "ended"
+      and any(.status.others[]?; (.function // "") | test("cl1193")))][0].name // empty')
   done
-  say "the worker's pod, which another computer ordered: $W"
+  say "the worker's pod: $W"
 
   held '[.status.others[]? | .step] | any(. > 1)' || check "its run never said a step"
   # A run of this computer's open project there too: the machine works for it, so it comes next to local (Paul, 11-17: "machines that
@@ -76,16 +76,16 @@ reader() {
   shown running
   jq -e --arg w "$W" '[.seen | to_entries[] | select(.key | endswith(" tabs")) | .value | test("^local\\s+" + $w + "\\b")] | (length > 0 and all)' \
     "$OUT/running-page.json" > /dev/null || check "running: the machine working for the open project isn't next to local: $(jq -c '[.seen | to_entries[] | select(.key | endswith(" tabs")) | .value]' "$OUT/running-page.json")"
-  jq -e '.ordered == false and .running >= 1 and .status.ssh_sessions >= 1
+  jq -e '.running >= 1 and .status.ssh_sessions >= 1
     and any(.status.others[]; ((.function // "") | test("cl1193")) and .running and (.client // "") != "" and .step > 0 and .steps > 0)' \
-    "$OUT/running-show.json" > /dev/null || check "running: the listing doesn't say its run, its computer and step, and the SSH session: $(jq -c '{ordered, running, queued, status: .status | {others, ssh_sessions, kept_alive_ms}}' "$OUT/running-show.json")"
+    "$OUT/running-show.json" > /dev/null || check "running: the listing doesn't say its run, its computer and step, and the SSH session: $(jq -c '{running, queued, status: .status | {others, ssh_sessions, kept_alive_ms}}' "$OUT/running-show.json")"
   jq -e '[.seen | to_entries[] | select(.key | endswith(" row")) | .value | test("From .*cl1193")] | (length > 0 and all)' "$OUT/running-page.json" > /dev/null ||
     check "running: the page's row doesn't say the run and who sent it"
   say "running: $(jq -c '.status.others' "$OUT/running-show.json")"
 
   held '((.status.others // []) | length == 0) and .status.ssh_sessions >= 1 and .status.kept_alive_ms != null' || check "it was never held by the SSH session and a keepalive alone"
   shown held
-  jq -e '.ordered == false and .running == 0 and .status.ssh_sessions >= 1 and .status.kept_alive_ms != null' "$OUT/held-show.json" > /dev/null ||
+  jq -e '.running == 0 and .status.ssh_sessions >= 1 and .status.kept_alive_ms != null' "$OUT/held-show.json" > /dev/null ||
     check "held: the listing doesn't say the SSH session and the keepalive: $(jq -c '{running, status: .status | {ssh_sessions, kept_alive_ms, idle_deadline_ms}}' "$OUT/held-show.json")"
   jq -e '[.seen | to_entries[] | select(.key | endswith(" row")) | .value | test("SSH session") and test("keepalive")] | (length > 0 and all)' "$OUT/held-page.json" > /dev/null ||
     check "held: the page's row doesn't say the SSH session and the keepalive"

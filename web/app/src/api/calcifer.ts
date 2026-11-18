@@ -1397,11 +1397,6 @@ running: number, queued: number,
  */
 jobs?: Array<Run>,
 /**
- * False: a rental another client of this account ordered. This controller reaches it as its
- * own (the Hub grants it every device the account signed in on), but places no run on it unasked.
- */
-ordered: boolean,
-/**
  * Its Hub did not answer the last listing.
  */
 unverified: boolean,

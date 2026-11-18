@@ -14,8 +14,8 @@ for tool in jq node npm google-chrome curl; do command -v "$tool" > /dev/null ||
 RENT_ARGS=--ssh
 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 
-# What this runner's Calcifer ordered is this session's: it started with none, and another client's rentals, which it lists too, read
-# `ordered: false`. So a lost answer's order is ended too, by name until it has a rental id.
+# What this runner's Calcifer ordered is this session's (machines.sh `own`): it started with none. So a lost answer's order is ended
+# too, by name until it has a rental id.
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
 PW=$(mktemp -d)

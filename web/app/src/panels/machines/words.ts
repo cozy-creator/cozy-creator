@@ -55,7 +55,7 @@ export function brokenWords(machine: Machine): string {
       ? "Cozy won't send it work. It stops after 2 idle minutes, and checks itself again the next time it's needed."
       : machine.status?.phase === "releasing"
         ? "It's ending itself."
-        : broken.code === "silent_after_update" && machine.ordered !== false
+        : broken.code === "silent_after_update"
           ? "Cozy is ending it, since it costs money and can't do any work."
           : "Cozy won't send it work, and it ends itself once nothing is running on it."
   return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
@@ -100,7 +100,7 @@ export const stateClass = (machine: Machine) =>
           : "s-queued"
 
 export const kindWords = (machine: Machine) =>
-  machine.kind === "local" ? "This computer" : machine.kind === "added" ? "Added computer" : machine.ordered === false ? "Rental (rented by another computer)" : "Rental"
+  machine.kind === "local" ? "This computer" : machine.kind === "added" ? "Added computer" : "Rental"
 
 /** When an idle machine ends itself; a rental with work names no deadline and ends after it. */
 export function endsWords(machine: Machine, now: number): string {

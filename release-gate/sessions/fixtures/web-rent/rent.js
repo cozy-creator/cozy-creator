@@ -8,7 +8,9 @@
 // JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
-const { writeFileSync } = require('fs');
+const { existsSync, readdirSync, writeFileSync } = require('fs');
+const { homedir } = require('os');
+const { join } = require('path');
 
 const link = process.argv[2];
 const spend = process.argv[3] === '--rent';
@@ -31,7 +33,14 @@ function cozy(...args) {
     throw error;
   }
 }
-const mine = () => JSON.parse(cozy('--json', 'machine', 'ls')).machines.filter((machine) => machine.kind === 'rental' && machine.ordered && machine.state !== 'ended');
+/** What this runner's Calcifer ordered (machines.sh `own`, cl-1224): the rentals whose key an order here minted, under the name it asked. */
+const mine = () => {
+  const keys = join(homedir(), '.cozy', 'keys');
+  const asked = new Set((existsSync(keys) ? readdirSync(keys) : []).filter((f) => /^rental-.*\.pem$/.test(f)).map((f) => f.slice(7, -4)));
+  return JSON.parse(cozy('--json', 'machine', 'ls')).machines.filter(
+    (machine) => machine.kind === 'rental' && machine.state !== 'ended' && (asked.has(machine.name) || asked.has(machine.alias)),
+  );
+};
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 async function until(what, read, wanted, ms = STEP_MS) {

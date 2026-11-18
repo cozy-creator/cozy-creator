@@ -402,9 +402,16 @@ impl Machines {
     /// its first-party packages from a checkout of the RC's source, which the RC's Runtime runs (xs-195).
     pub(crate) fn follows(&self, name: &str) -> Option<crate::store::MachineRow> {
         let row = self.store().machine(name).ok()??;
-        let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row);
+        let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered_here(&row);
         let local = row.kind == MachineKind::Local && crate::checkout::configured();
         (self.dev && (rental || local)).then_some(row)
+    }
+
+    /// Whether this computer ordered rental `row` (its key was minted here; another client's is reached with the device key). Only the
+    /// follower asks: a move to the RC's builds by one computer's choice, unasked by any run, is never made on a rental another
+    /// computer of the account holds on a build by hand, which this one can't see (cl-1224).
+    fn ordered_here(&self, row: &crate::store::MachineRow) -> bool {
+        api::config::Origin::parse(&row.hub).map_or(true, |hub| row.key != hub.device_key(&self.home))
     }
 
     /// Whether `name` is a rental that follows the RC and hasn't said it's ready (cl-1069): until it is, it can't be told behind or
@@ -545,7 +552,7 @@ impl Machines {
                         let frame = self.frame(&row.name);
                         let ready = frame.as_ref().is_some_and(|frame| frame.phase == "ready");
                         match row.kind {
-                            MachineKind::Rental if !self.ordered(row) => continue,
+                            MachineKind::Rental if !self.ordered_here(row) => continue,
                             MachineKind::Rental if row.state == MachineState::Ready && ready => {
                                 self.follow_rc(&row.name).await;
                             }
