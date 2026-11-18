@@ -124,6 +124,20 @@ fn directory() -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// The most bytes any process on this GPU held outside its own books (its context, kernel modules,
+/// local memory, libraries' handles), as each measured it this boot: None before any did. A file
+/// beside the GPU's page, so the page's layout stays. cozy-creator #3885 (var-024) measures and
+/// writes it (`held_out_of_books`, at each request's end) and adds this same reader: one of the two
+/// goes when both land.
+pub fn out_of_books(uuid: &[u8; 16]) -> Option<u64> {
+    fs::read_to_string(out_of_books_path(uuid).ok()?).ok()?.trim().parse().ok()
+}
+
+fn out_of_books_path(uuid: &[u8; 16]) -> io::Result<PathBuf> {
+    let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(directory()?.join(format!("out-of-books-{name}")))
+}
+
 /// A `GPU-…` or `MIG-…` name's 16 bytes, as CUDA reports them.
 pub fn parse_uuid(name: &str) -> Option<[u8; 16]> {
     let (kind, rest) = name.split_once('-')?;

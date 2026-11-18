@@ -1088,9 +1088,29 @@ struct Device {
     asking: Option<Mutex<varena_ledger::Table>>,
     /// Open while it drove a display at the pool's start: its use is read for each request.
     display: Option<platform::gpu::Device>,
+    /// What one process holds on it outside varena's books (`varena_ledger::out_of_books`), read once:
+    /// the first time a process here measured it.
+    #[cfg(target_os = "linux")]
+    unbooked: std::sync::OnceLock<u64>,
 }
 
 impl Device {
+    /// What one process holds on it outside varena's books, as varena measured it this boot; 0 before.
+    #[cfg(target_os = "linux")]
+    fn unbooked(&self) -> u64 {
+        if let Some(bytes) = self.unbooked.get() {
+            return *bytes;
+        }
+        let uuid = self.memory.as_ref().and_then(|memory| varena_ledger::parse_uuid(&memory.uuid));
+        match uuid.and_then(|uuid| varena_ledger::out_of_books(&uuid)) {
+            Some(bytes) => *self.unbooked.get_or_init(|| bytes),
+            None => 0,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn unbooked(&self) -> u64 {
+        0
+    }
     /// What its executors hold.
     #[cfg(target_os = "linux")]
     fn executors_hold(&self) -> u64 {
@@ -1183,6 +1203,8 @@ impl Pool {
                     .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
                     .filter(|device| device.display_active().unwrap_or(false))
                     .inspect(|_| tracing::info!("GPU {entry} drives a display: each run keeps free what it uses plus {} MiB", DISPLAY_MARGIN >> 20)),
+                #[cfg(target_os = "linux")]
+                unbooked: std::sync::OnceLock::new(),
             }
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
@@ -1488,12 +1510,17 @@ impl Pool {
             .map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         tensorfs::fetch::Hardware { gpus, ..Default::default() }
     }
-    /// The first `degree` GPUs' least capacity: each one's memory, or the `gpu_memory_limit` below
-    /// it, never what is free (xs-213: a lane's fit is what it holds against the card it holds it on).
+    /// The first `degree` GPUs' least capacity (xs-213: a lane's fit is what it holds against the card it
+    /// holds it on): each one's memory, or the `gpu_memory_limit` below it, less what one process holds
+    /// there outside varena's books (its context and the driver's own), never what others use: that would
+    /// be free memory. That figure is varena's own measure (cozy-creator #3885, var-024), read once;
+    /// before any process on the card has measured it, none is taken off.
     pub(crate) fn capacity(&self, degree: u32) -> Option<u64> {
         let limit = self.config.gpu_memory_limit.unwrap_or(u64::MAX);
-        self.devices.iter().take(degree as usize).filter_map(|d| self.inventory(&d.entry))
-            .map(|g| g.memory_bytes.min(limit)).filter(|bytes| *bytes > 0).min()
+        (self.devices.iter().take(degree as usize))
+            .filter_map(|d| Some(self.inventory(&d.entry)?.memory_bytes.min(limit).saturating_sub(d.unbooked())))
+            .filter(|bytes| *bytes > 0)
+            .min()
     }
     /// The first `degree` GPUs' least free bytes, counting what idle peers hold: they give it back
     /// when asked, so it is room a new model can plan on. What a Hub before rule 8 fits a 4-bit
