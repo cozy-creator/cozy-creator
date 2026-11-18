@@ -14,15 +14,18 @@
 # 4. Control: an unencrypted project's draft box is guessed onto local and gets ready, and Calcifer's log names its box.
 # It passes when the draft's words and box name are in no such file, the folder's name in none it wasn't in at step 0, the encrypted
 # draft and the plain one both got ready, and the machine lists neither item once their projects are gone from the page.
+# With `upgrade`, step 3b: this computer then moves to that dev-build's cozy (`cozy machine update local --tensord`), whose TensorD
+# forgets what the build before kept of the drafts, and the search judged is the one after it.
 # params:
-#   tree  the packages_refs checkout (`-f packages_refs=pk=<packages ref>`, tree pk); e2e-boxed is put in it
+#   tree     the packages_refs checkout (`-f packages_refs=pk=<packages ref>`, tree pk); e2e-boxed is put in it
+#   upgrade  a dev-build run id whose cozy this computer moves to after step 3 (empty: none)
 . "$(dirname "$0")/lib.sh"
 fail() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
   cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local.log" 2>&1
   say "FAIL: $*"; RC=1; exit 1
 }
-TREE=$(param tree '')
+TREE=$(param tree '') UPGRADE=$(param upgrade '')
 [ -n "$TREE" ] && [ -d "$PACKAGES/$TREE" ] || fail "dispatch with -f packages_refs=<name>=<packages ref> and params.tree=<name>"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 V=$(cozy --version | awk '{print $2}')
@@ -173,13 +176,37 @@ cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || tru
 cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local.log" 2>&1 || true
 say "step 3: what holds the words now, the project locked"
 found locked
+tables locked
 # The folder's name where step 0 had it is by design; the draft's words and box name anywhere are not.
 holding() { awk -F'\t' -v a="$2" -v b="${3:-}" -v c="${4:-}" '{w=$2; sub(/^name: /, "", w)} w == a || w == b || w == c {print $1}' "$OUT/found-$1.txt" | sort -u; }
-leaks=$(holding locked "$DRAFT" "$EDITED" "$BOX")
-folder_new=$(comm -13 <(holding made "$FOLDER") <(holding locked "$FOLDER"))
-tables locked
-[ -z "$leaks" ] || MISMATCH+=("the draft's words or box name are outside the vault: $(cut -f1 <<< "$leaks" | sort -u | sed "s|$HOME|~|" | paste -sd, -)")
-[ -z "$folder_new" ] || MISMATCH+=("the folder's name is in files it wasn't in when the project was made: $(sed "s|$HOME|~|" <<< "$folder_new" | paste -sd, -)")
+JUDGED=locked
+if [ -n "$UPGRADE" ]; then
+  # 3b. This computer moves to `upgrade`'s cozy as a person's does (its TensorD, CLI and Calcifer), and what the build before left
+  # is searched for again.
+  say "step 3b: this computer's machine moves to the cozy of dev-build $UPGRADE; what the build before left: $(holding locked "$DRAFT" "$EDITED" "$BOX" | sed "s|$HOME|~|" | paste -sd, -)"
+  mkdir -p "$RUNNER_TEMP/upgrade" && gh run download "$UPGRADE" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$RUNNER_TEMP/upgrade" > "$OUT/upgrade-download.txt" 2>&1 ||
+    fail "dev-build $UPGRADE's cozy: $(tail -c 300 "$OUT/upgrade-download.txt")"
+  NEW=$(find "$RUNNER_TEMP/upgrade" -name cozy-linux-x86_64 | head -1)
+  [ -n "$NEW" ] && chmod 755 "$NEW" || fail "dev-build $UPGRADE has no cozy-linux-x86_64"
+  NEW_V=$("$NEW" --version | awk '{print $2}')
+  cozy machine update local --tensord "$NEW" -y > "$OUT/upgrade.txt" 2>&1 || fail "machine update local: $(tail -c 300 "$OUT/upgrade.txt")"
+  began=$SECONDS
+  until [ "$(cozy --json machine show local 2> /dev/null | jq -r '.status.version // empty')" = "$NEW_V" ]; do
+    [ $((SECONDS - began)) -lt 300 ] || fail "local isn't on $NEW_V 300 s after its update: $(cozy --json machine show local 2>&1 | head -c 300)"
+    sleep 2
+  done
+  say "local runs TensorD $NEW_V after $((SECONDS - began)) s; the CLI is $(cozy --version | awk '{print $2}')"
+  cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local-upgraded.log" 2>&1 || true
+  say "TensorD at its start: $(grep -a "list items' runs forgotten" "$OUT/tensord-local-upgraded.log" | tail -1 | cut -c1-200)"
+  grep -aq "list items' runs forgotten" "$OUT/tensord-local-upgraded.log" || MISMATCH+=("the upgraded TensorD didn't say it forgot the list items' runs")
+  found upgraded
+  tables upgraded
+  JUDGED=upgraded
+fi
+leaks=$(holding "$JUDGED" "$DRAFT" "$EDITED" "$BOX")
+folder_new=$(comm -13 <(holding made "$FOLDER") <(holding "$JUDGED" "$FOLDER"))
+[ -z "$leaks" ] || MISMATCH+=("$JUDGED: the draft's words or box name are outside the vault: $(cut -f1 <<< "$leaks" | sort -u | sed "s|$HOME|~|" | paste -sd, -)")
+[ -z "$folder_new" ] || MISMATCH+=("$JUDGED: the folder's name is in files it wasn't in when the project was made: $(sed "s|$HOME|~|" <<< "$folder_new" | paste -sd, -)")
 
 say "step 4: control, an unencrypted project's draft"
 RUN_PROJECT=$PLAIN_PROJECT
