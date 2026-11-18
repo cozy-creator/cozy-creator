@@ -51,6 +51,29 @@ const middleOf = (page) => page.evaluate(() => {
 /** Where `point` is in `box`, as fractions of its width and height. */
 const within = (box, point) => ({ u: (point.x - box.x) / box.width, v: (point.y - box.y) / box.height });
 
+/** Every pan Focus draws from now, by its frame's style as it's set, and every pointer move and up under it, each at its time: `stop()`
+ *  returns them. A pan goes only the way the pointer went, and is where it went within a frame or two of the up (cl-1208: 44222701495
+ *  read 90, 30 of a 120, 40 pan 9 ms after the up). */
+const recordPan = (page) => page.evaluate(() => {
+  const frame = document.querySelector('.focus-viewer .focus-image-transform');
+  const seen = [], quit = new AbortController();
+  const at = () => Math.round(performance.now() * 10) / 10;
+  const drawn = () => { const m = new DOMMatrix(getComputedStyle(frame).transform); seen.push({ t: at(), drawn: [Math.round(m.e), Math.round(m.f)] }); };
+  const observer = new MutationObserver(drawn);
+  observer.observe(frame, { attributes: true, attributeFilter: ['style'] });
+  for (const type of ['pointermove', 'pointerup']) addEventListener(type, (event) => seen.push({ t: at(), [type]: [event.clientX, event.clientY] }), { capture: true, signal: quit.signal });
+  window.__panStop = () => { observer.disconnect(); quit.abort(); return seen; };
+}).then(() => ({ stop: () => page.evaluate(() => window.__panStop()) }));
+
+/** The pan's record: kept with the cell, and it never went back against the pointer, on either axis. */
+function panWent(seen, sign, what) {
+  test.info().annotations.push({ type: `pan: ${what}`, description: JSON.stringify(seen) });
+  console.log(`pan, ${what}: ${JSON.stringify(seen)}`);
+  const drawn = seen.filter((one) => one.drawn).map((one) => one.drawn);
+  const back = drawn.findIndex((now, i) => i > 0 && [0, 1].some((axis) => (now[axis] - drawn[i - 1][axis]) * sign[axis] < -1));
+  expect.soft(back, `${what}: drawn only the way the pointer went, never back (${drawn.map((one) => one.join(',')).join(' → ')})`).toBe(-1);
+}
+
 test('zoom', async ({ page, project, cli }) => {
   await cli.json('machine', 'use', 'local');
   const shots = join(process.env.OUT, 'web', 'zoom');
@@ -98,11 +121,14 @@ test('zoom', async ({ page, project, cli }) => {
     expect.soft(before.scale, 'still zoomed after playing and scrubbing').toBeGreaterThan(2.5);
     const from = await middleOf(page);
     await page.mouse.move(from.x, from.y);
+    const videoPan = await recordPan(page);
     await page.mouse.down();
     await page.mouse.move(from.x - 160, from.y - 60, { steps: 8 });
     await page.mouse.up();
-    const panned = await view(page, 'video.live');
-    expect.soft({ dx: Math.round(panned.x - before.x), dy: Math.round(panned.y - before.y) }, 'a drag pans it as far as it went').toEqual({ dx: -160, dy: -60 });
+    // Exactly where it went, within a second: the last moves' render can come a frame after the pointer's up. 44222701495 read the orbit's
+    // pan 9 ms after it, at its sixth move of eight (90, 30), while the page's DOM held 120, 40 before and after.
+    await soft.poll(async () => { const panned = await view(page, 'video.live'); return { dx: Math.round(panned.x - before.x), dy: Math.round(panned.y - before.y) }; }, { message: 'a drag pans it as far as it went', timeout: 1_000 }).toEqual({ dx: -160, dy: -60 });
+    panWent(await videoPan.stop(), [-1, -1], 'the video');
     const middle = await middleOf(page);
     await page.mouse.dblclick(middle.x, middle.y);
     await soft.poll(async () => (await view(page, 'video.live'))?.scale, { message: 'a double-click: the fit' }).toBe(1);
@@ -139,12 +165,13 @@ test('zoom', async ({ page, project, cli }) => {
     const angle = Number(await orbit.getAttribute('data-angle'));
     await page.keyboard.down('Shift');
     await page.mouse.move(middle.x, y);
+    const orbitPan = await recordPan(page);
     await page.mouse.down();
     await page.mouse.move(middle.x + 120, y + 40, { steps: 8 });
     await page.mouse.up();
     await page.keyboard.up('Shift');
-    const panned = await view(page, '.orbit');
-    expect.soft({ dx: Math.round(panned.x - turned.x), dy: Math.round(panned.y - turned.y) }, 'a Shift-drag pans it').toEqual({ dx: 120, dy: 40 });
+    await soft.poll(async () => { const panned = await view(page, '.orbit'); return { dx: Math.round(panned.x - turned.x), dy: Math.round(panned.y - turned.y) }; }, { message: 'a Shift-drag pans it', timeout: 1_000 }).toEqual({ dx: 120, dy: 40 });
+    panWent(await orbitPan.stop(), [1, 1], 'the orbit');
     expect.soft(Number(await orbit.getAttribute('data-angle')), 'and turns nothing').toBeCloseTo(angle, 3);
     await page.mouse.dblclick(middle.x, y);
     await soft.poll(async () => (await view(page, '.orbit'))?.scale, { message: 'a double-click: the fit' }).toBe(1);
