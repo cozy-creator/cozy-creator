@@ -1,0 +1,1 @@
+A box's LoRAs are part of what its render needs: a machine made ready for a box holds them with its models, its plan says them, a LoRA that left its disk is fetched again before Render, and a render's quote counts their bytes. A function that loads models and calls others is planned for both: its own models and those of the functions it calls.

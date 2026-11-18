@@ -142,8 +142,9 @@ pub(crate) struct RunContext {
     pub(crate) models: Vec<stored::ModelChoice>,
     /// What its weights come under before its call's executor reads them (`Fetch::ahead`).
     pub(crate) ahead: Option<Arc<crate::access::Fetch>>,
-    /// An orchestrator's guesses at what its calls read (`fetch_internal`), until its first call
-    /// wants its own.
+    /// Its guesses at what its calls read, come beside its own weights (`fetch_internal`, cl-1281), until its first call wants its own.
+    pub(crate) calls: Option<Arc<crate::access::Fetch>>,
+    /// The same of one that loads no model itself, which has them under `ahead`.
     pub(crate) guessing: Option<std::sync::Weak<crate::access::Fetch>>,
     /// What its function's rules say this request doesn't need (cl-1103): each such model slot's checkpoint and components with
     /// its parameter, and each such function it calls. A read or a call of one is its rule's miss, said on the run.
@@ -404,11 +405,12 @@ impl Runs {
     /// (`published::predicted`), each at once, in its package's order. Another package's function (`<distribution>/<function>`,
     /// cl-1123) resolves as its child run will: in the App of `callees`, its environment's, that holds it, with the choices addressed
     /// to its slots and its own default lane (`child_spec`). A called function that doesn't resolve is left out, said; its own is the
-    /// run's refusal.
+    /// run's refusal. `own`: its own function's plan, when its preparation made one (cl-1281: one with slots that calls others).
     #[allow(clippy::too_many_arguments)]
     fn needs(
         &self, id: &str, installation: &Installation, callees: &[crate::catalog::Callee], hub: Option<hub::Source>, asker: &Asker,
-        entrypoint: &str, wants: &needs::Wants, (models, lane): (&[stored::ModelChoice], &str), observe: Option<&Report>, stop: Option<&Stop>,
+        entrypoint: &str, wants: &needs::Wants, (models, lane): (&[stored::ModelChoice], &str), own: Option<&Plan>, observe: Option<&Report>,
+        stop: Option<&Stop>,
     ) -> Result<crate::access::Needs, Refused> {
         let predicted = |named: &str| -> Result<Option<Plan>, Refused> {
             let (held, function, own, lane) = match named.split_once('/') {
@@ -432,7 +434,10 @@ impl Runs {
         let functions = wants.functions();
         let private = crate::private_io::current();
         let each: Vec<_> = std::thread::scope(|scope| {
-            let each: Vec<_> = functions.iter().map(|function| scope.spawn(|| crate::private_io::within(private.clone(), || predicted(function)))).collect();
+            let each: Vec<_> = functions.iter().map(|function| scope.spawn(|| match own.filter(|_| *function == entrypoint) {
+                Some(plan) => Ok(Some(plan.clone())),
+                None => crate::private_io::within(private.clone(), || predicted(function)),
+            })).collect();
             each.into_iter().map(|read| read.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
         });
         // Each plan by the package it is of (none: its own), as a slot names it.
@@ -449,7 +454,7 @@ impl Runs {
         }
         let selected = |slot: &str| {
             let (package, path) = slot.split_once('/').map_or((None, slot), |(distribution, path)| (Some(distribution), path));
-            plans.iter().filter(|(of, _)| *of == package).find_map(|(_, plan)| plan.selected(path))
+            plans.iter().filter(|(of, _)| *of == package).find_map(|(_, plan)| plan.reads(path))
         };
         Ok(crate::access::Needs::of(needs::resolved(wants, selected)))
     }
@@ -1245,8 +1250,11 @@ impl Runs {
         // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
         if crate::ahead::item(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
+            let loras: Vec<String> = (spec.models.iter())
+                .flat_map(|choice| choice.adapters.iter().map(move |lora| format!("{} on {}", if lora.source.is_empty() { &lora.model } else { &lora.source }, choice.parameter)))
+                .collect();
             tracing::info!(
-                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}; planned in {} ms, its code ready in {installed_ms} ms",
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}, with its LoRAs {loras:?}; planned in {} ms, its code ready in {installed_ms} ms",
                 fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras, planning.elapsed().as_millis()
             );
         }
@@ -1261,7 +1269,7 @@ impl Runs {
         // A call's weights come from here on, in the Start pass's order, until its executor
         // asks for them itself; its import-only parent starts now unless it already did. A
         // child's are a started run's, ahead of every queued run's (cl-804).
-        let mut ahead = None;
+        let (mut ahead, mut calls) = (None, None);
         if let (false, Some(pool)) = (spec.warm, self.service.pool()) {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| match record.invocation.parent.is_empty() {
@@ -1298,18 +1306,18 @@ impl Runs {
                 fetch.hold(resolved);
                 fetch
             });
-            // An orchestrator's functions' weights come while it starts and imports (cl-905), if not already. Another package's it
+            // The weights of the functions a root calls come while it starts and imports (cl-905), if not already. Another package's it
             // calls (cl-1123) only its environment holds: what came before its install, its static reading's, is walked again with them.
             let callees = &generation.record.callees;
-            let internal = match (plan.is_none(), spec.parent.is_empty()) {
-                (true, true) => internal_models(&installation, callees, &spec.entrypoint, &ruled.unneeded).unwrap_or_default(),
-                _ => vec![],
+            let internal = match spec.parent.is_empty() {
+                true => internal_models(&installation, callees, &spec.entrypoint, &ruled.unneeded).unwrap_or_default(),
+                false => vec![],
             };
             if !internal.is_empty() {
-                ahead = Some(match early.take() {
+                let fetch = match early.take() {
                     Some(before) if !internal.iter().any(|function| function.contains('/')) => before,
                     before => {
-                        let fetch = self.fetch_internal(id, &installation, callees, hub.clone(), &spec);
+                        let fetch = self.fetch_internal(id, &installation, callees, hub.clone(), &spec, plan.as_ref());
                         // It goes on until the call ends, unlisted: this fetch lists what the run waits on.
                         if let Some(before) = &before {
                             before.unlist();
@@ -1317,10 +1325,15 @@ impl Runs {
                         fetch.replaces(before);
                         fetch
                     }
-                });
+                };
+                // One with weights of its own keeps them under `ahead`, which its call waits on (cl-1281).
+                match plan.is_some() {
+                    true => calls = Some(fetch),
+                    false => ahead = Some(fetch),
+                }
             }
             // A call wants what it reads now: its caller's guesses at it end, and their room is free.
-            let caller = self.contexts.lock().unwrap().get(&spec.parent).and_then(|context| context.guessing.as_ref()?.upgrade());
+            let caller = self.contexts.lock().unwrap().get(&spec.parent).and_then(|context| context.calls.clone().or_else(|| context.guessing.as_ref()?.upgrade()));
             if let Some(guesses) = caller {
                 guesses.drop_guessed();
                 guesses.unlist();
@@ -1397,11 +1410,11 @@ impl Runs {
             // costs bytes, never room, as nothing is evicted for it. An on-demand model comes when a stage reads it (cl-804).
             let reads = match &plan {
                 _ if install_only => crate::access::Needs::default(),
-                Some(plan) => plan.needs(&wants),
-                None => {
+                Some(plan) if wants.functions().iter().all(|function| *function == spec.entrypoint) => plan.needs(&wants),
+                own => {
                     let observer: Report = observe.clone();
                     let chosen = (spec.models.as_slice(), spec.lane.as_str());
-                    self.needs(id, &installation, &generation.record.callees, hub.clone(), &self.asker(id, &spec), &spec.entrypoint, &wants, chosen, Some(&observer), Some(&stoppable.stop))?
+                    self.needs(id, &installation, &generation.record.callees, hub.clone(), &self.asker(id, &spec), &spec.entrypoint, &wants, chosen, own.as_ref(), Some(&observer), Some(&stoppable.stop))?
                 }
             };
             let mut moved = tensorfs::fetch::Landed::default();
@@ -1512,14 +1525,16 @@ impl Runs {
                 models: spec.models.clone(),
                 guessing: ahead.as_ref().filter(|_| plan.is_none()).map(Arc::downgrade),
                 ahead,
+                calls,
                 unneeded: (plan.iter().flat_map(|plan| &plan.slots))
                     .filter(|slot| ruled.unneeded.contains(&slot.binding.model_parameter_name))
                     .map(|slot| (slot.binding.snapshot.clone(), slot.binding.components.clone(), slot.binding.model_parameter_name.clone()))
                     .collect(),
-                uncalled: match &plan {
-                    Some(_) => BTreeSet::new(),
-                    None => ruled.unneeded.clone(),
-                },
+                // A rule's name that is no slot of its own names a function it calls.
+                uncalled: (ruled.unneeded.iter())
+                    .filter(|name| !api::interface::models(entry).iter().any(|slot| api::interface::slot_path(slot).is_some_and(|path| path.rsplit_once(".models.").is_some_and(|(_, parameter)| parameter == name.as_str()))))
+                    .cloned()
+                    .collect(),
             };
             self.contexts.lock().unwrap().insert(id.into(), context);
         }
@@ -1631,7 +1646,7 @@ impl Runs {
         let asker = self.asker(id, spec);
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
         let wanted = (|| -> Result<(), Refused> {
-            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&read, &[], spec), (&spec.models, &spec.lane), None, Some(stop))?;
+            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&read, &[], spec), (&spec.models, &spec.lane), None, None, Some(stop))?;
             self.want_reads(id, fetches_ahead(spec), &fetch, &reads, true)
         })();
         let caller = self.service.engine.caller_id(id);
@@ -1665,7 +1680,7 @@ impl Runs {
             let interface: Value = serde_json::from_slice(&installation.interface)
                 .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
             // Its static reading: other packages' functions come once its environment, which holds them, is built (`fetch_internal`).
-            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&interface, &[], spec), (&spec.models, &spec.lane), None, Some(stop))?;
+            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&interface, &[], spec), (&spec.models, &spec.lane), None, None, Some(stop))?;
             self.want_reads(id, fetches_ahead(spec), &fetch, &reads, true)
         })();
         match wanted {
@@ -1713,19 +1728,19 @@ impl Runs {
         fetch.hint(lined, listed.then_some(caller.as_str())).map_err(Refused::from)
     }
 
-    /// A root that loads no model itself (an orchestrator) gets the weights of the functions it calls on the way while it starts
-    /// and imports (cl-905), its own package's and those of the others its environment holds (`callees`, cl-1123: Orbit's H3): what
-    /// they all read at its place in the download line, then each one's own as a guess, while it fits beside what comes first.
-    /// Nothing waits on them; they end with its call, or its cancel.
+    /// A root gets the weights of the functions it calls on the way while it starts and imports (cl-905), its own package's and
+    /// those of the others its environment holds (`callees`, cl-1123: Orbit's H3): what they all read at its place in the download
+    /// line, then each one's own as a guess, while it fits beside what comes first. Nothing waits on them; they end with its call,
+    /// or its cancel. `own`: its own plan, when it loads models too.
     fn fetch_internal(self: &Arc<Self>, id: &str, installation: &Installation, callees: &[crate::catalog::Callee], hub: Option<hub::Source>,
-        spec: &Spec) -> Arc<crate::access::Fetch> {
+        spec: &Spec, own: Option<&Plan>) -> Arc<crate::access::Fetch> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
         let (runs, held, id, asker) = (self.clone(), fetch.clone(), id.to_string(), self.asker(id, spec));
         let (installation, models, lane, entrypoint) = (installation.clone(), spec.models.clone(), spec.lane.clone(), spec.entrypoint.clone());
         let interface: Value = serde_json::from_slice(&installation.interface).unwrap_or_default();
-        let (private, wants, callees) = (spec.local_private.clone(), wants_of(&interface, callees, spec), callees.to_vec());
+        let (private, wants, callees, own) = (spec.local_private.clone(), wants_of(&interface, callees, spec), callees.to_vec(), own.cloned());
         let started = std::thread::Builder::new().name("internal-prefetch".into()).spawn(move || crate::private_io::within(private, || {
-            let wanted = runs.needs(&id, &installation, &callees, hub, &asker, &entrypoint, &wants, (&models, &lane), None, None)
+            let wanted = runs.needs(&id, &installation, &callees, hub, &asker, &entrypoint, &wants, (&models, &lane), own.as_ref(), None, None)
                 .and_then(|reads| runs.want_reads(&id, false, &held, &reads, true));
             if let Err(refusal) = wanted {
                 crate::private_io::warning(&runs.service.engine, &id, format_args!("its functions' weights aren't fetched ahead: {}", refusal.message));

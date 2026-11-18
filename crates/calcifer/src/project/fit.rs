@@ -400,8 +400,7 @@ pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str
     said(&need, gpus.iter().map(|gpu| gpu.1).max(), gpus.iter().any(|gpu| gpu.2))
 }
 
-/// The model slots a function loads on a GPU, its own or, for one that orchestrates, those of what it calls; and what's on its box in their
-/// place.
+/// The model slots a function loads on a GPU, its own and those of what it calls (cl-1281); and what's on its box in their place.
 struct Weights {
     slots: Vec<Slot>,
     /// A checkpoint on the box, by the parameter it takes the place of.
@@ -426,10 +425,7 @@ impl Weights {
     /// before it runs all the same, so a machine without them is quoted that download (cl-1047). None: it reads none.
     fn read(interface: &Interface, function: &str, made: &Map<String, Value>) -> Option<Self> {
         let callable = interface.callables.iter().find(|callable| callable.name == function)?;
-        let slots: Vec<Slot> = match callable.models.is_empty() {
-            true => interface.call_slots(callable).into_iter().cloned().collect(),
-            false => callable.models.clone(),
-        };
+        let slots: Vec<Slot> = callable.models.iter().chain(interface.call_slots(callable)).cloned().collect();
         if slots.is_empty() {
             return None;
         }
@@ -616,8 +612,9 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
 
 /// What `function` of `package` waits for before it starts, as its machine fetches it (cl-1071, cl-1103): what it wants of its models by
 /// its needs rules for `request` (`super::wants`, the walk its machine makes; none: no rule answers), each slot by its Hub card's lane
-/// checkpoint with `made`'s choices, resolved as its machine resolves them (`needs::resolved`: of the functions it may call that no
-/// rule answers, what they all read), and the bytes of the chunks its components read, each object once across checkpoints (a
+/// checkpoint with `made`'s choices and, whole, each LoRA `made` puts on it (`loras_of`, cl-1281), resolved as its machine resolves
+/// them (`needs::resolved`: of the functions it may call that no rule answers, what they all read), and the bytes of the chunks its
+/// components read, each object once across checkpoints (a
 /// fine-tune composed of a base's parts shares them). A header that can't be read counts its checkpoint whole. A machine's estimate
 /// counts the fetch of what it lacks of these (cl-816, cl-1047): exactly the call's needs less what it has. Its extras are no part of
 /// it, as no call waits for them; what the Hub doesn't say in time is left out.
@@ -631,6 +628,29 @@ pub(super) async fn read_ahead(api: &Api, hub: &str, package: &super::Package, f
     let mut wanted = super::wants(package, function, None);
     wanted.needed.extend(wanted.either.drain(..).flatten().chain(wanted.extras.drain(..).flat_map(|(_, slots)| slots)));
     held(api, hub, package, function, made, wanted).await;
+}
+
+/// The LoRAs a box's `models` and `lora` (`made`) put on each slot of `function`, by the slot's path: bound as its render binds them
+/// (`api::choices`, the one binder), each as written. One that doesn't bind is its render's to refuse.
+fn loras_of(interface: &Interface, function: &str, made: &Map<String, Value>) -> HashMap<String, Vec<String>> {
+    let Some(callable) = interface.callables.iter().find(|callable| callable.name == function) else { return HashMap::new() };
+    let mut given: Map<String, Value> = (["models", "lora"].iter())
+        .filter_map(|field| Some(((*field).to_owned(), made.get(*field).filter(|value| !value.is_null())?.clone())))
+        .collect();
+    let mut choices = api::choices::Choices::new("", function, &callable.models, interface.call_slots(callable));
+    if choices.take(&mut given).is_err() {
+        return HashMap::new();
+    }
+    (choices.into_choices().into_iter())
+        .filter(|choice| !choice.adapters.is_empty())
+        .map(|choice| {
+            let path = match choice.slot.contains(".models.") {
+                true => choice.slot,
+                false => format!("{function}.models.{}", choice.slot),
+            };
+            (path, choice.adapters.into_iter().map(|lora| lora.reference).collect())
+        })
+        .collect()
 }
 
 async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, wanted: ::needs::Wants) -> Vec<api::machine::ModelRef> {
@@ -660,13 +680,32 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
             .or_else(|| slot.lane.clone());
         asked.push((path.as_str(), *slot, written, lane, picked));
     }
-    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane, _)| checkpoint(api, hub, written, lane.as_deref())))).await;
+    // Each LoRA the box puts on one of those slots, by its card too.
+    let loras = loras_of(&interface, function, made);
+    let mut stacked: Vec<&String> = asked.iter().flat_map(|(path, ..)| loras.get(*path).into_iter().flatten()).collect();
+    stacked.sort_unstable();
+    stacked.dedup();
+    let (cards, lora_cards) = crate::stages::stage("cards", futures_util::future::join(
+        futures_util::future::join_all(asked.iter().map(|(_, _, written, lane, _)| checkpoint(api, hub, written, lane.as_deref()))),
+        futures_util::future::join_all(stacked.iter().map(|written| checkpoint(api, hub, written, None))),
+    ))
+    .await;
     let held: HashMap<&str, (Lane, String, Vec<String>, bool)> = (asked.into_iter().zip(cards))
         .filter_map(|((path, slot, written, _, picked), card)| Some((path, (card?, written.clone(), slot.fetched_components(), picked))))
         .collect();
-    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components, _)| (lane.checkpoint.clone(), components.clone())));
+    let stacked: HashMap<&String, Lane> = stacked.into_iter().zip(lora_cards).filter_map(|(written, card)| Some((written, card?))).collect();
+    let resolved = ::needs::resolved(&wanted, |path| {
+        let (lane, _, components, _) = held.get(path)?;
+        let on_it = loras.get(path).into_iter().flatten().filter_map(|written| stacked.get(written)).map(|lane| (lane.checkpoint.clone(), vec![]));
+        Some(std::iter::once((lane.checkpoint.clone(), components.clone())).chain(on_it).collect())
+    });
+    // A box's LoRA is no slot's pick: the call is timed by its slot's model (`runs_of`, the largest).
     let lanes: Vec<(&Lane, &String, Vec<String>, bool)> = (resolved.needed.into_iter())
-        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _, picked)| (lane, written, components, *picked)))
+        .filter_map(|(checkpoint, components)| {
+            let slot = held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _, picked)| (lane, written, *picked));
+            let lora = || stacked.iter().find(|(_, lane)| lane.checkpoint == checkpoint).map(|(written, lane)| (lane, *written, false));
+            slot.or_else(lora).map(|(lane, written, picked)| (lane, written, components, picked))
+        })
         .collect();
     let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components, _)| async move {
         match &lane.header {
