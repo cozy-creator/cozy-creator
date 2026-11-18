@@ -4,21 +4,24 @@
 # waiting for it, and a new rental was bought (red on a runner's stood-in rental: e2e 44296656584). The fix: the held run's
 # driver sends the machine's keepalive as it is held and as the update is taken, and an update a keepalive came during
 # restarts the clock at its end. Its green was by reading (#3935, #3955): a runner's update is too quick to hold a render.
-# One cheap rental of $SKU with SSH, this session's cozy its TensorD (the fix is TensorD's and Calcifer's; its Runtime stays
-# its image's, and the code sent asks for no newer one, so nothing but the updates by hand moves it):
-#   1. its idle window becomes `idle_s` for its service's next start (its config.toml, over SSH: the running service keeps
-#      its 15 minutes), a keepalive starts its clock, and it sits idle past `idle_s`: the restarted service opens a clock
-#      already past its deadline, as one an update outlasted;
-#   2. an update by hand restarts its service (the mode it has, as suite rentals' updates), a second is asked behind it
-#      (cl-1267's case), and while they go, local code is sent `--on` the rental;
+# One cheap rental of $SKU with SSH, this session's cozy its TensorD (the fix is TensorD's and Calcifer's; the code sent asks
+# for the rental's Runtime minor, so nothing but the updates by hand moves it):
+#   1. its idle window becomes `idle_s` for its service's next start (the config.toml of the running service's own home,
+#      over SSH: the running service keeps its 15 minutes), a keepalive starts its clock, and it sits idle past `idle_s`:
+#      the restarted service opens a clock already past its deadline, as one an update outlasted;
+#   2. an update by hand moves its Runtime to `runtime_to` (a download and an install: long enough to hold a run; a restart
+#      alone settles in under a second, 44396105554), a second is asked behind it, back to the Runtime it had (cl-1267's
+#      case), and while the first goes, local code is sent `--on` the rental;
 #   3. the run is held ("waiting for <rental> to finish updating"), completes on that rental, and its window after the
 #      restart is `idle_s` (the control: else no deadline was outlasted).
-# A run the update didn't hold proves nothing, and fails the session saying so: one update's restart is a few seconds.
-# params: idle_s (120).
+# A run the update didn't hold proves nothing, and fails the session saying so.
+# params: runtime_to (a Runtime release of the rental's minor other than its own, required), idle_s (120).
 . "$(dirname "$0")/lib.sh"
 check() { say "FAIL: $*"; echo "::error::$*"; RC=1; }
 IDLE=$(param idle_s 120)
 [[ $IDLE =~ ^[0-9]+$ && $IDLE -ge 60 && $IDLE -lt 900 ]] || fail "idle_s is seconds, 60 to 899: $IDLE"
+TO=$(param runtime_to)
+[[ $TO =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "runtime_to is a Runtime release (0.47.0): ${TO:-none}"
 CODE=$OUT/held-code
 cp -r "$(dirname "$0")/fixtures/rc-floor" "$CODE" || fail "no fixtures/rc-floor"
 [ -f ~/.ssh/id_ed25519.pub ] || { mkdir -p ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519; } || fail "no SSH key"
@@ -35,12 +38,20 @@ want=$(cozy --version | awk '{print $2}')
 at=$(jq -r '.status.runtime // empty' "$OUT/show-tensord.json")
 [[ $at =~ ^[0-9]+\.[0-9]+ ]] || fail "$NAME reports no Runtime: ${at:-none}"
 minor=${BASH_REMATCH[0]}
+[ "$TO" != "$at" ] && [[ $TO == "$minor".* ]] || fail "runtime_to $TO must be a release of $NAME's minor $minor other than its own $at"
 sed -i "s/\"cozy-runtime[^\"]*\"/\"cozy-runtime>=$minor\"/" "$CODE/pyproject.toml" && grep -qF "\"cozy-runtime>=$minor\"" "$CODE/pyproject.toml" ||
   fail "the code's floor wasn't set to $NAME's Runtime minor $minor"
 
-# Its next service start has the short window; the one running keeps 15 minutes.
+# Its next service start has the short window; the one running keeps 15 minutes. The service reads the config.toml of its own
+# home, which need not be the SSH login's: its home is read from the running service's environment (else its user's entry).
 script=$(cat << EOS
-c=\$HOME/.cozy/config.toml
+p=; for d in /proc/[0-9]*; do [ "\$(cat \$d/comm 2> /dev/null)" = tensord ] && { p=\${d#/proc/}; break; }; done
+[ -n "\$p" ] || { echo "no tensord running"; exit 1; }
+h=\$(tr '\\0' '\\n' < /proc/\$p/environ | sed -n 's/^HOME=//p')
+[ -n "\$h" ] || h=\$(getent passwd "\$(stat -c %u /proc/\$p)" | cut -d: -f6)
+[ -n "\$h" ] || { echo "tensord \$p has no home"; exit 1; }
+echo "tensord \$p reads \$h/.cozy/config.toml; the SSH login is \$(id -un), home \$HOME"
+c=\$h/.cozy/config.toml
 mkdir -p "\${c%/*}" && touch "\$c" || exit 1
 awk '/^idle_seconds *=/ { next } { print } /^\\[machine\\]/ { print "idle_seconds = $IDLE"; put = 1 }
   END { if (!put) printf "\\n[machine]\\nidle_seconds = $IDLE\\n" }' "\$c" > "\$c.new" && mv "\$c.new" "\$c" || exit 1
@@ -54,6 +65,7 @@ for _ in 1 2 3 4 5 6; do
   sleep 10
 done
 grep -qx "idle_seconds = $IDLE" <<< "$said" || fail "$NAME's config.toml doesn't say idle_seconds = $IDLE: $(tail -c 300 <<< "$said")"
+say "$(grep -m1 '^tensord ' <<< "$said")"
 cozy machine keepalive "$NAME" > "$OUT/keepalive.txt" 2>&1 || fail "keepalive: $(tail -c 300 "$OUT/keepalive.txt")"
 d0=0
 for _ in 1 2 3 4 5 6; do
@@ -64,16 +76,17 @@ done
 say "$NAME (Runtime $at) started its clock $(date -u -d "@$(((d0 - 900000) / 1000))" +%T), deadline $(date -u -d "@$((d0 / 1000))" +%T) on a 15 min window; idle now for $((IDLE + 20)) s"
 sleep $((IDLE + 20))
 
-# The update by hand, a second behind it, and the run once the rental's own record shows an update unsettled.
+# The update by hand (a Runtime move), a second behind it (back), and the run once the rental's own record shows an update
+# unsettled.
 t0=$(date +%s%3N)
-(cozy --json machine update "$NAME" --mode dedicated -y > "$OUT/held-update.json" 2> "$OUT/held-update.err") 9>&- & UP=$!; BG="$BG $UP"
+(cozy --json machine update "$NAME" --runtime "$TO" -y > "$OUT/held-update.json" 2> "$OUT/held-update.err") 9>&- & UP=$!; BG="$BG $UP"
 for _ in $(seq 240); do
   cozy machine show "$NAME" --json > "$OUT/show-update.json" 2> /dev/null
   jq -e '[.jobs[]? | select(.kind == "update" and (.status == "queued" or .status == "in_progress"))] | length > 0' "$OUT/show-update.json" > /dev/null 2>&1 && break
   kill -0 "$UP" 2> /dev/null || break
   sleep 0.5
 done
-(cozy --json machine update "$NAME" --mode dedicated -y > "$OUT/queued-update.json" 2> "$OUT/queued-update.err") 9>&- & UQ=$!; BG="$BG $UQ"
+(cozy --json machine update "$NAME" --runtime "$at" -y > "$OUT/queued-update.json" 2> "$OUT/queued-update.err") 9>&- & UQ=$!; BG="$BG $UQ"
 say "the update went $(( $(date +%s%3N) - t0 )) ms ago, $NAME's clock $(( (t0 - d0 + 900000) / 1000 )) s old against a window of $IDLE s to come; the run is asked now"
 step held run "$CODE/runtime" --on "$NAME" text=held; held=$?
 wait "$UP"; up=$?; wait "$UQ"; uq=$?
