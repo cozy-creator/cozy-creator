@@ -2158,15 +2158,16 @@ impl Calcifer {
     /// A run held for its machine's update (`update`: its id, and whether the machine runs it) is its user's command (Paul: idle is no
     /// user command for 15 minutes). The machine's keepalive restarts its idle clock as the run is held, and again once the machine
     /// runs the update, which then restarts it at its end (TensorD's `update_ended`): the run goes there once it is updated, never
-    /// to a new rental (cl-1236). Once for each, as `kept` remembers.
+    /// to a new rental (cl-1236). Once for each, as `kept` remembers; taken is the machine running it, not queuing it (cl-1267).
     async fn keep_for(&self, machines: &machines::Machines, name: &str, id: &RunId, update: (RunId, bool), kept: &mut Option<(RunId, bool)>) {
         if kept.as_ref() == Some(&update) {
             return;
         }
-        if let Err(e) = Box::pin(machines.keepalive(name)).await {
-            warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message);
+        // One that fails (the machine unreachable a moment) is asked again at the run's next wake, not taken as said (cl-1267).
+        match Box::pin(machines.keepalive(name)).await {
+            Ok(_) => *kept = Some(update),
+            Err(e) => warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message),
         }
-        *kept = Some(update);
     }
 
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
@@ -2249,7 +2250,8 @@ impl Calcifer {
                         continue;
                     }
                     if let (Some(machines), Ok(Some(update))) = (self.machines(), self.store.update_going(&name)) {
-                        let taken = update.state == State::Accepted;
+                        // Taken once the machine runs it, not while it only queues it behind another (cl-1267).
+                        let taken = update.state == State::Accepted && update.machine_state.as_deref() != Some("queued");
                         self.keep_for(&machines, &name, id, (update.id, taken), &mut kept_for).await;
                     }
                     self.waiting(id, format!("waiting for {name} to finish updating"));
@@ -2366,7 +2368,7 @@ impl Calcifer {
                 match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        let taken = update.status == RunStatus::InProgress;
+                        let taken = update.status == RunStatus::InProgress && update.machine_state.as_deref() != Some("queued");
                         self.keep_for(&machines, &name, id, (update.id.clone(), taken), &mut kept_for).await;
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
                         tokio::select! {
