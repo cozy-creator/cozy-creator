@@ -297,6 +297,9 @@ export class CanvasStore {
   private pulling: { name: string; was?: Box; field?: Field; shown: Set<string> } | null = null
   /** The note offering Undo of each edit, and the one saying what Undo or Redo last did: each goes once that's moved on. */
   private offers = new Map<string, number>()
+  /** The failure said of each box since it was last asked to render: said once, though a read before its render's answer and one after both
+   *  find it (a render that fails before it is sent, as one whose input has no take does, cl-1192). */
+  private told = new Map<string, string>()
   private stepped = 0
   /** The tools known so far, by id. */
   readonly tools = signal<Map<string, Tool>>(new Map())
@@ -974,7 +977,10 @@ export class CanvasStore {
         // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
         // in a note that goes by itself (Paul, 11-16). One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) this.failed(asset.name, asset.failure)
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message) && this.told.get(asset.name) !== asset.failure.message) {
+          this.told.set(asset.name, asset.failure.message)
+          this.failed(asset.name, asset.failure)
+        }
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.noRoom?.line !== noRoom.get(asset.name)?.line) change.noRoom = noRoom.get(asset.name)
         if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
@@ -1574,6 +1580,7 @@ export class CanvasStore {
     const aimed = !id || this.aims.get(id) === take
     if (aimed && id) this.aims.delete(id)
     if (aimed && (asset.kind === "image" || asset.kind === "video")) this.watchTake(key, take, asset.kind === "video")
+    this.told.delete(key)
     this.patch(key, { waiting: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
     const settle = (asked?: number) => {
@@ -1623,6 +1630,7 @@ export class CanvasStore {
     if (!asset?.timeline || !this.projectId) return
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
+    this.told.delete(key)
     this.patch(key, { asked: NOT_YET })
     const once = `join-${crypto.randomUUID()}`
     this.act(key, {

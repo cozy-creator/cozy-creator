@@ -109,15 +109,19 @@ def main() -> int:
     def nexts(said: Said) -> list[str]:
         return [line for line in said.lines() if line.startswith("next: ")]
 
-    # A 4 s clip each shot shoots from, and a chain: film cuts shot_1 and shot_2, shot_1 reads a picture, mara.
-    clip = out / "render-look.mp4"
+    # A 4 s clip each shot shoots from, and a chain: film cuts shot_1 and shot_2, shot_1 reads a picture, mara. A shot's video is the clip
+    # it mentions, so `dusk`, another clip, makes a take of other bytes.
+    clip, dusk = out / "render-look.mp4", out / "render-dusk.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=navy:size=160x90:rate=24:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dusk)], check=True)
     made = cozy("new", str(project), "--unencrypted", at=out)
     if made.code != 0:
         print(json.dumps({"failures": ["new"], "seen": repr(made)}))
         return 1
     imported = subprocess.run([sys.executable, str(HERE.parent / "page.py"), "import", str(project), str(clip), "--name", "look"], capture_output=True, text=True)
     check("look_imported", imported.returncode == 0, imported.stderr[-500:])
+    other = subprocess.run([sys.executable, str(HERE.parent / "page.py"), "import", str(project), str(dusk), "--name", "dusk"], capture_output=True, text=True)
+    check("dusk_imported", other.returncode == 0, other.stderr[-500:])
     if imported.returncode != 0:
         # Every shot reads <look>: said here, not as the first take the rest can't make.
         print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
@@ -167,6 +171,12 @@ def main() -> int:
     check("json_ends_rendered", bool(events) and events[-1].get("type") == "rendered", events[-1:])
 
     # An input changed and not rendered: nothing calls it out of date, and film alone renders, cut on shot_2's newest take as it stands.
+    # Its newest take is of dusk; its words then go back to look, unrendered: rendering shot_2 again would make look's bytes.
+    idle()
+    api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <dusk>."}})
+    on_dusk = cozy("render", "shot_2", "--on", "local")
+    newest = cast(Json, cast(list[Json], row("shot_2").get("prefixes", [{}]))[-1].get("main") or {}).get("sha256")
+    check("shot_2_on_dusk", on_dusk.code == 0 and newest is not None and newest != row("look").get("sha256"), {"said": repr(on_dusk), "newest": newest})
     idle()
     api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <look>, at dusk."}})
     idle()
@@ -181,7 +191,9 @@ def main() -> int:
     cut = cast(list[Json], row("film").get("prefixes", []))
     check("only_the_named_renders", only.code == 0 and took(only, "film") == [films + 1] and took(only, "shot_2") == [] and took(only, "shot_1") == []
           and len(versions("shot_2")) == shots and "out of date" not in only.out + only.err, only)
-    check("read_as_it_stands", bool(cut) and f"shot_2 {shots}" in cast(list[str], cut[-1].get("from", [])), cut[-1:])
+    clips = cast(list[Json], cast(Json, cast(list[Json], cast(Json, cut[-1].get("timeline") or {}).get("tracks") or [{}])[0]).get("clips", [])) if cut else []
+    read = next((piece.get("sha256") for piece in clips if piece.get("clip") == "<shot_2>"), None)
+    check("read_as_it_stands", read is not None and read == newest, {"read": read, "newest": newest, "clips": clips})
 
     # Approved, then its words changed: it stands on its approved take, current, with no mark of what changed.
     api("/approve", "POST", {"name": "shot_1", "version": "1"})

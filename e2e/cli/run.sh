@@ -1025,8 +1025,8 @@ case $SHARD in
   projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
   projectdb-render) parts="agent_render logs" ;;
-  # The agent API alone (cl-956): its apply's next step and the render it names (cl-1192).
-  agent-api) parts="agent_api logs" ;;
+  # The agent API alone (cl-956), with the project part's fixtures: its apply's next step and the render it names (cl-1192).
+  projectdb-agent) parts="agent_api logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
   # A lock passing over a release no rental can install (cl-1011).
