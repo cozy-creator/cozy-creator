@@ -181,7 +181,7 @@ if [ -n "$IV_AFTER" ]; then
     --seams "$seams" --joins "$joins" --out "$OUT/iv-pictures" > iv-pictures.json 2> iv-pictures.err
   pics=$(cat iv-pictures.json)
   whole_lanes=$(jq -c '[.measurements.models[]?.lane] | unique' iv-whole.json 2> /dev/null)
-  log "incremental-video pictures: $(jq -c '{frames, after_vs_whole: (.after_vs_whole | del(.near)), segment_1: (.after_vs_before.segment_1 // {} | del(.near)), later: (.after_vs_before.later // {} | del(.near)), steps, sound}' <<< "$pics" 2> /dev/null || tail -c 300 iv-pictures.err)"
+  log "incremental-video pictures: $(jq -c '{frames, after_vs_whole: (.after_vs_whole | del(.near)), segment_1: (.after_vs_before.segment_1 // {} | del(.near)), later: (.after_vs_before.later // {} | del(.near)), steps, sound, brightness}' <<< "$pics" 2> /dev/null || tail -c 300 iv-pictures.err)"
   # A/V sync against BEFORE, which libavformat muxed: segment 1's sound within 1 ms of it, and every revision's tracks starting where
   # its take's do (a priming edit off by one AAC frame is 21-23 ms).
   expect iv-sync "$(jq -r --slurpfile iv iv.json '($iv[0].before.revisions[-1].probe.starts) as $want | if $want != null and ((.sound.segment_1.lag_ms // 99) | fabs) <= 1

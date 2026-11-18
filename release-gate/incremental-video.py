@@ -24,7 +24,9 @@ cl-1210 makes it (each segment decodes its windows once, the take their join), W
   picture at a join scores high; run 20751's was luma +3.7).
 - `sound`: each arm's sound at each seam, the largest sample-to-sample step within 5 ms of it over the arm's 99.9th-percentile step
   (a click scores past 1); its length against its pictures' (drift, ms); and over segment 1, the lag (ms) and correlation of AFTER's sound
-  against BEFORE's.
+  against BEFORE's. `butts`: within 20 ms of each join, the largest sample step, where (ms from the picture's join) and over that
+  percentile: sound butted with no crossfade jumps there, up to a few ms short of the picture's join.
+- `brightness`: each segment's mean luma, and at each seam the 3 frames before against the 3 after, both arms (AFTER at its joins too).
 - A strip a seam and a join (`strip-<frame>.png`): frames f-2..f+2, BEFORE over AFTER over WHOLE; `pair-<frame>.png`: AFTER's frames
   f-1 and f at full size and their difference eight times over; `sound-<frame>.png`: the second around it as a spectrogram, BEFORE over
   AFTER (a click is a vertical line).
@@ -262,6 +264,21 @@ def steps(path: str, seams: list[int]) -> list[dict[str, float]]:
     return [{"at": f, "ratio": round(float(change[max(0, f - 2):f + 2].max()) / median, 2)} for f in seams if 0 < f < len(change)]
 
 
+def brightness(path: str, marks: list[int]) -> dict[str, object]:
+    """Mean luma (0-255, as decoded) of each stretch between `marks`, and at each mark the 3 frames before against the 3 after."""
+    import numpy as np
+
+    luma = gray(path).mean(axis=(1, 2))
+    bounds = [0, *[f for f in marks if 0 < f < len(luma)], len(luma)]
+    stretches = [round(float(luma[a:b].mean()), 2) for a, b in zip(bounds, bounds[1:], strict=False) if b > a]
+    at = []
+    for f in marks:
+        if 3 <= f <= len(luma) - 3:
+            ahead, behind = float(luma[f - 3:f].mean()), float(luma[f:f + 3].mean())
+            at.append({"at": f, "before": round(ahead, 2), "after": round(behind, 2), "step": round(behind - ahead, 2)})
+    return {"segments": stretches, "joins": at}
+
+
 def sound(path: str):  # type: ignore[no-untyped-def]
     import numpy as np
 
@@ -278,6 +295,26 @@ def clicks(wave, seams: list[int]) -> list[dict[str, float | None]]:  # type: ig
         at = f * RATE // FPS
         near = step[max(0, at - RATE // 200):at + RATE // 200]
         out.append({"at": f, "click": round(float(near.max()) / norm, 2) if near.size else None})
+    return out
+
+
+def butts(wave, marks: list[int]) -> list[dict[str, float | None]]:  # type: ignore[no-untyped-def]
+    """Within 20 ms of each picture join, the largest sample-to-sample step (full scale 1), where it is (ms from the join), and that
+    over the arm's 99.9th-percentile step: a soundtrack butted with no crossfade jumps there, even short of the picture's join."""
+    import numpy as np
+
+    step = np.abs(np.diff(wave))
+    norm = max(float(np.percentile(step, 99.9)), 1e-6) if step.size else 1e-6
+    out: list[dict[str, float | None]] = []
+    for f in marks:
+        at = f * RATE // FPS
+        lo = max(0, at - RATE // 50)
+        near = step[lo:at + RATE // 50]
+        if not near.size:
+            out.append({"at": f, "step": None, "offset_ms": None, "ratio": None})
+            continue
+        i = int(near.argmax())
+        out.append({"at": f, "step": round(float(near[i]), 4), "offset_ms": round((lo + i - at) * 1000 / RATE, 2), "ratio": round(float(near[i]) / norm, 2)})
     return out
 
 
@@ -349,14 +386,20 @@ def pictures(before: str, after: str, whole: str, rest: list[str]) -> None:
         "frames": {"before": frames(before) if before != "-" else None, "after": count, "whole": frames(whole) if whole != "-" else None},
         "after_vs_whole": summary(psnr, ssim, seams + joins),
     }
-    sounds: dict[str, object] = {"after": {"clicks": clicks(two, sorted(set(seams + joins))), "drift_ms": round((len(two) / RATE - count / FPS) * 1000, 1)}}
+    sounds: dict[str, object] = {"after": {"clicks": clicks(two, sorted(set(seams + joins))), "drift_ms": round((len(two) / RATE - count / FPS) * 1000, 1),
+                                           "butts": butts(two, sorted(set(seams + joins)))}}
     moves: dict[str, object] = {"after": steps(after, seams), "after_joins": steps(after, joins)}
+    # Each segment's brightness and its step at each seam: today's segments darken one after another (cr-288; an H3 edit's 67, 66,
+    # 64, 60, 62 over a plate of 76).
+    lit: dict[str, object] = {"after": brightness(after, seams), "after_joins": brightness(after, joins)["joins"]}
+    report["brightness"] = lit
     if before != "-":
+        lit["before"] = brightness(before, seams)
         psnr2, ssim2 = compare(before, after, out, "after-before")
         one = sound(before)
         report["after_vs_before"] = {"segment_1": summary(psnr2, ssim2, joins, first), "later": summary(psnr2, ssim2, seams + joins, later)}
         moves["before"] = steps(before, seams)
-        sounds["before"] = {"clicks": clicks(one, seams), "drift_ms": round((len(one) / RATE - frames(before) / FPS) * 1000, 1)}
+        sounds["before"] = {"clicks": clicks(one, seams), "drift_ms": round((len(one) / RATE - frames(before) / FPS) * 1000, 1), "butts": butts(one, seams)}
         sounds["segment_1"] = dict(zip(("lag_ms", "corr"), lag(one[: first.stop * RATE // FPS], two[: first.stop * RATE // FPS]), strict=True))
     report["steps"], report["sound"] = moves, sounds
     shown = [path for path in (before, after, whole) if path != "-"]
