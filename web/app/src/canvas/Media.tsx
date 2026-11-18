@@ -4,7 +4,6 @@ import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, use
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
-import { holdMedia, playingHere } from "../api/events"
 import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
@@ -243,6 +242,26 @@ export function usePreview(video: boolean, initialHover?: PreviewHover) {
   }
 }
 
+/** `path`'s bytes in this page's memory while it's shown (Transport.media, cl-1215): the URL for a `<video>`'s src, holding no connection to
+ *  Calcifer as it plays, loops and seeks. Undefined until they're here; the last let go once the next is drawn in its place. */
+export function useHeldMedia(path: string | undefined): string | undefined {
+  const { client } = useConnection()
+  const [held, setHeld] = useState<{ path: string; url: string; release(): void } | null>(null)
+  useEffect(() => {
+    if (!path) return
+    let live = true
+    void client.transport.media(path).then((one) => {
+      if (live) setHeld({ path, ...one })
+      else one.release()
+    }, () => {})
+    return () => {
+      live = false
+    }
+  }, [client, path])
+  useEffect(() => () => held?.release(), [held])
+  return held && held.path === path ? held.url : undefined
+}
+
 /** Previews that couldn't play, by hash, and until when a hover doesn't ask again: a file still arriving has one soon. */
 const unpreviewable = new Map<string, number>()
 const PREVIEW_TRIES = 4
@@ -255,24 +274,17 @@ const PREVIEW_AGAIN_MS = 30_000
 export function Preview({ sha256 }: { sha256: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [src, setSrc] = useState<string>()
   const [playing, setPlaying] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState<string>()
   const element = useRef<HTMLVideoElement>(null)
   const retry = useRef<number | undefined>(undefined)
   useEffect(() => () => clearTimeout(retry.current), [])
   const projectId = store.projectId
-  useEffect(() => {
-    if (!projectId || (unpreviewable.get(sha256) ?? 0) > Date.now()) return
-    let live = true
-    const path = client.preview(projectId, sha256)
-    void client.transport.src(attempt ? `${path}&try=${attempt}` : path).then((url) => {
-      if (live) setSrc(url)
-    })
-    return () => {
-      live = false
-    }
-  }, [client, projectId, sha256, attempt])
+  const [wanted] = useState(() => (unpreviewable.get(sha256) ?? 0) <= Date.now())
+  const path = projectId && wanted ? client.preview(projectId, sha256) : undefined
+  const held = useHeldMedia(path && (attempt ? `${path}&try=${attempt}` : path))
+  const src = held !== failed ? held : undefined
   // Its bytes and decoder go with it, not when it's collected.
   useEffect(() => {
     const el = element.current
@@ -297,7 +309,7 @@ export function Preview({ sha256 }: { sha256: string }) {
       onPlaying={() => setPlaying(true)}
       onError={(event) => {
         if (event.currentTarget.error?.code === MediaError.MEDIA_ERR_NETWORK) return
-        setSrc(undefined)
+        setFailed(src)
         // Made on its first ask, or its file still arriving: asked again while the pointer rests, then not for a while.
         if (attempt + 1 < PREVIEW_TRIES) retry.current = window.setTimeout(() => setAttempt(attempt + 1), 1000 * 2 ** attempt)
         else unpreviewable.set(sha256, Date.now() + PREVIEW_AGAIN_MS)
@@ -362,7 +374,7 @@ export function viewable(view: ElementView | undefined): boolean {
   return shown.field === "image" ? !shown.absent && FILE.test(shown.path) : shown.field === "video" && Boolean(sourceOf(view, shown))
 }
 
-/** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
+/** Played on click, or at once with `auto`: a file Calcifer serves, by its API path, played from this page's memory (cl-1215), or one straight from a machine. */
 /** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own, and a file opens at once to show
  *  its own frame at its own size, not the poster's small one stretched over it (cl-1080; Paul, 11-16). */
 export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
@@ -434,7 +446,6 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   useEffect(() => {
     if (state !== "waiting") return
     const waiting = new AbortController()
-    let release: (() => void) | null = null
     let playback: Playback | null = null
     const failed = (reason: string) => {
       setWhy(reason)
@@ -443,27 +454,17 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     const stop = () => {
       waiting.abort()
       playback?.stop()
-      release?.()
-      const at = playingHere.indexOf(stop)
-      if (at >= 0) playingHere.splice(at, 1)
       setState((now) => (now === "unplayable" ? now : "idle"))
     }
     stopRef.current = stop
-    if (playingHere.length >= 2) playingHere[0]()
-    playingHere.push(stop)
-    // Another tab's newer play taking its slot: back to its poster, its Play there.
-    holdMedia(waiting.signal, () => stop())
-      .then(async (held) => {
-        // Stopped while its slot came (a third player here): given back, never kept by a player that isn't (cl-1208).
-        if (waiting.signal.aborted) return held()
-        release = held
-        const el = element.current
-        if (!el) return stop()
-        playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, waiting.signal, failed)
-        if (waiting.signal.aborted) {
-          playback.stop()
-          return held()
-        }
+    const el = element.current
+    if (!el) return stop()
+    // Every video in every tab plays at once: a file's bytes are in this page's memory, holding no connection to Calcifer (cl-1215; Paul,
+    // 11-18: "why can't I have all 3 videos playing at the same time?").
+    void (path !== undefined ? client.transport.play(path, el) : fromMachine(client, machine!, el, waiting.signal, failed))
+      .then((opened) => {
+        if (waiting.signal.aborted) return opened.stop()
+        playback = opened
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
@@ -1016,6 +1017,9 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
+  // A video revision's bytes in the page's memory (cl-1215); the one before let go once this one is drawn in its place.
+  const [held, setHeld] = useState<{ release(): void } | null>(null)
+  useEffect(() => () => held?.release(), [held])
   const element = useRef<HTMLVideoElement>(null)
   const resume = useRef<{ at: number; playing: boolean } | null>(null)
   // The revision its element plays: the newest may still be on its way.
@@ -1024,20 +1028,22 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
   useEffect(() => {
     if (!store.projectId) { setSrc(undefined); return }
     let live = true
-    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => {
-      if (!live) return
+    const path = client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)
+    void (glimpse.media === "video" ? client.transport.media(path) : client.transport.src(path).then((url) => ({ url, release() {} }))).then(({ url, release }) => {
+      if (!live) return release()
       // Where it is now, else where it last was: its element redrawn, or a revision before still on its way.
       const el = element.current
       const was = glimpsedAt.get(key)
       resume.current = el?.currentSrc && !resume.current ? { at: el.currentTime, playing: !el.paused }
         : was && was.rev < glimpse.rev ? { at: was.at, playing: was.playing } : resume.current
       playing.current = glimpse.rev
+      setHeld({ release })
       setSrc(url)
-    })
+    }, () => {})
     return () => {
       live = false
     }
-  }, [client, store.projectId, key, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  }, [client, store.projectId, key, glimpse.run, glimpse.output, glimpse.index, glimpse.rev, glimpse.media])
   // Its new revision starts where the last one was: set before its metadata, it is never read at 0 s in between.
   useLayoutEffect(() => {
     const el = element.current

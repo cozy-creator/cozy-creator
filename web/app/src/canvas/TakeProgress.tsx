@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
 import type { Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -8,6 +7,7 @@ import { called } from "../panels/machines/words"
 import { bytesKind, countsOf, phaseOf } from "../panels/runs/words"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
+import { useHeldMedia } from "./Media"
 import "./Takes.css"
 
 /** What a take on its way is doing, by name, and how far through that alone (Paul, 11-16, cl-1074): its download, then its render, each
@@ -79,14 +79,7 @@ export function TakeProgress({ view, run }: { view: ElementView; run?: number })
 function TileGlimpse({ glimpse }: { glimpse: NonNullable<ElementView["glimpse"]> }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [src, setSrc] = useState<string>()
-  useEffect(() => {
-    if (!store.projectId) { setSrc(undefined); return }
-    let live = true
-    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
-    return () => {
-      live = false
-    }
-  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  // Looping on its tile from the page's memory, holding no connection (cl-1215).
+  const src = useHeldMedia(store.projectId ? client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev) : undefined)
   return src ? <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" /> : null
 }

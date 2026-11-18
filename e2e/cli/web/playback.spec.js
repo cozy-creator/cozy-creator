@@ -4,8 +4,7 @@
 // player's clock, not what's on screen, and only on the page built into cozy, while his laptop serves the page from Vite (dev = true), React's
 // development build. So this reads the screen, on both pages: on the canvas a video's preview moves; in Focus a video plays (its clock runs
 // and its picture moves), an orbit's picture turns with a drag and moves with Spin, and both again after Focus goes from one to the other; and
-// a page that leaves Focus holds none of the two players it may hold across tabs. With three tabs, the newest play takes one of the two at
-// once, as his clash, waiting on his other tabs, never did.
+// every video in every window plays at once (web-windows, cl-1215).
 const { spawn } = require('child_process');
 const { closeSync, existsSync, openSync, readFileSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
@@ -31,8 +30,6 @@ const moved = (a, b) => a.filter((rgb, i) => Math.max(...rgb.map((value, c) => M
 const MOVES = 6;
 
 const clock = (video) => video.evaluate((el) => ({ at: el.currentTime, paused: el.paused, ready: el.readyState, seeking: el.seeking, src: Boolean(el.currentSrc) }));
-/** The players this page holds of the two its tabs share (api/events.ts's holdMedia). */
-const held = (page) => page.evaluate(async () => (await navigator.locks.query()).held.filter((lock) => lock.name.startsWith('cozy-media-')).length);
 
 async function made({ page, project, cli }) {
   await cli.json('machine', 'use', 'local');
@@ -75,7 +72,6 @@ async function plays(page) {
       expect((await clock(live)).at, 'its clock went on').toBeGreaterThan(then.at);
       await region.locator('.tl-transport').getByRole('button', { name: 'Pause', exact: true }).click();
       await leave(page);
-      await expect.poll(() => held(page), { message: 'Focus left: no player held' }).toBe(0);
     });
 
     await test.step(`${round}: in Focus an orbit turns on screen with a drag, and moves with Spin`, async () => {
@@ -105,7 +101,6 @@ async function plays(page) {
       await region.locator('.orbit-bar').getByRole('button', { name: 'Stop', exact: true }).click();
       await page.emulateMedia({ reducedMotion: null });
       await leave(page);
-      await expect.poll(() => held(page), { message: 'Focus left: no player held' }).toBe(0);
     });
   }
 }
@@ -113,74 +108,6 @@ async function plays(page) {
 test('playback', async ({ page, project, cli }) => {
   await made({ page, project, cli });
   await plays(page);
-});
-
-// Paul's laptop, with clash: his other tabs, in Focus on a video or an orbit, held both of the two players every tab of a Calcifer shares
-// (api/events.ts's holdMedia, of a browser's six connections to it), and the tab he looked at waited for one with nothing said, on its poster,
-// its Play doing nothing, through a reload. The newest play takes the slot taken longest ago, and the tab that had it goes back to its
-// poster, to play again on its next Play, or turn again on its next drag.
-test('playback: three tabs, the newest play wins', async ({ page, project, cli, context, signIn }) => {
-  await made({ page, project, cli });
-  const tabs = [page];
-  for (let i = 0; i < 2; i++) {
-    const tab = await context.newPage();
-    await signIn(tab, project.url());
-    await expect(tab.locator('.stage')).toBeVisible();
-    tabs.push(tab);
-  }
-  const live = (tab) => tab.getByRole('region', { name: 'Focused asset' }).locator('video.live');
-  const transport = (tab, name) => tab.getByRole('region', { name: 'Focused asset' }).locator('.tl-transport').getByRole('button', { name, exact: true });
-  const playsIn = async (tab, message) => {
-    await tab.bringToFront();
-    await transport(tab, 'Play').click();
-    await expect.poll(async () => (await live(tab).count()) ? (await clock(live(tab))).at : 0, { message, timeout: 20_000 }).toBeGreaterThan(0.5);
-    const box = await live(tab).boundingBox(), was = await look(tab, box);
-    await expect.poll(async () => moved(was, await look(tab, box)), { message: `${message}: its picture moves` }).toBeGreaterThanOrEqual(MOVES);
-  };
-  const turnsIn = async (tab, message) => {
-    await tab.bringToFront();
-    const region = tab.getByRole('region', { name: 'Focused asset' });
-    const orbit = region.getByRole('slider', { name: 'Turn', exact: true });
-    const box = await orbit.boundingBox(), y = box.y + box.height / 2;
-    const was = await look(tab, box), from = Number(await orbit.getAttribute('data-angle'));
-    await tab.mouse.move(box.x + box.width * 0.25, y);
-    await tab.mouse.down();
-    await tab.mouse.move(box.x + box.width * 0.5, y, { steps: 8 });
-    await tab.mouse.up();
-    await expect(region.locator('.orbit.ready'), `${message}: its video drawn`).toBeVisible({ timeout: 20_000 });
-    await expect.poll(async () => Number(await orbit.getAttribute('data-angle')), { message: `${message}: turned a quarter` }).toBeCloseTo((from + 90) % 360, -1);
-    await expect.poll(async () => moved(was, await look(tab, box)), { message: `${message}: its picture turns` }).toBeGreaterThanOrEqual(MOVES);
-  };
-
-  for (const tab of tabs) {
-    await tab.emulateMedia({ reducedMotion: 'reduce' });
-    for (const name of ['turned', 'walk']) await expect.poll(() => canvasVisible(tab, name)).toBe(true);
-    await fit(tab);
-  }
-  await test.step('tab 1 plays walk and tab 2 turns turned: both players taken', async () => {
-    await tabs[0].bringToFront();
-    await focus(tabs[0], 'walk');
-    await playsIn(tabs[0], 'tab 1 plays walk');
-    await tabs[1].bringToFront();
-    await focus(tabs[1], 'turned');
-    await turnsIn(tabs[1], 'tab 2 turns turned');
-    await expect.poll(() => held(tabs[2]), { message: 'two players held across the tabs' }).toBe(2);
-  });
-  await test.step("tab 3's Play plays at once, from tab 1, the one taken longest ago, which goes back to its poster", async () => {
-    await tabs[2].bringToFront();
-    await focus(tabs[2], 'walk');
-    await playsIn(tabs[2], "tab 3's Play plays");
-    await expect(live(tabs[0]), 'tab 1 let its player go').toHaveCount(0);
-    await expect(transport(tabs[0], 'Play'), "tab 1's transport says Play").toBeVisible();
-    expect(await held(tabs[2]), 'still two players held across the tabs').toBe(2);
-  });
-  await test.step("tab 1's Play plays again, from tab 2; tab 2's next drag turns it again, from tab 3", async () => {
-    await playsIn(tabs[0], "tab 1's Play plays again");
-    await expect(tabs[1].getByRole('region', { name: 'Focused asset' }).locator('.orbit.ready'), "tab 2's orbit let its player go").toHaveCount(0);
-    await turnsIn(tabs[1], "tab 2's drag turns it again");
-    await expect(live(tabs[2]), 'tab 3 let its player go').toHaveCount(0);
-    expect(await held(tabs[0]), 'still two players held across the tabs').toBe(2);
-  });
 });
 
 /** config.toml in dev mode, its page from this Vite (web/access.js's devConfig). */
