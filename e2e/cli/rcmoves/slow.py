@@ -10,6 +10,7 @@ Each listens on a free loopback port, writes it to stdout, and serves until kill
 import asyncio
 import sys
 import time
+from collections.abc import Awaitable, Callable
 
 CHUNK = 16 * 1024
 
@@ -34,7 +35,7 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, rate:
             pass
 
 
-async def listening(joined) -> None:
+async def listening(joined: Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]) -> None:
     server = await asyncio.start_server(joined, "127.0.0.1", 0)
     print(server.sockets[0].getsockname()[1], flush=True)
     async with server:
