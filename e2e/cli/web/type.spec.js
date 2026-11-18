@@ -120,7 +120,7 @@ test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }
 
   await test.step('two tabs typing in one box both keep theirs', async () => {
     const other = await context.newPage();
-    await signIn(other, project.url('assets/shared'));
+    await signIn(other, project.url('nodes/shared'));
     const there = other.getByRole('region', { name: 'Focused asset' }).getByRole('textbox', { name: 'Text', exact: true });
     const here = region.getByRole('textbox', { name: 'Text', exact: true });
     await expect(there).toHaveText(merged);

@@ -56,7 +56,7 @@ class Project {
     Object.assign(this, { api, id: opened.id, code: opened.code, path: opened.path, name: opened.name, passphrase, recovery: opened.recovery_secret });
   }
 
-  /** Its page, `/p/<code>`, or what's under it: `assets/A`, `projects`. */
+  /** Its page, `/p/<code>`, or what's under it: `nodes/A`, `projects`. */
   url(rest = '') { return `${this.api.origin}/p/${this.code}${rest ? `/${rest}` : ''}`; }
   /** Its API path, or what's under it: `/assets`, `/history`. */
   at(rest = '') { return `/v1/projects/${encodeURIComponent(this.id)}${rest}`; }

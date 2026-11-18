@@ -30,6 +30,9 @@ export function projectPath(project: Pick<ProjectAddress, "code">, rest = ""): s
   return `/p/${project.code}${rest && `/${rest.replace(/^\//, "")}`}`
 }
 
+/** A node open in Focus, under its project's page: `nodes/<name>` (cl-1209). */
+export const nodePath = (name: string) => `nodes/${encodeURIComponent(name)}`
+
 export function useProjectId(): string | null {
   return useContext(CurrentProject)?.id ?? null
 }

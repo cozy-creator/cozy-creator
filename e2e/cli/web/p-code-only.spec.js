@@ -94,7 +94,7 @@ test('p-code-only', { tag: '@solo' }, async ({ page, project, api, cli, removeAf
       for (const path of [`/projects/${project.id}`, `/projects/${plain.id}`, `/projects/${project.id}/assets/picture`, `/projects/${plain.id}/runs`, `/projects/${project.code}`]) {
         expect.soft((await api.raw('GET', path)).status, `GET ${path}`).toBe(404);
       }
-      for (const path of ['/projects', `/p/${project.code}`, `/p/${project.code}/assets/picture`, `/p/${plain.code}/projects`]) {
+      for (const path of ['/projects', `/p/${project.code}`, `/p/${project.code}/nodes/picture`, `/p/${plain.code}/projects`]) {
         expect.soft((await api.raw('GET', path)).status, `GET ${path}`).toBe(200);
       }
       // `/p/` takes a code alone: a project's id there opens nothing and goes nowhere.
@@ -118,8 +118,8 @@ test('p-code-only', { tag: '@solo' }, async ({ page, project, api, cli, removeAf
       await expect(drawer.locator('ul.list a').first()).toBeVisible();
       expect.soft(await linksAt('the Projects list'), 'the list links each').toEqual(expect.arrayContaining([`/p/${project.code}`, `/p/${plain.code}`]));
       await page.goto(project.url('assets'));
-      await expect(drawer.locator('a[href$="/assets/picture"]'), 'the picture is listed').toBeVisible({ timeout: 30_000 });
-      expect.soft(await linksAt('the Assets list'), 'its picture at its address').toContain(`/p/${project.code}/assets/picture`);
+      await expect(drawer.locator('a[href$="/nodes/picture"]'), 'the picture is listed').toBeVisible({ timeout: 30_000 });
+      expect.soft(await linksAt('the Assets list'), 'its picture at its address').toContain(`/p/${project.code}/nodes/picture`);
 
       // The take lands where the page isn't looking at it: its note's View opens it at its address.
       await page.goto(project.url());
@@ -128,7 +128,7 @@ test('p-code-only', { tag: '@solo' }, async ({ page, project, api, cli, removeAf
       const note = page.locator('[data-note]').filter({ hasText: /of shot is ready/ });
       await expect(note, 'the landed take is said').toBeVisible({ timeout: 180_000 });
       await note.getByRole('button', { name: 'View', exact: true }).click();
-      await expect(page, 'View opens it at its address').toHaveURL(`${api.origin}/p/${project.code}/assets/shot`);
+      await expect(page, 'View opens it at its address').toHaveURL(`${api.origin}/p/${project.code}/nodes/shot`);
       await linksAt('a box opened');
 
       await page.goto(project.url('runs'));

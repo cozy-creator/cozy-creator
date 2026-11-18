@@ -24,24 +24,27 @@ include!(concat!(env!("OUT_DIR"), "/page_files.rs"));
 /// WebAssembly, which `'wasm-unsafe-eval'` allows without allowing `eval`.
 pub(crate) const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/// The page's drawers, at `/` and on a project's page (`web/app/src/app/routes.tsx`). The Projects drawer is at `/projects`; a project's
+/// only address is `/p/<code>` (cl-1171).
+const DRAWERS: [&str; 11] =
+    ["runs", "runs/{number}", "machines", "machines/{name}", "packages", "packages/{name}", "models", "models/{name}", "account", "projects", "settings"];
+/// What only a project's page has: a node open in Focus (cl-1209), and its New run, Assets and Project settings drawers. Any other path
+/// under `/p/<code>` is no page address, and answers 404 as any unknown path does.
+const PROJECT: [&str; 4] = ["nodes/{name}", "new", "assets", "project-settings"];
+
 pub(crate) fn routes() -> Router<Arc<Api>> {
-    Router::new()
+    let mut page = Router::new()
         .route("/", get(index))
         .route("/__cozy_hmr", get(development::upgrade))
         .route("/assets/{file}", get(asset))
-        .route("/p/{code}", get(index))
-        .route("/p/{code}/{*rest}", get(index))
-        // The Projects drawer. A project's only address is `/p/<code>` (cl-1171).
-        .route("/projects", get(index))
-        .route("/runs", get(index))
-        .route("/runs/{number}", get(index))
-        .route("/machines", get(index))
-        .route("/machines/{name}", get(index))
-        .route("/packages", get(index))
-        .route("/packages/{name}", get(index))
-        .route("/models", get(index))
-        .route("/models/{name}", get(index))
-        .route("/account", get(index))
+        .route("/p/{code}", get(index));
+    for drawer in DRAWERS {
+        page = page.route(&format!("/{drawer}"), get(index)).route(&format!("/p/{{code}}/{drawer}"), get(index));
+    }
+    for own in PROJECT {
+        page = page.route(&format!("/p/{{code}}/{own}"), get(index));
+    }
+    page
 }
 
 fn not_built() -> Refusal {

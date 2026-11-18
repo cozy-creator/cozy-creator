@@ -81,7 +81,7 @@ const boxOf = (page, name) => page.locator(`[data-focused-asset=${JSON.stringify
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
-  if (!(await page.evaluate(() => location.pathname.includes('/assets/')))) return settled(page);
+  if (!(await page.evaluate(() => location.pathname.includes('/nodes/')))) return settled(page);
   await page.locator('.card.here').waitFor();
   await page.keyboard.press('Escape');
   await page.locator('.card.here').waitFor({ state: 'detached' });
@@ -113,7 +113,7 @@ async function renderOf(page, name) {
 
 async function openBox(page, name) {
   const card = page.locator(`[data-focused-asset=${JSON.stringify(name)}]:not([data-entering])`);
-  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) {
+  if (await page.evaluate((asked) => location.pathname.endsWith(`/nodes/${encodeURIComponent(asked)}`), name)) {
     await card.waitFor();
     return settled(page);
   }

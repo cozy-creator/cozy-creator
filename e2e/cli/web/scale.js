@@ -474,7 +474,7 @@ async function nativeMemory(base, folder) {
     await closeBox(page);
     await page.locator('.card.here').waitFor({ state: 'detached' });
     const state = await page.evaluate(() => ({ hash: location.pathname, opened: document.querySelectorAll('.card.here').length }));
-    if (state.opened || state.hash.includes('/assets/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
+    if (state.opened || state.hash.includes('/nodes/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
   };
   const measuredPan = async () => {
     await resting();

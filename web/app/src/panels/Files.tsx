@@ -5,7 +5,7 @@ import type { Asset } from "../api/calcifer"
 import { projectQuery } from "../api/queries"
 import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
 import { useConnection } from "../app/Connection"
-import { useProjectId, useTo } from "../app/Shell"
+import { nodePath, useProjectId, useTo } from "../app/project"
 import { downloadable } from "../canvas/Media"
 import { nodeState, StateDot } from "../canvas/StateDot"
 import { Menu, useMenuAt } from "../ui/Menu"
@@ -41,7 +41,7 @@ function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolea
   const saves = file && downloadable(file)
   return (
     <li className={`assetrow ${asset.starred ? "starred" : ""}`} data-asset={asset.name} onContextMenu={saves ? menu.open : undefined}>
-      <Link to={to(`assets/${encodeURIComponent(asset.name)}`)}>
+      <Link to={to(nodePath(asset.name))}>
         <span className="asset-thumb">{asset.sha256 && asset.kind !== "audio" && !asset.absent && <Picture id={id} sha256={asset.sha256} />}</span>
         <StateDot state={nodeState(asset, { waiting, failureShown: !asset.pinned })} unseen={asset.unseen?.length ?? 0} noun={asset.noun} />
         <span className="nm">{asset.name}</span>

@@ -182,6 +182,10 @@ only the guard's first three checks, and a link from another app opens it. With 
 Calcifer fetches the page's code and hot reload from that local Vite and serves them as its own, for its own account only; the
 browser talks to Calcifer alone.
 - `GET /`: its `index.html`.
+- Its addresses, each its `index.html` too: a project's `/p/{code}`, a node open in Focus `/p/{code}/nodes/{name}` (cl-1209), and the
+  drawers, at `/` and under `/p/{code}` (`runs`, `runs/{number}`, `machines`, `machines/{name}`, `packages`, `packages/{name}`, `models`,
+  `models/{name}`, `account`, `projects`, `settings`; and a project's `new`, `assets`, `project-settings`). Any other path is `404` as an
+  unknown route is, `/p/{code}/assets/{name}` among them (with `development_web`, Vite answers it).
 - `GET /assets/{file}`: a file named by its hash, `immutable`; `404 asset_not_found` for any other.
 
 Each answers `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:;

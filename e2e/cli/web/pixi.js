@@ -247,7 +247,7 @@ async function candidate(context, origin, directory) {
   const wander = await camera();
   p = await point('pixi_renamed'); await page.mouse.dblclick(p.x, p.y);
   await page.locator('[data-focused-asset="pixi_renamed"]:not([data-entering])').waitFor();
-  check('double_click_enters_focus', new URL(page.url()).pathname.endsWith('/assets/pixi_renamed'));
+  check('double_click_enters_focus', new URL(page.url()).pathname.endsWith('/nodes/pixi_renamed'));
   await page.keyboard.press('Escape');
   await page.locator('[data-focused-asset]').waitFor({ state: 'detached' }); await settled();
   const returned = await camera();
@@ -394,7 +394,7 @@ async function candidate(context, origin, directory) {
   p = await point('pixi_movie'); await page.mouse.click(p.x, p.y); await page.keyboard.press('Enter');
   await page.locator('[data-focused-asset="pixi_movie"]:not([data-entering])').waitFor(); await settled();
   const approvedAfter = await asset('pixi_movie');
-  check('enter_opens_current_mouse_selection', new URL(page.url()).pathname.endsWith('/assets/pixi_movie'));
+  check('enter_opens_current_mouse_selection', new URL(page.url()).pathname.endsWith('/nodes/pixi_movie'));
   check('enter_does_not_also_toggle_video_approval', approvalWrites.length === 0 && approvedAfter.approved === approvedBefore.approved && approvedAfter.pinned === approvedBefore.pinned, { approvalWrites, before: { approved: approvedBefore.approved, pinned: approvedBefore.pinned }, after: { approved: approvedAfter.approved, pinned: approvedAfter.pinned } });
   page.off('request', approval);
   await page.keyboard.press('Escape'); await page.locator('[data-focused-asset]').waitFor({ state: 'detached' }); await passive(); await settled();

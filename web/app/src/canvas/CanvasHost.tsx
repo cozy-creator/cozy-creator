@@ -9,7 +9,7 @@ import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
-import { Unopened, useGone, useTo } from "../app/project"
+import { nodePath, Unopened, useGone, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Canvas, Opened, ProjectViewPatch } from "../api/calcifer"
@@ -297,7 +297,7 @@ function Canvas({
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
-  const opened = useMatch("/p/:code/assets/:name")?.params.name
+  const opened = useMatch("/p/:code/nodes/:name")?.params.name
   const openedNow = useRef(opened)
   openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
@@ -411,7 +411,7 @@ function Canvas({
   )
   store.openHere = (name: string) => {
     writeHere(name)
-    navigate(to(`assets/${encodeURIComponent(name)}`))
+    navigate(to(nodePath(name)))
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
@@ -459,7 +459,7 @@ function Canvas({
   useEffect(() => {
     if (store.focusedName.get() === null && toolsBeforeFocus.current !== null) stopWriting()
   }, [store, focusedName, stopWriting])
-  store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
+  store.hereRenamed = (name) => navigate(to(nodePath(name)), { replace: true })
   const enterAddressed = useCallback((name: string) => {
     const current = openedNow.current
     const resolved = store.resolveName(name)
@@ -910,7 +910,7 @@ function Canvas({
       if (store.focusedName.get() === name) return
       flow.replaceNodes(flow.getNodes().map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
-      navigate(to(`assets/${encodeURIComponent(name)}`))
+      navigate(to(nodePath(name)))
     },
     [store, flow, writeHere, navigate, to],
   )

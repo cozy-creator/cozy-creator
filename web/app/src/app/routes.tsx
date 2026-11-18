@@ -66,8 +66,8 @@ export const theRouter = () =>
           path: "p/:code",
           children: [
             { index: true, element: null },
-            // A box opened: drawn over the canvas, by the canvas, which is always mounted.
-            { path: "assets/:name", element: null },
+            // A node open in Focus (`nodePath`): drawn over the canvas, by the canvas, which is always mounted.
+            { path: "nodes/:name", element: null },
             ...drawers,
             drawer("new", <NewRun />),
             drawer("assets", <Files />),

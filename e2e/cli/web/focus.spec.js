@@ -3,8 +3,16 @@
 // reload come back to Focus on the same box. A press that began inside Focus, the Assets drawer or a box's menu and was let go outside keeps
 // it open; one that began outside closes it (Paul, 11-12). In Focus the wheel zooms the picture, its own file (cl-1184), never the canvas,
 // with no blank frame. An edit's backdrop shows every picture its words use, as large as they can be (cl-949).
-const { test, expect, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
+// A node's address (cl-1209). Paul, 11-18, at /p/C24W6BXYG/assets/clash: "that should probably be /nodes/clash or something, rather than
+// /assets/ since these are nodes (I think)". A node in Focus is at /p/<code>/nodes/<name>, however it was opened: a double click, its row in
+// the Assets drawer, its address opened as it is. A rename takes its address with it. /p/<code>/assets/<name> is no address: 404 as any
+// unknown path, with no Focus and no redirect. A video in Focus plays (11-18 lesson: media-changes-prove-playback). Focus and its address
+// at 1440×900 and 1920×1080, paper and dark: $OUT/web/focus/node-address.
+const { mkdirSync, readFileSync } = require('fs');
+const { join } = require('path');
+const { test, expect, themed, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
 const { camera, drag, sameCamera } = require('./geometry');
+const { ffmpeg } = require('./hands');
 
 // A tall picture, fitted in Focus narrower than its thumbnail and still its own file (cl-1184); and Qwen's Image with a take beside it.
 const PICTURE = 'tall';
@@ -18,7 +26,7 @@ async function inFocus(page, project, name) {
   const region = page.getByRole('region', { name: 'Focused asset' });
   await expect(region).toHaveAttribute('data-focused-asset', name);
   await canvasIdle(page);
-  await expect.soft(page, `Focus is at ${name}'s address`).toHaveURL(project.url(`assets/${encodeURIComponent(name)}`));
+  await expect.soft(page, `Focus is at ${name}'s address`).toHaveURL(project.url(`nodes/${encodeURIComponent(name)}`));
   return region;
 }
 
@@ -243,5 +251,112 @@ test('focus', async ({ page, project, api }) => {
     const now = await behind();
     expect.soft(now.pictures.filter((one) => used.includes(one.key) && one.share < 0.12), `each a real share: ${JSON.stringify(now)}`).toEqual([]);
     expect.soft(now.covered, `together the frame: ${JSON.stringify(now)}`).toBeGreaterThanOrEqual(0.93);
+  });
+});
+
+const LOOKS = [
+  { width: 1440, height: 900, theme: 'paper' },
+  { width: 1440, height: 900, theme: 'dark' },
+  { width: 1920, height: 1080, theme: 'paper' },
+  { width: 1920, height: 1080, theme: 'dark' },
+];
+/** The address bar drawn over a screenshot, px: the page's own pixels under the address it's at, as a browser shows them. */
+const BAR = 44;
+
+test('focus: a node at its address', async ({ page, project, api, browser, context, guards }) => {
+  const shots = join(process.env.OUT, 'web', 'focus', 'node-address');
+  mkdirSync(shots, { recursive: true });
+  const clip = test.info().outputPath('walk.mp4');
+  ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=20', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', clip);
+  await project.import(readFileSync(clip), { name: 'walk', at: { x: 0, y: 0 } });
+  await project.import(png(90, 400, 300), { name: 'still', at: { x: 760, y: 0 } });
+  for (const name of ['walk', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  const region = page.getByRole('region', { name: 'Focused asset' });
+  const at = (name) => project.url(`nodes/${encodeURIComponent(name)}`);
+  const shoot = async (name, { width, height, theme }) => {
+    await api.call('PUT', project.at('/appearance'), { appearance: { theme } });
+    await themed(page, theme);
+    await page.setViewportSize({ width, height });
+    await canvasIdle(page);
+    const shot = await page.screenshot();
+    const dark = theme === 'dark';
+    const framed = await browser.newPage({ viewport: { width, height: height + BAR } });
+    const address = page.url().replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`);
+    await framed.setContent(`<body style="margin:0;background:${dark ? '#35363a' : '#dee1e6'}"><div style="height:${BAR}px;box-sizing:border-box;padding:7px 12px">`
+      + `<div style="height:30px;border-radius:15px;padding:0 16px;display:flex;align-items:center;font:15px system-ui,sans-serif;background:${dark ? '#202124' : '#fff'};color:${dark ? '#e8eaed' : '#202124'}">${address}</div></div>`
+      + `<img style="display:block" src="data:image/png;base64,${shot.toString('base64')}"></body>`);
+    await framed.locator('img').evaluate((img) => img.decode());
+    await framed.screenshot({ path: join(shots, `${name}-${width}x${height}-${theme}.png`) });
+    await framed.close();
+  };
+
+  await test.step('/p/<code>/assets/<name> is no address: 404, no Focus, no redirect', async () => {
+    const old = `/p/${project.code}/assets/walk`;
+    expect.soft((await api.raw('GET', old)).status, `GET ${old}`).toBe(404);
+    expect.soft((await api.raw('GET', `/p/${project.code}/nodes/walk`)).status, 'its address answers the page').toBe(200);
+    // Chrome says a page's 404 in its console.
+    guards.allow(new RegExp(`status of 404\\b.*${old}`));
+    const tab = await context.newPage();
+    const answer = await tab.goto(`${api.origin}${old}`);
+    expect.soft(answer?.status(), `${old} in a tab`).toBe(404);
+    expect.soft(await answer?.text(), 'Calcifer\'s unknown route, not the page').toContain('unknown_route');
+    await expect.soft(tab.getByRole('region', { name: 'Focused asset' }), 'no Focus').toHaveCount(0);
+    expect.soft(new URL(tab.url()).pathname, 'and no redirect').toBe(old);
+    await tab.close();
+  });
+
+  await test.step('a double click opens a node in Focus at /p/<code>/nodes/<name>', async () => {
+    await focus(page, 'walk');
+    await expect.soft(page).toHaveURL(at('walk'));
+    await page.keyboard.press('Escape');
+    await expect(region).toHaveCount(0);
+    await expect.soft(page, 'out of Focus, the canvas').toHaveURL(project.url());
+  });
+
+  await test.step('its address, opened as it is, lands in Focus on it, and its video plays there', async () => {
+    await page.goto(at('walk'));
+    await expect(region, 'in Focus on walk').toHaveAttribute('data-focused-asset', 'walk', { timeout: 30_000 });
+    await canvasIdle(page);
+    await expect.soft(page, 'at its address').toHaveURL(at('walk'));
+    const transport = region.locator('.tl-transport');
+    await expect(transport.getByRole('button', { name: 'Play', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await transport.getByRole('button', { name: 'Play', exact: true }).click();
+    const live = region.locator('video.live');
+    const clock = async () => (await live.count()) ? live.evaluate((el) => el.currentTime) : 0;
+    await expect.poll(clock, { message: 'its clock runs', timeout: 30_000 }).toBeGreaterThan(0.5);
+    const was = await clock();
+    await expect.poll(clock, { message: 'and goes on' }).toBeGreaterThan(was + 0.5);
+    await transport.getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect.poll(() => live.evaluate((el) => el.paused), { message: 'Pause pauses it' }).toBe(true);
+    for (const look of LOOKS) await shoot('walk', look);
+    await api.call('PUT', project.at('/appearance'), { appearance: null });
+    await themed(page, 'paper');
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.keyboard.press('Escape');
+    await expect(region).toHaveCount(0);
+  });
+
+  await test.step('a row of the Assets drawer opens its node at its address', async () => {
+    await page.locator('details.main-menu > summary').click();
+    await page.locator('details.main-menu nav').getByRole('link', { name: 'Assets', exact: true }).click();
+    const row = page.locator('aside.drawer li[data-asset="still"] a');
+    await expect(row).toHaveAttribute('href', `/p/${project.code}/nodes/still`, { timeout: 30_000 });
+    await row.click();
+    await expect(region, 'in Focus on still').toHaveAttribute('data-focused-asset', 'still');
+    await expect.soft(page, 'at its address').toHaveURL(at('still'));
+  });
+
+  await test.step('a rename takes its address with it, and a reload finds it there', async () => {
+    await region.getByRole('button', { name: 'Rename box', exact: true }).click();
+    const field = region.getByRole('textbox', { name: 'Name', exact: true });
+    await field.fill('still_life');
+    await field.press('Enter');
+    await expect(region, 'in Focus on its new name').toHaveAttribute('data-focused-asset', 'still_life');
+    await expect.soft(page, 'at its new address').toHaveURL(at('still_life'));
+    await page.reload();
+    await expect(region, 'a reload: in Focus on it').toHaveAttribute('data-focused-asset', 'still_life', { timeout: 30_000 });
+    await expect.soft(page).toHaveURL(at('still_life'));
+    await page.keyboard.press('Escape');
+    await expect(region).toHaveCount(0);
   });
 });
