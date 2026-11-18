@@ -995,6 +995,7 @@ async fn put_object(
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
     let private = crate::private_io::current();
+    let said = private.is_none();
     let writer = tokio::task::spawn_blocking(move || crate::private_io::within(private, || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
         let mut at = start;
         let mut writer = landing.writer()?;
@@ -1015,8 +1016,9 @@ async fn put_object(
         }
         drop(receiver);
         let (held, stored) = runs.objects.settled(&landing)?;
-        // What a guess carries ahead lands as a run's inputs do (cl-1123): said where it lands whole.
-        if stored {
+        // What a guess carries ahead lands as a run's inputs do (cl-1123): said where it lands whole. A project's own on this
+        // computer (`private`) leaves nothing of itself in this log, its digest and length least of all.
+        if stored && said {
             tracing::info!("objects: {named} landed whole in parts, {length} bytes");
         }
         wrote.map(|()| held)
