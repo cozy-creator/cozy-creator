@@ -119,6 +119,8 @@ test('shared-install', { tag: '@vault' }, async ({ page, project, api, cli, remo
       await page.keyboard.press('Escape');
       await page.goto(project.url(`machines/${encodeURIComponent(MACHINE)}`));
       await expect(page.locator('ul.queue')).toBeVisible();
+      // Shot once its run says what it waits on: a page just loaded lists the machine's install before its project's runs on it.
+      await page.locator('ul.queue [data-queue="run"] a.said.waits').first().waitFor({ timeout: 15_000 }).catch(() => {});
       await shoot('drawer', page.locator('ul.queue'));
       await page.goto(project.url());
       await expect(page.locator('.stage')).toBeVisible();
