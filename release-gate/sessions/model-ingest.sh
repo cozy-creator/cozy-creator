@@ -28,8 +28,9 @@
 #              checkpoint. `commit` names one already made: a rerun skips it.
 #   lanes      more lanes written from the bf16 commit by `recipes`' recipe (a Hub package, or ./<dir> of the checkout); an item
 #              {"lane", "from"} is written from that lane's upload instead
-#   prepare    {function, lane}: a package function (./<dir>/<fn>) run on the bf16 commit, `cozy run <fn> <commit> <model>`,
-#              whose commit in `lane` (bf16) the lanes are then written from (pan2's curve form)
+#   prepare    {function, lane, commit?}: a package function (./<dir>/<fn>) run on the bf16 commit, `cozy run <fn> <commit>
+#              <model>`, whose commit in `lane` (bf16) the lanes are then written from (pan2's curve form), and which is
+#              not itself released; `commit` names the one it made already: a rerun skips it
 #   call       {function, request, slot?, strength?, lanes?}: one run on each commit (of `lanes` only, if given) before
 #              publishing: a model as model.<slot>= (model), a LoRA as --lora <ref>,<strength> (1). ./<dir>/<fn> runs
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
@@ -58,7 +59,9 @@ elif [ "$SRC" != false ]; then
   say "runtime: ${RUNTIME##*/}"
 fi
 printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
-[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
+printf 'bf16                 commit _/x@sha256:%064d (bf16)\ncheckpoint           sha256:%064d\n' 8 9 > "$OUT/probe-run.txt"
+[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(made probe-run)" = "sha256:$(printf '%064d' 8)" ] &&
+  [ "$(runno probe)" = 17999 ] || fail "parsers"
 trees=("$PACKAGES"/*/)
 lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.checkpoints[]? | select(.checkpoint==$c) | .lane'; }
 # released <model> <release> <lane>: that release's checkpoint in that lane.
@@ -101,16 +104,16 @@ mirror() {
     commits+=("$c"); calls+=("$lane=$c"); up[$lane]=$c; [ "$lane" != "$from" ] || bf16=$c
     say "COMMIT $m $lane $c"
   done
-  # prepare {function, lane}: the package function that writes the lanes' source from the `from` upload, as
-  # `cozy run <function> <from commit> <model>` (pan2's curve form), in its lane (bf16).
+  # prepare {function, lane, commit?}: the package function that writes the lanes' source from the `from` upload, as
+  # `cozy run <function> <from commit> <model>` (pan2's curve form), in its lane (bf16); `commit`, the one it made already.
   fn=$(jq -r '.prepare.function // ""' <<<"$it")
   if [ -n "$fn" ]; then
-    lane=$(jq -r '.prepare.lane // "bf16"' <<<"$it")
+    lane=$(jq -r '.prepare.lane // "bf16"' <<<"$it") c=$(jq -r '.prepare.commit // ""' <<<"$it")
     [ -n "$bf16" ] || { say "MIRROR FAILED: $m: prepare needs a $from upload"; return 1; }
-    step "prepare-$slug" run "$fn" "$m@$bf16" "$m" --on "$NAME" &&
-      c=$(made "prepare-$slug") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: prepare $fn"; return 1; }
-    commits+=("$c"); calls+=("$lane=$c"); up[$lane]=$c; bf16=$c
-    say "COMMIT $m $lane $c (prepare $fn)"
+    [ -n "$c" ] || { step "prepare-$slug" run "$fn" "$m@$bf16" "$m" --on "$NAME" && c=$(made "prepare-$slug"); }
+    [ -n "$c" ] && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: prepare $fn (${c:-no commit})"; return 1; }
+    up[$lane]=$c; bf16=$c
+    say "PREPARED $m $lane $c ($fn): the lanes' source, not released"
   fi
   # A lane is written from the `from` upload, or `{"lane", "from"}` from that lane's upload (H3's int8 from its text
   # encoder on the release's int8 lane: the recipe keeps the DiTs' encoding and encodes the encoder alone).

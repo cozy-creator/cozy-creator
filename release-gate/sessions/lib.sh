@@ -53,9 +53,13 @@ wheel_from() {
   esac
   find "$1" -name '*manylinux*x86_64*.whl' | head -1
 }
-# made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
-# (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
-made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
+# made <name>: the checkpoint a step's upload, quantize or run made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…`
+# line, or a run's `<slot> commit <org/name>@sha256:…` one (a machine's own `checkpoint sha256:…` line names no model);
+# cozy 0.24's quantize says `commit`.
+made() {
+  awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} $2=="commit" && $3 ~ /@sha256:/ {c=$3}
+    END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"
+}
 # runno <name>: the run a step's output names last (its own, after a local source's sync run): its KEY-N.
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 # handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
