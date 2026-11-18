@@ -122,6 +122,12 @@ def rgb(path: str) -> Image.Image:
     return im.convert('RGB')
 
 
+def package(target: str) -> str:
+    """A run's package: `pkg/fn`, or `local/pkg/fn` for a checkout's (gate.sh `pkg`), as ledger.py reads it."""
+    parts = [p for p in target.split('@', 1)[0].split('/') if p not in ('local', '_', '.')]
+    return parts[-2] if len(parts) >= 2 else ''
+
+
 def dots(path: str) -> float:
     """The decoder's 2-px pattern, in 8-bit levels: each 2x2 sublattice position's mean of luminance minus its 4x4 box
     average, over the 2x2 blocks that are wholly opaque; their mean |offset|. A flat field or a transparent background
@@ -190,7 +196,7 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             flat = [round(float(np.asarray(im, dtype=np.float32).std()), 2) for im in ims]
             if flat and min(flat) < 2.0:
                 fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
-            if run and 'qwen-image-2' in run.target and f.endswith(('.png', '.webp')):
+            if run and package(run.target) == 'qwen-image-2' and f.endswith(('.png', '.webp')):
                 level = dots(f)
                 if level > DOTS:
                     fails.append(f'dots {name}: {os.path.basename(f)} carries a 2-px dot grid of {level:.2f} levels, over {DOTS}: '
