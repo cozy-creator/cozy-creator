@@ -5,7 +5,8 @@
 #   role=worker (rent): the cheapest pod with SSH; its TensorD becomes this session's cozy; an SSH session stays open on it; a function
 #     steps on it for `seconds` (fixtures/rentals-view/cl1193_steps.py); then a keepalive and the SSH session alone hold it for `hold_s`.
 #   role=reader ($0): another computer of the account. It finds the worker's pod in its listing (a rental it didn't order, running
-#     cl1193), and reads it as Paul's page does, while the run steps and again while only the SSH session and the keepalive hold it:
+#     cl1193), sends a run of its own open project there, and reads it as Paul's page does, the pod next to local as it works for that
+#     project, while the runs step and again while only the SSH session and the keepalive hold it:
 #     `cozy machine ls`/`show`, and the page in Chrome (the tabs top right, the machine's activity, Machines, the machine) at 1440x900
 #     and 1920x1080 (fixtures/rentals-view/look.js).
 # Params: role (worker|reader); seconds (worker, 360), hold_s (worker, 300); wait_s (reader, 1800).
@@ -55,7 +56,7 @@ reader() {
   for tool in jq node npm google-chrome; do command -v "$tool" > /dev/null || fail "no $tool"; done
   PW=$(mktemp -d)
   npm install -s --prefix "$PW" playwright-core@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install playwright-core: $(tail -c 300 "$OUT/npm.log")"
-  cozy --json open > "$OUT/open.txt" 2>&1 || fail "cozy --json open: $(tail -c 300 "$OUT/open.txt")"
+  (cd "$RUN_PROJECT" && cozy --json open) > "$OUT/open.txt" 2>&1 || fail "cozy --json open: $(tail -c 300 "$OUT/open.txt")"
   LINK=$(jq -r .url "$OUT/open.txt")
   until=$(($(date +%s) + wait)) W=''
   while [ -z "$W" ]; do
@@ -68,7 +69,13 @@ reader() {
   say "the worker's pod, which another computer ordered: $W"
 
   held '[.status.others[]? | .step] | any(. > 1)' || check "its run never said a step"
+  # A run of this computer's open project there too: the machine works for it, so it comes next to local (Paul, 11-17: "machines that
+  # are working on our current project ... should be to the left and more visible (next to local)").
+  (cd "$RUN_PROJECT" && cozy run "$FIX/cl1193_steps.py" steps:=60 seconds:=2 --on "$W") > "$OUT/own-run.txt" 2>&1 & BG="$BG $!"
+  held '[.status.runs[]? | .run.project_id // empty] | length > 0' || check "this computer's run never reached its pod"
   shown running
+  jq -e --arg w "$W" '[.seen | to_entries[] | select(.key | endswith(" tabs")) | .value | test("^local\\s+" + $w + "\\b")] | (length > 0 and all)' \
+    "$OUT/running-page.json" > /dev/null || check "running: the machine working for the open project isn't next to local: $(jq -c '[.seen | to_entries[] | select(.key | endswith(" tabs")) | .value]' "$OUT/running-page.json")"
   jq -e '.ordered == false and .running >= 1 and .status.ssh_sessions >= 1
     and any(.status.others[]; ((.function // "") | test("cl1193")) and .running and (.client // "") != "" and .step > 0 and .steps > 0)' \
     "$OUT/running-show.json" > /dev/null || check "running: the listing doesn't say its run, its computer and step, and the SSH session: $(jq -c '{ordered, running, queued, status: .status | {others, ssh_sessions, kept_alive_ms}}' "$OUT/running-show.json")"

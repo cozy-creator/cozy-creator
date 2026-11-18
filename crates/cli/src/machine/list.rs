@@ -500,7 +500,7 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     fields.extend(status.runs.iter().map(live_run));
     fields.extend(status.others.iter().map(other_run));
     if status.ssh_sessions > 0 {
-        fields.push(("ssh".into(), format!("{} session{} open", status.ssh_sessions, if status.ssh_sessions == 1 { "" } else { "s" })));
+        fields.push(("ssh sessions".into(), format!("{} open", status.ssh_sessions)));
     }
     if let Some(at) = status.kept_alive_ms {
         fields.push(("kept alive".into(), format!("by a keepalive {} ago", clock(now_ms() - at))));
