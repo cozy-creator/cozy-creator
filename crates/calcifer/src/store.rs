@@ -2343,6 +2343,18 @@ impl Store {
         })
     }
 
+    /// `machine`'s update yet to end, whoever asked it, if one is.
+    pub(crate) fn update_going(&self, machine: &str) -> Result<Option<RunRow>> {
+        self.read(|db| {
+            let id = db.query_row(
+                "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled' ORDER BY number LIMIT 1",
+                params![machine],
+                |r| r.get::<_, String>(0),
+            );
+            id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
+        })
+    }
+
     /// `machine`'s move to the open RC yet to end, if one is.
     pub(crate) fn moving(&self, machine: &str) -> Result<Option<RunRow>> {
         self.read(|db| {

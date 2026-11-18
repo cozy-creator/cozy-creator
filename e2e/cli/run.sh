@@ -898,6 +898,8 @@ case $SHARD in
   hold-wins) parts="hold_wins logs" ;;
   # A dev home's moves to the open RC never hold up work: none from a request, and a pending one yields to a render (cl-1201).
   rc-moves) parts="rc_moves logs" ;;
+  # A render held behind a rental's update keeps it past its idle deadline (cl-1236): by dispatch.
+  rc-held) parts="rc_held_alone logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
