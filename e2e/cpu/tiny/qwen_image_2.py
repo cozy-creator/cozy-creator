@@ -144,6 +144,8 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 _FOX = _shared.picture("fox", 320, 256)
 #: 1 MP, the least Qwen-Image-2.1 serves, at its fixed 40 steps.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 1, "prompt_upsampling": False}
+#: The enhancer runs as upstream's, to its full token budget, which tiny weights spend whole (4-7 min a cell on CPU): only
+#: `upsampled` and `edit-upsampled` take it; the `image` cells test their bindings.
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -155,19 +157,21 @@ CELLS: list[Cell] = [
      "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL, "prompt_upsampling": True},
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
-                                                  "megapixels": 1}},
+                                                  "megapixels": 1, "prompt_upsampling": False}},
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
      "check": size(1024, 1024)},
     {"entry": "generate_turbo", "name": "edit", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7,
-                                                   "megapixels": 1}},
+                                                   "megapixels": 1, "prompt_upsampling": False}},
     # The `vae` slot bound to another VAE: the same latents as `image/turbo`, another decoder's picture (se-131).
-    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
+                                                 "prompt_upsampling": False},
      "models": {"image.models.vae": VAE}},
     # The `model` and `text_encoder` slots bound to models of those parts alone, the VAE the default's: the same weights as
     # `image/turbo`'s, composed at run time, so the same picture (xs-192).
-    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
+                                                   "prompt_upsampling": False},
      "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER_PART}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
