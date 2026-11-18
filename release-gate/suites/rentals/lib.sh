@@ -78,10 +78,11 @@ rental_idle_through_updates() {
 # pod stops itself at its provider, as vast stopped hougetsu for its balance: a dev machine (`dev = true` in its config.toml)
 # whose service takes SIGUSR2 asks its provider to stop it with the credential only it holds (`stop_when_asked`; an exited
 # container is started again by vast and RunPod alike). The Hub confirms the stop with a second read and releases it
-# (th-404); Calcifer says `ending: vast stopped it`. Red before th-404: offline until 15 minutes after its last reach. A
+# (th-404) and destroys it within 5 minutes, never shown offline (`ending: vast stopped it` while it closes). Red before
+# th-404: offline until 15 minutes after its last reach. A
 # candidate TensorD ($TDF) goes on the pod first.
 rental_stop_closes() {
-  local p=${1:-vast} m r t0 st seen=() offline= ending=
+  local p=${1:-vast} m r t0 st seen=() offline= closed=
   [ -s "$RT/pod-ssh" ] || ssh-keygen -q -t ed25519 -N '' -C rentals-stop -f "$RT/pod-ssh"
   # vast without `cpu` now (as suite hub found on 11-10): its cheapest GPUs in turn.
   local sku
@@ -119,8 +120,7 @@ rental_stop_closes() {
   while (( $(date +%s) - t0 < 600 )); do
     st=$(show "$m" state); [ -z "$(show "$m" offline)" ] || offline=$(show "$m" offline)
     [ "${seen[-1]:-}" = "$st" ] || seen+=("$st")
-    { [ "$st" = ending ] || [ "$st" = ended ]; } && [ -z "$ending" ] && ending=$(( $(date +%s) - t0 ))
-    gone "$r" && break
+    gone "$r" && { closed=$(( $(date +%s) - t0 )); break; }
     sleep 15
   done
   local said="states ${seen[*]}"
@@ -128,10 +128,11 @@ rental_stop_closes() {
     expect "rental-stop-closes" FAIL "$m was shown offline ($offline); $said"
   elif ! gone "$r"; then
     expect "rental-stop-closes" FAIL "$m not released and gone 10 min after its provider stopped it; $said"
-  elif [ -z "$ending" ] || (( ending > 300 )); then
-    expect "rental-stop-closes" FAIL "$m was ending only ${ending:-never} s after its provider stopped it; $said"
+  elif (( closed > 300 )); then
+    expect "rental-stop-closes" FAIL "$m released and gone only $closed s after its provider stopped it; $said"
   else
-    expect "rental-stop-closes" PASS "$m ending ${ending} s after its provider stopped it, released and gone at $p; $said"
+    # `ending` may be too short to be seen between reads: kronii's took 10 s (11-18).
+    expect "rental-stop-closes" PASS "$m released and gone at $p $closed s after its provider stopped it, never offline; $said"
   fi
   gone "$r" || "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
 }
