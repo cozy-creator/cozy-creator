@@ -27,7 +27,7 @@ use api::{calcifer::On, config::Origin, error::Error, machine as v1};
 use serde_json::{Map, Value};
 use tokio::sync::watch;
 
-use super::{Asking, Project, host::{Host, Renderer}, job_of};
+use super::{Asking, Project, host::{Host, Package, Renderer}, job_and_package};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again (cl-1123: a prediction is only as good as how early it starts). A project
@@ -359,9 +359,10 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
 async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking, stages: &Mutex<crate::stages::Stages>) -> Guessed {
     let began = std::time::Instant::now();
     let (name, with, kind, made, media) = boxed;
-    let read = job_of(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
-    let mut job = match tokio::time::timeout(READ, read).await {
-        Ok(Ok(job)) => job,
+    let first = on.first().cloned();
+    let read = job_and_package(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
+    let (mut job, package) = match tokio::time::timeout(READ, read).await {
+        Ok(Ok(read)) => read,
         Ok(Err(why)) => return Guessed::Unknown(Cow::Owned(format!("its quote couldn't be read: {why}"))),
         Err(_) => return Guessed::Unknown(Cow::Borrowed("its quote didn't answer in time")),
     };
@@ -387,7 +388,9 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         })
         .collect();
     let placed = crate::prefetch::Placed { finish_ms: chosen.finish_at_ms, others };
-    let (item, function, key) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking).await {
+    // The package its quote read, where that was read for this machine; else read for it.
+    let read = (first.as_ref() == Some(&chosen.machine)).then_some(package);
+    let (item, function, key) = match item(api, host, project, hub, (name.as_str(), with.as_str(), kind.as_str(), &made), &chosen.machine, asking, read).await {
         Ok(Ok(item)) => item,
         Ok(Err(why)) => return Guessed::Nothing(why),
         Err(why) => return Guessed::Unknown(Cow::Owned(format!("its request couldn't be read: {}", why.message))),
@@ -413,9 +416,13 @@ fn draft(with: &str, made: &Map<String, Value>) -> u64 {
 /// draft bound, its draft's seed); and the function, as its row says it. Its package is read statically, nothing installed to read
 /// it (`Host::foreseen`). Err(why) inside: none, as its package makes nothing of the kind, or it is an encrypted project's local
 /// code, which goes with the run that calls it.
-async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking) -> Result<Result<(v1::Predicted, String, u64), Cow<'static, str>>, Error> {
+#[allow(clippy::too_many_arguments)]
+async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, with, kind, made): (&str, &str, &str, &Map<String, Value>), machine: &On, asking: &Asking, read: Option<Package>) -> Result<Result<(v1::Predicted, String, u64), Cow<'static, str>>, Error> {
     let dir = &project.folder.dir;
-    let package = crate::stages::stage("package", host.foreseen(hub, with, dir, std::slice::from_ref(machine))).await?;
+    let package = match read {
+        Some(package) => package,
+        None => crate::stages::stage("package", host.foreseen(hub, with, dir, std::slice::from_ref(machine))).await?,
+    };
     let Some(renderer) = package.first_making(kind) else { return Ok(Err(Cow::Owned(format!("{} makes no {kind}", package.name)))) };
     let source = match &renderer.local {
         None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: recorded(api, project, hub, &renderer)?, ..Default::default() }),
