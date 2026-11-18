@@ -51,18 +51,22 @@ rental_self_case() {
   echo "rental_self $case: $(grep -c '"kind": "end"' "$dir/events.jsonl" 2> /dev/null) provider asks, $(grep -c '"kind": "check_in"' "$dir/events.jsonl" 2> /dev/null) check-ins, taken: $(grep -c '"kind": "taken"' "$dir/events.jsonl" 2> /dev/null)"
 }
 
-# slow_link (th-405, cl-1213). Paul, 11-18, after aono, an RTX 4090 on vast, pulled its models at 14.7 MB/s: "damn that's really
-# slow; make sure we don't run on slow hosts like that again please". A rental holds its first download to the floor its lease
-# names: under it for the lease's window, past its warm-up, it tells its Hub once and reads whether the Hub is placing it on another
-# host; over it, it tells the pace its link sustained, once 1 GiB is in. Each case is a stood-in rental (as holdwins.sh's: `cozy
-# machine serve --rental` on this runner, its stood-in Hub granting this computer's key) whose lease names 120 Mbit/s after 2 s over
-# 6 s. Added here as a machine, it installs pagebox's 1.6 GB from the isolated Hub's store through one bottleneck (tc on the
-# loopback, 1500-byte packets, as ondemand_share's).
+# slow_link (th-405, cl-1213). Paul, 11-18: "if we get a machine, and it's below 100MB/s don't necessarily end it (maybe end it if
+# it's way below that for a good while and not coming back, especially if it's a new machine that we just got, but other than that
+# it's fine--never end a machine with lots of stuff on its hard-drive already because its download link takes a crap later on.)"
+# A new rental holds its first download to the slow-link rule its lease names: under it for the rule's window with no recovery,
+# past its warm-up and with little on its disk, it tells its Hub once and reads whether the Hub is placing it on another host;
+# otherwise it tells the pace its link sustained, once 1 GiB is in. Each case is a stood-in rental (as holdwins.sh's: `cozy machine
+# serve --rental` on this runner, its stood-in Hub granting this computer's key) whose lease names 120 Mbit/s after 2 s over 6 s,
+# 3 s to recover, within 10 min, under 8 GiB landed. Added here as a machine, it installs pagebox's 1.6 GB from the isolated Hub's
+# store through one bottleneck (tc on the loopback, 1500-byte packets, as ondemand_share's).
 #   slow    60 Mbit/s: one `slow_link`, the link's pace over its window, answered `replacing`, which its log says; no `download`.
-#   paced   240 Mbit/s: no `slow_link`; one `download`, 1 GiB or more at the link's pace.
-# On rc/0.27.0 the slow rental told its Hub nothing until its install ended, 234 s in: one `download` of the whole, 58 Mbit/s.
+#   landed  100 Mbit/s, its lease allowing 16 MiB landed: no `slow_link`, its log saying what it holds; one `download`.
+#   paced   400 Mbit/s: no `slow_link`; one `download`, 1 GiB or more at the link's pace.
+# Before (rc/0.27.0, the lease's 800 Mbit/s floor over 30 s): any rental's first download under the floor was reported slow,
+# whatever it held.
 slow_link() {
-step "a rental whose first download stays under its lease's floor tells its Hub once; over it, the pace it sustained (th-405)"
+step "a new rental whose first download stays far under its lease's rule tells its Hub once; any other, the pace it sustained (th-405)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "slow link: a fresh GitHub Linux runner only"; return 0; }
 local key minio
 key=$(cozy --json machine show local | jq -r '.controller_key // empty')
@@ -70,16 +74,21 @@ key=$(cozy --json machine show local | jq -r '.controller_key // empty')
 minio=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1) || true
 [ -n "$minio" ] || { check "slow link: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return; }
 slow_link_case slow 60 "$key" "$minio"
-slow_link_case paced 240 "$key" "$minio"
+slow_link_case landed 100 "$key" "$minio"
+slow_link_case paced 400 "$key" "$minio"
 }
 
-# slow_link_case <slow|paced> <Mbit/s> <controller key> <store port>: one rental through a link that wide, in $OUT/slowlink-<case>.
+# slow_link_case <slow|landed|paced> <Mbit/s> <controller key> <store port>: one rental through a link that wide, in
+# $OUT/slowlink-<case>.
 slow_link_case() {
   local case=$1 wide=$2 d=$OUT/slowlink-$1 name=stand-$1 standin pid='' install='' hub provider ca port fp code line began left=20
+  local landed=8589934592
+  [ "$case" != landed ] || landed=16777216
   rm -rf "$d" && mkdir -p "$d/home/.cozy" "$d/root" || { check "slow link $case: $d not made"; return; }
   printf '[machine]\nidle_seconds = 3600\n' > "$d/home/.cozy/config.toml"
   printf '%s\n' "$3" > "$d/keys"
-  echo '{"mbps": 120, "warmup_seconds": 2, "window_seconds": 6}' > "$d/link_floor.json"
+  echo "{\"mbps\": 120, \"warmup_seconds\": 2, \"window_seconds\": 6, \"recover_seconds\": 3, \"within_seconds\": 600, \"landed_bytes_max\": $landed}" \
+    > "$d/slow_link.json"
   echo "$wide" > "$d/link_mbit"
   python3 "$here_rentalself/rentalself/standin.py" serve "$d" held > "$d/standin.log" 2>&1 & standin=$!
   slow_link_quit() {
@@ -120,8 +129,8 @@ slow_link_case() {
     || { check "slow link $case: the link wasn't made ${wide} Mbit/s wide"; slow_link_quit; return; }
   began=$(date +%s)
   cozy --json model install lilylilith/pagebox --on "$name" > "$d/install.ndjson" 2>&1 & install=$!
-  # Its word to its Hub: 8 s into a slow download; 1 GiB into a paced one, 36 s at 240 Mbit/s, or as its download ends. One that
-  # says nothing is given 4 min, or 10 s past its install's end.
+  # Its word to its Hub: 8 s into a slow download; 1 GiB into any other, 86 s at 100 Mbit/s, 22 s at 400, or as its download
+  # ends. One that says nothing is given 4 min, or 10 s past its install's end.
   for _ in $(seq 480); do
     grep -q '"kind": "speed"' "$d/events.jsonl" 2> /dev/null && break
     kill -0 "$install" 2> /dev/null || left=$((left - 1))

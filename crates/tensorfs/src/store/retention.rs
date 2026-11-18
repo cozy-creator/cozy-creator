@@ -542,6 +542,18 @@ impl Store {
         Ok(Room { lanes, spare, lengths })
     }
 
+    /// The bytes on this store's disk: its objects and what cut fetches left to resume, taken whole (th-405: a machine that
+    /// holds models is never ended for its link).
+    pub fn landed(&self) -> Result<u64> {
+        let mut landed: u64 = self.objects()?.values().map(|(length, _)| length).sum();
+        for entry in list(&self.root.join("tmp"))? {
+            if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
+                landed += fs::metadata(&entry).map(|m| platform::durable::allocated(&m)).unwrap_or(0);
+            }
+        }
+        Ok(landed)
+    }
+
     /// When a collection last removed an object (`stamp_eviction`), in any process: what was
     /// known to be here may not be since.
     pub fn evicted_at(&self) -> Option<SystemTime> {

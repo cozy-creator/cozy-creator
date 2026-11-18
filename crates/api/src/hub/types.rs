@@ -154,10 +154,10 @@ pub struct WorkerAuthorizedKeys {
     #[serde(deserialize_with = "null_is_empty")]
     pub authorized_keys: Vec<String>,
     pub lease_seconds: i64,
-    /// What the machine holds its first download to (th-405). None from a Hub before it, or one this can't read: the keys
-    /// stand all the same.
+    /// When the machine reports its link slow (th-405). None from a Hub before it, or one this can't read: the keys stand
+    /// all the same.
     #[serde(deserialize_with = "readable")]
-    pub link_floor: Option<WorkerLinkFloor>,
+    pub slow_link: Option<WorkerSlowLinkRule>,
 }
 
 /// A value this client can read, else none: never a reason to refuse the document it is in.
@@ -165,13 +165,17 @@ fn readable<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> 
     Ok(Option::<Value>::deserialize(d)?.and_then(|value| serde_json::from_value(value).ok()))
 }
 
-/// The floor a rental's first download is held to (th-405): past its first `warmup_seconds`, the link's pace at `mbps` or
-/// more. Under it for `window_seconds`, the machine reports a [`WorkerSlowLink`].
+/// When a rental's machine reports its link slow (th-405), which replaces its host: its first transfer, within
+/// `within_seconds` of its lease and with under `landed_bytes_max` on its disk, past its first `warmup_seconds`, under `mbps`
+/// for `window_seconds` with no `recover_seconds` back at `mbps` or more. Otherwise it reports the transfer as a download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct WorkerLinkFloor {
+pub struct WorkerSlowLinkRule {
     pub mbps: u32,
     pub warmup_seconds: u32,
     pub window_seconds: u32,
+    pub recover_seconds: u32,
+    pub within_seconds: u32,
+    pub landed_bytes_max: u64,
 }
 
 /// What a rental's machine measured of its own host (`POST /v1/worker/rental/speed`).
@@ -198,7 +202,7 @@ pub struct WorkerDownload {
     pub seconds: f64,
 }
 
-/// A first download's stretch under the lease's [`WorkerLinkFloor`]: what the link carried over its seconds.
+/// A first download's stretch under the lease's [`WorkerSlowLinkRule`]: what the link carried over its seconds.
 #[derive(Debug, Serialize)]
 pub struct WorkerSlowLink {
     pub bytes: u64,

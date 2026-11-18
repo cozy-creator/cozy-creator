@@ -82,8 +82,8 @@ impl Hub {
         })
     }
 
-    /// The rental's current authorized keys and their lease, and the floor it holds its first download to.
-    pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration, Option<types::WorkerLinkFloor>), Refusal> {
+    /// The rental's current authorized keys and their lease, and when it reports its link slow.
+    pub(crate) async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration, Option<types::WorkerSlowLinkRule>), Refusal> {
         let answer = self.client.get_worker_authorized_keys().await;
         let document = self.heard(answer)?;
         let invalid = || Refusal::Transport("rental authority metadata is invalid".into(), None);
@@ -105,7 +105,7 @@ impl Hub {
                 key
             })
             .collect();
-        Ok((keys, Duration::from_secs(document.lease_seconds as u64), document.link_floor))
+        Ok((keys, Duration::from_secs(document.lease_seconds as u64), document.slow_link))
     }
 
     /// What this machine measured of its host (`machine::speed`). A Hub from before the route
@@ -124,7 +124,7 @@ impl Hub {
         }
     }
 
-    /// This rental's first download, held under its lease's floor over `seconds` (`machine::speed`): whether the Hub is placing
+    /// This rental's first download, under its lease's slow-link rule over `seconds` (`machine::speed`): whether the Hub is placing
     /// it on another host. Its renter waits on the answer, so a Hub that doesn't answer, or fails, is asked again (1 s, doubling,
     /// `ATTEMPTS` in all); its refusal stands.
     pub(crate) async fn report_slow_link(&self, bytes: u64, seconds: f64) -> Result<bool, Refusal> {

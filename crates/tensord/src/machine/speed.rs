@@ -7,22 +7,21 @@
 //! which is no harm. Its GPU power limit against the card's default (cl-1161) is told the same way, in a
 //! report of its own, so a Hub that refuses it still takes the heat.
 use super::hub::Hub;
-use ::api::hub::types::{WorkerDownload, WorkerGpuHeat, WorkerGpuPower, WorkerLinkFloor, WorkerProbe};
+use ::api::hub::types::{WorkerDownload, WorkerGpuHeat, WorkerGpuPower, WorkerProbe, WorkerSlowLinkRule};
 use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
-use tensorfs::fetch::Sustained;
+use tensorfs::{fetch::Sustained, store::Store};
 
 /// Under this a transfer measures its latency more than its link (the Hub judges none smaller).
 const MEASURED_BYTES: u64 = 1 << 30;
-/// The pace held to the floor is the link's over its last 10 s.
-const TRAILING: Duration = Duration::from_secs(10);
 /// A transfer whose pace the link set none of for this long is over: the next is measured afresh, its own warm-up apart.
 const GAP: Duration = Duration::from_secs(5);
-/// A transfer's first seconds, left out, and how long it is measured before it is told, where no lease says (an older Hub).
+/// A transfer's first seconds, left out, and how long it is measured before its download is told, where no lease names a
+/// rule (a Hub before th-405).
 const WARMUP: Duration = Duration::from_secs(10);
 const WINDOW: Duration = Duration::from_secs(30);
 
@@ -30,26 +29,40 @@ struct Reporter {
     hub: Arc<Hub>,
     state: PathBuf,
     runtime: tokio::runtime::Handle,
+    /// What the machine holds on its disk (`SlowLinkRule::landed_bytes_max`).
+    store: Arc<Store>,
 }
 
 static REPORTER: OnceLock<Reporter> = OnceLock::new();
 
-/// The floor this rental's lease names for its first download (th-405); none from a Hub before it.
-static FLOOR: Mutex<Option<WorkerLinkFloor>> = Mutex::new(None);
+/// The slow-link rule this rental's lease names (th-405); none from a Hub before it.
+static RULE: Mutex<Option<WorkerSlowLinkRule>> = Mutex::new(None);
+/// When this machine first read its lease: a new machine is judged for `within_seconds` from here.
+static LEASED: OnceLock<Instant> = OnceLock::new();
 
 /// The lease as last read (`lifecycle::keep_authority`).
-pub(crate) fn floor(leased: Option<WorkerLinkFloor>) {
-    *FLOOR.lock().unwrap_or_else(|e| e.into_inner()) = leased.filter(|floor| floor.mbps > 0 && floor.window_seconds > 0);
+pub(crate) fn rule(leased: Option<WorkerSlowLinkRule>) {
+    LEASED.get_or_init(Instant::now);
+    let leased = leased.filter(|rule| rule.mbps > 0 && rule.window_seconds > 0 && rule.recover_seconds > 0);
+    *RULE.lock().unwrap_or_else(|e| e.into_inner()) = leased;
+}
+
+/// The lease's rule, and whether this machine is still new by it.
+fn leased() -> (Option<WorkerSlowLinkRule>, bool) {
+    let rule = *RULE.lock().unwrap_or_else(|e| e.into_inner());
+    let new = rule.zip(LEASED.get()).is_some_and(|(rule, at)| at.elapsed() < Duration::from_secs(rule.within_seconds.into()));
+    (rule, new)
 }
 
 /// Reports for this rental from now on, on the current runtime.
-pub(crate) fn serve(hub: Arc<Hub>, state: PathBuf) {
+pub(crate) fn serve(hub: Arc<Hub>, state: PathBuf, store: Arc<Store>) {
     let runtime = tokio::runtime::Handle::current();
     if REPORTER
         .set(Reporter {
             hub,
             state,
             runtime: runtime.clone(),
+            store,
         })
         .is_err()
         || reported("download")
@@ -66,16 +79,20 @@ struct Transfer {
     began: Sustained,
     /// The count when its warm-up ended; None while it warms up.
     warm: Option<Sustained>,
-    /// The counts since, a window each, back to the newest at least `TRAILING` old.
+    /// The counts since, a window each, back to the newest at least the rule's `recover_seconds` old.
     trail: VecDeque<Sustained>,
-    /// The count since which the pace of the last `TRAILING` has stayed under the floor.
+    /// The count since which the pace of the last `recover_seconds` has stayed under the rule.
     under: Option<Sustained>,
+    /// Held to the lease's rule: the machine's first transfer, while the machine is new.
+    judged: bool,
+    /// What its disk held when it began (`SlowLinkRule::landed_bytes_max`); judged only.
+    held: u64,
 }
 
 /// What a transfer says of its host's link, once.
 enum Said {
-    /// Under the lease's floor through its whole window (th-405): these bytes over these seconds.
-    Slow(u64, Duration, WorkerLinkFloor),
+    /// Under the lease's rule through its whole window (th-405): these bytes over these seconds.
+    Slow(u64, Duration, WorkerSlowLinkRule),
     /// What it sustained past its warm-up.
     Measured(u64, Duration),
 }
@@ -85,11 +102,12 @@ fn mbps(bytes: u64, time: Duration) -> f64 {
 }
 
 impl Transfer {
-    /// The link's count went from `before` to `now` in one more window. Under `floor` for its whole window, the transfer is
-    /// slow. Otherwise, measured that long with 1 GiB landed and its pace not now under the floor, it is told as measured.
-    fn window(&mut self, before: Sustained, now: Sustained, floor: Option<WorkerLinkFloor>) -> Option<Said> {
+    /// The link's count went from `before` to `now` in one more window. Judged, under `rule` for its `window_seconds` with no
+    /// `recover_seconds` back at it, the transfer is slow. Otherwise, measured that long with 1 GiB landed and its pace not
+    /// now under the rule, it is told as measured.
+    fn window(&mut self, before: Sustained, now: Sustained, rule: Option<WorkerSlowLinkRule>) -> Option<Said> {
         let seconds = |s: u32| Duration::from_secs(s.into());
-        let (warmup, window) = floor.map_or((WARMUP, WINDOW), |floor| (seconds(floor.warmup_seconds), seconds(floor.window_seconds)));
+        let (warmup, window) = rule.map_or((WARMUP, WINDOW), |rule| (seconds(rule.warmup_seconds), seconds(rule.window_seconds)));
         let Some(warm) = self.warm else {
             if now.time - self.began.time >= warmup {
                 self.warm = Some(now);
@@ -97,25 +115,31 @@ impl Transfer {
             }
             return None;
         };
-        self.trail.push_back(now);
-        while self.trail.len() > 2 && now.time - self.trail[1].time >= TRAILING {
-            self.trail.pop_front();
-        }
-        let trailing = mbps(now.bytes - self.trail[0].bytes, now.time - self.trail[0].time);
-        match floor.filter(|floor| trailing < f64::from(floor.mbps)) {
-            Some(_) => _ = self.under.get_or_insert(before),
+        match rule.filter(|_| self.judged) {
             None => self.under = None,
-        }
-        if let (Some(under), Some(floor)) = (self.under, floor) {
-            let (bytes, time) = (now.bytes - under.bytes, now.time - under.time);
-            if time < window {
-                return None;
+            Some(rule) => {
+                self.trail.push_back(now);
+                while self.trail.len() > 2 && now.time - self.trail[1].time >= seconds(rule.recover_seconds) {
+                    self.trail.pop_front();
+                }
+                let trailing = mbps(now.bytes - self.trail[0].bytes, now.time - self.trail[0].time);
+                if trailing < f64::from(rule.mbps) {
+                    self.under.get_or_insert(before);
+                } else {
+                    self.under = None;
+                }
+                if let Some(under) = self.under {
+                    let (bytes, time) = (now.bytes - under.bytes, now.time - under.time);
+                    if time < window {
+                        return None;
+                    }
+                    // Every trailing stretch of it under the rule, so is the whole, but for a window's rounding: said only when it is.
+                    if mbps(bytes, time) < f64::from(rule.mbps) {
+                        return Some(Said::Slow(bytes, time, rule));
+                    }
+                    self.under = None;
+                }
             }
-            // Every 10 s of it under the floor, so is the whole, but for a window's rounding: said only when it is.
-            if mbps(bytes, time) < f64::from(floor.mbps) {
-                return Some(Said::Slow(bytes, time, floor));
-            }
-            self.under = None;
         }
         let (bytes, time) = (now.bytes - warm.bytes, now.time - warm.time);
         (time >= window && bytes >= MEASURED_BYTES).then_some(Said::Measured(bytes, time))
@@ -128,15 +152,21 @@ impl Transfer {
     }
 }
 
-/// Holds this rental's downloads to its lease's floor until one says what its host's link is (th-405, Paul 11-18, after a host
-/// pulled 29 GiB at 14.7 MB/s: "make sure we don't run on slow hosts like that again please"). Each window TensorFS says the
-/// link set the pace in is one step; nothing runs between downloads. A transfer under the floor for the lease's window is
-/// reported as a slow link, and the Hub answers whether it is placing the rental on another host. Else its sustained pace is
-/// reported as the host's download speed: once measured for the window with 1 GiB landed, or when it ends with 1 GiB.
+/// Measures this rental's downloads until one says what its host's link is, and holds a new machine's first one to its lease's
+/// slow-link rule (th-405). Paul 11-18: "maybe end it if it's way below that for a good while and not coming back, especially if
+/// it's a new machine that we just got … never end a machine with lots of stuff on its hard-drive already because its download
+/// link takes a crap later on." Each window TensorFS says the link set the pace in is one step; nothing runs between downloads.
+/// The machine's first transfer, while it is within the rule's `within_seconds` of its lease, is judged: under the rule for its
+/// window with no recovery, and with under `landed_bytes_max` on its disk (what it held when the transfer began, and what the
+/// transfer landed since), it is reported as a slow link, and the Hub answers
+/// whether it is placing the rental on another host. Every other is the host's download speed, its sustained pace reported
+/// once: measured for the window with 1 GiB landed, or when it ends with 1 GiB.
 async fn first_download() {
     let mut link = tensorfs::fetch::sustained();
     let mut seen = *link.borrow_and_update();
     let mut transfer: Option<Transfer> = None;
+    // Only the machine's first transfer is judged.
+    let mut first = true;
     loop {
         let moved = match transfer {
             Some(_) => tokio::time::timeout(GAP, link.changed()).await.ok(),
@@ -144,17 +174,43 @@ async fn first_download() {
         };
         let said = match moved {
             Some(Err(_)) => return,
-            None => transfer.take().and_then(|ended| ended.over(seen)),
+            None => {
+                first = false;
+                transfer.take().and_then(|ended| ended.over(seen))
+            }
             Some(Ok(())) => {
                 let (before, now) = (seen, *link.borrow_and_update());
+                let (rule, new) = leased();
+                if transfer.is_none() {
+                    let judged = first && new && rule.is_some();
+                    let held = if judged { held().await } else { 0 };
+                    transfer = Some(Transfer { began: before, warm: None, trail: VecDeque::new(), under: None, judged, held });
+                }
                 seen = now;
-                let floor = *FLOOR.lock().unwrap_or_else(|e| e.into_inner());
-                let began = || Transfer { began: before, warm: None, trail: VecDeque::new(), under: None };
-                transfer.get_or_insert_with(began).window(before, now, floor)
+                let current = transfer.as_mut().expect("begun above");
+                current.judged &= new;
+                current.window(before, now, rule)
             }
         };
         match said {
-            Some(Said::Slow(bytes, time, floor)) => return slow(bytes, time, floor).await,
+            Some(Said::Slow(bytes, time, rule)) => {
+                // What it held when this began and what this landed since.
+                let landed = transfer.as_ref().map_or(u64::MAX, |current| current.held.saturating_add(seen.bytes - current.began.bytes));
+                if landed < rule.landed_bytes_max {
+                    return slow(bytes, time, rule).await;
+                }
+                tracing::info!(
+                    "this host's link carried {:.0} Mbit/s over {:.0} s of its first download, under the Hub's {} Mbit/s, but the \
+                     machine holds {:.1} GB: not reported slow",
+                    mbps(bytes, time),
+                    time.as_secs_f64(),
+                    rule.mbps,
+                    landed as f64 / 1e9
+                );
+                if let Some(current) = transfer.as_mut() {
+                    current.judged = false;
+                }
+            }
             Some(Said::Measured(bytes, time)) => {
                 return send("download", Some(WorkerDownload { bytes, seconds: time.as_secs_f64() }), None, None);
             }
@@ -163,17 +219,30 @@ async fn first_download() {
     }
 }
 
-/// Tells the Hub this host's link is under its floor, once per pod, and says its answer.
-async fn slow(bytes: u64, time: Duration, floor: WorkerLinkFloor) {
+/// The bytes on this machine's disk; unreadable, as many as can be (it is then never ended for its link).
+async fn held() -> u64 {
+    let Some(store) = REPORTER.get().map(|reporter| reporter.store.clone()) else { return u64::MAX };
+    match tokio::task::spawn_blocking(move || store.landed()).await {
+        Ok(Ok(landed)) => landed,
+        Ok(Err(refusal)) => {
+            tracing::info!("what this machine holds is unreadable: {refusal}");
+            u64::MAX
+        }
+        Err(_) => u64::MAX,
+    }
+}
+
+/// Tells the Hub this host's link is under its rule, once per pod, and says its answer.
+async fn slow(bytes: u64, time: Duration, rule: WorkerSlowLinkRule) {
     let (Some(reporter), Some(path)) = (REPORTER.get(), marker("slow-link")) else { return };
     if std::fs::OpenOptions::new().write(true).create_new(true).open(&path).is_err() {
         return;
     }
     let measured = format!(
-        "this host's link carried {:.0} Mbit/s over {:.0} s of its first download, under the Hub's floor of {} Mbit/s",
+        "this host's link carried {:.0} Mbit/s over {:.0} s of its first download, under the Hub's {} Mbit/s",
         mbps(bytes, time),
         time.as_secs_f64(),
-        floor.mbps
+        rule.mbps
     );
     match reporter.hub.report_slow_link(bytes, time.as_secs_f64()).await {
         Ok(true) => tracing::warn!("{measured}: the Hub is placing this rental on another host"),

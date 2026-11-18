@@ -460,10 +460,10 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
     let mut unanswered = FIRST;
     loop {
         let delay = match hub.authorized_keys().await {
-            Ok((current, lease, floor)) => {
+            Ok((current, lease, rule)) => {
                 keep_lease(&state, &current);
                 keys.renew(current);
-                super::speed::floor(floor);
+                super::speed::rule(rule);
                 unanswered = FIRST;
                 lease / 2
             }
