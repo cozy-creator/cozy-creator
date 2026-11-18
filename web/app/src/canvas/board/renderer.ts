@@ -2,7 +2,7 @@
 // compositor readback of 130-190 ms a frame (cl-1018); a 2D canvas on the CPU has none.
 // CSP-safe shader uniforms (no eval): the WebGL renderer is made as this module loads.
 import "pixi.js/unsafe-eval"
-import { CanvasGraphicsPipe, CanvasRenderer, Container, ExtensionType, extensions, Graphics, type InstructionSet, type Renderer, Sprite, Text, Texture, WebGLRenderer } from "pixi.js"
+import { BatchTextureArray, CanvasGraphicsPipe, CanvasRenderer, Container, ExtensionType, extensions, GCManagedHash, Graphics, type InstructionSet, type Renderer, Sprite, Text, Texture, type TextureSource, WebGLRenderer } from "pixi.js"
 import { warmLabels } from "./text"
 
 /** Why this renderer: a hardware GPU; no WebGL at all; WebGL only in software (or only with a major performance caveat); WebGL refused to start. */
@@ -33,6 +33,29 @@ extensions.add(CanvasGraphics)
 function tidy(renderer: Renderer) {
   const { gc, canvasText } = renderer as unknown as { gc: { addCollection(context: object, collection: string, type: "hash"): void }; canvasText: object }
   gc.addCollection(canvasText, "_activeTextures", "hash")
+}
+
+// Two Pixi tables keyed by uids that never repeat, which drop an entry by nulling it and keep its key (Pixi 8.23 and its dev branch on
+// 11-18). Both corrections go when Pixi deletes the keys itself (cl-1227).
+/** Every batch in Pixi's module-wide pool keeps a table of the texture sources it holds, and clear() nulled each entry and kept its key, so
+ *  each pooled batch gathered a key for every picture and label it ever drew: 288k keys on 1,296 batches after 100 pan-and-zoom cycles over
+ *  1,000 boxes, and the heap still rising (e2e 44302102288). Pixi's clear() as it is, but deleting the keys it nulled: a new table at each
+ *  clear rendered as fast but held 1.5 MB more in sparse arrays (e2e 44307308164). */
+BatchTextureArray.prototype.clear = function (this: BatchTextureArray) {
+  const held = this.textures as (TextureSource | null)[]
+  for (let i = 0; i < this.count; i++) {
+    delete this.ids[held[i]!.uid]
+    held[i] = null
+  }
+  this.count = 0
+}
+/** Each pipe's GC table (Graphics, labels) kept a released entry's key until the table held 10,000 nulls: the heap swung by half a MB with
+ *  where a pan stood in that count. A released entry's key goes with it. */
+const managed = GCManagedHash.prototype as unknown as { remove(this: { items: Record<number, unknown> }, item: { uid: number }, ...args: unknown[]): void }
+const removeManaged = managed.remove
+managed.remove = function (item, ...args) {
+  removeManaged.call(this, item, ...args)
+  if (this.items[item.uid] === null) delete this.items[item.uid]
 }
 
 /** The GPU a context names. Firefox's RENDERER is already the device (and it warns on the debug extension); Chrome's says "WebKit WebGL". */
