@@ -4,7 +4,9 @@
 #   upload    its code, with an empty file (0.22.1 refused one: file_length_required), sent by content and described
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
-#             suite's Hub's: lock_same.py); not under run.sh's --lock fresh, which locked it before its run
+#             suite's Hub's: lock_same.py), for every package: a first-party dependency it takes from the Hub is the
+#             checkout's own, which isolated.sh publishes to this suite's Hub, released yet or not (an RC's lock names the
+#             RC's build of it: packages #976, #989); not under run.sh's --lock fresh, which locked it before its run
 #   bind      a stand-in package's (drive.py, se-149) every cell's request (<out>/requests/<request>.json, its input files)
 #             bound by Calcifer's binder against the staged local code (the private estimate API; 0.22.1 refused
 #             `aspect_ratio=1:1`), a prompt's reference images named as the run's own `references`. Every other package's cells
@@ -49,10 +51,6 @@ fi
 
 if [ "${LOCK:-}" = fresh ]; then
   :
-elif [ -s "$OUT/staged/unpublished.txt" ]; then
-  # A first-party dependency production's index can't meet yet (run.sh's stage.py): no committed lock can name it until promotion
-  # publishes it and the publish cascade relocks this one. The check comes back once production meets it.
-  line SKIP - lock "unpublished first-party dependency $(paste -sd, "$OUT/staged/unpublished.txt"); the publish cascade relocks it"
 elif python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
   # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same.
   if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
