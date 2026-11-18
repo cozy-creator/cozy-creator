@@ -23,16 +23,6 @@
    "max_s": 3600
   },
   {
-   "name": "q3-ask-27b-16",
-   "target": "qwen3/ask",
-   "args": [
-    "prompts:=[{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic1}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic2}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic3}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic4}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic5}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic6}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic7}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic8}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic9}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic10}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic11}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic12}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic13}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic14}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic15}\"]},{\"text\":\"Describe this picture in one sentence.\",\"images\":[\"{pic16}\"]}]",
-    "max_tokens:=64",
-    "seed:=31002"
-   ],
-   "max_s": 3600
-  },
-  {
    "name": "q3-ask-default",
    "target": "qwen3/ask",
    "args": [
@@ -41,7 +31,6 @@
     "images={seed}",
     "seed:=31003"
    ],
-   "unless": "q3-ask-27b-16",
    "max_s": 2700
   }
  ]
