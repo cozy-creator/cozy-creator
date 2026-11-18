@@ -537,6 +537,63 @@ pub struct Run {
     pub retry: Option<Retry>,
 }
 
+impl Run {
+    /// What a reader outside an encrypted project may know of one of its runs (cl-1242, the release coordinator's ruling): that it
+    /// is there, its id and number, its kind, its machine, its state and times, and how many steps it has gone. Nothing its project
+    /// wrote or chose: not its project's name, nor its key (`KEY-N` is made from that name), its tool, its stage, its outputs or their
+    /// files, its words, its log lines, why it waits or ended, what it asked. The one rule for both kinds of outsider: another project
+    /// on its computer (Calcifer's `Machines::picture_for`) and another computer on the account (TensorD's queue, `estimate::roots`,
+    /// which gives it no function, stage or models). Another run's words name it as TensorD's `others::Others` rules (cl-1223): by
+    /// its id only to its own project's readers. Each field is said here, so one added to `Run` is decided, never passed on.
+    pub fn outsider(&self) -> Run {
+        Run {
+            id: self.id.clone(),
+            number: self.number,
+            name: String::new(),
+            machine_number: self.machine_number,
+            kind: self.kind,
+            target: String::new(),
+            hub: String::new(),
+            machine: self.machine.clone(),
+            project: None,
+            project_id: self.project_id.clone(),
+            status: self.status,
+            cancel_requested: self.cancel_requested,
+            machine_state: self.machine_state.clone(),
+            reason: None,
+            output: vec![],
+            created_at_ms: self.created_at_ms,
+            accepted_at_ms: self.accepted_at_ms,
+            started_at_ms: self.started_at_ms,
+            settled_at_ms: self.settled_at_ms,
+            waiting: None,
+            progress: self.progress.as_ref().map(|progress| Progress {
+                completed: progress.completed,
+                total: progress.total,
+                at_ms: progress.at_ms,
+                ..Progress::default()
+            }),
+            text: vec![],
+            video_progress: None,
+            arriving: None,
+            queue_position: self.queue_position,
+            warnings: vec![],
+            adjustments: vec![],
+            result: None,
+            execution_ms: self.execution_ms,
+            memo: None,
+            measurements: None,
+            stalled: None,
+            calls: vec![],
+            report: None,
+            request: None,
+            gpu: None,
+            placed: None,
+            retry: None,
+        }
+    }
+}
+
 /// A run sent again, its machine lost under it or its GPU failed (cl-1132, cl-935): "attempt 2 of 3: stand-r shut down".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
