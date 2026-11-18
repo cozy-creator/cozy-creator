@@ -393,7 +393,7 @@ pub fn refusal(device: i32) -> Result<Option<Refusal>> {
 /// pinned host memory. A window of a whole whose rows are not contiguous, such as heads of an
 /// attention output kept on host, crosses the link at the copy engine's rate this way, not at the
 /// rate of a kernel writing through mapped host pages (var-030).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unsafe_code)]
 pub fn copy_pitched(
     device: i32, dst: u64, dst_pitch: usize, src: u64, src_pitch: usize, width: usize, height: usize, stream: u64,
 ) -> Result<()> {
