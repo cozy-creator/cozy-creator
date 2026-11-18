@@ -2064,7 +2064,7 @@ fn apply_adapters(
     let object = |header: &str| {
         storage::held(store, header).map_err(|e| ("model_download_failed", format!("checkpoint {header} is not held: {e}")))
     };
-    let (mut selections, mut names) = (vec![], vec![]);
+    let (mut selections, mut names, mut unread) = (vec![], vec![], vec![]);
     for adapter in &choice.adapters {
         let mut name = if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() };
         // The Hub model whose card says its recommended strength: a named one's, or a held one's as it was pulled.
@@ -2114,7 +2114,14 @@ fn apply_adapters(
         };
         // Given none (a call's `Lora(ref)`), its release's recommended strength, else 1 (cl-1281; Calcifer fills a request's).
         let strength = if adapter.scale.is_empty() {
-            carded.zip(source).and_then(|(model, source)| release_strength(source, &model)).unwrap_or(1.0)
+            match carded.zip(source).map(|(model, source)| release_strength(source, &model)) {
+                Some(Ok(strength)) => strength.unwrap_or(1.0),
+                Some(Err(why)) => {
+                    unread.push(format!("{name}: its release's strength wasn't read ({why}), so it ran at 1"));
+                    1.0
+                }
+                None => 1.0,
+            }
         } else {
             adapter.scale.parse::<f64>().map_err(|_| {
                 (
@@ -2150,6 +2157,7 @@ fn apply_adapters(
         .collect();
     let warnings = (names.iter().zip(&composed.warnings))
         .flat_map(|(named, said)| said.iter().map(move |w| format!("{named}: {w}")))
+        .chain(unread)
         .collect();
     let base = std::mem::replace(&mut grant.model, composed.name);
     grant.adapted = Some(crate::gpu_service::Adapted { model: base, adapters });
@@ -2158,17 +2166,22 @@ fn apply_adapters(
 }
 
 /// A LoRA's recommended strength, as its Hub card says (none: unread, or none set), kept 10 minutes: its owner can change it.
-fn release_strength(source: &hub::Source, model: &str) -> Option<f64> {
-    static READ: std::sync::LazyLock<Mutex<HashMap<String, (Instant, Option<f64>)>>> = std::sync::LazyLock::new(Default::default);
+/// A pull records no card (`held_models::Pulled`: model, release, lane, tree), so this is the one read of it. Ok(None): the card names
+/// none. A failed read is kept the same 10 minutes (Err: why), so a run in them asks the Hub once and its notes say why it ran at 1.
+fn release_strength(source: &hub::Source, model: &str) -> Result<Option<f64>, String> {
+    type Read = (Instant, Result<Option<f64>, String>);
+    static READ: std::sync::LazyLock<Mutex<HashMap<String, Read>>> = std::sync::LazyLock::new(Default::default);
     let key = format!("{} {model}", source.origin);
     if let Some((_, strength)) = READ.lock().unwrap().get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(600)) {
-        return *strength;
+        return strength.clone();
     }
-    let (org, name) = model.split_once('/')?;
-    let card = hub::Catalog::new(source).ok().and_then(|catalog| catalog.model(org, name).ok())?;
-    let strength = card.model.strength.filter(|strength| strength.is_finite());
-    READ.lock().unwrap().insert(key, (Instant::now(), strength));
-    strength
+    let read = (|| {
+        let (org, name) = model.split_once('/').ok_or_else(|| format!("{model} names no org"))?;
+        let card = hub::Catalog::new(source).map_err(|e| e.0)?.model(org, name).map_err(|e| e.to_string())?;
+        Ok(card.model.strength.filter(|strength| strength.is_finite()))
+    })();
+    READ.lock().unwrap().insert(key, (Instant::now(), read.clone()));
+    read
 }
 
 /// A catalog read the Hub answered 404 to is the thing named absent there; any other failure
