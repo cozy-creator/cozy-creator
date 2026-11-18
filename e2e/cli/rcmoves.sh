@@ -170,11 +170,12 @@ runner=$!
 echo "rc held: asked as stand-c ran $move: $(jq -c --arg m "$move" '.jobs[]? | select(.id == $m) | {number, status, target}' "$d/show-move.json")"
 wait "$runner" || code=$?
 rm_runs stand-c "$d/runs.json"
-echo "rc held: the render waited: $(grep -o '"reason": *"updating stand-c first[^"]*"' "$d/held.ndjson" | head -1)"
+echo "rc held: the render waited: $(grep -oE '"reason": *"(updating stand-c first|waiting for stand-c to finish updating)[^"]*"' "$d/held.ndjson" | head -1)"
 echo "rc held: stand-c's runs: $(jq -c '[.runs | sort_by(.number)[] | {number, kind, status, target: .target[0:60], created: (.created_at_ms - '"$t0"'), accepted: ((.accepted_at_ms // 0) - '"$t0"'), settled: ((.settled_at_ms // 0) - '"$t0"'), reason: .reason.code}]' "$d/runs.json")"
 echo "rc held: stand-c's Hub heard: $(jq -sc --argjson t "$t0" '[.[] | select(.kind != "check_in") | {kind, ms: ((.at * 1000 | floor) - $t)}]' "$d/events.jsonl" 2> /dev/null)"
 grep -E 'idle|releas|restarting|keepalive' "$d/machine.log" | tail -8 | cut -c1-300 || true
-grep -q '"reason": *"updating stand-c first' "$d/held.ndjson" || check "rc held: the render wasn't held behind stand-c's move: $(tail -c 400 "$d/held.ndjson")"
+grep -qE '"reason": *"(updating stand-c first|waiting for stand-c to finish updating)' "$d/held.ndjson" \
+  || check "rc held: the render wasn't held behind stand-c's move: $(tail -c 400 "$d/held.ndjson")"
 release=$(jq -s '[.[] | select(.kind == "release") | .at * 1000 | floor] | min // 0' "$d/events.jsonl" 2> /dev/null || echo 0)
 settled=$(jq -r '[.runs[] | select(.kind != "update") | .settled_at_ms // 0] | max // 0' "$d/runs.json")
 [ "$code" = 0 ] && J '[.runs[] | select(.kind != "update")] | length > 0 and all(.status == "completed")' "$d/runs.json" \
