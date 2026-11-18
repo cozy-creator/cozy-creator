@@ -22,14 +22,25 @@ const PICTURES = 50;
 const SIDE = 1200;
 const COLUMNS = 10;
 const [W, DX, DY] = [240, 280, 320];
-/** Long enough for the old build's stall to show whole, short enough that the cell ends; above every bar. A Mac's runner makes thumbnails
- *  slowly at rc (agent a92b210), so its wait is shorter, to leave the frames time to be judged. */
-const WAIT_MS = process.platform === 'darwin' ? 15_000 : 75_000;
+/** Long enough for the old build's stall to show whole, short enough that the cell ends; above every bar. The same on a Mac: at 15 s its
+ *  previews could not all be drawn on its runner (6 to 43 of 50 a tab, 44245107402 to 44273472488), so the check failed by construction;
+ *  a wait returns as soon as they are, and test.slow leaves the frames time to be judged. */
+const WAIT_MS = 75_000;
+/** On a Mac's runner (a shared 3-core virtual M1) the timing bars that measure the runner more than the page are recorded with their
+ *  allowance, not judged; they stay judged everywhere else, and Paul's 11-13 frame bars stay judged here too. The release coordinator,
+ *  11-18: "misses of 1.6%, 4.4% and 18% on 3 of 5 heads on a 3-core shared virtual machine measure the runner". */
+const RECORDED_ON_MAC = process.platform === 'darwin';
+/** `bar` judged, or on a Mac recorded (a `mac_bar` note) with what it read and what it allows. */
+const judgeOrRecord = (held, bar, read, allowed, judge) => {
+  if (RECORDED_ON_MAC) test.info().annotations.push({ type: 'mac_bar', description: JSON.stringify({ bar, read, allowed, within: held }) });
+  else judge();
+};
 const VIEWPORT = { width: 1600, height: 1000 };
 // What Paul asked (11-13), on the fast hosted runners; each is held times this runner's speed against those (speed.js).
 const BARS = { frames_first_ms: 100, frames_all_ms: 100, previews_cold_ms: 2000, previews_warm_ms: 1000, landed_ms: 2000 };
 // React Flow on a Mac (e2e 43793283804, macos-15, its runner 2.3 times the reference): every open's frames drawn by 20-126 ms of its state,
-// the middle open at 96 ms. On a Mac the canvas is held to these too, times this runner's speed against that one's; within 5% is a tie.
+// the middle open at 96 ms. On a Mac each open is recorded against these, times this runner's speed against that one's, with 5% as a tie
+// (the `react_flow_mac` note); they don't decide pass or fail (the release coordinator, 11-18).
 const REACT_FLOW_MAC = { factor: 2.3, middle_ms: 96, slowest_ms: 126, each_ms: { plain_cold: 126, plain_warm: 101, sealed_cold: 95, sealed_warm: 20,
   plain_three_tabs_cold: 80, plain_three_tabs_warm: 103, sealed_three_tabs_cold: 96, sealed_three_tabs_warm: 59 } };
 const soft = expect.configure({ soft: true });
@@ -421,12 +432,16 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       expect.soft(sorted[sorted.length >> 1] <= BAR.frames_all_ms, `the middle open: ${JSON.stringify(seen.frames)}`).toBe(true);
       expect.soft(sorted.at(-1) <= 3 * BAR.frames_all_ms, `every open: ${JSON.stringify(seen.frames)}`).toBe(true);
       if (process.platform !== 'darwin') return;
-      // Each open against React Flow's same open, so a cold open's far number is never read for a warm one's.
+      // Each open against React Flow's same open, so a cold open's far number is never read for a warm one's. Recorded, not judged (the
+      // release coordinator, 11-18: "the React Flow bars on that 3-core virtual runner do not gate the 0.27.0 promotion; they are a tracked
+      // target"): cl-1018 owns the gap, and a slow runner's scale passed it best (cl-1018's issue, 0 green of 87 rc-os runs).
       const scale = 1.05 * speed.factor / REACT_FLOW_MAC.factor, rf = (ms) => Math.round(ms * scale);
       seen.frames.react_flow_mac = { middle_ms: rf(REACT_FLOW_MAC.middle_ms), slowest_ms: rf(REACT_FLOW_MAC.slowest_ms),
         each: Object.fromEntries(Object.entries(framed).map(([label, ms]) => [label, { ms, react_flow_ms: rf(REACT_FLOW_MAC.each_ms[label] ?? NaN), within: ms <= rf(REACT_FLOW_MAC.each_ms[label] ?? NaN) }])) };
-      expect.soft(sorted[sorted.length >> 1] <= seen.frames.react_flow_mac.middle_ms, `cl-1018: the middle open no slower than React Flow's on a Mac: ${JSON.stringify(seen.frames)}`).toBe(true);
-      expect.soft(sorted.at(-1) <= seen.frames.react_flow_mac.slowest_ms, `cl-1018: every open no slower than React Flow's slowest on a Mac: ${JSON.stringify(seen.frames)}`).toBe(true);
+      const middle = sorted[sorted.length >> 1], slowest = sorted.at(-1);
+      testInfo.annotations.push({ type: 'react_flow_mac', description: JSON.stringify({ factor: speed.factor, middle_ms: middle, middle_allowed_ms: seen.frames.react_flow_mac.middle_ms,
+        slowest_ms: slowest, slowest_allowed_ms: seen.frames.react_flow_mac.slowest_ms, within: middle <= seen.frames.react_flow_mac.middle_ms && slowest <= seen.frames.react_flow_mac.slowest_ms,
+        each: seen.frames.react_flow_mac.each }) });
     });
   };
   /** `page` opened on `one` (or reloaded): when its boxes and previews were drawn, against the bars of a `cold` or warm open. */
@@ -523,7 +538,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     const counted = await page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.open ?? null);
     if (counted) {
       expect.soft(counted.cards, said(`every box in view built one frame after the read: ${JSON.stringify(counted)}`)).toBe(1);
-      expect.soft(counted.previews, said(`every picture in view drawn within 3 frames: ${JSON.stringify(counted)}`)).toBeLessThanOrEqual(3);
+      judgeOrRecord(counted.previews <= 3, `${label}: every picture in view drawn within 3 frames`, counted.previews, 3,
+        () => expect.soft(counted.previews, said(`every picture in view drawn within 3 frames: ${JSON.stringify(counted)}`)).toBeLessThanOrEqual(3));
     } else test.info().annotations.push({ type: 'frames', description: `${label}: the canvas counts no open frames (resources().open)` });
     return result;
   };
@@ -606,7 +622,9 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       for (const page of tabs) await soft.poll(() => previewsDrawn(page), { message: `each tab's ${PICTURES} previews drawn`, timeout: WAIT_MS }).toBeGreaterThanOrEqual(PICTURES);
       const result = { state_ms: states, wire: wire.since(from) };
       seen.three_at_once = result;
-      expect.soft(states.every((took) => took !== null && took <= BAR.previews_warm_ms), `each state within ${BAR.previews_warm_ms} ms: ${JSON.stringify(result)}`).toBe(true);
+      const statesWithin = states.every((took) => took !== null && took <= BAR.previews_warm_ms);
+      judgeOrRecord(statesWithin, 'three tabs at once: each state within the warm previews bar', states, BAR.previews_warm_ms,
+        () => expect.soft(statesWithin, `each state within ${BAR.previews_warm_ms} ms: ${JSON.stringify(result)}`).toBe(true));
       expect.soft(result.wire.call_wait_ms?.most ?? 0, `no call waits ${BAR.frames_first_ms} ms for a connection: ${JSON.stringify(result.wire)}`).toBeLessThanOrEqual(BAR.frames_first_ms);
       await context.close();
     });
