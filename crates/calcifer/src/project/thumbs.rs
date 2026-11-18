@@ -64,6 +64,9 @@ pub(super) struct Asked {
     /// A video's sound as a waveform: none if it has no sound.
     #[serde(default)]
     wave: bool,
+    /// A media element's request: each `Range` answer at most a megabyte (`files::Asked`, cl-1220).
+    #[serde(default)]
+    pieces: bool,
 }
 
 /// What to draw of one file.
@@ -161,7 +164,7 @@ pub(super) async fn thumb(
     let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
-    let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
+    let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers, asked.pieces).map_err(unreadable)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if private { "private, no-store" } else { crate::files::IMMUTABLE }));
     Ok(response)
 }

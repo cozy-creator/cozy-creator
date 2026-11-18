@@ -162,7 +162,7 @@ export class Media {
     const element = document.createElement("video")
     Object.assign(element, { muted: true, loop: true, playsInline: true, disablePictureInPicture: true, preload: "auto" })
     let texture: Texture | undefined, frame = 0, tries = 0, stopped = false, retry: ReturnType<typeof setTimeout> | undefined
-    // Its bytes in the page's memory while it's held: looping, it holds no connection (cl-1215).
+    // Its URL, asked of Calcifer in pieces: looping, it holds no connection (cl-1220).
     let bytes: { release(): void } | undefined
     // Each decoded frame where the browser says so (requestVideoFrameCallback), else each animation frame while it's held.
     const framed = "requestVideoFrameCallback" in element

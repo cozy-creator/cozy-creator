@@ -1,5 +1,5 @@
-// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, its clip's file in the page's memory (cl-1215),
-// there only while it's played or scrubbed. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
+// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, its clip's file asked of Calcifer in pieces
+// (cl-1220), there only while it's played or scrubbed. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
 import type { Client } from "../../api/client"
 import type { Playback } from "../../api/transport"
 import { signal } from "../../ui/signal"
@@ -178,7 +178,7 @@ export class Preview {
     this.pause()
   }
 
-  /** This file in the `<video>`, from the page's memory (cl-1215): false if it was let go while it came, or can't be played. */
+  /** This file in the `<video>` (Transport.play): false if it was let go while it came, or can't be played. */
   private async load(path: string): Promise<boolean> {
     if (!this.holder || !this.projectId) return false
     this.live.set(true)

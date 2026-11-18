@@ -79,7 +79,7 @@ export function TakeProgress({ view, run }: { view: ElementView; run?: number })
 function TileGlimpse({ glimpse }: { glimpse: NonNullable<ElementView["glimpse"]> }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  // Looping on its tile from the page's memory, holding no connection (cl-1215).
+  // Looping on its tile, asked of Calcifer in pieces, holding no connection (cl-1220).
   const src = useHeldMedia(store.projectId ? client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev) : undefined)
   return src ? <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" /> : null
 }
