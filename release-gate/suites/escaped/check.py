@@ -4,7 +4,8 @@ blocks, by birth site), and no loop's undeclared escaped bytes pass BOUND or gro
 model keeps across steps is held through `author.retained` (spilled to host and refilled), which the record never counts.
 A cell that failed or was refused memory capped has an uncapped twin (<cell>-uncapped, cells.sh): the twin completes only
 if the capped cell did, with the same kernels, and the capped one's driver peak stays within CAP and a CUDA context:
-success, peak and kernels, never the bytes (a cap may tile).
+success, peak and kernels, never the bytes (a cap may tile). A capped run varena moved live tensors to host pages for
+(cr-305 rung 5) has a twin too, and its output against the twin's is stated: byte-identical, or each frame's difference.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import os, sys
 from collections.abc import Callable
@@ -14,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import record  # noqa: E402
 from runs import EscapedLoop, GateRuns, Run  # noqa: E402
 
-MIB = 1 << 20
+MIB, GIB = 1 << 20, 1 << 30
 BOUND, GROWTH = 256 * MIB, 16 * MIB
 # cells.sh's cap, and what a CUDA context and the libraries outside varena add to the driver's count beside it.
 CAP, CONTEXT = 6 << 30, 1 << 30
@@ -25,6 +26,26 @@ def loops(run: Run) -> tuple[list[EscapedLoop], bool]:
     """Each loop's record in the run's and its calls' memory, and whether any GPU row carried one."""
     rows = [s for m in run.measurements if m.get('memory') for s in record.rows(m['memory'])]
     return [l for s in rows for l in s.get('escaped') or [] if isinstance(l, dict)], any('escaped' in s for s in rows)
+
+
+def moved(run: Run) -> int:
+    """The live working bytes varena moved to host pages for the run (cr-305 rung 5): its records' allocator deltas."""
+    rows = [s for m in run.measurements if m.get('memory') for s in record.rows(m['memory'])]
+    return max((int((s.get('allocator') or {}).get('demoted_total') or 0) for s in rows), default=0)
+
+
+def same(capped: Run, uncapped: Run) -> str:
+    """A moved run's output against its twin's: the bytes, else the first video's per-frame RGB difference."""
+    def digests(run: Run) -> list[str]:
+        return sorted(str(o.get('sha256') or '') for o in run.record.get('output') or [] if isinstance(o, dict))
+    if digests(capped) == digests(uncapped):
+        return 'byte-identical'
+    videos = [(a, b) for a, b in zip(capped.outputs, uncapped.outputs) if a.endswith('.mp4') and b.endswith('.mp4')]
+    if not videos:
+        return 'its outputs differ, with no video of both to compare'
+    import frames  # noqa: PLC0415 (numpy and ffmpeg, only when a twin differs)
+    p = frames.pair(*videos[0])
+    return f"differs: each frame's mean RGB difference {p['mean']} of 255, the worst {p['worst']} at frame {p['worst_at']}"
 
 
 def named(sites: list[tuple[str, int]]) -> str:
@@ -69,6 +90,9 @@ def compared(out: str) -> tuple[list[str], list[str]]:
         if peak is not None and uncapped.vram:
             line += f', uncapped run {uncapped.number} {uncapped.vram["added"] / 1024:.1f} GiB'
         (fails if peak is not None and peak * MIB > CAP + CONTEXT else notes).append(line)
+        if gone := moved(capped):
+            notes.append(f'{cell}: {gone / GIB:.1f} GiB of live tensors on host pages (rung 5); against uncapped run '
+                         f'{uncapped.number}: {same(capped, uncapped)}')
     return fails, notes
 
 

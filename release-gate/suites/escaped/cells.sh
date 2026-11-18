@@ -24,13 +24,14 @@ STOP=3
 for p in "${PRODUCTS[@]}"; do product "$p"; done
 cap off
 # refused <cell>: its capped run failed or has no record, or varena refused it memory in this request (a split level
-# refused for good, a Runtime Retry, a loop's refused pass, an OOM the package returned past).
+# refused for good, a Runtime Retry, a loop's refused pass, an OOM the package returned past), or moved live tensors
+# to host pages for it (cr-305 rung 5): its twin's output is the byte comparison for a run that completed that way.
 refused() {
   [ -f "$1.json" ] || return 0
   # A run stopped after its steps (gate.sh STOP) ended canceled on purpose: only its memory record says it was refused.
   jq -e --arg stopped "$(whole "$1" || echo 1)" '(.status != "completed" and ($stopped == "" or .status != "canceled")) or ([.measurements, .calls[]?.measurements] | map(.memory.stats.varena[]?.stats // {})
     | any(((.retries // 0) + (.swallowed_ooms // 0)) > 0 or any(.working_splits[]?; .refused != null)
-          or any(.escaped[]?; .refused != null)))' "$1.json" >/dev/null 2>&1
+          or any(.escaped[]?; .refused != null) or (.allocator.demotions // 0) > 0))' "$1.json" >/dev/null 2>&1
 }
 # Each such cell again uncapped on the same pod (<cell>-uncapped), which tells a capacity failure from a bug: a package
 # that sizes from the physical card, not varena's room, fails capped and passes here. A passing capped cell needs no
