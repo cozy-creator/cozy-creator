@@ -127,7 +127,7 @@ if has tools; then
   media() {
     local f; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image" or .key == "video") | .value | (.path // .file // .local // empty)' "$W/out/$1.render.json" 2> /dev/null | tail -1)
     [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
-    [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.add.json" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
+    [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.render.err" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
     [ -n "$f" ] && [ -f "$f" ] || { echo "no file found"; return; }
     cp "$f" "$W/out/$1.${f##*.}"
     ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
@@ -151,9 +151,9 @@ if has tools; then
         continue ;;
       page) PAGE add "$P" "$name" --tool "$(tid "$tool")" --fields "$(jq -c .fields <<< "$s")" > "$W/out/$name.add.json" 2>&1 || { say "$name: add failed: $(tail -c 300 "$W/out/$name.add.json")"; continue; } ;;
     esac
-    t1=$SECONDS
-    timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$name" > "$W/out/$name.render.json" 2> "$W/out/$name.render.err"; rc=$?
-    say "$name (${tool:-its tool}): exit $rc in $((SECONDS - t1)) s; $(media "$name"); $(tail -c 200 "$W/out/$name.render.err" | tr '\n' ' ')"
+    t1=$SECONDS o=$name; [ ! -e "$W/out/$name.render.json" ] || o=$name-again
+    timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$name" > "$W/out/$o.render.json" 2> "$W/out/$o.render.err"; rc=$?
+    say "$o (${tool:-its tool}): exit $rc in $((SECONDS - t1)) s; $(media "$o"); $(jq -r '.asset.failure // empty | tostring' "$W/out/$o.render.json" 2> /dev/null | cut -c1-300) $(tail -c 300 "$W/out/$o.render.err" | tr '\n' ' ')"
   done < <(jq -c '.[]' "$STEPS")
   # A cancelled run: an SDXL render asked, then cancelled as the page cancels it.
   PAGE add "$P" stop --tool "$(tid sdxl/image)" --fields '{"instructions": "a tall stack of pancakes", "megapixels": 4, "seed": 9}' > "$W/out/stop.add.json" 2>&1
