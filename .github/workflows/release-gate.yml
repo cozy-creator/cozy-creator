@@ -492,6 +492,15 @@ jobs:
           ssh-key: ${{ secrets.BENCHMARKS_READ_KEY }}
           sparse-checkout: upscale/originals
           path: benchmarks-upscale
+      # Suite edit's photo: the private benchmarks repo's edit/originals (make_set.py checks it by sha256), never Wikimedia.
+      - if: ${{ contains(format(',{0},', matrix.suite), ',edit,') }}
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/benchmarks
+          ref: master
+          ssh-key: ${{ secrets.BENCHMARKS_READ_KEY }}
+          sparse-checkout: edit/originals
+          path: benchmarks-edit
       - name: Gate ${{ matrix.sku }} (${{ matrix.suite }})
         env:
           ARGS: ${{ steps.candidate.outputs.args }}
@@ -501,6 +510,7 @@ jobs:
           CORPUS: ${{ inputs.corpus }}
           BENCHMARKS_DIR: ${{ github.workspace }}/benchmarks
           UPSCALE_ORIGINALS: ${{ github.workspace }}/benchmarks-upscale/upscale/originals
+          EDIT_ORIGINALS: ${{ github.workspace }}/benchmarks-edit/edit/originals
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
           MODELS: ${{ inputs.models }}
