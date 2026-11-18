@@ -38,6 +38,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -94,9 +95,33 @@ def kept(event: dict[str, object]) -> dict[str, object] | None:
     return None
 
 
+def closings(ended: dict[str, int], lock: threading.Lock) -> subprocess.Popen[str]:
+    """Each TCP socket's payload received as it closes (`ss -E`), into `ended` by `local peer`: what came after the tap's last
+    sample of a lane that closed before the next one."""
+    follower = subprocess.Popen(["ss", "-EtinH"], stdout=subprocess.PIPE, text=True)
+
+    def follow() -> None:
+        key = None
+        assert follower.stdout is not None
+        for line in follower.stdout:
+            if line[:1] not in (" ", "\t"):
+                parts = line.split()
+                key = f"{parts[3]} {parts[4]}" if len(parts) >= 5 and not parts[4].startswith(LOCAL) else None
+            elif key and (got := re.search(r"bytes_received:(\d+)", line)):
+                with lock:
+                    ended[key] = int(got.group(1))
+
+    threading.Thread(target=follow, daemon=True).start()
+    return follower
+
+
 def tap(ndjson: str, out: str, stop: str) -> None:
     seen: dict[str, int] = {}
     closed: dict[str, int] = {}
+    written: dict[str, int] = {}
+    ended: dict[str, int] = {}
+    lock = threading.Lock()
+    follower = closings(ended, lock)
     at = 0
     with open(out, "a") as log:
         while True:
@@ -118,7 +143,13 @@ def tap(ndjson: str, out: str, stop: str) -> None:
                     continue
                 if event is not None:
                     log.write(json.dumps({"t": now, "event": event}) + "\n")
-            for key, count in sockets().items():
+            now_open = sockets()
+            with lock:
+                gone, _ = dict(ended), ended.clear()
+            for key, count in gone.items():
+                if key not in now_open and count >= seen.get(key, 0):
+                    seen[key] = count
+            for key, count in now_open.items():
                 # A port taken again by a new connection counts on from what the old one received.
                 if count < seen.get(key, 0):
                     closed[key] = closed.get(key, 0) + seen[key]
@@ -127,9 +158,14 @@ def tap(ndjson: str, out: str, stop: str) -> None:
             for key, count in seen.items():
                 peer = key.split(" ")[1].rsplit(":", 1)[0]
                 peers[peer] = peers.get(peer, 0) + count + closed.get(key, 0)
-            log.write(json.dumps({"t": now, "tcp": peers, "net": received()}) + "\n")
+            # Each socket's count too, as it changes: the report tells the output reads' bulk lanes from the control connection.
+            socks = {key: count + closed.get(key, 0) for key, count in seen.items()}
+            moved = {key: count for key, count in socks.items() if written.get(key) != count}
+            written.update(moved)
+            log.write(json.dumps({"t": now, "tcp": peers, "socks": moved, "net": received()}) + "\n")
             log.flush()
             if os.path.exists(stop):
+                follower.terminate()
                 return
             time.sleep(0.2)
 
@@ -179,6 +215,28 @@ def arm(out: Path, name: str) -> dict[str, object]:
             return None, None
         return tcp(last[0]) - tcp(first[-1]), int(last[0]["net"]) - int(first[-1]["net"])
 
+    # Each socket to the machine, its count carried from its last change. Calcifer reads a machine on one HTTP/2 connection for
+    # control calls, the event stream and status, and reads outputs on bulk HTTP/1.1 lanes of their own (machine_client.rs): the
+    # control socket is the one whose bytes kept coming over the longest span, every other socket to the machine a bulk lane.
+    running: dict[str, int] = {}
+    spans: dict[str, list[int]] = {}
+    for sample in samples:
+        for key, count in (sample.get("socks") or {}).items():
+            if key.split(" ")[1].rsplit(":", 1)[0] in peers:
+                running[key] = int(count)
+                spans.setdefault(key, [sample["t"], sample["t"]])[1] = sample["t"]
+        sample["machine_socks"] = dict(running)
+    control = max(spans, key=lambda key: spans[key][1] - spans[key][0]) if spans else None
+
+    def split(start: int, end: int) -> dict[str, int] | None:
+        """Each machine socket's bytes over `window`'s samples, those that moved."""
+        first = [sample for sample in samples if sample["t"] <= start - 400] or samples[:1]
+        last = [sample for sample in samples if sample["t"] >= end]
+        if not spans or not first or not last:
+            return None
+        before, after = first[-1]["machine_socks"], last[0]["machine_socks"]
+        return {key: after[key] - before.get(key, 0) for key in after if after[key] != before.get(key, 0)}
+
     video = [(t, event) for t, event in events if str(event.get("type", "")).startswith("output_item.") and event.get("name") == "video"]
     said = {int(event["rev"]): t for t, event in reversed(video) if event["type"] in ("output_item.added", "output_item.delta") and event.get("rev")}
     kept_of = {int(event["rev"]): int(event.get("appended_from") or 0) for _, event in video if event["type"] == "output_item.delta" and event.get("rev")}
@@ -190,9 +248,12 @@ def arm(out: Path, name: str) -> dict[str, object]:
     for rev in sorted(set(sizes) | set(watched)):
         length = sizes.get(rev) or int(next(size for rev_text, _, size, _, _ in revs if int(rev_text) == rev))
         wire, net = window(said[rev], landed[rev]) if rev in said and rev in landed else (None, None)
+        by_socket = split(said[rev], landed[rev]) if rev in said and rev in landed else None
         at, probe, errors = watched.get(rev, (None, {}, None))
         rows.append({"rev": rev, "length": length, "appended_from": kept_of.get(rev, 0), "expected_read": length - kept_of.get(rev, 0),
                      "wire": wire, "wire_interfaces": net, "said_ms": said.get(rev), "landed_ms": landed.get(rev), "watched_ms": at,
+                     "wire_bulk": None if by_socket is None else sum(v for key, v in by_socket.items() if key != control),
+                     "wire_control": None if by_socket is None else by_socket.get(control, 0), "wire_sockets": by_socket,
                      "probe": probe, "decode_errors": errors})
     calls = record.get("calls") or []
     last = calls[-1] if calls else {}
@@ -210,6 +271,12 @@ def arm(out: Path, name: str) -> dict[str, object]:
         "take": rows[-1]["length"] if rows else 0,
         "expected_total": sum(int(row["expected_read"]) for row in rows),
         "wire_total": sum(wires) if rows and all(wire is not None for wire in wires) else None,
+        "wire_bulk_total": sum(row["wire_bulk"] for row in rows) if rows and all(row["wire_bulk"] is not None for row in rows) else None,
+        "sockets": {"classified": "control: the socket to the machine whose bytes kept coming over the longest span (its one HTTP/2 "
+                                  "connection: control calls, events, status); bulk: every other socket to it (HTTP/1.1 output lanes)",
+                    "control": control,
+                    "each": [{"socket": key, "class": "control" if key == control else "bulk", "first_ms": first, "last_ms": last,
+                              "bytes": running.get(key, 0)} for key, (first, last) in sorted(spans.items(), key=lambda item: item[1][0])]},
         "record": {"read": took.get("read"), "reused": took.get("reused")},
         "warnings": [warning.get("code") for warning in record.get("warnings") or []],
         "last_segment": {"frames": int(geometry[-1].get("frames", 0)) if geometry else 0,

@@ -74,7 +74,7 @@ iv_watch() {
         f=$(find "iv-$arm.out" -name '*.mp4' 2> /dev/null | head -1)
         # A revision of a run still going has no digest on its record, so `run watch -o` exports none of it (44275320398 saw only
         # the take): it is the project's file of that length, where Calcifer landed it.
-        [ -n "$f" ] || f=$(find "$OUT/project/files/" -maxdepth 1 -name '*.mp4' -size "${want}c" 2> /dev/null | head -1)
+        [ -n "$f" ] || f=$(find "$OUT/project/files/" -maxdepth 1 -type f -size "${want}c" 2> /dev/null | head -1)
         if [ -n "$f" ] && [ "$(stat -c %s "$f")" = "$want" ]; then
           last=$rev
           mkdir -p "iv-$arm.revisions" && cp "$f" "iv-$arm.revisions/rev-$rev.mp4"
@@ -145,14 +145,15 @@ expect iv-arms "$(jq -r 'if .before.status == "completed" and .after.status == "
 # bytes of the one before, and no more read than the take is long (its indexes are read again: within 5%).
 expect iv-reads "$(jq -r '.after as $a | if ($a.revisions | length) >= 3 and $a.record.read != null and $a.record.read <= $a.take * 1.05 and all($a.revisions[1:][]; .appended_from > 0) then "PASS" else "FAIL" end' <<< "$iv" 2> /dev/null || echo FAIL)" \
   "$(jq -c '{before: (.before | {record, take}), after: (.after | {record, take, appended_from: [.revisions[] | .appended_from]})}' <<< "$iv" 2> /dev/null)"
-# The wire agrees with it, revision by revision, in both arms: what this computer received from the machine while a revision landed is
+# The wire agrees with it, revision by revision, in both arms: what this computer received on the machine's output lanes (its bulk
+# sockets; the control connection's events and status are outside the account, Predictive Downloads 11-18) while a revision landed is
 # what its event said was new, the arm's sum is the record's `read` (each within 5%: a tie, Paul 11-15), and what the events said it
-# kept is the record's `reused`, to the byte.
+# kept is the record's `reused`, to the byte. Every socket's bytes and how it was classified are in iv.json (`sockets`).
 expect iv-reads-agree "$(jq -r 'def near($a; $b): $a != null and $b != null and $b > 0 and (($a - $b) | fabs) <= $b * 0.05;
-  if all(.before, .after; . as $arm | ($arm.revisions | length) > 0 and all($arm.revisions[]; near(.wire; .expected_read))
-    and near($arm.wire_total; $arm.record.read) and $arm.record.reused == ([$arm.revisions[] | .appended_from] | add))
+  if all(.before, .after; . as $arm | ($arm.revisions | length) > 0 and all($arm.revisions[]; near(.wire_bulk; .expected_read))
+    and near($arm.wire_bulk_total; $arm.record.read) and $arm.record.reused == ([$arm.revisions[] | .appended_from] | add))
   then "PASS" else "FAIL" end' <<< "$iv" 2> /dev/null || echo FAIL)" \
-  "$(jq -c 'map_values({peer: .peer.by, wire_total, record, revisions: [.revisions[] | {rev, length, appended_from, expected_read, wire}]})' <<< "$iv" 2> /dev/null)"
+  "$(jq -c 'map_values({peer: .peer.by, control: .sockets.control, wire_bulk_total, wire_total, record, revisions: [.revisions[] | {rev, length, appended_from, expected_read, wire_bulk, wire_control, wire}]})' <<< "$iv" 2> /dev/null)"
 expect iv-no-reencode "$(jq -r '.after.last_segment as $s | if $s.frames > 0 and $s.frames < .before.last_segment.frames then "PASS" else "FAIL" end' <<< "$iv" 2> /dev/null || echo FAIL)" \
   "$(jq -c '{before: .before.last_segment, after: .after.last_segment, last_denoise_to_take_ms: map_values(.last_denoise_to_take_ms)}' <<< "$iv" 2> /dev/null)"
 expect iv-playable "$(jq -r 'if (.after.revisions | length) > 0 and all(.before.revisions[], .after.revisions[]; .probe.duration > 0 and .probe.video > 0 and .probe.audio > 0 and .decode_errors == "") then "PASS" else "FAIL" end' <<< "$iv" 2> /dev/null || echo FAIL)" \
