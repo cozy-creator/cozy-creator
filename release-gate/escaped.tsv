@@ -9,3 +9,5 @@ upscale-qwen-dists	*	se-147: qwen-image-2's Upscale sharpened a small JPEG's blo
 upscale-seedvr2-dists	*	se-149: SeedVR2's picture Upscale at 1080p fell short of its 2160p restoration (suite upscale)	packages=seedvr2
 rental-idle-through-updates	cpu	cl-1203: hougetsu's RC updates every few minutes restarted its 15-minute idle clock; it never idled out (Paul 11-17; suite rentals)
 rental-stop-closes	cpu	th-404: vast stopped hougetsu and it sat "offline" at list price until 15 min after its last reach (Paul 11-17; suite rentals)
+edit-chain-hold	*	se-153: chained Qwen Image 2 edits lost the detail and colour of what none of them touched (Paul 11-17; suite edit)	packages=qwen-image-2
+edit-chain-crisp	*	se-153: what a Qwen Image 2 edit drew sharpened into crackle as later edits re-rendered it (Paul 11-17; suite edit)	packages=qwen-image-2
