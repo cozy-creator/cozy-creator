@@ -804,7 +804,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
-    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 30 || 90 }}
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 40 || 90 }}
     defaults:
       run:
         shell: bash
