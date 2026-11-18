@@ -35,6 +35,8 @@ jq -r '.result.pairs[] | "  \(.settings | tojson): plain \(.plain), drafted \(.d
   "$OUT/drafted.json" | tee -a "$R"
 jq -r '[.. | strings | select(test("tokens after .* ms/token"))] | .[]' "$OUT/drafted.json" | sed 's/^/  lm: /' | tee -a "$R"
 jq -e '.result.head' "$OUT/drafted.json" > /dev/null || fail "the checkpoint has no draft head"
+ran=$(jq -r '.result.runtime // empty' "$OUT/drafted.json") want=$(basename "$W" | cut -d- -f2)
+[ "$ran" = "$want" ] || fail "the run's Runtime is $ran, not the candidate's $want"
 jq -e '.result.pairs | length == 4 and all(.same)' "$OUT/drafted.json" > /dev/null || { say "FAIL drafted: a drafted call's tokens are not its undrafted one's"; RC=1; }
 # Each call is on a fresh engine, so it warms up eagerly first ("partly eager"); a drafted one says `drafting` and its captures.
 [ "$(jq '[.. | strings | select(test("tokens after .*drafting [0-9].*, [1-9][0-9]* captures"))] | length' "$OUT/drafted.json")" -ge 4 ] ||

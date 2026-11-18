@@ -6,6 +6,8 @@ that seed and position. The RC's order (top-k before the presence penalty) is sc
 
 from __future__ import annotations
 
+from importlib import metadata
+
 import msgspec
 import torch
 from cozy_runtime import lm, vlm
@@ -282,6 +284,8 @@ class Pairs(msgspec.Struct):
     pairs: list[Pair]
     #: the checkpoint has a draft head
     head: bool
+    #: the Runtime that ran it
+    runtime: str
 
 
 @app.entrypoint(defaults={"model": DRAFTING})
@@ -325,4 +329,4 @@ def drafted(payload: Drafted, model: VisionLM) -> Pairs:
             settings, len(plain), len(drafts), plain == drafts, first,
             str(tokenizer.decode(plain, skip_special_tokens=True)), str(tokenizer.decode(drafts, skip_special_tokens=True)),
         ))  # fmt: skip
-    return Pairs(pairs, head is not None)
+    return Pairs(pairs, head is not None, metadata.version("cozy-runtime"))
