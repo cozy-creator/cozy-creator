@@ -16,8 +16,7 @@
     "prompt_upsampling:=true",
     "seed:=30034"
    ],
-   "max_s": 4500,
-   "twin": true
+   "max_s": 4500
   },
   {
    "name": "hid-gen-hardest",
@@ -73,8 +72,7 @@
     "image={pic1}",
     "seed:=30039"
    ],
-   "max_s": 3000,
-   "twin": true
+   "max_s": 3000
   },
   {
    "name": "f2-gen-default",

@@ -84,8 +84,7 @@
     "shot:={\"beats\":[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}],\"seed\":30990}",
     "loras:=[{\"model\":\"alissonerdx/minimax-h3-vfx-edit@0.1.0\",\"strength\":1.0}]"
    ],
-   "max_s": 4500,
-   "twin": true
+   "max_s": 4500
   }
  ]
 }
