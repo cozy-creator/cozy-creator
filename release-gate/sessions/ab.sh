@@ -46,6 +46,8 @@
 #              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
+#              "pod_sh" (optional: {"during", "after"}, each a root shell on the pod over `cozy machine ssh`: `during` each 5 s
+#              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to 15 min), into <cell>-pod-after.log);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -172,6 +174,7 @@ for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socke
             host, port = f[1].split(":")
             raw = b"".join(struct.pack("<I", int(host[i:i + 8], 16)) for i in range(0, len(host), 8))
             print(f"{socket.inet_ntop(family, raw)}:{int(port, 16)} {owners.get(f[9], chr(63))}")'
+pod_sh() { timeout "${2:-60}" cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$1") | base64 -d | sh" < /dev/null 2>&1 | grep -v '^Warning: Permanently added'; }
 listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
@@ -301,7 +304,11 @@ for k in "${names[@]}"; do
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
+  during=$(jq -r '.pod_sh.during // empty' <<<"$c") after=$(jq -r '.pod_sh.after // empty' <<<"$c") PW=''
+  [ -z "$during" ] || { ( while :; do echo "== $(date -u +%T.%3N)"; pod_sh "$during"; sleep 5; done ) >> "$OUT/$k-pod-during.log" 2>&1 & PW=$!; }
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  [ -z "$PW" ] || kill "$PW" 2> /dev/null
+  [ -z "$after" ] || pod_sh "$after" 900 > "$OUT/$k-pod-after.log" 2>&1
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
