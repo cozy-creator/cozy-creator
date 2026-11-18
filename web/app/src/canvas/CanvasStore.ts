@@ -256,7 +256,7 @@ function linksOf(entity: Entity): string[] {
   return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
 }
 
-const WORST = ["making", "failed", "out_of_date", "missing", "current"] as const
+const WORST = ["making", "failed", "missing", "current"] as const
 
 /** How an entity stands: the worst of what it links. */
 const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((standing) => standings.includes(standing)) ?? "current"
@@ -1361,7 +1361,7 @@ export class CanvasStore {
   }
 
   /**
-   * Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes, so nothing goes out of date.
+   * Opened: what lies on something comes apart in the smallest moves, the later name moving, and that's saved. Only where things sit changes.
    * Only boxes themselves: the room each keeps around it is for placing and settling, so a project laid out closer than that stays as it is.
    */
   private separate() {
@@ -1704,7 +1704,7 @@ export class CanvasStore {
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays.
    *  With none yet, `send` shows it as it goes (`show`), or answers nothing when there's nothing to ask, and its step goes. */
-  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
+  private over<T extends { etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -1728,7 +1728,6 @@ export class CanvasStore {
           this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
           this.patch(held.name, { known: answer.etag })
         }
-        if (answer.stale?.length) say(`${answer.stale.join(", ")} ${answer.stale.length === 1 ? "is" : "are"} now out of date`)
         then?.done?.(answer)
       },
       refused: (error) => {
@@ -2000,7 +1999,7 @@ export class CanvasStore {
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "approve", by)
   }
 
-  /** Starred, it leads the project's Files list (cl-892). A star is no input: nothing goes out of date, and it's no approval. */
+  /** Starred, it leads the project's Files list (cl-892). A star is no input, and it's no approval. */
   star(name: string, on: boolean) {
     const key = this.resolveName(name)
     const edit = this.step(`${on ? "Starred" : "Unstarred"} ${key}`, [key])

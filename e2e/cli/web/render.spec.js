@@ -1,8 +1,10 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
 // press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
 // faded preview of its latents until its take replaces it, and its finish note's View opens it. The top bar has no Render all (cl-1192),
-// shown at 1440×900, 1920×1080 and 600×900. Two boxes rendered one at a time, one reading the other: it waits for it, says so and shows
-// none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
+// shown at 1440×900, 1920×1080 and 600×900. Render on a box renders it alone (cl-1192, Paul 11-18): one reading a box with no take says
+// to render that first, once, as a toast, and renders nothing; its input rendered and then changed, it reads the take that stands, and
+// nothing renders the input again or says it's out of date, shown at 1440×900 and 600×900. Two boxes rendered one at a time, one reading
+// the other: it waits for the take on its way, says so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
 // A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
 // showed, through a reload (cl-1070). The take watched in Focus is the one drawn
@@ -376,6 +378,50 @@ test('render', async ({ page, project, api, cli }) => {
     await page.setViewportSize(size);
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
+    await fit(page);
+  });
+
+  await test.step('Render on a box renders it alone: an input with no take is said once; one changed is read as it stands', async () => {
+    // Paul, 11-18 (cl-1192): "no you can delete this sort of walking logic. We won't have this idea of 'this is out of date' right now".
+    await project.add({ name: 'source', tool: STILL, kind: 'image', fields: { instructions: 'A source still.' }, at: { x: 0, y: 840 } });
+    await project.add({ name: 'reader', tool: STILL, kind: 'image', fields: { instructions: 'Like <source>.' }, at: { x: 360, y: 840 } });
+    await fit(page);
+    const takes = async () => ({ source: (await project.asset('source'))?.versions ?? 0, reader: (await project.asset('reader'))?.versions ?? 0 });
+    const line = 'Render source first: it has no picture yet';
+    let region = await focus(page, 'reader');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect(page.locator('[data-note]').filter({ hasText: line }), 'a toast names the input to render first').toHaveCount(1, { timeout: 60_000 });
+    await expect.poll(async () => (await project.asset('reader'))?.failure?.message ?? '', { message: "reader's one line" }).toContain(line);
+    await notesOver(page, 2000);
+    expect.soft((await page.evaluate(() => window.__notes)).filter((text) => text.includes(line)), 'said once').toHaveLength(1);
+    expect.soft(await takes(), 'nothing rendered: not source on its behalf, nor reader').toEqual({ source: 0, reader: 0 });
+    await back(page);
+
+    region = await focus(page, 'source');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await takes()).source, { message: "source's take", timeout: 120_000 }).toBe(1);
+    await back(page);
+    await api.patch(project.at('/assets/source'), { fields: { instructions: 'A source still, changed and not rendered.' } });
+    await expect.poll(async () => (await project.asset('source'))?.fields?.instructions).toBe('A source still, changed and not rendered.');
+    region = await focus(page, 'reader');
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(async () => (await takes()).reader, { message: "reader's take", timeout: 120_000 }).toBe(1);
+    await back(page);
+    expect.soft(await takes(), 'only reader rendered').toEqual({ source: 1, reader: 1 });
+    const [source, reader, state] = [await project.asset('source'), await project.asset('reader'), await project.state()];
+    const input = (await api.get(`${project.at(`/runs/${reader.prefixes[0].run}`)}?detail=full`)).request?.input;
+    expect.soft(JSON.stringify(input?.instructions?.references ?? []), "reader was sent source's take as it stands").toContain(shaOf(source, 1));
+    expect.soft({ standing: source.standing, status: source.status, failure: reader.failure ?? null, stale: state.stale ?? null },
+      'nothing is out of date, and reader no longer fails').toEqual({ standing: 'current', status: 'version 1', failure: null, stale: null });
+    const shots = join(process.env.OUT, 'web', 'render');
+    mkdirSync(shots, { recursive: true });
+    const size = page.viewportSize();
+    for (const [width, height] of [[1440, 900], [600, 900]]) {
+      await page.setViewportSize({ width, height });
+      await fit(page);
+      await page.screenshot({ path: join(shots, `read-as-it-stands-${width}x${height}.png`) });
+    }
+    await page.setViewportSize(size);
     await fit(page);
   });
 

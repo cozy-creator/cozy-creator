@@ -57,7 +57,8 @@ if want project-split || want project-upscale; then
     {name: "mural_upscale", tool: "\($h3)/upscale", kind: "video", fields: {aspect_ratio: "16:9", video: "<mural>", to: "1080p"}},
     {name: "edit", tool: "cozy/edit", fields: {aspect_ratio: "16:9", resolution: "1080p", tracks: [{clips: ["<mural_upscale>"]}]}}
   ]' | boxes "$P"
-  render project-split "$P" mural || expect project-split FAIL "render mural: $(tail -c 300 project-split.log)"
+  # Each named: mural reads hero_sheet, which nothing renders on its behalf (cl-1192).
+  render project-split "$P" hero_sheet mural || expect project-split FAIL "render mural: $(tail -c 300 project-split.log)"
   v=$(approved "$P" mural)
   f=$(made "$P" mural)
   if [ -z "$f" ]; then expect project-split FAIL "no version of mural: $(tail -c 300 project-split.log)"
@@ -79,8 +80,8 @@ if want project-split || want project-upscale; then
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
       request "$(approved "$P" mural_upscale | jq -r .run)" | jq -r '.video.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
-      # The edit is cut here once what it reads has landed, on its own: asked for only if it isn't yet.
-      render project-edit "$P" --missing edit || expect project-edit FAIL "render edit: $(tail -c 300 project-edit.log)"
+      # The edit is cut here, named: nothing cuts it on another's behalf (cl-1192).
+      render project-edit "$P" edit || expect project-edit FAIL "render edit: $(tail -c 300 project-edit.log)"
       e=$(m=$(made "$P" edit); [ -n "$m" ] && ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$m")
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit ${e:-missing}"
     fi
@@ -190,7 +191,7 @@ if want project-stills; then
     {name: "kitchen_door", tool: "\($still)/image", kind: "image", fields: {aspect_ratio: "16:9",
       instructions: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"}}
   ]' | boxes "$P"
-  render project-stills "$P" --wait cook,kitchen,kitchen_door all
+  render project-stills "$P" cook kitchen kitchen_door
   for n in kitchen kitchen_door cook; do
     f=$(made "$P" "$n")
     expect "project-stills-${n//_/-}" "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"

@@ -1,6 +1,6 @@
 //! `cozy render`: the page's Render, on its route (`POST /v1/projects/{id}/runs`), followed on `GET /v1/events` until what it asked
-//! lands (cl-956). It brings the named nodes up to date and what they read first; a node already rendering is joined, so running it
-//! again never pays twice, and killing it never cancels the render.
+//! lands (cl-956). It renders the named nodes and nothing else (cl-1192): each reads what it reads has now. A node already rendering is
+//! joined, so running it again never pays twice, and killing it never cancels the render.
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -10,7 +10,7 @@ use std::{
 use api::{
     calcifer::{
         NoteLevel, ProjectShowReply, Shown, StreamEvent,
-        project::{Asked, AssetVersions, Board, Job, JobState, Pickup, Runs, Said, Standing, State},
+        project::{Asked, AssetVersions, Board, Job, JobState, Pickup, Runs, Said, State},
         tool::Tools,
     },
     error::{Error, Kind},
@@ -31,31 +31,29 @@ const FPS: f64 = 24.0;
 const MADE_NOTHING: [&str; 3] = ["it stands", "nothing to do", "stays pinned"];
 
 const EXAMPLES: &str = "Examples
-  cozy render film                    film, and what it reads with no current take first
-  cozy render shot_1 shot_2 -n 3      three takes of each that is missing or out of date
-  cozy render shot_2 --new            a new take though it is current
+  cozy render film                    a new take of film, from what it reads now
+  cozy render shot_1 shot_2 film      each in turn: film reads the takes shot_1 and shot_2 make here
+  cozy render shot_2 -n 3             three takes of shot_2
   cozy render shot_2 --pickup '<shot_2.1>@243'
                                       Pick up from here: take 1 up to frame 243 kept, the rest rendered again
 
-A node with an approved take stands, unless --new. Rendering a node already rendering joins it; stopping this command never
-cancels the render (cozy run cancel <run> does), and running it again joins it.";
+Only the named nodes render: a node reads each box it mentions as it is now, its approved take else its newest, and one with no take
+yet says to render that first. Rendering a node already rendering joins it; stopping this command never cancels the render (cozy run
+cancel <run> does), and running it again joins it.";
 
-/// Render nodes and what they read, as the page's Render does, and follow them until their takes land.
+/// Render nodes, as the page's Render does, and follow them until their takes land.
 #[derive(clap::Args, Debug)]
 #[command(after_help = EXAMPLES)]
 pub(crate) struct Args {
-    /// The nodes to bring up to date.
+    /// The nodes to render.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines it may go to: `local`, a machine, or several (`a,b`). Default: the project's machines, else any.
     #[arg(long = "on", value_name = "MACHINE[,MACHINE]")]
     on: Option<String>,
-    /// Takes of each named node that renders. What they read renders once.
+    /// Takes of each named node.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
-    /// Render the named nodes though they are current.
-    #[arg(long)]
-    new: bool,
     /// Pick up from here: keep a take up to a frame and render the rest again. One node.
     #[arg(long, value_name = "<NAME.N>@FRAME")]
     pickup: Option<String>,
@@ -88,11 +86,8 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let board = head.board.unwrap_or_default();
     let mut follow = Follow::new(ctx, &args.names, &board);
     follow.adopt();
-    // With --new a named node rendering already is joined, not rendered twice.
-    let (asked, joined): (Vec<String>, Vec<String>) = match args.new {
-        true => args.names.iter().cloned().partition(|name| !follow.rendering(&board, name)),
-        false => (args.names.clone(), vec![]),
-    };
+    // A named node rendering already is joined, not rendered twice.
+    let (asked, joined): (Vec<String>, Vec<String>) = args.names.iter().cloned().partition(|name| !follow.rendering(&board, name));
     let mut said = joined.iter().map(|name| Said { level: NoteLevel::Info, message: format!("{name} is rendering: joined"), names: vec![name.clone()] }).collect::<Vec<_>>();
     let mut ask = None;
     if !asked.is_empty() {
@@ -102,7 +97,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             on,
             hub: ctx.hub().to_string(),
             approve: false,
-            missing: !args.new,
             pickup,
             takes: vec![],
         };
@@ -114,7 +108,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     if follow.mine.is_empty() {
         return Ok(follow.nothing(&said));
     }
-    follow.begin(&state, &said);
+    follow.begin(&said);
     landed(follow, &project, watch, ask.as_deref()).await
 }
 
@@ -149,7 +143,6 @@ pub(crate) struct Watching<'a> {
     ctx: &'a Context,
     project: Project,
     watch: Watch<StreamEvent>,
-    state: State,
     board: Board,
 }
 
@@ -160,7 +153,7 @@ impl<'a> Watching<'a> {
         let project = Project { id: state.id.clone(), dir: state.path.clone(), calcifer };
         let watch = project.watch().await?;
         let head: State = project.calcifer.get(&format!("{}?assets=false", project.at(&[]))).await?;
-        Ok(Self { ctx, project, watch, state, board: head.board.unwrap_or_default() })
+        Ok(Self { ctx, project, watch, board: head.board.unwrap_or_default() })
     }
 
     /// What `asked` added, followed by its boxes as `cozy render` follows them, until their takes land.
@@ -177,7 +170,7 @@ impl<'a> Watching<'a> {
         if follow.mine.is_empty() {
             return Ok(follow.nothing(&asked.said));
         }
-        follow.begin(&self.state, &asked.said);
+        follow.begin(&asked.said);
         landed(follow, &self.project, self.watch, asked.ask.as_deref()).await
     }
 }
@@ -354,8 +347,8 @@ impl<'a> Follow<'a> {
         self.tell();
     }
 
-    /// What it renders first, and why: what the named nodes read that renders, and what they joined.
-    fn begin(&self, state: &State, said: &[Said]) {
+    /// What the render said of the named nodes: warnings, and why one renders nothing or was joined.
+    fn begin(&self, said: &[Said]) {
         if self.ctx.json {
             output::ndjson(&json!({"type": "asked", "jobs": self.mine_jobs().map(|job| json!({"name": job.asset, "state": job.state})).collect::<Vec<_>>(), "said": said}));
             return;
@@ -369,39 +362,6 @@ impl<'a> Follow<'a> {
             if !rendering || said.message.ends_with("joined") {
                 anstream::println!("{}", said.message);
             }
-        }
-        let mut deps: Vec<&str> = vec![];
-        for job in self.mine_jobs().filter(|job| !self.names.contains(&key(&job.asset))) {
-            if !deps.contains(&job.asset.as_str()) {
-                deps.push(&job.asset);
-            }
-        }
-        // Each under the node that reads it, from the named nodes up, in the order its text mentions them.
-        let mut readers: Vec<&str> = self.mine_jobs().filter(|job| self.names.contains(&key(&job.asset))).map(|job| job.asset.as_str()).collect();
-        let (mut at, mut placed) = (0, HashSet::new());
-        while let Some(&reader) = readers.get(at) {
-            at += 1;
-            let reads: Vec<&str> = row(state, reader).into_iter().flat_map(|asset| &asset.reads).filter(|read| read.version.is_none())
-                .filter_map(|read| deps.iter().copied().find(|dep| key(dep) == key(&read.name)))
-                .filter(|dep| placed.insert(key(dep)))
-                .collect();
-            if reads.is_empty() {
-                continue;
-            }
-            readers.extend(reads.iter().copied());
-            let whys: Vec<&str> = reads.iter().map(|name| why(state, name)).collect();
-            let said = match whys.iter().all(|why| *why == whys[0]) {
-                true => format!("{reader} reads {}, which {}: rendering {} first", and(&reads), plural(whys[0], reads.len()), if reads.len() == 1 { "it" } else { "them" }),
-                false => {
-                    let each: Vec<String> = reads.iter().zip(&whys).map(|(name, why)| format!("{name}, which {why}")).collect();
-                    format!("{reader} reads {}: rendering them first", each.join(", and "))
-                }
-            };
-            anstream::println!("{said}");
-        }
-        let rest: Vec<&str> = deps.into_iter().filter(|dep| !placed.contains(&key(dep))).collect();
-        if !rest.is_empty() {
-            anstream::println!("rendering {} first", and(&rest));
         }
     }
 
@@ -591,24 +551,6 @@ fn label(job: &Job) -> String {
 
 fn ended(state: JobState) -> bool {
     matches!(state, JobState::Done | JobState::Failed | JobState::Canceled | JobState::NotSent)
-}
-
-/// Why a node read renders first, as its row says.
-fn why<'s>(state: &'s State, name: &str) -> &'s str {
-    match row(state, name).map(|asset| (asset.standing, asset.approved.is_some())) {
-        Some((Standing::OutOfDate, _)) => "is out of date",
-        Some((Standing::Current, true)) => "is approved and out of date",
-        Some((Standing::Making, _)) => "is rendering",
-        _ => "has no takes",
-    }
-}
-
-/// `has no takes` said of several: `have no takes`.
-fn plural(why: &str, n: usize) -> String {
-    match n {
-        1 => why.to_owned(),
-        _ => why.replacen("has ", "have ", 1).replacen("is ", "are ", 1),
-    }
 }
 
 fn row<'s>(state: &'s State, name: &str) -> Option<&'s api::calcifer::project::Asset> {
