@@ -191,8 +191,7 @@ pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
     let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
     let staged = match crate::checkout::package_at(path) {
         Some(_) => {
-            let patched = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("patched"), "patched")?;
-            crate::checkout::stage(path, Some(&memo), &patched)?
+            crate::checkout::stage(path, Some(&memo))?
         }
         None => shared::stage(path, Some(&memo))?,
     };
@@ -518,7 +517,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
         // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
-        callees: callees(&project_dir)?.into_iter().chain(crate::checkout::of(code).into_iter().flat_map(|from| from.callees)).collect(),
+        callees: callees(&project_dir)?.into_iter().chain(sibling_callees(&project_dir)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -564,6 +563,12 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     })
 }
 
+/// The first-party siblings the package at `project` takes by path (`sibling_sources`), as the packages they are: `minimax-h3` →
+/// `_/minimax-h3`, as a checkout names them (xs-195).
+fn sibling_callees(project: &Path) -> impl Iterator<Item = (String, String)> {
+    shared::siblings(project).into_iter().filter_map(|(distribution, dir)| Some((distribution, format!("{}/{}", api::names::ROOT, crate::checkout::application(&dir)?))))
+}
+
 /// Each local source's `cozy-runtime` requirement by its manifest, as `source` read it while Calcifer runs: what a machine that
 /// refused its install for its Runtime moves for (cl-1069, `Machines::refloored`).
 static NEEDS: LazyLock<Mutex<HashMap<String, pep440_rs::VersionSpecifiers>>> = LazyLock::new(Mutex::default);
@@ -605,15 +610,16 @@ fn shared_lock(home: &Home, within: &Path, sent: &Path, hub: &Origin) -> Result<
     Ok(Some(dir.join(format!("{}.json", &hex(&key)[..32]))))
 }
 
-/// What a lock of the copy `within` (its package at `sent`) is made from: every project's metadata in it (the package's own, its
-/// path dependencies', the checkout's packages it calls), its lock, the wheels it carries, and the package's place in the tree. The
-/// package's own code is none of it: an edit to that locks nothing again.
+/// What a lock of the copy `within` (its package at `sent`) is made from: the package's metadata, its lock and the wheels it
+/// carries; every file beside it (its path dependencies and first-party siblings, whose own change locks it again: cl-1211); and
+/// its place in the tree. The package's own code is none of it: an edit to that locks nothing again.
 fn lock_inputs(within: &Path, sent: &Path) -> Result<Digest, Error> {
     const NAMED: [&str; 6] = ["pyproject.toml", "uv.lock", "uv.toml", ".python-version", "setup.py", "setup.cfg"];
+    let own = sent.strip_prefix(within).unwrap_or(sent);
     let mut inputs = vec![];
     for file in source_files(within, &mut vec![])? {
         let name = file.file_name().unwrap_or_default().to_string_lossy();
-        let input = NAMED.contains(&name.as_ref()) || name.ends_with(".whl") || name.ends_with(".tar.gz");
+        let input = !file.starts_with(own) || NAMED.contains(&name.as_ref()) || name.ends_with(".whl") || name.ends_with(".tar.gz");
         if !input || !(file.starts_with("tree") || file.starts_with("script")) {
             continue;
         }
@@ -639,6 +645,45 @@ pub(crate) fn copy_tree(within: &Path, to: &Path) -> Result<(), Error> {
             .map_err(|e| refuse("code_unwritable", format!("{}: {e}", at.display())))?;
     }
     Ok(())
+}
+
+/// The pyproject.toml of `project` and of each first-party sibling its tree holds beside it (`api::code::siblings`), each
+/// `{ index = "tensorhub" }` source a sibling answers taking that sibling by path (`{ path = "../birefnet" }`), as #3808's
+/// `local-sources.sh` does: those it changes, by path. A lock made from them asks no Hub for a sibling's unpublished release
+/// (cl-1211); a committed lock, which pins only what a machine can fetch, never holds them (`made`).
+pub(crate) fn sibling_sources(project: &Path) -> Result<Vec<(PathBuf, String)>, Error> {
+    let siblings = shared::siblings(project);
+    let mut out = vec![];
+    for folder in std::iter::once(project.to_path_buf()).chain(siblings.values().cloned()).filter(|_| !siblings.is_empty()) {
+        let path = folder.join("pyproject.toml");
+        let text = fs::read_to_string(&path).map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
+        let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| refuse("project_file_invalid", format!("{}: {e}", path.display())))?;
+        let sources = (doc.get_mut("tool").and_then(|tool| tool.get_mut("uv")))
+            .and_then(|uv| uv.get_mut("sources"))
+            .and_then(toml_edit::Item::as_table_like_mut);
+        let mut changed = false;
+        for (key, source) in sources.into_iter().flat_map(|sources| sources.iter_mut()) {
+            let Some(dir) = siblings.get(&distribution(key.get())) else { continue };
+            let hub = |value: &toml_edit::Value| value.as_inline_table().and_then(|table| table.get("index")).and_then(|index| index.as_str()) == Some(INDEX);
+            let named = match source {
+                toml_edit::Item::Value(toml_edit::Value::Array(alternatives)) => alternatives.iter().any(hub),
+                toml_edit::Item::Value(value) => hub(value),
+                toml_edit::Item::Table(table) => table.get("index").and_then(toml_edit::Item::as_str) == Some(INDEX),
+                _ => false,
+            };
+            if !named {
+                continue;
+            }
+            let mut by_path = toml_edit::InlineTable::new();
+            by_path.insert("path", format!("../{}", dir.file_name().unwrap_or_default().to_string_lossy()).into());
+            *source = toml_edit::value(by_path);
+            changed = true;
+        }
+        if changed {
+            out.push((path, doc.to_string()));
+        }
+    }
+    Ok(out)
 }
 
 /// One lock of a copy at a time: any other waits and takes what it made.
@@ -681,7 +726,7 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         let made = match kept.filter(|kept| takes(&kept.lock)) {
             Some(kept) => kept,
             None => {
-                let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+                let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], true, &say).await?;
                 let made = SharedLock { changed: made.changed, lock: made.lock };
                 if let Some(at) = &shared {
                     let _ = serde_json::to_vec(&made).map_err(std::io::Error::other).and_then(|bytes| durable::replace(at, &bytes, 0o600).map_err(std::io::Error::other));
@@ -692,12 +737,20 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
         let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", part.display()));
-        let kept = if made.changed { made.lock.as_str() } else { "" };
+        // Its first-party siblings by path, as its lock took them: the copy it describes and installs says so too (cl-1211).
+        let bound = sibling_sources(&sent)?;
+        let kept = if made.changed || !bound.is_empty() { made.lock.as_str() } else { "" };
         fs::create_dir_all(&part).and_then(|()| fs::write(part.join("lock"), kept)).map_err(failed)?;
-        if made.changed {
+        if !kept.is_empty() {
             copy_tree(&within, &part.join("copy"))?;
             let at = sent.strip_prefix(&within).unwrap_or(Path::new(""));
             fs::write(part.join("copy").join(at).join("uv.lock"), &made.lock).map_err(failed)?;
+            for (path, text) in &bound {
+                fs::write(part.join("copy").join(path.strip_prefix(&within).unwrap_or(path)), text).map_err(failed)?;
+            }
+        }
+        if !bound.is_empty() {
+            fs::write(part.join(BOUND), b"").map_err(failed)?;
         }
         if let Err(e) = fs::rename(&part, &done) {
             let _ = fs::remove_dir_all(&part);
@@ -712,9 +765,17 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     Ok((dir, made))
 }
 
+/// Beside a lock `locked` made with first-party siblings by path: no client writes that one into its folder.
+const BOUND: &str = "siblings";
+
 /// The lock `locked` made for `code` at `hub`, when it is not the tree's own: what its client writes into the package's folder.
+/// None for one that takes first-party siblings by path, which no machine could fetch from a committed lock (cl-1211).
 pub(crate) fn made(home: &Home, code: &LocalCode, hub: &Origin) -> Option<String> {
-    fs::read_to_string(lock_dir(home, code, hub).ok()?.join("lock")).ok().filter(|made| !made.is_empty())
+    let done = lock_dir(home, code, hub).ok()?;
+    if done.join(BOUND).exists() {
+        return None;
+    }
+    fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty())
 }
 
 /// The distributions the lock takes from a Hub index, as the packages they are

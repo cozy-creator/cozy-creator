@@ -7,7 +7,7 @@
 //! copy excludes its layer, so no lock holds it. Nothing is written into the client's folder: a lock
 //! answers its `uv.lock`, which the client writes.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -163,6 +163,14 @@ impl Stage {
         Ok(())
     }
 
+    /// Takes each first-party sibling the copy's tree holds by path (`local_code::sibling_sources`): their distributions.
+    fn siblings(&self) -> Result<BTreeSet<String>, Error> {
+        for (path, text) in crate::local_code::sibling_sources(&self.src)? {
+            fs::write(&path, text).map_err(|e| refuse("stage_unavailable", e))?;
+        }
+        Ok(::api::code::siblings(&self.src).into_keys().collect())
+    }
+
     /// Points each of the copy's `tensorhub` sources at the index `bound` names for its distribution: one uv index per
     /// namespace, named `tensorhub` itself when every source takes the same one.
     fn bind(&self, bound: &Bound) -> Result<(), Error> {
@@ -281,7 +289,7 @@ type Bound = BTreeMap<String, (String, String)>;
 /// distribution; else the root's, whose packages are everyone's. Each at the index that namespace has at the origin `hub`
 /// advertises. A package of the account's own wins over a root one of the same name, so nothing published later at the root
 /// moves an account's dependency.
-async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock: Option<&str>) -> Result<Bound, Error> {
+async fn bindings(hubs: &Hubs, hub: &Origin, sources: &BTreeSet<String>, root: bool, lock: Option<&str>) -> Result<Bound, Error> {
     let locked = lock.map(lock_namespaces).unwrap_or_default();
     let reader = hubs.reader(hub.as_str())?;
     let account = match !root && matches!(reader.credential(), ::api::hub::Credential::User(_)) {
@@ -289,7 +297,7 @@ async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock
         false => None,
     };
     let (mut urls, mut bound) = (BTreeMap::new(), Bound::new());
-    for name in &project.hub_sources {
+    for name in sources {
         let namespace = match (root, locked.get(name), &account) {
             (true, _, _) | (false, None, None) => api::names::ROOT.to_owned(),
             (false, Some(namespace), _) => namespace.clone(),
@@ -394,24 +402,31 @@ fn sent(api: &Api, code: &api::code::LocalCode) -> Result<(Project, PathBuf), Er
 pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackageLock, work: &Here) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
     let (project, within) = sent(api, code)?;
-    let locked = locked(&api.machines.hubs, hub, &project, &within, ask.root, &ask.upgrade, say).await?;
+    let locked = locked(&api.machines.hubs, hub, &project, &within, ask.root, &ask.upgrade, false, say).await?;
     versions(&locked.lock)?;
     Ok(locked)
 }
 
 /// `project` locked for `hub` by uv in a private copy, its `tensorhub` sources bound where their packages are (`bindings`), each
 /// of `upgrade` free to move to its newest release, and the rest kept at what its own uv.lock pins. A run of local code locks
-/// with this too (`local_code::locked`), its path dependencies included. `within`: Calcifer's copy of the tree it is in.
-/// `account_index`: the index its own account's packages came from, else the root's.
-pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], say: Say<'_>)
-    -> Result<Locked, Error> {
+/// with this too (`local_code::locked`), its path dependencies included, and with `siblings` the first-party siblings its tree
+/// holds by path (`local_code::sibling_sources`, cl-1211), which no Hub is asked for. `within`: Calcifer's copy of the tree it is
+/// in. `account_index`: the index its own account's packages came from, else the root's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], siblings: bool,
+    say: Say<'_>) -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
     let mut stage = blocking(|| Stage::new(project, within, uv_path, say))?;
     stage.rc_runtime(upgrade, say).await?;
+    let taken = match siblings {
+        true => blocking(|| stage.siblings())?,
+        false => BTreeSet::new(),
+    };
+    let sources: BTreeSet<String> = project.hub_sources.difference(&taken).cloned().collect();
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
-    let bound = match project.hub_sources.is_empty() {
+    let bound = match sources.is_empty() {
         true => Bound::new(),
-        false => match bindings(hubs, hub, project, root, own.as_deref()).await {
+        false => match bindings(hubs, hub, &sources, root, own.as_deref()).await {
             Ok(bound) => {
                 super::held::keep_indexes(hubs.home(), hub.as_str(), &bound);
                 bound
@@ -422,7 +437,7 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
                 let locked = own.as_deref().map(lock_namespaces).unwrap_or_default();
                 stage.offline = true;
                 say(&format!("{hub} can't be reached: locked from what this computer holds"));
-                (project.hub_sources.iter())
+                (sources.iter())
                     .map(|name| {
                         let namespace = locked.get(name).cloned().unwrap_or_else(|| api::names::ROOT.to_owned());
                         let url = super::held::offline_index(hubs.home(), hub.as_str(), &namespace)
@@ -514,7 +529,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     // this Hub cannot meet is refused by name, never re-resolved to a newer release.
     let python = blocking(|| python(&project, &stage.uv))?;
     if !project.hub_sources.is_empty() {
-        let bound = bindings(&api.machines.hubs, hub, &project, ask.root, Some(committed.as_str())).await?;
+        let bound = bindings(&api.machines.hubs, hub, &project.hub_sources, ask.root, Some(committed.as_str())).await?;
         stage.bind(&bound)?;
         let pins = index_pins(&committed)?;
         if !pins.is_empty() && bound.values().any(|(_, url)| !committed.contains(url.as_str())) {
