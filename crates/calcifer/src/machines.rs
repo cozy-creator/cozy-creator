@@ -1051,6 +1051,12 @@ impl Machines {
         Ok(machine)
     }
 
+    /// The runs other clients of the account have on the machine, running or queued, as `frame`'s queue says them (cl-1224): one with
+    /// any is never moved (to a minor, a package's floor, the RC) for this computer's sake, which would drain or hold up their work.
+    pub(crate) fn others_on(&self, frame: &v1::StatusFrame) -> usize {
+        frame.queue.iter().flatten().filter(|root| !self.sent_here(root)).count()
+    }
+
     /// Whether this computer sent `root`: the machine says so, or (a machine before cl-1193) its id is one of this computer's runs.
     fn sent_here(&self, root: &v1::Queued) -> bool {
         let id = crate::store::calcifer_id(&root.run);

@@ -437,8 +437,10 @@ impl Machines {
         if local && !self.calcifer.at_rest(AT_REST.as_millis() as i64).unwrap_or(false) {
             return None;
         }
+        // Every client's work counts (cl-1224): another computer of the account may be running on it.
         let idle = || {
             self.calcifer.busy(name).is_ok_and(|busy| busy == 0)
+                && self.frame(name).is_none_or(|frame| self.others_on(&frame) == 0)
                 && self.store().updating(name).is_ok_and(|updating| !updating)
                 && self.held_by_hand(name).is_none()
         };
