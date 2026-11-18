@@ -372,7 +372,7 @@ impl Refusal {
         Self {
             requested,
             capacity: owner.total.load(Ordering::Acquire).min(owner.capacity()),
-            working_live: state.blocks.values().filter(|b| b.life == Life::Live && !b.scratch).map(|b| b.capacity).sum(),
+            working_live: state.working_live(),
             pinned: owner.held.load(Ordering::Acquire),
             weights_resident: owner.pages.load(Ordering::Acquire),
             pools: state.segments.values().filter(|s| s.pool.is_some() && s.backed()).map(|s| s.bytes).sum(),
@@ -389,6 +389,11 @@ pub fn refusal(device: i32) -> Result<Option<Refusal>> {
 }
 
 impl State {
+    /// Working bytes live now: allocated and not freed, scratch aside.
+    pub(crate) fn working_live(&self) -> usize {
+        self.blocks.values().filter(|b| b.life == Life::Live && !b.scratch).map(|b| b.capacity).sum()
+    }
+
     /// A free block onto its list, and a run's onto the cut index too. The block is in the table.
     fn list(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
         self.free.entry(key).or_default().push(ptr);

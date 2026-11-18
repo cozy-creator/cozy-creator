@@ -1093,6 +1093,45 @@ impl Device {
         }))
     }
 
+    /// Refuses `regions`, with `more` bytes held beside them not in a Region yet, before any of them
+    /// maps, when no reclaim could ever give them room at once: more than the card or its cap less
+    /// this process's live working memory and what other uses pin. Other programs' and idle peers'
+    /// memory may still come back, and a fill ahead gives way to demand, so neither counts against
+    /// them. Filled partway, a binding no card can hold only evicts everything else first and then
+    /// waits on room that never comes (cr-286: an 11.1 GiB decode set at an 8 GiB cap, run 47309).
+    pub fn fits(&self, regions: &[Arc<Region>], more: usize) -> Result<()> {
+        let gate = gate(self.ordinal)?;
+        gate.not_capturing()?;
+        let state = self.lock()?;
+        let _context = self.driver().enter()?;
+        self.sample()?;
+        let mut ids = std::collections::BTreeSet::new();
+        let mut wanted = more;
+        for region in regions {
+            if !std::ptr::eq(region.gpu, self) {
+                return Err(Error::Invalid("a region of another device"));
+            }
+            if ids.insert(region.id) {
+                wanted = wanted.saturating_add(region.rounded);
+            }
+        }
+        let pinned: usize = state.entries.iter()
+            .filter(|(id, entry)| entry.uses.pins() != 0 && !entry.prefetched && !ids.contains(id))
+            .map(|(_, entry)| entry.bytes)
+            .sum();
+        let total = self.total.load(Ordering::Acquire);
+        let ceiling = self.ceiling.load(Ordering::Acquire);
+        let card = match ceiling {
+            usize::MAX => total,
+            ceiling => ceiling.saturating_sub(self.reservation.get().copied().unwrap_or(0)).min(total),
+        };
+        let room = card.saturating_sub(state.working_live()).saturating_sub(pinned);
+        if wanted > room {
+            return Err(Error::Exhausted { requested_bytes: wanted, available_bytes: room });
+        }
+        Ok(())
+    }
+
     /// A new phase begins: what was used before it is no longer in its loop. Metadata only.
     pub fn enter_phase(&self) -> Result<()> {
         gate(self.ordinal)?.not_capturing()?;
