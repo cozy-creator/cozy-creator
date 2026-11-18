@@ -5,7 +5,8 @@
 # a dir is a hand gate's --out. A trusted failed run may carry a lead-accepted FAIL.
 # Promotions (promote.sh, cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml) check what they
 # publish against this output. --release (a Runtime, TensorFS or cozy release; a hand gate's record names its output): every
-# row of escaped.tsv, a bug that once reached users, passed on a SKU it names in one of these gates.
+# row of escaped.tsv, a bug that once reached users, passed on a SKU it names in one of these gates, or escaped-accepted.tsv
+# accepts it by name for this release: such a row is printed in full, never passed over.
 set -euo pipefail
 RELEASE=; [ "${1:-}" != --release ] || { RELEASE=1; shift; }
 [ $# -gt 0 ] || { sed -n '2,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -42,7 +43,10 @@ if [ -n "$RELEASE" ]; then
   # A row naming packages is required only when the set changes one (its version at the set's packages_ref is a prerelease,
   # as suite packages reads it) or carries a Runtime other than the last release's (PyPI's newest cozy-runtime); one it
   # can't read is required.
+  # escaped-accepted.tsv: <row> <why it was not run> <who accepted it> <date> <release>. A line counts only for the cozy
+  # release it names (this set's, less any -dev or build suffix), so an acceptance never carries to the next release.
   missing= pref=$(jq -r '.packages_ref // ""' <<< "$first") crt=$(jq -r '.runtime // ""' <<< "$first") released=
+  release=$(jq -r '.cozy // ""' <<< "$first"); release=${release%%[-+]*}
   required() {
     local p v
     [ -n "$1" ] || return 0
@@ -69,8 +73,12 @@ if [ -n "$RELEASE" ]; then
       [[ $sku == @($skus) ]] || continue
       awk -F'\t' -v r="$row" '$1 == r && $2 == "PASS" {f = 1} END {exit !f}' "$d/expect.tsv" 2>/dev/null && { hit="$sku: $d"; break; }
     done
-    if [ -n "$hit" ]; then echo "escaped $row ($issue) PASS on $hit${WHY:+ (required: $WHY)}" >&2; else missing="$missing $row($skus, $issue${WHY:+; $WHY})"; fi
+    took=$(awk -F'\t' -v r="$row" -v v="$release" '$1 == r && $5 == v && v != "" {print "not run: " $2 "; accepted by " $3 ", " $4 ", for " $5; exit}' \
+      "$(dirname "$0")/escaped-accepted.tsv" 2>/dev/null || true)
+    if [ -n "$hit" ]; then echo "escaped $row ($issue) PASS on $hit${WHY:+ (required: $WHY)}" >&2
+    elif [ -n "$took" ]; then echo "escaped $row ($issue) ACCEPTED on no SKU ($skus): $took" >&2
+    else missing="$missing $row($skus, $issue${WHY:+; $WHY})"; fi
   done < "$(dirname "$0")/escaped.tsv"
-  [ -z "$missing" ] || { echo "a release gate must pass every escaped bug's cell; not passed here:$missing" >&2; exit 1; }
+  [ -z "$missing" ] || { echo "a release gate must pass every escaped bug's cell, or escaped-accepted.tsv accept it for $release; not passed here:$missing" >&2; exit 1; }
 fi
 echo "$first"
