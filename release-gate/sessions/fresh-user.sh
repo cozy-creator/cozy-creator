@@ -20,6 +20,33 @@ t() {
 }
 cfg=$HOME/.cozy/config.toml
 say "cozy $(cozy --version); config: $(tr '\n' ' ' < "$cfg" 2> /dev/null | cut -c1-200)"
+# mode dev (the coordinator, 11-18): a dev home from the first command, `local` on the RC's pair; the RC's packages from source (birefnet,
+# qwen3 on a 0.8B model), then a PUBLISHED package locked on the released pair (birefnet@<its release>), then `machine update local`.
+if [ "$(param mode published)" = dev ]; then
+  SOURCE=$(cd "$PACKAGES/$(param source rc)" && pwd) || fail "no packages_refs checkout $(param source rc)"
+  mkdir -p "${cfg%/*}"; { echo 'dev = true'; printf '\n[calcifer]\npackages = "%s"\n' "$SOURCE"; } > "$cfg"
+  t restart-dev restart
+  t doctor-fix doctor --fix -y
+  t local-before machine show local
+  t new new --unencrypted fresh
+  P=$F/fresh; cp "$REF/seed.jpg" "$P/picture.jpg"; small=$P/small.jpg
+  ffmpeg -v error -y -i "$P/picture.jpg" -vf scale=512:-2 "$small" 2> /dev/null || small=$P/picture.jpg
+  DIR=$P t src-birefnet run birefnet/remove_background --file image="$small" --on local
+  DIR=$P t src-write run qwen3/write instructions:='"Say hello in five words."' max_tokens=32 --model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated --on local
+  rel=$(cozy --json package ls 2> /dev/null < /dev/null | jq -r '[.. | objects | select((.name // .package) == "birefnet") | (.latest // .version)] | first // "0.9.0"' 2> /dev/null)
+  DIR=$P t pub-birefnet run "birefnet/remove_background@${rel:-0.9.0}" --file image="$small" --on local
+  DIR=$P t pub-birefnet-2 run "birefnet/remove_background@${rel:-0.9.0}" --file image="$small" --on local
+  DIR=$P t update-local machine update local -y
+  DIR=$P t local-after machine show local
+  DIR=$P t src-birefnet-after run birefnet/remove_background --file image="$P/picture.jpg" --on local
+  PAGE import "$P" "$small" --name pic > "$F/page-import.json" 2>&1
+  PAGE add "$P" cut --tool birefnet/remove_background --fields '{"image": "<pic>"}' > "$F/page-add.json" 2>&1
+  t0=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on local cut > "$F/page-render.json" 2> "$F/page-render.err"
+  say "page render on local (source birefnet): exit $? in $((SECONDS - t0)) s: $(jq -c '{failure: .asset.failure, versions: (.versions | length)}' "$F/page-render.json" 2> /dev/null | cut -c1-600) $(tail -c 300 "$F/page-render.err" | tr '\n' ' ')"
+  DIR=$P t runs run ls
+  say "fresh-user (dev) done"
+  exit 0
+fi
 grep -qE '^(dev *= *true|packages *=)' "$cfg" 2> /dev/null && fail "this home has a dev or packages setting: $(cat "$cfg")"
 t doctor-fix doctor --fix -y
 t local-before machine show local
