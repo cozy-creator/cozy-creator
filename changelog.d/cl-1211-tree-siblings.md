@@ -1,0 +1,2 @@
+A package that takes another package of its own tree from the Hub (`{ index = "tensorhub" }`, as qwen-image-2 takes birefnet) runs that package from the tree, by path, wherever it runs: `cozy run <checkout>/qwen-image-2/image`, a project's `with:`, a dev home's checkout. A release of it no Hub has yet no longer fails the lock.
+- Its lock is made again when that package changes, and never written into the package's folder: a committed lock pins only what a machine can fetch.

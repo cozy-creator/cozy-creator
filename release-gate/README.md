@@ -221,7 +221,11 @@ PSNR) and with none (MUSIQ, CLIP-IQA) on the runner after the rental ends; `$OUT
 synthetic portraits it makes first, Vermeer's Pearl and a teapot photo (`fixtures/ltx-images`), Turbo and full, and judges each
 output's alpha on the runner (`fixtures/qwen-cutout/judge.py`: cleared, solid and partial shares, edge noise, painted-checkerboard
 tiles), with sheets of each over white, black and a checkerboard. A package that takes another of its checkout from the Hub (qwen-image-2
-takes birefnet) runs, in a gate (`pkg`) or a session (`step run <path>`), from `local-sources.sh`'s copy, as a dev home stages it.
+takes birefnet) takes it by path, as cozy stages a package's first-party siblings (cl-1211); `local-sources.sh` does it for what runs
+without cozy (`interfaces.sh`) and a fixture calling another tree's package (child-lora-stacks).
+`tree-siblings` (cl-1211, se-153's 44221031943; no rental) runs a tiny CPU package that takes its sibling, at a release no Hub has, from the
+Hub's index, by path on this runner's `local`: it runs on the sibling's version, writes no lock into its folder, locks again when the
+sibling changes, and runs by name from a dev home's checkout.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
 the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.

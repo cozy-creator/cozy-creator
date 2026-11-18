@@ -139,7 +139,7 @@ pub(crate) fn admit_checkout(api: &Api, dir: &Path) -> Result<LocalCode, Error> 
     let _ownership = OWNERSHIP.try_read().map_err(|_| Error::new(Kind::Conflict, "source_capture_busy", "a project is being created; ask again"))?;
     let home = api.machines.hubs.home();
     let memo = home.root().join("cache").join("digests");
-    let staged = crate::checkout::stage(dir, Some(memo.as_path()), &home.calcifer().join("patched"))?;
+    let staged = crate::checkout::stage(dir, Some(memo.as_path()))?;
     let code = staged.code();
     let copied = crate::local_code::copy_of(home, &code)?.join("tree");
     if require(api, &code).is_ok() && copied.is_dir() {

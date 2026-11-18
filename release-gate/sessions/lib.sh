@@ -194,14 +194,8 @@ step() {
   if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
     local t=${words[1]}; [ "$1" = run ] || t=${words[2]:-}
     case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
-    # One that takes another package of its checkout from the Hub (`{ index = "tensorhub" }`), which holds no release of an
-    # RC's package, runs from a copy taking it by path (local-sources.sh), as a dev home's checkout stages it (xs-195, se-154).
-    local d=$t at=1; [ -d "$d" ] || d=$(dirname "$t"); [ "$1" = run ] || at=2
-    if [[ $t == /* ]] && grep -qs '= *{ *index *= *"tensorhub"' "$d/pyproject.toml"; then
-      local copy=${RUNNER_TEMP:-$OUT/..}/sourced/$(basename "$(dirname "$d")")/$(basename "$d")
-      [ -d "$copy" ] || "$(dirname "${BASH_SOURCE[0]}")/../local-sources.sh" "$d" "$copy" "$(dirname "$d")" > /dev/null || copy=$d
-      words[$at]=$copy${t#"$d"}
-    fi
+    # One that takes another package of its checkout from the Hub (`{ index = "tensorhub" }`) takes it from the checkout by
+    # path: cozy stages a package's first-party siblings itself (cl-1211, `api::code::siblings`).
   fi
   say "step $n: cozy ${words[*]}"
   # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
