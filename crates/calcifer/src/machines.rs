@@ -774,11 +774,11 @@ impl Machines {
         })
     }
 
-    /// The newest `lines` whole lines (0: all) of a log the machine keeps.
+    /// The newest `lines` whole lines (0: all) of a log the machine keeps, of those the ones from `since_ms` on.
     /// A machine that cannot answer (ended, lost, unreachable) answers its own lines Calcifer kept of its TensorD log.
-    pub(crate) async fn logs(&self, text: &str, log: MachineLog, lines: u64) -> Result<Vec<u8>, Error> {
+    pub(crate) async fn logs(&self, text: &str, log: MachineLog, lines: u64, since_ms: Option<i64>) -> Result<Vec<u8>, Error> {
         let read = match self.linked(text) {
-            Ok((row, link)) => link.read_log(log_name(log), lines).await.map_err(|e| log_refusal(&row.name, log, e)),
+            Ok((row, link)) => link.read_log(log_name(log), lines, since_ms).await.map_err(|e| log_refusal(&row.name, log, e)),
             Err(error) => Err(error),
         };
         match read {
@@ -2263,7 +2263,7 @@ async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &Hea
             move || log.read(Start::Last(lines))
         });
         let text = read.await.map_err(|e| unreadable(&e))?.map_err(|e| unreadable(&e))?;
-        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], since.keep(&text)).into_response());
+        return Ok(log_text(headers, since.keep(&text)).await);
     }
     let start = match after(query.after, headers) {
         Some(place) => Start::After(place.parse().map_err(|why: String| Refusal(usage(why)))?),
@@ -2286,6 +2286,17 @@ async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &Hea
     Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
 }
 
+/// A log's whole lines as their reader takes them: gzip when its `Accept-Encoding` says so.
+async fn log_text(headers: &HeaderMap, text: String) -> Response {
+    let gzip = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(platform::gzip::accepted);
+    let plain = [(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::VARY, "accept-encoding")];
+    if !gzip {
+        return (plain, text).into_response();
+    }
+    let packed = tokio::task::spawn_blocking(move || platform::gzip::pack(text.as_bytes())).await.expect("packing doesn't panic");
+    (plain, [(header::CONTENT_ENCODING, "gzip")], packed).into_response()
+}
+
 /// Whether a log's reader asked to follow it.
 fn follows(headers: &HeaderMap) -> bool {
     (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())).is_some_and(|v| v.contains("text/event-stream"))
@@ -2296,8 +2307,8 @@ fn after(asked: Option<String>, headers: &HeaderMap) -> Option<String> {
     asked.or_else(|| headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(str::to_owned))
 }
 
-/// A machine's log: its whole lines, or with `Accept: text/event-stream` those and then each
-/// batch as the machine appends it, as `lines` events whose id (`after`) resumes the follow.
+/// A machine's log: its whole lines (gzip to a reader that takes it), or with `Accept: text/event-stream` those and
+/// then each batch as the machine appends it, as `lines` events whose id (`after`) resumes the follow.
 pub(crate) async fn logs(
     State(api): State<Arc<Api>>,
     UrlPath((name, log)): UrlPath<(String, String)>,
@@ -2322,11 +2333,11 @@ pub(crate) async fn logs(
     if !follows(&headers) {
         let bytes = api
             .machines
-            .logs(&name, log, query.lines)
+            .logs(&name, log, query.lines, query.since_ms)
             .await
             .map_err(Refusal)?;
         let text = since.keep(&String::from_utf8_lossy(&bytes));
-        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
+        return Ok(log_text(&headers, text).await);
     }
     let after = after(query.after, &headers);
     let lines = api
@@ -2382,7 +2393,7 @@ impl Since {
         let mut kept = String::new();
         for line in text.split_inclusive('\n') {
             if self.0.is_some() {
-                if stamp(line).is_none_or(|at| at < cutoff) {
+                if v1::log_stamp(line).is_none_or(|at| at < cutoff) {
                     continue;
                 }
                 self.0 = None;
@@ -2390,14 +2401,6 @@ impl Since {
             kept.push_str(line);
         }
         kept
-    }
-}
-
-fn stamp(line: &str) -> Option<i64> {
-    let word = line.split_whitespace().next()?;
-    match word.parse::<jiff::Timestamp>() {
-        Ok(at) => Some(at.as_millisecond()),
-        Err(_) => word.parse::<f64>().ok().map(|seconds| (seconds * 1000.0) as i64),
     }
 }
 

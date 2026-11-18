@@ -239,8 +239,8 @@ impl Link {
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    pub(crate) async fn read_log(&self, log: &str, lines: u64) -> Result<Vec<u8>, LinkError> {
-        Ok(self.machine.log(log, lines).await?.to_vec())
+    pub(crate) async fn read_log(&self, log: &str, lines: u64, since_ms: Option<i64>) -> Result<Vec<u8>, LinkError> {
+        Ok(self.machine.log(log, lines, since_ms).await?.to_vec())
     }
 
     /// A log's lines as `read_log` reads them, or those after `after` (a batch's place), then

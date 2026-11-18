@@ -112,6 +112,7 @@ dependencies = [
  "hex",
  "httpdate",
  "idna_adapter",
+ "jiff",
  "pep440_rs",
  "percent-encoding",
  "platform",

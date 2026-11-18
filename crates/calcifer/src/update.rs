@@ -475,7 +475,7 @@ impl Machines {
         {
             return outcome;
         }
-        let log = self.logs(name, wire::MachineLog::Tensord, 1000).await.unwrap_or_default();
+        let log = self.logs(name, wire::MachineLog::Tensord, 1000, None).await.unwrap_or_default();
         let log = String::from_utf8_lossy(&log);
         let line = m.unreachable.clone().or_else(|| log.lines().rfind(|l| l.contains(row.id.as_str())).map(str::to_owned));
         outcome.status = "failed".into();
