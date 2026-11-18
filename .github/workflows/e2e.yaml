@@ -1247,8 +1247,9 @@ jobs:
 
   # The free CPU test (e2e/cpu): every package's entry points on tiny random weights, as a person runs them (cozy run --on
   # local, real TensorD, its models mirrored on the owned Hub), outputs against stored references; each package uploaded and
-  # locked through the candidate cozy. In shards of every Nth package, slowest first (run.sh --shard K/N): minimax-h3's
-  # stand-in cells alone fill a runner's lane for ~50 min. No GPU or rental.
+  # locked through the candidate cozy. In shards of every Nth package, slowest first (run.sh --shard K/N): shard 1 holds the
+  # stand-in TensorD's packages (minimax-h3's cells alone fill its lane for ~30 min), apart from the machine's (xs-217). No
+  # GPU or rental.
   cpu:
     name: cpu ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: [affected, candidate, hub]
