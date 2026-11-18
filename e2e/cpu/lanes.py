@@ -42,6 +42,8 @@ OTHERWISE = {
     "kopper/relayvsr@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "qwen/qwen3.5-9b-mtp@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
     "tencent/hunyuan-image-3-instruct@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane (its distil has int8)"),
+    # se-155, a label and not a precision: the VAE is 238 tensors, 1,350,961,616 bytes in qwen's bf16 lane, its int8 lane and here; qwen-image-2's int8 recipe leaves its source bytes; the Runtime decodes it in bf16 whatever the lane.
+    "madebyollin/texture-fix-vae@0.3.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-155: bf16 its only lane, as the stock VAE's int8 lane was unquantized"),
 }
 PRODUCTION = "https://tensorhub.com"
 EIGHT = ("int8", "fp8")
