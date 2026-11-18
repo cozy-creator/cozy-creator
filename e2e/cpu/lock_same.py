@@ -8,12 +8,22 @@ cohort's source: those URLs are read at production's origin and those wheels' ha
 released versions only (Paul 11-13: no prereleases for testing), so the committed lock may name an older release of such a
 package than the source the suite's Hub built; never a newer one. Every other byte must be the committed lock's. Prints the
 first line that differs and exits 1, or exits 0.
+
+    lock_same.py <committed> <made> [<origin>] [--unpublished <name>,...]
+
+A committed lock pins only what a machine can fetch: each file it names at production's index must be one the Hub serves (a
+HEAD each, not followed: a redirect to storage is served, a 4xx isn't), and a first-party dependency the Hub doesn't have yet
+(`--unpublished`, stage.py's, which the made lock resolved by path) is no committed lock's: its entries, and every package only
+it brings in, are left out of the made one before they're compared.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+import tomllib
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 PRODUCTION = "https://tensorhub.com"
@@ -65,9 +75,102 @@ def cohort(want: str, got: str) -> str:
     return "\n[[package]]\n".join(blocks)
 
 
+#: At most this many files a lock pins are asked of the Hub, each within its timeout.
+ASKED, TIMEOUT = 32, 20
+FILE = re.compile(r'url = "(' + re.escape(PRODUCTION) + r'/v1/index/[^"]+)"')
+
+
+class Unfollowed(urllib.request.HTTPRedirectHandler):
+    """A redirect is the Hub's answer: the file is served, from storage, which a HEAD there would be refused."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def unserved(committed: str) -> str:
+    """The first file the committed lock pins at production's index that the Hub answers with a 4xx, said; else ''. One it
+    can't ask (a network error, a 5xx) is said on stderr and passes: this judges the lock, not the Hub's health."""
+    opener = urllib.request.build_opener(Unfollowed)
+    for url in sorted(set(FILE.findall(committed)))[:ASKED]:
+        try:
+            opener.open(urllib.request.Request(url, method="HEAD"), timeout=TIMEOUT).close()
+        except urllib.error.HTTPError as answer:
+            if 400 <= answer.code < 500:
+                return f"it pins {url}, which the Hub answers {answer.code}: a committed lock pins only what a machine can fetch"
+            if answer.code >= 500:
+                print(f"lock_same.py: {url}: the Hub answered {answer.code}", file=sys.stderr)
+        except OSError as error:
+            print(f"lock_same.py: {url}: {error}", file=sys.stderr)
+    return ""
+
+
+def norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def only_through(made: str, unpublished: set[str]) -> set[str]:
+    """Each unpublished dependency and every package of the made lock only it brings in: none reachable from the project
+    without passing through one."""
+    if not unpublished:
+        return set()
+    edges: dict[str, set[str]] = {}
+    roots: list[str] = []
+    for package in tomllib.loads(made).get("package", []):
+        name = norm(package["name"])
+        needs = edges.setdefault(name, set())
+        groups = [package.get("dependencies", []), *package.get("optional-dependencies", {}).values(),
+                  *package.get("dev-dependencies", {}).values()]
+        needs.update(norm(dependency["name"]) for group in groups for dependency in group)
+        if package.get("source", {}).get("editable") == "." or package.get("source", {}).get("virtual") == ".":
+            roots.append(name)
+    blocked = {norm(name) for name in unpublished}
+    if not roots:
+        return blocked
+    reached: set[str] = set()
+    todo = [root for root in roots if root not in blocked]
+    while todo:
+        name = todo.pop()
+        if name in reached or name in blocked:
+            continue
+        reached.add(name)
+        todo.extend(edges.get(name, ()))
+    return set(edges) - reached
+
+
+def without(made: str, names: set[str]) -> str:
+    """The made lock less `names`' blocks, and each mention of them in the rest (a dependency, a requirement)."""
+    if not names:
+        return made
+    blocks = made.split("\n[[package]]\n")
+    mention = re.compile(r'\{ name = "(?:' + "|".join(map(re.escape, sorted(names))) + r')"(?:, [^{}]*)? \},? ?')
+    kept = [blocks[0]]
+    for block in blocks[1:]:
+        found = re.match(r'name = "([^"]+)"', block)
+        if found is not None and norm(found[1]) in names:
+            continue
+        lines = []
+        for line in block.split("\n"):
+            left = mention.sub("", line).replace(", ]", "]")
+            if left != line and not left.strip(" ,"):
+                continue
+            lines.append(left)
+        kept.append("\n".join(lines))
+    return "\n[[package]]\n".join(kept)
+
+
 def main() -> int:
-    committed, made = (Path(arg).read_text() for arg in sys.argv[1:3])
-    origin = sys.argv[3] if len(sys.argv) > 3 else ""
+    flags = sys.argv[1:]
+    unpublished: set[str] = set()
+    if "--unpublished" in flags:
+        at = flags.index("--unpublished")
+        unpublished = {name for name in flags[at + 1].split(",") if name}
+        del flags[at:at + 2]
+    committed, made = (Path(arg).read_text() for arg in flags[0:2])
+    origin = flags[2] if len(flags) > 2 else ""
+    if said := unserved(committed):
+        print(said[:300])
+        return 1
+    made = without(made, only_through(made, unpublished))
     got = normal(made, origin)
     try:
         want = cohort(normal(committed, origin), got)
