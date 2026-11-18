@@ -5151,10 +5151,15 @@ pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply:
     let run = engine.get(id).ok();
     // What the machine had of its weights and what it fetched for it (`journal::Account`, cl-1102).
     let weights = run.as_ref().and_then(|run| run.needs);
+    // Its size by its function's own variables (cl-1286): what `cozy package benchmarks` makes its row's request of.
+    let size = run.as_ref().and_then(|run| run.size.clone());
     let software = run.and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
     let mut measurements = measured(plan, reply, software, call_memory(reply, driver));
     if let Some(weights) = weights {
         measurements["weights"] = serde_json::json!(weights);
+    }
+    if let Some(size) = size {
+        measurements["size"] = serde_json::json!(size);
     }
     let recorded = serde_json::to_vec(&measurements)
         .map_err(io::Error::other)

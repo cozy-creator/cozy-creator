@@ -431,6 +431,12 @@ pub struct Placed {
     /// Its weights' bytes it downloads there first.
     #[serde(default)]
     pub fetch_bytes: u64,
+    /// Its request's size as its plan read it (cl-1286): its function's own variables, else the guess.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub size: std::collections::BTreeMap<String, f64>,
+    /// Its time there on one GPU by its function's own formula (cl-1286); none: it declares none, or it gave none there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula_ms: Option<u64>,
 }
 
 /// One run as Calcifer holds it.
@@ -966,6 +972,12 @@ pub struct MachineEstimate {
     /// A machine on its way (a rental booting or ordered): when it should serve, part of `start_ms` (cl-915).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready_ms: Option<u64>,
+    /// The request's size as its plan read it (cl-1286): its function's own variables, else the guess.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub size: std::collections::BTreeMap<String, f64>,
+    /// Its time there on one GPU by its function's own formula (cl-1286); none: it declares none, or it gave none there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formula_ms: Option<u64>,
 }
 
 /// A run waiting for GPUs another run or its machine's own work holds, as its machine says it (TensorD's `GpuAllocation` wait): how

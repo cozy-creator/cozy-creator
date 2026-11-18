@@ -1559,6 +1559,10 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     if let Some(fault) = ::needs::faults(&document).into_iter().next() {
         return Err(refuse("needs_rule_invalid", fault));
     }
+    // So does an estimate's expression (cl-1286).
+    if let Some(fault) = ::needs::estimate_faults(&document).into_iter().next() {
+        return Err(refuse("estimate_invalid", fault));
+    }
     Ok((said.trim_end().to_owned(), document))
 }
 

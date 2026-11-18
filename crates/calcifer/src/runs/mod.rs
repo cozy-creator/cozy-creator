@@ -599,7 +599,9 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let input: Option<serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok());
-    let size = input.as_ref().map(v1::JobSize::of).unwrap_or_default();
+    // Its size and cost as its function's estimate reads the payload (cl-1286): its own variables, else the guess.
+    let cost = input.as_ref().map(|input| std::sync::Arc::new(::needs::Cost::declared(&callable.request, &callable.estimate, input)));
+    let size = cost.as_ref().map(|cost| cost.size.clone()).unwrap_or_default();
     let gpus = ask.gpus.unwrap_or(0);
     let (estimates, count) = match purpose {
         For::Estimate(count) => (true, count),
@@ -662,7 +664,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         Resolved::Local { local, .. } if estimates => {
             let function = format!("{}/{}", local.source.manifest, callable.name);
             let jobs: Vec<crate::placement::Job> = (0..count)
-                .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size, gpus, gpu: needs_gpu, on: set.clone(), ..Default::default() })
+                .map(|copy| crate::placement::Job { key: copy.to_string(), target: named.clone(), function: function.clone(), size: size.clone(), gpus, gpu: needs_gpu, on: set.clone(), cost: cost.clone(), ..Default::default() })
                 .collect();
             let (offered, said) = crate::placement::offers(api, &jobs, false).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
@@ -730,7 +732,7 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
         return None;
     }
     let input: Option<serde_json::Value> = run.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok());
-    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, input.as_ref(), &run.spec.models, run.size, run.gpus, run.gpu, 1, false).await;
+    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, input.as_ref(), &run.spec.models, run.size.clone(), run.gpus, run.gpu, 1, false).await;
     let (chosen, _) = chosen.ok()?;
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;

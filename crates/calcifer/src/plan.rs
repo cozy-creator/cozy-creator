@@ -35,6 +35,8 @@ pub(crate) struct Job {
     pub after_at_ms: Option<i64>,
     /// The picture fetching its weights ahead.
     pub stay: Option<usize>,
+    /// Its request as its function's estimate reads it (`placement::Job::cost`, cl-1286).
+    pub cost: Option<std::sync::Arc<::needs::Cost>>,
 }
 
 /// Where one job goes.
@@ -61,12 +63,12 @@ pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placemen
             .map(|&m| {
                 quotes += 1;
                 let mut tried = asks[m].clone();
-                tried.push(ask(&jobs[j], m, after));
+                tried.push(ask(&jobs[j], m, &pictures[m], after));
                 (m, crate::placement::quote(&pictures[m], &tried, now).pop().expect("one quoted"))
             })
             .collect();
         if let Some((m, offer)) = choose(&offers, jobs[j].stay, now) {
-            asks[m].push(ask(&jobs[j], m, after));
+            asks[m].push(ask(&jobs[j], m, &pictures[m], after));
             ends[j] = Some(offer.finish_at_ms);
             assigned[j] = Some(m);
         }
@@ -132,9 +134,11 @@ fn after_ms(job: &Job, ends: &[Option<i64>], now: i64) -> u64 {
     needs.chain(job.after_at_ms).map(|at| (at - now).max(0) as u64).max().unwrap_or(0)
 }
 
-fn ask(job: &Job, picture: usize, after_ms: u64) -> v1::EstimateJob {
+fn ask(job: &Job, picture: usize, pictured: &Picture, after_ms: u64) -> v1::EstimateJob {
     let prior = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or_default();
-    v1::EstimateJob { prior_ms: prior.ms, prior_runs: prior.runs, after_ms, ..job.ask.clone() }
+    let mut ask = v1::EstimateJob { prior_ms: prior.ms, prior_runs: prior.runs, after_ms, ..job.ask.clone() };
+    crate::placement::formula(&mut ask, job.cost.as_deref(), pictured);
+    ask
 }
 
 /// Each job's picture and offer with `assigned`, and the plan's (latest, summed) finish: each machine's jobs in dependency order,
@@ -145,7 +149,7 @@ fn evaluate(pictures: &[Picture], jobs: &[Job], order: &[usize], assigned: &[Opt
     let mut ends: Vec<Option<i64>> = vec![None; jobs.len()];
     for &j in order {
         let Some(m) = assigned[j] else { continue };
-        asks[m].push((j, ask(&jobs[j], m, after_ms(&jobs[j], &ends, now))));
+        asks[m].push((j, ask(&jobs[j], m, &pictures[m], after_ms(&jobs[j], &ends, now))));
         *quotes += 1;
         let tried: Vec<v1::EstimateJob> = asks[m].iter().map(|(_, ask)| ask.clone()).collect();
         let offer = crate::placement::quote(&pictures[m], &tried, now).pop().expect("one quoted");

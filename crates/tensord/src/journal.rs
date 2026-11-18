@@ -339,6 +339,10 @@ pub(crate) struct Execution {
     /// What this machine had of what it loads, and what it fetched for it (`Account`), as first reckoned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<Account>,
+    /// Its size by its function's own variables (`estimate.size`, cl-1286), as its plan read its request: what its time here is kept
+    /// under (`timed`) and its measurements say. None: it declares none, and its input is guessed (`JobSize::of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<api::machine::JobSize>,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -1810,6 +1814,7 @@ fn insert(
         width: 0,
         fetched: None,
         needs: None,
+        size: None,
         executor: None,
         result: None,
         pending_completion: None,
@@ -1974,7 +1979,7 @@ impl Journal {
             return Ok(());
         }
         let ran = Ran::of(tx, record)?;
-        let size = encoded(&api::machine::JobSize::of(&invocation.input))?;
+        let size = encoded(&record.size.clone().unwrap_or_else(|| api::machine::JobSize::of(&invocation.input)))?;
         let function = function_key(&invocation.package, &invocation.entrypoint);
         // Its first call here: its plan compiled as it ran, so its time is the cold one (cl-967).
         let cold = tx
@@ -2503,6 +2508,18 @@ impl Journal {
                 return Ok(false);
             }
             record.needs = Some(account);
+            Ok(true)
+        })
+        .map(drop)
+    }
+
+    /// Its size as its plan read it (cl-1286), once.
+    pub(crate) fn size(&mut self, id: &str, size: api::machine::JobSize) -> io::Result<()> {
+        self.update(id, |record| {
+            if record.state.terminal() || record.size.is_some() {
+                return Ok(false);
+            }
+            record.size = Some(size);
             Ok(true)
         })
         .map(drop)

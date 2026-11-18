@@ -1140,6 +1140,11 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob], references:
         // Warm: a job of its function goes before it here, or an idle executor holds its model; else its first call's cold time.
         let hot = !function.is_empty() && (warm.contains(&function) || warm_there(frame, &job.models));
         let (time, widths) = machine.timed(&timed_as, &job.function, &job.size, runs_of(&job.models), job.prior_ms as f64, widths, hot);
+        // Its function's own formula over its rows (cl-1286), where no run of it here or on this card times it.
+        let time = match (job.formula_ms, job.formula_basis) {
+            (Some(ms), Some(basis)) if !matches!(time.basis, Basis::Measured | Basis::Prior) => Time { one_ms: ms, basis, ..time },
+            _ => time,
+        };
         // This machine's own runs, which its frame doesn't time (a project's, cl-1047), measure it all the same.
         quote.basis = match (time.basis, job.prior_runs) {
             (Basis::Prior, 1..) => Basis::Measured,

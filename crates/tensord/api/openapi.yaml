@@ -1112,12 +1112,10 @@ components:
           description: 'The soonest it can start, ms from now: when what it reads is made.'
     JobSize:
       type: object
-      description: What a job makes, in the units its time scales with; each unknown one absent.
+      description: "What a job makes, by the variables its time scales with: its function's own (`estimate.size`), else megapixels, frames, steps, tokens and seconds guessed from its input; each unknown one absent. `refs`: the pictures it reads."
       properties:
-        megapixels: {type: number}
-        frames: {type: integer, format: int64, minimum: 0}
-        steps: {type: integer, format: int64, minimum: 0}
-        tokens: {type: integer, format: int64, minimum: 0}
+        refs: {type: integer, format: int32, minimum: 0}
+      additionalProperties: {type: number}
     ModelRef:
       type: object
       properties:

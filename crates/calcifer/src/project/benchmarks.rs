@@ -40,7 +40,8 @@ pub(super) async fn benchmarks(State(api): State<Arc<Api>>, Path(id): Path<Strin
         let measured: Value = outcome.measurements.as_ref().and_then(|m| serde_json::from_str(m.get()).ok()).unwrap_or_default();
         let gpus = measured["execution"]["degree"].as_u64().and_then(|d| u32::try_from(d).ok()).unwrap_or(1).max(1);
         let payload: Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
-        let request = JobSize::of(&payload);
+        // Its size as its run's record keeps it (its function's own variables, cl-1286), else the guess from its request.
+        let request = serde_json::from_value(measured["size"].clone()).ok().filter(|size: &JobSize| !size.values.is_empty()).unwrap_or_else(|| JobSize::of(&payload));
         let key = (function.to_owned(), outcome.gpu.clone(), gpus, serde_json::to_string(&request).unwrap_or_default());
         let warm = crate::reports::warm(row, &measured).unwrap_or(false);
         groups.entry(key).or_insert_with(|| (request, vec![])).1.push((outcome.execution_ms, warm));

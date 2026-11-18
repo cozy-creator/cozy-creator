@@ -660,6 +660,10 @@ impl Engine {
     pub(crate) fn needs(&self, id: &str, account: crate::journal::Account) -> io::Result<()> {
         self.journal().needs(id, account)
     }
+    /// See `Journal::size`.
+    pub(crate) fn size(&self, id: &str, size: api::machine::JobSize) -> io::Result<()> {
+        self.journal.lock().unwrap().size(id, size)
+    }
     pub(crate) fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
         let progress = self.progress.lock();

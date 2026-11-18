@@ -9,8 +9,13 @@
 //! to quote a call and to tell a machine what to fetch ahead of one (Paul, 11-17: "calcifer says 'okay, I'm going to send machine-A
 //! this request, so I should tell it to download the required files'"); a machine walks it for a call sent with no such word. The
 //! two can't disagree on what a request needs.
+//!
+//! The same plan also says what the request costs (`estimate`, cl-1286): its size variables and, on a machine, its time and peaks.
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
+
+mod estimate;
+pub use estimate::{Card, Cost, Declared, Estimated, OUTPUTS};
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -62,13 +67,10 @@ pub fn answers(entry: &Value, sent: &Value) -> Answers {
     if rules.is_empty() {
         return answers;
     }
-    let request = match Struct::deserialize(&entry["request"]) {
-        Ok(request) => match sent {
-            Value::Object(members) => Value::Object(fields(&request.fields, members)),
-            _ => Value::Object(fields(&request.fields, &Map::new())),
-        },
-        Err(error) => {
-            answers.unanswered = rules.into_iter().map(|(name, _)| (name, format!("its request can't be read: {error}"))).collect();
+    let request = match request(entry, sent) {
+        Ok(request) => request,
+        Err(why) => {
+            answers.unanswered = rules.into_iter().map(|(name, _)| (name, why.clone())).collect();
             return answers;
         }
     };
@@ -83,6 +85,35 @@ pub fn answers(entry: &Value, sent: &Value) -> Answers {
         };
     }
     answers
+}
+
+/// `sent` as `entry`'s expressions read it: its fields at their declared types, each it leaves out at its default; one sent as nothing
+/// is its defaults.
+fn request(entry: &Value, sent: &Value) -> Result<Value, String> {
+    let request = Struct::deserialize(&entry["request"]).map_err(|error| format!("its request can't be read: {error}"))?;
+    Ok(match sent {
+        Value::Object(members) => Value::Object(fields(&request.fields, members)),
+        _ => Value::Object(fields(&request.fields, &Map::new())),
+    })
+}
+
+/// One request's plan of a call (cl-1103, cl-1286; Paul, 11-18: "we give it a prediction, and it says 'I need x models, and inference
+/// will take y'"): what its rules say of it, what it wants of its models, and its cost (`Cost`: its size, and what it takes on a machine).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Plan {
+    pub answers: Answers,
+    pub wants: Wants,
+    pub cost: Cost,
+}
+
+/// The plan of a call of `entrypoint` in `document` (others as `wants`) with the request `sent`; none: a call sent with no request,
+/// whose rules answer nothing and whose size is unknown.
+pub fn plan(document: &Value, others: &[Other<'_>], entrypoint: &str, sent: Option<&Value>) -> Plan {
+    let Some(entry) = api::interface::entrypoint(document, entrypoint) else { return Plan::default() };
+    let answers = sent.map(|sent| answers(entry, sent)).unwrap_or_default();
+    let wants = wants(document, others, entrypoint, &answers);
+    let cost = sent.map(|sent| Cost::of(entry, sent)).unwrap_or_default();
+    Plan { answers, wants, cost }
 }
 
 /// Another package a walk goes into: its distribution, as a call names it (`calls[].package`), and its interface (an environment's
@@ -374,6 +405,75 @@ pub fn faults(document: &Value) -> Vec<String> {
     faults
 }
 
+/// Each expression of the interface `document`'s estimates (cl-1286) that can't be read against its function's request, in words: a
+/// package with one isn't published, installed or run, as one with a broken rule isn't.
+pub fn estimate_faults(document: &Value) -> Vec<String> {
+    let mut faults = vec![];
+    for entry in api::interface::entrypoints(document).filter(|entry| entry.get("estimate").is_some()) {
+        let function = api::interface::name(entry).unwrap_or_default();
+        let declared = Declared::of(entry);
+        let request = match Struct::deserialize(&entry["request"]) {
+            Ok(request) => request,
+            Err(error) => {
+                faults.push(format!("{function}: its request can't be read, so its estimate can't either: {error}"));
+                continue;
+            }
+        };
+        let unknown = (entry["estimate"].as_object().into_iter().flatten()).filter(|(name, _)| *name != "size" && !OUTPUTS.contains(&name.as_str()));
+        for (name, _) in unknown {
+            faults.push(format!("{function}: its estimate has no `{name}`: it has `size`, {}", OUTPUTS.map(|o| format!("`{o}`")).join(", ")));
+        }
+        let names: Vec<String> = declared.size.iter().map(|(name, _)| name.clone()).collect();
+        let checks = (declared.size.iter().map(|(name, expression)| (format!("size {name}"), expression, None)))
+            .chain(declared.outputs.iter().map(|(name, expression)| (name.clone(), expression, Some(names.as_slice()))));
+        for (name, expression, size) in checks {
+            if let Err(why) = check_number(expression, &request, size) {
+                faults.push(format!("{function}: its estimate's {name}, `{expression}`: {why}"));
+            }
+        }
+    }
+    faults
+}
+
+/// Checks an estimate's `expression` against what it reads: the request alone (`size` None, a size variable), or the request, the size
+/// variables named and the machine (an output); and that it gives a number. Why not, in words.
+pub fn check_number(expression: &str, request: &Struct, size: Option<&[String]>) -> Result<(), String> {
+    let program = compiled(expression)?;
+    let mode = size.map_or(Mode::Size, Mode::Output);
+    match (Checker { request: &request.fields, mode }).of(program.expression(), &[], 0)? {
+        Kind::Int | Kind::Float | Kind::Any => Ok(()),
+        other => Err(format!("it gives {}, not a number", other.said())),
+    }
+}
+
+/// The functions whose rows an estimate's `expression` reads: `""` for `measured(machine)`, its own; the name of each
+/// `measured(machine, "function")`.
+fn measured_names(expression: &str) -> Vec<String> {
+    fn walk(node: &IdedExpr, found: &mut Vec<String>) {
+        match &node.expr {
+            Expr::Call(call) => {
+                match (call.func_name.as_str(), call.args.get(1).map(|arg| &arg.expr)) {
+                    (estimate::MEASURED, Some(Expr::Literal(LiteralValue::String(name)))) => found.push(name.to_string()),
+                    (estimate::MEASURED, None) => found.push(String::new()),
+                    _ => {}
+                }
+                call.target.iter().map(|target| &**target).chain(&call.args).for_each(|arg| walk(arg, found));
+            }
+            Expr::Select(select) => walk(&select.operand, found),
+            Expr::List(list) => list.elements.iter().for_each(|element| walk(element, found)),
+            Expr::Comprehension(each) => {
+                [&each.iter_range, &each.accu_init, &each.loop_cond, &each.loop_step, &each.result].into_iter().for_each(|part| walk(part, found));
+            }
+            _ => {}
+        }
+    }
+    let mut found = vec![];
+    if let Ok(program) = compiled(expression) {
+        walk(program.expression(), &mut found);
+    }
+    found
+}
+
 /// `sent` as a rule reads it: each field it leaves out at its declared default, at any depth, and a prompt sent as words alone as
 /// its text with no references. A field with no default that isn't sent stays out.
 fn fields(declared: &[Field], sent: &Map<String, Value>) -> Map<String, Value> {
@@ -401,6 +501,8 @@ fn typed(ty: &Type, held: &Value) -> Value {
             prompt.entry("references").or_insert_with(|| Value::Array(vec![]));
             Value::Object(prompt)
         }
+        // A number its schema says is one, as one, so `request.duration / 15.0` reads a whole number sent as a number.
+        (Type::Float, Value::Number(number)) => number.as_f64().map_or(Value::Null, |n| serde_json::json!(n)),
         (Type::Union { .. }, Value::Null) => Value::Null,
         // `T | None`, set: as `T`.
         (Type::Union { .. }, held) if !std::ptr::eq(ty.plain(), ty) => typed(ty.plain(), held),
@@ -429,7 +531,7 @@ pub fn holds(rule: &str, request: &Value) -> Result<bool, String> {
 /// declares, and it gives true or false. Why not, in words.
 pub fn check(rule: &str, request: &Struct) -> Result<(), String> {
     let program = compiled(rule)?;
-    match (Checker { request: &request.fields }).of(program.expression(), &[], 0)? {
+    match (Checker { request: &request.fields, mode: Mode::Rule }).of(program.expression(), &[], 0)? {
         Kind::Bool | Kind::Any => Ok(()),
         other => Err(format!("it gives {}, not true or false", other.said())),
     }
@@ -498,6 +600,12 @@ enum Kind<'a> {
     Prompt,
     /// It, or nothing.
     Optional(Box<Kind<'a>>),
+    /// An estimate's size variables, by name: each a number.
+    Size(&'a [String]),
+    /// The machine an estimate is of (`estimate::Card`).
+    Machine,
+    /// A benchmark row (`measured`).
+    Row,
     /// The schema doesn't say: its evaluation answers.
     Any,
 }
@@ -516,6 +624,9 @@ impl Kind<'_> {
             Kind::Media(_) => "a file",
             Kind::Prompt => "a prompt",
             Kind::Optional(_) => "a value that may be unset (compare it with `!= null`)",
+            Kind::Size(_) => "the size variables",
+            Kind::Machine => "the machine",
+            Kind::Row => "a benchmark row",
             Kind::Any => "a value",
         }
     }
@@ -584,6 +695,21 @@ fn member<'a>(held: &Kind<'a>, field: &str) -> Result<Kind<'a>, String> {
             _ => Err(absent(vec!["text", "references"])),
         },
         Kind::Optional(inner) => member(&**inner, field),
+        Kind::Size(names) => match names.iter().any(|name| name == field) {
+            true => Ok(Kind::Float),
+            false => Err(absent(names.iter().map(String::as_str).collect())),
+        },
+        Kind::Machine => match field {
+            "gpu" | "lane" | "cpu" => Ok(Kind::Text),
+            _ if estimate::MACHINE.contains(&field) => Ok(Kind::Float),
+            _ => Err(absent(estimate::MACHINE.to_vec())),
+        },
+        Kind::Row => match field {
+            "gpu" | "lane" => Ok(Kind::Text),
+            "request" => Ok(Kind::Map(Box::new(Kind::Float))),
+            _ if estimate::ROW.contains(&field) => Ok(Kind::Float),
+            _ => Err(absent(estimate::ROW.to_vec())),
+        },
         Kind::Map(item) => Ok((**item).clone()),
         Kind::Any => Ok(Kind::Any),
         other => Err(format!("it is {}, which has no fields", other.said())),
@@ -595,6 +721,16 @@ type Name<'a> = (String, Kind<'a>);
 
 struct Checker<'a> {
     request: &'a [Field],
+    mode: Mode<'a>,
+}
+
+/// What an expression is: a needs rule, an estimate's size variable (the request and `pow`, `sum`), or an estimate's output (those, the
+/// size variables named, `machine` and `measured`).
+#[derive(Clone, Copy)]
+enum Mode<'a> {
+    Rule,
+    Size,
+    Output(&'a [String]),
 }
 
 impl<'a> Checker<'a> {
@@ -612,7 +748,13 @@ impl<'a> Checker<'a> {
             Expr::Ident(name) => match names.iter().rev().find(|(bound, _)| bound == name) {
                 Some((_, held)) => Ok(held.clone()),
                 None if name == REQUEST => Ok(Kind::Fields(self.request)),
-                None => Err(format!("`{name}` isn't known: a rule reads `{REQUEST}` alone")),
+                None => match (self.mode, name.as_str()) {
+                    (Mode::Output(size), "size") => Ok(Kind::Size(size)),
+                    (Mode::Output(_), "machine") => Ok(Kind::Machine),
+                    (Mode::Output(_), _) => Err(format!("`{name}` isn't known: an estimate reads `{REQUEST}`, `size` and `machine`")),
+                    (Mode::Size, _) => Err(format!("`{name}` isn't known: a size variable reads `{REQUEST}` alone")),
+                    (Mode::Rule, _) => Err(format!("`{name}` isn't known: a rule reads `{REQUEST}` alone")),
+                },
             },
             Expr::Select(select) => {
                 let held = self.of(&select.operand, names, nested)?;
@@ -688,6 +830,9 @@ impl<'a> Checker<'a> {
                 Some(other) => Err(format!("`[ ]` reads a list or a map, and is given {}", other.said())),
             },
             operators::ADD | operators::SUBSTRACT | operators::MULTIPLY | operators::DIVIDE | operators::MODULO | operators::NEGATE => {
+                if args.iter().any(|arg| matches!(arg, Kind::Int)) && args.iter().any(|arg| matches!(arg, Kind::Float)) {
+                    return Err("it mixes a whole number with a number: write `double(…)` around the whole one, or `2.0` for `2`".into());
+                }
                 Ok(match args.first() {
                     Some(Kind::Int) => Kind::Int,
                     Some(Kind::Float) => Kind::Float,
@@ -706,6 +851,21 @@ impl<'a> Checker<'a> {
             "double" => Ok(Kind::Float),
             "string" => Ok(Kind::Text),
             "min" | "max" => Ok(Kind::Any),
+            estimate::MEASURED if matches!(self.mode, Mode::Output(_)) => {
+                match (args.first(), call.args.get(1).map(|arg| &arg.expr), call.args.len()) {
+                    (Some(Kind::Machine), _, 1) | (Some(Kind::Machine), Some(Expr::Literal(LiteralValue::String(_))), 2) => Ok(Kind::Row),
+                    _ => Err("`measured` takes `machine`, and may name another function of its package: `measured(machine, \"generate\")`".into()),
+                }
+            }
+            "pow" if !matches!(self.mode, Mode::Rule) => match args.len() {
+                2 => Ok(Kind::Float),
+                _ => Err("`pow(x, y)` takes two numbers".into()),
+            },
+            "sum" if !matches!(self.mode, Mode::Rule) => match args.first() {
+                Some(Kind::List(_) | Kind::Any) => Ok(Kind::Float),
+                _ => Err("`sum(list)` adds a list of numbers".into()),
+            },
+            other if !matches!(self.mode, Mode::Rule) => Err(format!("`{other}` isn't something an estimate may call; it calls `measured`, `pow`, `sum`, and what a rule may")),
             other => Err(format!("`{other}` isn't something a rule may call; {MAY}")),
         }
     }
