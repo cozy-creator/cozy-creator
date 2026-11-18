@@ -30,9 +30,10 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
-/// output will read, then guesses, then warm sets. The downloader finishes one before the next. Everything after a
-/// run's needs is background (`tensorfs::fetch::BACKGROUND`): none of it starts, and what is in flight gives way, while a
-/// need is under way (cl-1101).
+/// output will read, then guesses, then what a caller's prepare list names in that list's order, then warm
+/// sets. The downloader finishes one before the next. Everything after a run's needs is background
+/// (`tensorfs::fetch::BACKGROUND`): none of it starts, and what is in flight gives way, while a need is under
+/// way (cl-1101).
 pub(crate) mod priority {
     // A run's needs are class 0; `ahead` (class 1) is the first background order.
     const _: () = assert!(2 + (1 << 62) == tensorfs::fetch::BACKGROUND);
@@ -59,10 +60,14 @@ pub(crate) mod priority {
     pub(crate) fn guess(run: u64, rank: u32) -> u64 {
         at(2, run, rank)
     }
-    /// What a caller expects demand for here with no job yet (`PUT /v1/prepare`, cl-967): after every guess.
-    pub(crate) fn prepare(run: u64, rank: u32) -> u64 {
-        at(3, run, rank)
+    /// What a caller expects demand for here with no job yet (`PUT /v1/prepare`, cl-967): after every guess, at its item's `place`
+    /// in the line (`ahead::place`, cl-1278: its list's order), `rank` within it. What an item may read (`extra`) goes behind what
+    /// every item needs.
+    pub(crate) fn prepare(place: u64, extra: bool, rank: u32) -> u64 {
+        at(3, u64::from(extra) << 29 | place.min(LAST), rank)
     }
+    /// The last place in line a prepare item takes.
+    pub(crate) const LAST: u64 = (1 << 29) - 1;
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
     /// What a resolve or a plan reads of a checkpoint at `order` (its header and structure, a few KiB): a run's goes ahead of every

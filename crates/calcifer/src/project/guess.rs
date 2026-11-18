@@ -21,7 +21,7 @@ use std::{
     borrow::Cow,
     collections::HashSet,
     sync::{Arc, LazyLock, Mutex, atomic::Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use api::{calcifer::On, config::Origin, error::Error, machine as v1};
@@ -88,6 +88,24 @@ fn kept(api: &Api, project: &Project, folder: &str, (name, with, kind, made): (&
     (request_key(with, kind, made, project.draft_seed(name), request.as_ref()) == memo.key).then_some(guess)
 }
 
+/// Each box as it is written (`draft` of its tool and `Doc::authoring_fields`) and when that was last new to a round, by project folder
+/// and box (cl-1278): the box touched last (made, a tool put on it, its words or models edited) is the likeliest rendered next, so its
+/// machine's prepare list has it first (`Lists::send`).
+static TOUCHED: LazyLock<Mutex<std::collections::HashMap<(String, String), (u64, Instant)>>> = LazyLock::new(Mutex::default);
+
+/// When box `name`, its tool `with` and its `fields` as written, was last new to a round: `now`, this round's, if it is. Its words
+/// count: `made` holds only its models and LoRAs, and an edit of words alone tied with every box in 44393630046. A round begun before
+/// the one that last found it new changes nothing (`ROUNDS`).
+fn touched(folder: &str, name: &str, with: &str, fields: &Map<String, Value>, now: Instant) -> Instant {
+    let draft = draft(with, fields);
+    let mut held = lock(&TOUCHED);
+    let at = held.entry((folder.to_owned(), name.to_owned())).or_insert((draft, now));
+    if at.0 != draft && now >= at.1 {
+        *at = (draft, now);
+    }
+    at.1
+}
+
 /// Why each box isn't guessed, by project folder and box ("" for the project), said once until it changes (cl-1123: Paul's picture box
 /// with Qwen on it was never guessed, and nothing said why).
 static UNGUESSED: LazyLock<Mutex<std::collections::HashMap<(String, String), String>>> = LazyLock::new(Mutex::default);
@@ -140,8 +158,9 @@ pub(super) fn closed() {
     CLOSED.send_modify(|n| *n += 1);
 }
 
-/// A box as it's guessed for: its name, tool, kind, fields, and how many pictures and videos they read.
-type Boxed = (String, String, String, Map<String, Value>, u32);
+/// A box as it's guessed for: its name, tool, kind, fields, how many pictures and videos they read, and when its draft was last new
+/// (`touched`).
+type Boxed = (String, String, String, Map<String, Value>, u32, Instant);
 
 /// A page shows `project`: its guesses are kept as it stands, until it closes.
 pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
@@ -239,6 +258,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         *lock(&*applied) = u64::MAX;
         api.machines.lists.guess_closed(&api.machines, &folder);
         lock(&MADE).retain(|(at, _), _| *at != folder);
+        lock(&TOUCHED).retain(|(at, _), _| *at != folder);
         lock(&UNGUESSED).retain(|(at, _), _| *at != folder);
     });
 }
@@ -269,7 +289,7 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
         return vec![];
     };
     // What a render of each box would make: each draft with a tool of a package (`not_a_draft`), the first `BOXES`.
-    let mut drafts = 0;
+    let (mut drafts, now) = (0, Instant::now());
     let mut boxes: Vec<Boxed> = vec![];
     for &i in &asking.doc.order {
         let (doc, name) = (&asking.doc, &asking.doc.assets[i].name);
@@ -278,10 +298,13 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
             None if drafts == BOXES => unguessed(&folder, name, &format!("a project guesses its first {BOXES} drafts")),
             None => {
                 drafts += 1;
-                boxes.push((name.clone(), doc.target(i), doc.assets[i].kind.clone(), doc.assets[i].made.clone(), doc.media_read(i)));
+                let (with, made) = (doc.target(i), doc.assets[i].made.clone());
+                let touched = touched(&folder, name, &with, &doc.authoring_fields(i), now);
+                boxes.push((name.clone(), with, doc.assets[i].kind.clone(), made, doc.media_read(i), touched));
             }
         }
     }
+    lock(&TOUCHED).retain(|(at, name), _| *at != folder || boxes.iter().any(|(held, ..)| held == name));
     if boxes.is_empty() {
         return vec![];
     }
@@ -367,7 +390,7 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
 #[allow(clippy::too_many_arguments)]
 async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, folder: &str, on: Vec<On>, boxed: Boxed, asking: &Asking, stages: &Mutex<crate::stages::Stages>) -> Guessed {
     let began = std::time::Instant::now();
-    let (name, with, kind, made, media) = boxed;
+    let (name, with, kind, made, media, touched) = boxed;
     let first = on.first().cloned();
     let read = job_and_package(host, &project.folder.dir, name.clone(), on, hub, &with, made.clone(), Some((asking, name.as_str())));
     let (mut job, package) = match tokio::time::timeout(READ, read).await {
@@ -423,7 +446,7 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         true => format!("{folder}: {name} guessed on {machine} in {} ms", took.as_millis()),
         false => format!("{folder}: {name} guessed on {machine} in {} ms: {}", took.as_millis(), lock(stages).said()),
     });
-    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made), files }), key)
+    Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made), touched, files }), key)
 }
 
 /// A box's draft request, hashed: its tool and its fields. One edited is a new guess, which a failed one's doesn't stand in for.

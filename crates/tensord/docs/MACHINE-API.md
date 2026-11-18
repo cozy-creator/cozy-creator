@@ -16,7 +16,8 @@ onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
   `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
 - `PUT /v1/upcoming` and `PUT /v1/prepare` (cl-967): the jobs a caller expects to send, nearest first, and what to have ready with
-  no job; each item a function's warm run of the machine's own, behind every run, never listed. On a dedicated machine, once its
+  no job, the likeliest asked next first (cl-1278: a prepare list's items download in its order); each item a function's warm run
+  of the machine's own, behind every run, never listed. On a dedicated machine, once its
   weights are here and no call wants a GPU, it loads as its call would (cl-1123), into room no one else's model holds, and yields
   to any call of another model; Status' `ahead[].readiness` says `loading`, `loaded` or `evicted`;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),

@@ -1068,11 +1068,12 @@ pub struct Upcoming {
     pub jobs: Vec<Predicted>,
 }
 
-/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet, its whole set, replacing its last: its
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet, its whole list, replacing its last: its
 /// guesses (cl-1104: what a render of a box would run, from the moment a tool is on it), and many shots of one function queued
 /// elsewhere with this machine new. Each behind every upcoming job and every run's guesses, and no job: it holds no rental, gives
-/// the install line and the disk to any run, and what only it brought is the first to go. One the set drops stops once what the
-/// set replaced it with is in the download line, so what both read never stops; what landed stays.
+/// the install line and the disk to any run, and what only it brought is the first to go. One the list drops stops once what the
+/// list replaced it with is in the download line, so what both read never stops; what landed stays. The likeliest asked next comes
+/// first (cl-1278): the machine downloads what each item needs in the list's order, and a new list moves the items it holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prepare {
