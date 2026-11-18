@@ -71,6 +71,18 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   const drawn = async () => (await canvasCard(page, box))?.rendered?.labels?.progress?.text ?? null;
   /** Its time as its face says it, `17s of 40s`, or none. */
   const timed = async () => (await canvasCard(page, box))?.rendered?.progress?.time ?? '';
+  /** What its box says, whole: its words, then its count when it has one (`Queued,` `1st in line`). */
+  const boxed = async () => {
+    const progress = (await canvasCard(page, box))?.rendered?.progress;
+    return progress ? [progress.state, progress.count].filter(Boolean).join(' ') : null;
+  };
+  /** A row says what its box says, then more (cl-1263): one run, one story, as a GPU wait's rows begin with `Waiting for a GPU` and a
+   *  run in its machine's line's with `Queued, 1st in line`. Read at one moment, within 30 s, as its place and reason move. (A download
+   *  wait's box and rows are #3842's pair, `Waiting for download` and `Waiting for Sdxl to download`: web-shared-download holds them.) */
+  const begins = (message, read) => expect.configure({ soft: true }).poll(async () => {
+    const [boxSays, rowSays] = [await boxed(), await read()];
+    return boxSays && rowSays?.startsWith(boxSays) ? 'begins' : `box ${JSON.stringify(boxSays)}; row ${JSON.stringify(rowSays)}`;
+  }, { message, timeout: 30_000 }).toBe('begins');
   /** A wait its machine can't time (cl-1247): the run's time left isn't known, so nothing counts down to an end ("17s of 17s", "0s
    *  left" read as stuck at its end). */
   const untimed = Boolean(said && /isn't known/.test(said));
@@ -96,6 +108,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     await expect(doing).toBeVisible();
     const row = doing.locator(`li.doing[data-run="${run}"] .said`);
     if (said) await agrees('the tab says its wait', async () => ((await row.count()) ? row.textContent() : null), line);
+    await begins('the tab begins with what its box says', async () => ((await row.count()) ? row.textContent() : null));
     seen.tab = (await row.count()) ? await row.textContent() : null;
     if (untimed) expect.soft(seen.tab ?? '', 'the tab counts no time down while its wait isn\'t timed').not.toMatch(/\bleft\b/);
     await page.keyboard.press('Escape');
@@ -106,7 +119,9 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     const row = page.locator(`li.qrow[data-run="${run}"] .said`);
     await expect(row).toBeVisible({ timeout: 60_000 });
     if (said) await agrees('the queue says its wait', () => row.textContent(), line);
+    await begins('the queue begins with what its box says', () => row.textContent());
     seen.queue = await row.textContent();
+    seen.box = await boxed();
   });
   test.info().annotations.push({ type: 'seen', description: JSON.stringify(seen) });
 
