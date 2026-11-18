@@ -1704,7 +1704,7 @@ export class CanvasStore {
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays.
    *  With none yet, `send` shows it as it goes (`show`), or answers nothing when there's nothing to ask, and its step goes. */
-  private over<T extends { etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
+  private over<T extends object>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void; gone?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -1724,9 +1724,10 @@ export class CanvasStore {
         this.readAfter([id])
         // A write of its own: its read back isn't news.
         const held = now()
-        if (held && answer.etag) {
-          this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
-          this.patch(held.name, { known: answer.etag })
+        const etag = "etag" in answer && typeof answer.etag === "string" ? answer.etag : null
+        if (held && etag) {
+          this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(etag))
+          this.patch(held.name, { known: etag })
         }
         then?.done?.(answer)
       },
