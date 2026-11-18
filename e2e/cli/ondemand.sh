@@ -828,6 +828,7 @@ print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "stag
                   "waited_on": named, "download_looks": len(samples), "first": samples[:3], "last": samples[-3:],
                   "rates": sorted({round(op["bytes_per_s"]) for op in looks if op.get("bytes_per_s")})[-3:],
                   "time_left": sorted({op["eta_s"] for op in looks if op.get("eta_s") is not None})[:3],
+                  "waiters": list(dict.fromkeys(json.dumps({k: op.get(k) for k in ("runs", "names", "unnamed")}) for op in looks)),
                   "stages_after": list(dict.fromkeys(stage for stage, _ in after)), "record_stage": ended.get("stage") or ""}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
 if not waiting:
@@ -855,6 +856,11 @@ else:
             fail(f"its download never said a rate as its bytes rose: {samples}")
         if not any(op.get("eta_s") is not None for op in looks):
             fail(f"its download never said its time left as its bytes rose: {samples}")
+        # Who waits on it, as the run's own project hears it (cl-1230: 44275006404 listed `"runs": []` while this run waited on it).
+        if not any(record.get("number") in (op.get("runs") or []) for op in looks):
+            fail(f"its download never named run {record.get('number')} to its project: {[(op.get('runs'), op.get('unnamed')) for op in looks][:3]}")
+        if any(not op.get("runs") and not op.get("unnamed") for op in looks):
+            fail("its download was listed with no one waiting on it while the call did")
     if not any(not on for _, on in after):
         fail(f"its progress still named {model}'s download after it landed: {after[-3:]}")
 if ended.get("waiting_on"):
