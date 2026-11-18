@@ -163,7 +163,6 @@ class VarenaStats(TypedDict, total=False):
     retries: int | None
     retained_bytes: int | None
     escaped: list[EscapedLoop] | None
-    allocator: dict[str, int] | None  # the request's allocator counters, `demoted_total` among them (cr-305 rung 5)
 
 
 class VarenaRow(TypedDict, total=False):
