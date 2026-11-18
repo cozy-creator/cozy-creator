@@ -1,6 +1,8 @@
-"""`cozy render` (cl-956), as an agent runs it: off a terminal, on weightless fixtures (project/shots.py, project/shaped.py). A chain
-renders what it reads first; a current node renders nothing; `--new` and `-n`; a render already going is joined, a killed CLI's render
-finishes and is rejoined; a failure stops only what reads it; an approved node stands; `--pickup`. Nodes are made through the page's routes, as
+"""`cozy render` (cl-956), as an agent runs it: off a terminal, on weightless fixtures (project/shots.py, project/shaped.py). Only what
+it names renders (cl-1192, Paul 11-18: "no you can delete this sort of walking logic. We won't have this idea of 'this is out of
+date' right now"): a node reading one with no take says to render that first, in one line, and renders nothing; a chain named renders
+in order; an input changed and not rendered is read as it stands, and nothing says out of date; `-n`; a render already going is
+joined, a killed CLI's render finishes; a failure stops only what reads it; `--pickup`. Nodes are made through the page's routes, as
 the page makes them; every render is the CLI's.
     python3 render.py <project> <out>: $COZY the cozy under test; each call logged to <out>/argv.log for coverage. Prints what it saw as
     JSON and exits 1 if anything failed."""
@@ -107,15 +109,19 @@ def main() -> int:
     def nexts(said: Said) -> list[str]:
         return [line for line in said.lines() if line.startswith("next: ")]
 
-    # A 4 s clip each shot shoots from, and a chain: film cuts shot_1 and shot_2, shot_1 reads a picture, mara.
-    clip = out / "render-look.mp4"
+    # A 4 s clip each shot shoots from, and a chain: film cuts shot_1 and shot_2, shot_1 reads a picture, mara. A shot's video is the clip
+    # it mentions, so `dusk`, another clip, makes a take of other bytes.
+    clip, dusk = out / "render-look.mp4", out / "render-dusk.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=navy:size=160x90:rate=24:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dusk)], check=True)
     made = cozy("new", str(project), "--unencrypted", at=out)
     if made.code != 0:
         print(json.dumps({"failures": ["new"], "seen": repr(made)}))
         return 1
     imported = subprocess.run([sys.executable, str(HERE.parent / "page.py"), "import", str(project), str(clip), "--name", "look"], capture_output=True, text=True)
     check("look_imported", imported.returncode == 0, imported.stderr[-500:])
+    other = subprocess.run([sys.executable, str(HERE.parent / "page.py"), "import", str(project), str(dusk), "--name", "dusk"], capture_output=True, text=True)
+    check("dusk_imported", other.returncode == 0, other.stderr[-500:])
     if imported.returncode != 0:
         # Every shot reads <look>: said here, not as the first take the rest can't make.
         print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
@@ -125,54 +131,78 @@ def main() -> int:
     node("shot_2", SHOTS, "shoot", {"summary": "Then <look>."})
     api("/assets", "POST", {"name": "film", "tool": "cozy/edit", "exact": True, "fields": {"timeline": {"tracks": [{"clips": [{"clip": "<shot_1>"}, {"clip": "<shot_2>"}]}]}}})
 
-    # A chain: what film reads, and what that reads, renders first, each take a line as it lands, then one next step.
-    chain = cozy("render", "film", "--on", "local")
+    def row(name: str) -> Json:
+        return next((asset for asset in cast(list[Json], api("").get("assets", [])) if asset.get("name") == name), {})
+
+    # Nothing renders on another's behalf: a node reading one with no take says to render it first, once, in one line, and renders
+    # nothing. A shot (a machine's) and the film (cut here) alike.
+    for name, reads, noun in (("shot_1", "mara", "picture"), ("film", "shot_1", "video")):
+        alone = cozy("render", name, "--on", "local")
+        seen[f"{name}_alone"] = repr(alone)
+        line = f"Render {reads} first: it has no {noun} yet"
+        check(f"{name}_says_render_{reads}_first", alone.code != 0 and alone.out.count(line) == 1 and line in alone.err
+              and not any(versions(other) for other in ("mara", "shot_1", "shot_2", "film")), alone)
+    idle()
+
+    # A chain named renders in order, each reading the take the one before made here, each take a line as it lands, then one next step.
+    chain = cozy("render", "mara", "shot_1", "shot_2", "film", "--on", "local")
     seen["chain"] = repr(chain)
     film = path_of(chain, "film")
-    check("chain_renders_what_it_reads_first", chain.code == 0 and "film reads shot_1 and shot_2, which have no takes: rendering them first" in chain.out
-          and "shot_1 reads mara, which has no takes: rendering it first" in chain.out
+    check("chain_named_renders_in_order", chain.code == 0 and re.search(r"rendering (it|them) first", chain.out) is None
           and all(took(chain, name) == [1] for name in ("mara", "shot_1", "shot_2", "film")), chain)
     check("chain_film_last_with_its_file", film is not None and film.is_absolute() and film.exists() and chain.lines()[-2].startswith("film take 1 "), chain.lines()[-3:])
     check("chain_next_step", nexts(chain) == [f"next: look at {film}; approve with approved: 1 and apply"], nexts(chain))
     check("no_progress_off_a_terminal", "running" not in chain.err and "waits for" not in chain.err, chain.err[-1000:])
 
-    # Current: nothing to render, said definitely; -n forces nothing.
+    # The same cut again would make the same film: said, and nothing queued (cl-910).
     again = cozy("render", "film")
     seen["again"] = repr(again)
-    check("nothing_to_render", again.code == 0 and again.out.strip() == "nothing to render: film take 1 is up to date (use --new to render it again)", again)
-    forced = cozy("render", "shot_1", "-n", "2", "--on", "local")
-    check("n_forces_nothing", forced.code == 0 and forced.out.strip() == "nothing to render: shot_1 take 1 is up to date (use --new to render it again)", forced)
+    check("same_cut_again", again.code == 0 and again.out.strip() == "nothing to render: film version 1 already cuts what it reads now, so cutting it again would make the same film", again)
 
-    # --new renders a current node, -n of it; --json says each take.
+    # -n renders that many new takes, of a node that has one; --json says each take.
     idle()
     had = len(versions("shot_2"))
-    new = cozy("--json", "render", "shot_2", "--new", "-n", "2", "--on", "local")
+    new = cozy("--json", "render", "shot_2", "-n", "2", "--on", "local")
     events = [cast(Json, json.loads(line)) for line in new.lines() if line.startswith("{")]
     # A take that landed no number (a stopped one) is said as None, not a crash that hides it.
     numbers = sorted((cast("int | None", cast(Json, event["take"]).get("number")) for event in events if event.get("type") == "take"), key=lambda number: -1 if number is None else number)
     seen["new"] = {"said": repr(new), "numbers": numbers}
-    check("new_with_n", new.code == 0 and numbers == [had + 1, had + 2] and len(versions("shot_2")) == had + 2, seen["new"])
+    check("n_new_takes", new.code == 0 and numbers == [had + 1, had + 2] and len(versions("shot_2")) == had + 2, seen["new"])
     check("json_ends_rendered", bool(events) and events[-1].get("type") == "rendered", events[-1:])
 
-    # Out of date: shot_2's words changed, film renders it first, then itself. Film is cut on shot_2's newest take first (one already cut
-    # on it is said current and makes nothing), so it stands on a take its words no longer make: what a cut's own key can't see.
+    # An input changed and not rendered: nothing calls it out of date, and film alone renders, cut on shot_2's newest take as it stands.
+    # Its newest take is of dusk; its words then go back to look, unrendered: rendering shot_2 again would make look's bytes.
     idle()
-    recut = cozy("render", "film", "--new", "--on", "local")
-    check("film_cut_on_the_newest", recut.code == 0, recut)
+    api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <dusk>."}})
+    on_dusk = cozy("render", "shot_2", "--on", "local")
+    newest = cast(Json, cast(list[Json], row("shot_2").get("prefixes", [{}]))[-1].get("main") or {}).get("sha256")
+    check("shot_2_on_dusk", on_dusk.code == 0 and newest is not None and newest != row("look").get("sha256"), {"said": repr(on_dusk), "newest": newest})
     idle()
     api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <look>, at dusk."}})
     idle()
+    state = api("")
+    shot_2 = row("shot_2")
+    seen["changed_input"] = {"stale": state.get("stale"), "shot_2": {key: shot_2.get(key) for key in ("standing", "status", "changed")}}
+    check("nothing_out_of_date", "stale" not in state and shot_2.get("standing") == "current" and "changed" not in shot_2
+          and not any(asset.get("standing") == "out_of_date" for asset in cast(list[Json], state.get("assets", []))), seen["changed_input"])
     shots, films = len(versions("shot_2")), len(versions("film"))
-    stale = cozy("render", "film", "--on", "local")
-    seen["stale"] = repr(stale)
-    check("out_of_date_renders_first", stale.code == 0 and "film reads shot_2, which is out of date: rendering it first" in stale.out
-          and took(stale, "shot_2") == [shots + 1] and took(stale, "film") == [films + 1] and took(stale, "shot_1") == [], stale)
+    only = cozy("render", "film", "--on", "local")
+    seen["only"] = repr(only)
+    cut = cast(list[Json], row("film").get("prefixes", []))
+    check("only_the_named_renders", only.code == 0 and took(only, "film") == [films + 1] and took(only, "shot_2") == [] and took(only, "shot_1") == []
+          and len(versions("shot_2")) == shots and "out of date" not in only.out + only.err, only)
+    timeline: Json = cast(Json, cut[-1].get("timeline") or {}) if cut else {}
+    tracks: list[Json] = cast(list[Json], timeline.get("tracks") or [{}])
+    clips: list[Json] = cast(list[Json], tracks[0].get("clips", []))
+    read = next((piece.get("sha256") for piece in clips if piece.get("clip") == "<shot_2>"), None)
+    check("read_as_it_stands", read is not None and read == newest, {"read": read, "newest": newest, "clips": clips})
 
-    # Approved stands, though what it reads changed: nothing re-renders it but --new (cl-1192).
+    # Approved, then its words changed: it stands on its approved take, current, with no mark of what changed.
     api("/approve", "POST", {"name": "shot_1", "version": "1"})
     api("/assets/shot_1", "PATCH", {"fields": {"summary": "<mara> on <look>, at dawn."}})
-    kept = cozy("render", "shot_1", "--on", "local")
-    check("approved_stands", kept.code == 0 and kept.out.startswith("nothing to render: shot_1 take 1 is approved, though") and "use --new to render it again" in kept.out, kept)
+    approved = row("shot_1")
+    check("approved_stands_unmarked", approved.get("standing") == "current" and approved.get("status") == "approved take 1" and "changed" not in approved,
+          {key: approved.get(key) for key in ("standing", "status", "changed")})
 
     # Joined: a second render of a node rendering joins it, and one killed leaves it going; it lands once.
     node("wait", SHOTS, "takes", {"seconds": 12})
@@ -186,21 +216,19 @@ def main() -> int:
     check("rerun_joins", joined.code == 0 and "wait is rendering: joined" in joined.out and took(joined, "wait") == [1], joined)
     check("joined_pays_once", len(versions("wait")) == 1, len(versions("wait")))
 
-    # Killed, its render finishes with no CLI following it; run again, it's current.
+    # Killed, its render finishes with no CLI following it.
     node("alone", SHOTS, "takes", {"seconds": 6})
     lone = started("render", "alone", "--on", "local")
     check("alone_runs", until("alone running", lambda: running("alone")))
     lone.kill()
     lone.wait()
     check("killed_render_finishes", until("alone landed", lambda: len(versions("alone")) == 1 and not running("alone")))
-    rejoined = cozy("render", "alone")
-    check("killed_then_current", rejoined.code == 0 and rejoined.out.strip() == "nothing to render: alone take 1 is up to date (use --new to render it again)", rejoined)
 
     # A failure stops only what reads it.
     node("bad", SHOTS, "shoot", {"summary": "On <look>.", "refuse": "the fixture's lens cracked"})
     node("reads_bad", SHOTS, "shoot", {"summary": "From <bad>."})
     node("beside", SHAPED, "shot", {"beats": [{"description": "A grey room.", "duration": 1}]})
-    failed = cozy("render", "reads_bad", "beside", "--on", "local")
+    failed = cozy("render", "bad", "reads_bad", "beside", "--on", "local")
     seen["failed"] = repr(failed)
     check("failure_stops_its_readers", failed.code != 0 and re.search(r"^bad\b.*failed", failed.out, re.M) is not None
           and re.search(r"^reads_bad\b.*failed", failed.out, re.M) is not None and took(failed, "beside") == [1] and not versions("reads_bad"), failed)

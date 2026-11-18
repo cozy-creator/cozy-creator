@@ -115,7 +115,7 @@ export type Appearance = { theme: string, options?: { [key in string]: string },
 export type Approve = { name: string, version: string, };
 
 /**
- * What an approve pinned: the asset's version and files, and what that put out of date.
+ * What an approve pinned: the asset's version and files.
  */
 export type Approved = { name: string, noun: string,
 /**
@@ -125,11 +125,7 @@ number: number, files: { [key in string]: ProjectFile },
 /**
  * The file people mean by it.
  */
-path: string,
-/**
- * What this put out of date.
- */
-stale: Array<string>, warnings?: Array<string>,
+path: string, warnings?: Array<string>,
 /**
  * What `If-Match` names from here on.
  */
@@ -249,7 +245,7 @@ machine?: string | null,
  */
 made_by?: string | null,
 /**
- * For people, in its own noun: current, no take yet, out of date and why, making (run N), …
+ * For people, in its own noun: approved take 2, take 3, no take yet, rendering (run N), …
  */
 status: string,
 /**
@@ -268,10 +264,6 @@ etag?: string | null,
  * What stopped its last try: until a version lands, it's tried again, or its inputs change.
  */
 failure?: ErrorBody | null,
-/**
- * A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
- */
-changed?: Array<string>,
 /**
  * The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
  * A pin lists them too, for its text: it stands, and only fails if it is run again.
@@ -2538,13 +2530,9 @@ heads?: Array<string>,
  */
 queue?: Array<Queued>,
 /**
- * Assets with no state and no version yet.
+ * Assets with no version yet.
  */
 missing?: Array<string>,
-/**
- * Assets out of date, and why.
- */
-stale?: Array<Stale>,
 /**
  * Assets the project keeps versions of that it no longer names.
  */
@@ -3305,9 +3293,9 @@ agreed?: Agreed | null, };
 export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "canceled";
 
 /**
- * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
- * only if that has no state. It joins the project's walk, which sends each once what it reads is settled; `on` lists the machines
- * they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
+ * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and nothing else: each
+ * reads what it reads has now (cl-1192). It joins the project's walk, which sends each once this render's takes of what it reads have
+ * landed; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -3318,11 +3306,6 @@ hub?: string,
  * The new version is approved when it lands; only with `n` 1.
  */
 approve?: boolean,
-/**
- * Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
- * being made (it's joined), and what they read with no state first, a cut's too.
- */
-missing?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */
@@ -3389,11 +3372,6 @@ args: Array<string>,
 line: string, };
 
 /**
- * An asset out of date, and why.
- */
-export type Stale = { name: string, why: string, };
-
-/**
  * A run that has not moved: since when, on which machine, and what that machine costs an hour
  * (none: not a rental, or its Hub has not said).
  */
@@ -3402,7 +3380,7 @@ export type Stalled = { since_ms: number, machine: string, usd_micros_per_hour?:
 /**
  * How an asset stands, for a client that shows it rather than says it (`status` says it).
  */
-export type Standing = "current" | "out_of_date" | "making" | "missing";
+export type Standing = "current" | "making" | "missing";
 
 /**
  * One plan step of a GPU: the free bytes at its start, the bytes its binds found mapped (hit),
@@ -3789,12 +3767,12 @@ to?: { [key in string]: string }, };
 export type Undone = { at_ms: number, by: By, };
 
 /**
- * `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
+ * `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so it stands on its newest version again.
  */
 export type Unpin = { name: string, };
 
 /**
- * What an unpin left: the version it had pinned and what that put out of date.
+ * What an unpin left: the version it had pinned.
  */
 export type Unpinned = { name: string,
 /**
@@ -3802,11 +3780,7 @@ export type Unpinned = { name: string,
  */
 version?: number | null,
 /**
- * What this put out of date, itself too.
- */
-stale: Array<string>,
-/**
- * What making the tools that read it now said.
+ * What settling it said.
  */
 warnings?: Array<string>,
 /**
@@ -3945,10 +3919,6 @@ approved?: boolean,
  * What the asset stands on now, else its newest. None: it has none left.
  */
 stands?: number | null,
-/**
- * What is out of date now and wasn't.
- */
-stale?: Array<string>,
 /**
  * What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
  */

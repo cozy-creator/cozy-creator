@@ -246,7 +246,7 @@ pub(crate) struct Version {
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
-    /// Its key, 16 hex digits: what says it is out of date. Empty for one whose inputs can't be known: it never reads as current.
+    /// Its key, 16 hex digits: what made it, blind to names. Empty for one whose inputs can't be known.
     #[serde(default)]
     pub inputs: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -717,15 +717,9 @@ pub(crate) struct Take {
     /// Pinned when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// A new seed even with a state, as every render but `--missing` asks: no such take is a run a state already answers.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub new: bool,
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<api::calcifer::project::Pickup>,
-    /// What it reads with no state renders first, a cut's too (`cozy render`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub covers: bool,
 }
 
 impl Lock {

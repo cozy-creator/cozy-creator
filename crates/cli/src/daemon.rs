@@ -46,8 +46,7 @@ pub(crate) struct Status {}
 /// The current project's health and actionable warnings.
 pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     let project = crate::project::current(ctx).await?;
-    let attention = project.absent > 0 || !project.missing.is_empty() || !project.stale.is_empty()
-        || !project.warnings.is_empty() || !project.unsent.is_empty();
+    let attention = project.absent > 0 || !project.missing.is_empty() || !project.warnings.is_empty() || !project.unsent.is_empty();
     let mut next = Vec::new();
     next.push("cozy open");
     if !attention {
@@ -60,14 +59,13 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
         "project": if ctx.full {
             json!({
                 "id": project.id, "code": project.code, "key": project.key, "path": project.path, "assets": project.assets,
-                "missing": project.missing, "stale": project.stale, "orphans": project.orphans,
+                "missing": project.missing, "orphans": project.orphans,
                 "absent": project.absent, "run_files": project.run_files, "machines": project.machines,
             })
         } else { json!({"code": project.code, "key": project.key, "path": project.path, "machines": project.machines}) },
         "health": if attention { "needs_attention" } else { "ready" },
         "counts": {
             "unrendered_assets": project.missing.len(),
-            "outdated_assets": project.stale.len(),
             "missing_files": project.absent,
             "warnings": project.warnings.len(),
         },

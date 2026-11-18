@@ -1211,27 +1211,15 @@ fn held_field(folder: &Folder, source: &str) -> Result<&'static str, Error> {
     Folder::field_of(&at).map_err(|why| Error::new(Kind::Validation, "import_failed", why))
 }
 
-/// `cozy render` of what reads what this changed, and nothing reads in turn: what brings it all up to date.
+/// `cozy render` of each node whose own inputs this changed and that renders: what was edited, and nothing that reads it (cl-1192).
 fn next(folder: &Folder, planned: &[Planned]) -> Result<Vec<String>, Error> {
-    let written = folder.written()?;
     let changed: BTreeSet<String> = planned.iter().filter(|planned| planned.changed.iter().any(|said| !said.starts_with("approved") && said != "unapproved" && !said.starts_with("take ")))
         .map(|planned| name_key(&planned.name)).collect();
     if changed.is_empty() {
         return Ok(vec![]);
     }
-    let reads = |held: &Boxed| -> BTreeSet<String> {
-        held.fields.iter().flat_map(|(_, value)| graph::mentions_in(value)).filter_map(|mention| graph::mention(&mention).filter(|read| read.version.is_none()).map(|read| name_key(read.name))).collect()
-    };
-    let mut reached = changed.clone();
-    loop {
-        let more: Vec<String> = written.boxes.iter().filter(|held| !reached.contains(&name_key(&held.name)) && !reads(held).is_disjoint(&reached)).map(|held| name_key(&held.name)).collect();
-        if more.is_empty() {
-            break;
-        }
-        reached.extend(more);
-    }
+    let written = folder.written()?;
     let renders = |held: &Boxed| held.get("tool").and_then(Value::as_str).is_some_and(|tool| !tool.trim().is_empty());
-    let within: Vec<&Boxed> = written.boxes.iter().filter(|held| reached.contains(&name_key(&held.name)) && renders(held)).collect();
-    let sinks: Vec<&str> = within.iter().filter(|held| !within.iter().any(|other| other.name != held.name && reads(other).contains(&name_key(&held.name)))).map(|held| held.name.as_str()).collect();
-    Ok(if sinks.is_empty() { vec![] } else { vec![format!("cozy render {}", sinks.join(" "))] })
+    let named: Vec<&str> = written.boxes.iter().filter(|held| changed.contains(&name_key(&held.name)) && renders(held)).map(|held| held.name.as_str()).collect();
+    Ok(if named.is_empty() { vec![] } else { vec![format!("cozy render {}", named.join(" "))] })
 }

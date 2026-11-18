@@ -235,8 +235,9 @@ def main() -> None:
         assert listed["runs"] == [], "a new project has unexpected runs"
         assert Path(status["project"]["path"]).resolve() == project
         assert status["health"] == "ready" and status["warnings"] == []
-        for field in ("unrendered_assets", "outdated_assets", "missing_files", "warnings"):
+        for field in ("unrendered_assets", "missing_files", "warnings"):
             assert status["counts"][field] == 0, f"new project health count {field} is nonzero"
+        assert "outdated_assets" not in status["counts"], "nothing is out of date (cl-1192): status counts none"
         assert not ({"runs", "machines", "rentals"} & status.keys()), "health status contains activity or account totals"
         assert run("bare help in project", [], project).stdout.strip() == help_text.strip()
         plain = run("default health output", ["status"], project).stdout
