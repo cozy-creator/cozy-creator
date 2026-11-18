@@ -353,14 +353,14 @@ run() {
   for i in "${!args[@]}"; do
     args[$i]=$(expand "${args[$i]}")
     # A twin of a cell that completed asks with another seed: the same one is the call memo's to answer.
-    if [ "$budget" = off ] && [ -z "$TWF2" ] && [ "${ENDED[$k]:-}" = completed ]; then
+    if [ "$name" = "$k-uncapped" ] && [ -z "$TWF2" ] && [ "${ENDED[$k]:-}" = completed ]; then
       [[ ${args[$i]} =~ ^seed:=([0-9]+)$ ]] && args[$i]="seed:=$((BASH_REMATCH[1] + 500000))"
       [[ ${args[$i]} =~ \"seed\":([0-9]+) ]] && args[$i]=${args[$i]/"\"seed\":${BASH_REMATCH[1]}"/"\"seed\":$((BASH_REMATCH[1] + 500000))"}
     fi
   done
   target=$(jq -r .target <<< "$c") left=$(( END_AT - $(date +%s) ))
   most=$(jq -r '.max_s // 0' <<< "$c"); limit="its $most s cap"
-  [ "$budget" != off ] || { most=$TWIN_S; limit="a twin's $TWIN_S s"; }
+  [ "$name" != "$k-uncapped" ] || { most=$TWIN_S; limit="a twin's $TWIN_S s"; }
   if [ "$most" = 0 ] || [ "$most" -gt $((left - 300)) ]; then most=$((left - 300)); limit="the session's $NEED s"; fi
   rm -f "$OUT/$name.capped" "$OUT/$name.stuck"
   pod 'wc -l < /var/tmp/ab-gpu.log > /var/tmp/cap-sweep.mark' > /dev/null
