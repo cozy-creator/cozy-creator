@@ -1,0 +1,1 @@
+A process starting on a nearly full card asks the other processes there for what its CUDA context measured as it came up (the card's free bytes before it, less those after), where it asked for 3 GiB on any card: beside a game on an 8 GB card that took far more than a context needs (var-026).
