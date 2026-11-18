@@ -75,22 +75,24 @@ test('shared-download', async ({ page, project, api, cli }) => {
   const tab = () => page.locator(`nav.mtabs .mtab[data-machine="${MACHINE}"]`);
   const list = () => page.getByRole('dialog', { name: /is doing$/ });
 
-  // Its renders and its predictions go to MACHINE (cl-1123: a box's tool gets its preferred machine ready before Render).
-  await api.call('PUT', project.at('/machines'), { machines: [MACHINE] });
-  for (const [at, name] of [...BOXES, AHEAD].entries()) {
-    await project.add({ name, tool: TOOL, kind: 'image', fields: { instructions: `A lighthouse on a rocky coast at dusk, ${name} take, photo.`, ...FIELDS }, at: { x: at * 380, y: 0 } });
-  }
-  if (TOOL.startsWith('/')) {
-    await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.map((tool) => tool.id), { message: 'the local tool listed', timeout: 120_000 })
-      .toContain(TOOL);
-  }
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(project.url());
-  await expect(page.locator('.stage')).toBeVisible();
-  await canvasIdle(page);
-
+  // Slowed before any box is here: their predictions fetch the weights ahead, as soon as each is added (cl-1123), and whichever asks
+  // first fetches the one download the renders then wait on.
   const restore = slowStore(SLOW);
   try {
+    // Its renders and its predictions go to MACHINE (cl-1123: a box's tool gets its preferred machine ready before Render).
+    await api.call('PUT', project.at('/machines'), { machines: [MACHINE] });
+    for (const [at, name] of [...BOXES, AHEAD].entries()) {
+      await project.add({ name, tool: TOOL, kind: 'image', fields: { instructions: `A lighthouse on a rocky coast at dusk, ${name} take, photo.`, ...FIELDS }, at: { x: at * 380, y: 0 } });
+    }
+    if (TOOL.startsWith('/')) {
+      await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.map((tool) => tool.id), { message: 'the local tool listed', timeout: 120_000 })
+        .toContain(TOOL);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(project.url());
+    await expect(page.locator('.stage')).toBeVisible();
+    await canvasIdle(page);
+
     const rendering = cli('--json', 'render', ...BOXES, '--on', MACHINE);
 
     await test.step('as the weights come: the canvas, the machine tab and the drawer, paper and dark', async () => {
