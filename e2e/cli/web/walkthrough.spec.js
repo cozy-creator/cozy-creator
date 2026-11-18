@@ -276,7 +276,7 @@ test('walkthrough', async ({ context, page, project, api, cli, signIn, newContex
   }
 
   if (STAGE === 'results') {
-    const garden = join(W, 'garden');
+    const garden = process.env.WALK_PROJECT || join(W, 'garden');
     let code = null;
     await step(page, 'the walkthrough project opened', async () => {
       const opened = await api.post('/v1/projects', { path: garden }).catch(async () => null);

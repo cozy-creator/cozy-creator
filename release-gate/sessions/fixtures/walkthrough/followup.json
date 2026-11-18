@@ -1,0 +1,8 @@
+[
+  {"name": "photo", "kind": "import", "file": "release-gate/ref/seed.jpg"},
+  {"name": "sky", "kind": "render"},
+  {"name": "edit", "tool": "qwen-image-2/image", "fields": {"instructions": "Turn <photo> into a watercolor painting; keep its composition and subject."}},
+  {"name": "edit", "kind": "render", "why": "cr-333: the same Qwen edit again on the one machine, upsampling on"},
+  {"name": "cutout", "tool": "birefnet/remove_background", "fields": {"image": "<photo>"}},
+  {"name": "clip", "tool": "minimax-h3/generate", "fields": {"summary": "<photo> comes to life.", "beats": [{"description": "The camera pushes in slowly on <photo> as a light breeze moves through the scene.", "duration": 5}], "soundscape": "Soft wind."}}
+]

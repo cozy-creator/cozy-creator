@@ -13,8 +13,8 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 WEB=$ROOT/e2e/cli/web
-W=$OUT/walk SECRETS=${RUNNER_TEMP:-/tmp}/walk-secrets
-mkdir -p "$W/cli" "$W/out" "$W/page" "$SECRETS"
+W=$OUT/walk SECRETS=${RUNNER_TEMP:-/tmp}/walk-secrets PJ=${RUNNER_TEMP:-/tmp}/walk-projects
+mkdir -p "$W/cli" "$W/out" "$W/page" "$SECRETS" "$PJ"
 PHASES=,$(param phases cli,page,local),
 has() { [[ $PHASES == *",$1,"* ]]; }
 TREE=$(param tree '')
@@ -66,26 +66,26 @@ if has cli; then
   c model-ls model ls; c package-ls package ls; c run-ls run ls; c lora-ls lora ls; c lora-search lora search sdxl; c model-search model search qwen
   head -c 24 /dev/urandom | base64 > "$SECRETS/pass.txt"
   c new-notty new notty
-  c new-enc new garden --passphrase-file "$SECRETS/pass.txt" --recovery-out "$SECRETS/recovery.txt"
-  c new-plain new --unencrypted plain
-  DIR=$W/garden c status-garden status
-  DIR=$W/plain c status-plain status
+  DIR=$PJ c new-enc new garden --passphrase-file "$SECRETS/pass.txt" --recovery-out "$SECRETS/recovery.txt"
+  DIR=$PJ c new-plain new --unencrypted plain
+  DIR=$PJ/garden c status-garden status
+  DIR=$PJ/plain c status-plain status
   c vault-help vault --help
 fi
-[ -d "$W/plain" ] || c new-plain new --unencrypted plain
-[ -d "$W/garden" ] || { head -c 24 /dev/urandom | base64 > "$SECRETS/pass.txt"; c new-enc new garden --passphrase-file "$SECRETS/pass.txt" --recovery-out "$SECRETS/recovery.txt"; }
+[ -d "$PJ/plain" ] || DIR=$PJ c new-plain new --unencrypted plain
+[ -d "$PJ/garden" ] || { head -c 24 /dev/urandom | base64 > "$SECRETS/pass.txt"; DIR=$PJ c new-enc new garden --passphrase-file "$SECRETS/pass.txt" --recovery-out "$SECRETS/recovery.txt"; }
 # The tools a box can be, as the page lists them, and each one's fields.
-PAGE tools "$W/plain" > "$W/tools.json" 2> "$W/tools.err" || say "page.py tools: $(tail -c 300 "$W/tools.err")"
+PAGE tools "$PJ/plain" > "$W/tools.json" 2> "$W/tools.err" || say "page.py tools: $(tail -c 300 "$W/tools.err")"
 say "tools listed: $(jq -r '[.tools[]?.id // .[]?.id] | length' "$W/tools.json" 2> /dev/null)"
 for t in $(jq -r '[.tools[]?.id // .[]?.id] | .[]' "$W/tools.json" 2> /dev/null | grep -E 'qwen-image-2|klein|krea-2|sdxl|birefnet|seedvr2|h3-image|minimax-h3/|orbit' | sort -u); do
-  DIR=$W/plain c "describe-${t//\//_}" run "$t" --describe
+  DIR=$PJ/plain c "describe-${t//\//_}" run "$t" --describe
 done
 
 # 2. A first picture on this computer (its CPU): BiRefNet, the CLI's own example.
 if has local; then
-  DIR=$W/plain TO=2400 c local-birefnet run birefnet/remove_background --file image="$REF/seed.jpg" && say "local BiRefNet: $(tail -2 "$W/cli/local-birefnet.txt" | tr '\n' ' ')" ||
+  DIR=$PJ/plain TO=2400 c local-birefnet run birefnet/remove_background --file image="$REF/seed.jpg" && say "local BiRefNet: $(tail -2 "$W/cli/local-birefnet.txt" | tr '\n' ' ')" ||
     say "local BiRefNet failed: $(tail -c 400 "$W/cli/local-birefnet.txt")"
-  DIR=$W/plain c run-ls-after run ls
+  DIR=$PJ/plain c run-ls-after run ls
 fi
 
 # 3. The page.
@@ -100,7 +100,7 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
   local engine
   for engine in $(param engines chrome,webkit | tr , ' '); do
     [ "$engine" = chrome ] || [ -d "$HOME/.cache/ms-playwright" ] || continue
-    WALK=$W WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
+    WALK=$W WALK_PROJECT=$PJ/garden WALK_STAGE=$1 WALK_ENGINE=$engine WALK_MACHINE=${NAME:-} WALK_PASS=$SECRETS/pass.txt FLOW_SPEC=walkthrough.spec.js COZY_VERSION=$V \
       HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) CHROME=$(command -v google-chrome) OUT=$OUT/web-$1-$engine \
       NODE_PATH=$PW/node_modules node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/walkthrough.config.js" --project "$engine" \
       > "$W/page-$1-$engine.log" 2>&1
@@ -109,14 +109,14 @@ pageflow() {  # pageflow <stage>: walkthrough.spec.js's steps for that stage, in
 }
 has page && pageflow tour
 
-P=$W/garden
+P=$PJ/garden
 # A tool by the id the palette lists it under (a dev home's may be namespaced).
 tid() { jq -r --arg t "$1" '[(.tools // .)[]?.id] | map(select(. == $t or endswith("/" + $t))) | first // $t' "$W/tools.json" 2> /dev/null || echo "$1"; }
 # media <name>: the box's newest take's file, kept in out/ and measured.
 media() {
   local f; f=$(jq -r '.versions[-1].files // {} | to_entries[] | select(.key == "image" or .key == "video") | .value | (.path // .file // .local // empty)' "$W/out/$1.render.json" 2> /dev/null | tail -1)
   [ -z "$f" ] || [[ $f == /* ]] || f=$P/$f
-  [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.render.err" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) 2> /dev/null | grep -v '/\.' | head -1)
+  [ -n "$f" ] && [ -f "$f" ] || f=$(find "$P" -newer "$W/out/$1.render.err" -type f \( -name '*.png' -o -name '*.jpg' -o -name '*.webp' -o -name '*.mp4' \) -printf '%T@ %p\n' 2> /dev/null | grep -v '/\.vault-calcifer/' | sort -rn | head -1 | cut -d' ' -f2-)
   [ -n "$f" ] && [ -f "$f" ] || { echo "no file found"; return; }
   cp "$f" "$W/out/$1.${f##*.}"
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
@@ -132,7 +132,7 @@ if has tools || has idle || has cancel || has seeds || has lost; then
   DIR=$W c machine-ls-rented machine ls; DIR=$W c machine-show-rented machine show "$NAME"
 fi
 if has tools; then
-  P=$W/garden
+  P=$PJ/garden
   # The coordinator's check: an encrypted project's Qwen-Image 2 text-to-image box, shown as an open page holds it, prefetches only
   # expander_t2i on the machine it will render on.
   PAGE add "$P" sky --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a red kite over a green hill, morning light", "seed": 5}' > "$W/out/sky.add.json" 2>&1
@@ -140,6 +140,7 @@ if has tools; then
   cozy model ls --on "$NAME" > "$W/prefetch-models.txt" 2>&1 < /dev/null
   cozy machine logs "$NAME" --since 15m -n 600 < /dev/null 2>&1 | grep -aiE 'expander|prefetch|prepar|download|install' | tail -80 > "$W/prefetch-log.txt"
   cp "$P/.vault-calcifer/diagnostics/walk.log" "$W/walk-garden.log" 2> /dev/null || find "$P" -name walk.log -exec cp {} "$W/walk-garden.log" \; 2> /dev/null
+  grep -ahiE 'expander' "$W/prefetch-log.txt" "$W/walk-garden.log" "$W/prefetch-models.txt" 2> /dev/null | cut -c1-260 | head -20 | sed 's/^/    prefetch: /' >> "$R"
   say "prefetch, an encrypted project's t2i box shown $((SECONDS - t0)) s: $(grep -ahoiE 'expander_[a-z0-9_]+' "$W/prefetch-log.txt" "$W/prefetch-models.txt" "$W/walk-garden.log" 2> /dev/null | sort | uniq -c | tr '\n' ' ')"
   while read -r s; do
     name=$(jq -r .name <<< "$s") tool=$(jq -r '.tool // ""' <<< "$s") kind=$(jq -r '.kind // "page"' <<< "$s")
@@ -165,7 +166,7 @@ if has tools; then
   # The client gone mid-run (a laptop's lid closed): a Krea render asked, this computer's Calcifer stopped for 2 min, started again.
   PAGE add "$P" lid --tool "$(tid krea-2/image)" --fields '{"instructions": "a lighthouse keeper reading by lamplight", "seed": 9}' > "$W/out/lid.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lid > "$W/out/lid.render.json" 2>&1; sleep 5
-  unit=$(systemctl --user list-units --all --no-legend 2> /dev/null | awk '/cozy|calcifer/ {print $1; exit}')
+  unit=$(systemctl --user list-units --type=service --all --no-legend 2> /dev/null | awk '$1 ~ /(cozy|calcifer)/ && $1 ~ /\.service$/ {print $1; exit}')
   say "client gone: stopping ${unit:-no unit found} for 120 s"
   [ -z "$unit" ] || { systemctl --user stop "$unit"; sleep 120; systemctl --user start "$unit"; sleep 15; }
   t1=$SECONDS
@@ -174,12 +175,11 @@ if has tools; then
   PAGE asset "$P" $(jq -r '.[] | select(.kind != "cli") | .name' "$STEPS") lid stop > "$W/assets.json" 2>&1
   DIR=$P c run-ls-tools run ls
   DIR=$W c machine-show-after machine show "$NAME"
-  pageflow results
 fi
 # A Qwen render cancelled from the page near step 3, then the same box again (cozy-creator #3758: the executor kept warm): it completes,
 # starts fast, its peak normal. A warm-up render first, so the cancel lands on a warm executor as a user's would.
 if has cancel; then
-  P=$W/garden
+  P=$PJ/garden
   PAGE add "$P" qr --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a stone bridge over a mountain river, autumn", "turbo": false, "megapixels": 1}' > "$W/out/qr.add.json" 2>&1
   t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-warm.render.json" 2> "$W/out/qr-warm.render.err"
   say "qr warm-up: exit $? in $((SECONDS - t1)) s"
@@ -206,7 +206,7 @@ fi
 # Seeds (cozy-creator #3772, Paul: "you can only memoize when you have a fixed seed"): a box with no seed rendered three times, three
 # seeds and three pictures, none from memory; `cozy render <box> -n 3`, three seeds; a box at seed 42 twice, the second from memory.
 if has seeds; then
-  P=$W/garden
+  P=$PJ/garden
   PAGE add "$P" free --tool "$(tid sdxl/image)" --fields '{"instructions": "a teapot shaped like a snail, studio photo"}' > "$W/out/free.add.json" 2>&1
   for i in 1 2 3; do
     t1=$SECONDS; timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" free > "$W/out/free-$i.render.json" 2> "$W/out/free-$i.render.err"
@@ -230,9 +230,10 @@ if has seeds; then
   else say "no SDXL LoRA found by cozy lora ls --family sdxl: $(head -c 300 "$W/cli/lora-sdxl.txt")"; fi
   say "seeds: $(jq -c '{name: .asset.name, versions: [.versions[]? | {v: (.version // .number // .id), seed: (.seed // .fields.seed // .request.seed // .call.seed // null), memo: (.memoized // .memo // null)}]}' "$W/out/seeds-assets.json" 2> /dev/null | tr '\n' ' ' | cut -c1-900)"
 fi
+{ has tools || has cancel || has seeds; } && [ -n "${NAME:-}" ] && pageflow results
 # A machine lost mid-run: a long SDXL render going, the rental ended under it; what the box, the run and the CLI then say.
 if has lost; then
-  P=$W/garden
+  P=$PJ/garden
   PAGE add "$P" lost --tool "$(tid sdxl/image)" --fields '{"instructions": "a sprawling city of glass towers at dusk, aerial view", "megapixels": 16, "seed": 4}' > "$W/out/lost.add.json" 2>&1
   PAGE render "$P" --on "$NAME" --queue lost > "$W/out/lost.render.json" 2>&1
   for _ in $(seq 1 300); do PAGE asset "$P" lost > "$W/out/lost-poll.json" 2> /dev/null; jq -e '.asset.rendering != null' "$W/out/lost-poll.json" > /dev/null 2>&1 && break; sleep 2; done
@@ -256,5 +257,6 @@ fi
 if has update; then
   DIR=$W c update-check update --check; DIR=$W c update update; DIR=$W c version-after --version
 fi
+[ ! -d "$PJ/garden" ] || DIR=$PJ c vault-lock-end vault --directory "$PJ/garden" lock
 say "walkthrough done: $(wc -l < "$W/cli/times.tsv") commands, $(awk -F'\t' '$2 != 0' "$W/cli/times.tsv" | wc -l) non-zero"
 cp "$W/cli/times.tsv" "$OUT/cli-times.tsv"
