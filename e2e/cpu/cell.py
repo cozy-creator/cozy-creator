@@ -28,7 +28,8 @@ class Cell(TypedDict):
     #: field path (`image`, `assets.0`) -> the file the machine grants there
     files: NotRequired[dict[str, Source]]
     check: NotRequired[Check]
-    #: a slot (its path) bound to another of the fixture's models (a ref `models` builds), as `model=` binds it
+    #: a slot (its path) bound to another of the fixture's models (a ref `models` builds), or to the checkpoint an earlier
+    #: quantize cell wrote (its `entry/name`: that lane served), as `model=` binds it
     models: NotRequired[dict[str, str]]
     #: ranks of a CPU (gloo) group; 1 when absent
     ranks: NotRequired[int]
