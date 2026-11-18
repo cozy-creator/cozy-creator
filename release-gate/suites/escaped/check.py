@@ -43,7 +43,7 @@ def same(capped: Run, uncapped: Run) -> str:
     videos = [(a, b) for a, b in zip(capped.outputs, uncapped.outputs) if a.endswith('.mp4') and b.endswith('.mp4')]
     if not videos:
         return 'its outputs differ, with no video of both to compare'
-    import frames  # noqa: PLC0415 (numpy and ffmpeg, only when a twin differs)
+    import frames  # numpy and ffmpeg, only when a twin differs
     p = frames.pair(*videos[0])
     return f"differs: each frame's mean RGB difference {p['mean']} of 255, the worst {p['worst']} at frame {p['worst_at']}"
 
