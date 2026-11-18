@@ -13,9 +13,9 @@ def _pinprobe(when: str) -> list[str]:
     lines: list[str] = []
     began = time.perf_counter()
     try:
-        from cozy_runtime.internal import residency as _res
-
-        memories = list(_res._MEMORIES.values())
+        # The Runtime's residency memories, found by type: a package may not import Runtime internals.
+        memories = [o for o in gc.get_objects()
+                    if type(o).__name__ == "Memory" and type(o).__module__.endswith(".residency")]
 
         def pinned() -> str:
             said = []
