@@ -669,6 +669,9 @@ pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
 thread_local! {
     /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
     static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// PROOF ONLY (var-030 section 8): this thread fills a weight ahead of its use, which never pushes working
+    /// memory off the card.
+    static AHEAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `f` with the driver's reserve open to this thread's maps.
@@ -939,12 +942,13 @@ impl Device {
     /// beside the reserve, is `ReserveShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
-        // var-030 section 8 (proof): managed working memory gives way to pages the driver cannot move (measured:
-        // a map beside a card full of managed pages takes their room), so it is no part of this limit. What it
-        // pushes off the card must still fit host memory.
+        // var-030 section 8 (proof): working memory outranks every weight that is not running now. A weight the
+        // block about to run needs may push managed working pages off the card (a map beside a card full of them
+        // takes their room, measured); a fill ahead may not. What it pushes off must still fit host memory.
         let managed = self.paged.bytes();
         let over = self.over(bytes);
-        if over.saturating_sub(managed) != 0 {
+        let yields = if AHEAD.get() { 0 } else { managed };
+        if over.saturating_sub(yields) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
         if managed != 0 && !self.paged.host_admits(self.ordinal, 0, managed, over) {
@@ -1687,7 +1691,15 @@ impl Region {
         }
         let gate = gate(device)?;
         let mut state = arena.lock()?;
-        let fill = match self.prepare_locked(&gate, &mut state, true) {
+        struct Behind;
+        impl Drop for Behind {
+            fn drop(&mut self) { AHEAD.set(false); }
+        }
+        AHEAD.set(true);
+        let behind = Behind;
+        let prepared = self.prepare_locked(&gate, &mut state, true);
+        drop(behind);
+        let fill = match prepared {
             Ok(Some(Preparation::Fill(fill))) => fill,
             // SAFETY: this temporary pin was never handed to a consumer.
             Ok(Some(Preparation::Resident(pin))) => { drop(unsafe { pin.into_completed_region() }); return Ok(None) }

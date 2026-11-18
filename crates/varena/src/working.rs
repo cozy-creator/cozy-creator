@@ -1713,8 +1713,10 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 None => {
                     // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
                     let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
-                    let mapped = if whole { segment } else { exact };
-                    if managed {
+                    let mapped = if whole && !last { segment } else { exact };
+                    // var-030 section 8 (proof): managed memory only for what would otherwise be refused, after the
+                    // whole reclaim order; everything that fits is ordinary, today's path.
+                    if managed && last {
                         let base = owner.map_managed(&mut state, mapped, class, last)?;
                         if class > LARGE {
                             owner.rebind(base, mapped, stream);
