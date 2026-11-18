@@ -6869,12 +6869,28 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
 /// soonest elsewhere, if any.
 #[allow(clippy::too_many_arguments)]
 fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>, now: i64) -> Offer {
-    let poorly = soonest.machine.is_local()
-        && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
+    let poorly = soonest.machine.is_local() && (fit::draws_screen(api) || slowly_here(api, soonest, hub, package, function, made));
     let others: Vec<Offer> = offers.iter().filter(|offer| !offer.machine.is_local()).cloned().collect();
     match poorly {
         true => placement::soonest(&others, now).unwrap_or(soonest).clone(),
         false => soonest.clone(),
+    }
+}
+
+/// `offer` is this computer's, which would run `function` poorly (`fit::poorly_now`), and no quote of its own runs here says otherwise.
+fn slowly_here(api: &Api, offer: &Offer, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> bool {
+    offer.machine.is_local() && offer.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))
+}
+
+/// Why a render placed on `offer` (`well_placed`) wouldn't simply run there (cl-1123), so nothing goes there ahead of it: its machine
+/// has no GPU and the function builds a model on one (`gpu`), so it would run on its CPU, slowly or not at all (`runs::gpuless`); or
+/// this computer's GPU would run it poorly (`slowly_here`), which the page says as Slow here. None: it runs there.
+fn not_simply(api: &Api, offer: &Offer, gpu: bool, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Option<String> {
+    let On::Machine(name) = &offer.machine else { return None };
+    let here = if offer.machine.is_local() { "this computer".to_owned() } else { name.clone() };
+    match api.machines.frame(name).is_some_and(|frame| frame.gpus.is_empty()) {
+        true => gpu.then(|| format!("{here} has no GPU, so its render would run on its CPU: slowly, or not at all")),
+        false => slowly_here(api, offer, hub, package, function, made).then(|| format!("{here}'s GPU would render it slowly")),
     }
 }
 
