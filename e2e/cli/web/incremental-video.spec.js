@@ -108,6 +108,10 @@ test('incremental-video', async ({ page, project, api, cli }) => {
     await focus(page, 'shot');
     if (more) {
       const was = (await project.asset('shot')).fields.summary;
+      // Focus opens on its take once one has landed (or on its words, as it was left): its next take's words, then.
+      const next = region.getByRole('button', { name: 'New video', exact: true });
+      await region.locator('.in-frame').or(next).first().waitFor();
+      if (!(await region.locator('.in-frame').count())) await next.click();
       await region.getByRole('textbox', { name: 'Summary', exact: true }).click();
       await page.keyboard.press('ControlOrMeta+End');
       await page.keyboard.type(more);
