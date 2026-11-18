@@ -294,7 +294,7 @@ done
 # What each describe read: the package its folder's pyproject.toml names. One that failed (GitHub refusing a wheel's download,
 # 44294540054) is read again by its retry, not a second reading.
 read_of() { sed -n 's/.* --dir \([^ ]*\) describe$/\1/p' | while read -r dir; do sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/pyproject.toml" | head -1; done | sort; }
-failed=$(grep '^failed ' "$log" | read_of | paste -sd, -)
+failed=$(grep '^failed ' "$log" | read_of | paste -sd, - || true)
 described=$(comm -23 <(grep -v '^failed ' "$log" | read_of) <(grep '^failed ' "$log" | read_of) | paste -sd, -)
 echo "source reads: e2e-boxed changed: the page's stream was told tools.changed $told times; uv described ${described:-nothing}${failed:+ (and failed: $failed)}; listed:" \
   "$(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, source}]' "$OUT/source-reads-edited.json" 2> /dev/null)"
