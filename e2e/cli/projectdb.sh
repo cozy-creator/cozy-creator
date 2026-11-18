@@ -385,7 +385,7 @@ closes_show() {
 closes_made() {
   local P=$CLOSES/p$1 k
   cozy --json new --unencrypted "$P" > "$CLOSES/new-$1.json" 2>&1 || return 1
-  cp "$CLOSES/seed.png" "$P/seed.png"
+  cp "$CLOSES/seed.png" "$P/seed.png" || return 1
   { for k in $(seq 0 49); do printf 'pic_%s:\n  kind: image\n  takes:\n    - file: seed.png\n' "$k"; done
     for k in $(seq 0 149); do
       printf 'shot_%s:\n  %s:\n    instructions: The colossal blue whale rises through a storm, lit from below, <pic_%s> and <pic_%s>.\n' "$k" "$here/project/draw.py/draw" $((k % 50)) $((k * 7 % 50))

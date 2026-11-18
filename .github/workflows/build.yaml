@@ -132,6 +132,9 @@ jobs:
           found=$(git grep -cE 'PR_SET_PDEATHSIG|set_parent_process_death_signal' -- 'crates/*.rs' 'crates/*.py' || true)
           [ "$found" = 'crates/platform/src/process/linux.rs:2' ] \
             || { echo "::error::a parent-death signal armed outside platform::process::die_with_parent:"; echo "$found"; exit 1; }
+      # cl-1204: release-gate/ and e2e/ shell sets errexit only as a script's first command.
+      - if: steps.scope.outputs.run == 'true'
+        run: release-gate/errexit-lint.sh
       # The release and signing workflows run each action by its commit, never a tag that can move (xs-196).
       - if: steps.scope.outputs.run == 'true'
         run: |

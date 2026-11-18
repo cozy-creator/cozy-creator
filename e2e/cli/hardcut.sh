@@ -246,10 +246,10 @@ sudo pkill -KILL -u "$CUT_USER" || true
 # cut_old_outputs: the old landing folder `~/.cozy/outputs` as an older cozy left it (cl-1036): plain's still, which its box shows, there
 # with its `files/` entry a link to it (an older cozy's media link), and a file no box shows.
 cut_old_outputs() {
-  CUT_SHOWN=$P/$(jq -r '.card.image.path' "$OUT/cut-plain-before.json")
+  CUT_SHOWN=$P/$(jq -er '.card.image.path' "$OUT/cut-plain-before.json") || { check "hard cut: plain's still has no path"; return 1; }
   sudo -u "$CUT_USER" sh -c 'set -e; mkdir -p "$1/legacy"; mv "$2" "$1/legacy/card.png"; ln -s "$1/legacy/card.png" "$2"
     head -c 65536 /dev/urandom > "$1/legacy/unshown.bin"' sh "$home/.cozy/outputs" "$CUT_SHOWN" || { check "hard cut: the old landing folder not made"; return 1; }
-  CUT_UNSHOWN=$(sudo sha256sum "$home/.cozy/outputs/legacy/unshown.bin" | cut -d' ' -f1)
+  CUT_UNSHOWN=$(sudo sha256sum "$home/.cozy/outputs/legacy/unshown.bin" | cut -d' ' -f1) || { check "hard cut: the unshown file not read"; return 1; }
   [ "sha256:$(sudo sha256sum "$CUT_SHOWN" | cut -d' ' -f1)" = "$(jq -r '.card.image.sha256' "$OUT/cut-plain-before.json")" ] \
     || { check "hard cut: plain's still doesn't read through its link: $(sudo ls -l "$CUT_SHOWN")"; return 1; }
 }
@@ -703,7 +703,7 @@ PY
 # cut_admit: a new file into the cut's user's machine store, through this cozy's Calcifer: the store's upkeep runs as it comes in.
 cut_admit() {
   local holder address token file=$OUT/cut-admit.bin
-  head -c 4096 /dev/urandom > "$file"
+  head -c 4096 /dev/urandom > "$file" || return
   holder=$(sudo cat "$(getent passwd "$CUT_USER" | cut -d: -f6)/.cozy/calcifer/calcifer.lock.holder") || return
   address=$(jq -r .address <<< "$holder") token=$(jq -r .token <<< "$holder")
   sudo -u "$CUT_USER" curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $token" --data-binary @- "http://$address/v1/files/sha256:$(sha "$file")" < "$file" > /dev/null
@@ -759,7 +759,8 @@ cut_fill() {
   python3 -c 'import os,sys,zlib,struct
 w=h=8; raw=b"".join(b"\0"+os.urandom(3)*w for _ in range(h))
 c=lambda t,d: struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
-open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBBB",w,h,8,2,0,0,0))+c(b"IDAT",zlib.compress(raw))+c(b"IEND",b""))' "$png"
+open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBBB",w,h,8,2,0,0,0))+c(b"IDAT",zlib.compress(raw))+c(b"IEND",b""))' "$png" \
+    || { check "hard cut ($tag): its picture"; return 1; }
   sha="sha256:$(sha "$png")"
   cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg words "A still of one colour, $CUT_PROMPT_MARK." '{name: "card", exact: true, tool: "/opt/cozy-cut/draw.py/draw", kind: "image", fields: {instructions: $words}}')" > /dev/null \

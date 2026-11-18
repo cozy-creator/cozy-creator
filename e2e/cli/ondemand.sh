@@ -813,9 +813,9 @@ true
 # the wheel server's directory <dir>/www.
 share_package() {
 local dir=$1 arm=$2 port=$3
-mkdir -p "$dir/$arm/slow/e2e_share_slow_$arm" "$dir/www" && : > "$dir/$arm/slow/e2e_share_slow_$arm/__init__.py"
-printf '[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' > "$dir/$arm/slow/pyproject.toml"
-cat > "$dir/$arm/slow/setup.py" <<PY
+mkdir -p "$dir/$arm/slow/e2e_share_slow_$arm" "$dir/www" && : > "$dir/$arm/slow/e2e_share_slow_$arm/__init__.py" || return 1
+printf '[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' > "$dir/$arm/slow/pyproject.toml" || return 1
+cat > "$dir/$arm/slow/setup.py" <<PY || return 1
 import sys, time, urllib.request
 
 from setuptools import setup
@@ -830,7 +830,7 @@ if "bdist_wheel" in sys.argv:
     time.sleep(45)
 setup(name="e2e-share-slow-$arm", version="0.0.0", packages=["e2e_share_slow_$arm"], package_data={"e2e_share_slow_$arm": ["*.bin"]})
 PY
-python3 - "$dir/www" "$arm" <<'PY'
+python3 - "$dir/www" "$arm" <<'PY' || return 1
 import base64, hashlib, os, sys, zipfile
 www, arm = sys.argv[1], sys.argv[2]
 with open(f"{www}/blob-{arm}.bin", "wb") as blob:
