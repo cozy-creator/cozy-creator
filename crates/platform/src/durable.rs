@@ -407,6 +407,28 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Where an open file or directory is now, wherever it was moved since it was opened (Linux, macOS): None once it's deleted, or
+/// where that can't be known (Windows).
+pub fn path_now(file: &File) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+        (path.is_absolute() && !path.to_string_lossy().ends_with(" (deleted)")).then_some(path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let path = rustix::fs::getpath(file).ok()?;
+        Some(std::path::PathBuf::from(std::ffi::OsString::from_vec(path.into_bytes())))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = file;
+        None
+    }
+}
+
 /// Sets an open file's permission bits; a no-op on Windows.
 pub fn set_file_mode(file: &File, mode: u32) -> Result<()> {
     #[cfg(unix)]

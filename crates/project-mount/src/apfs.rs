@@ -222,6 +222,27 @@ fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Where the image attached as `device` has its volumes mounted now, as the image registry says (it follows a mount point that
+/// moved). Picked by the device this lease attached, never by path: another image unlocked at the same folder since is not this one.
+fn mount_points(provider: &Provider, device: &str) -> Result<Vec<PathBuf>> {
+    let mut command = provider.command("info");
+    command.arg("-plist");
+    let info = decode(run(provider, command, "read attached native images", None, CONTROL_ACK)?)?;
+    let images = info
+        .as_dictionary()
+        .and_then(|dictionary| dictionary.get("images"))
+        .and_then(Value::as_array)
+        .ok_or(Error::Invalid("the native image registry is unavailable"))?;
+    let ours = images.iter().find(|candidate| base_device(candidate).as_deref() == Some(device));
+    Ok(ours
+        .and_then(|candidate| candidate.as_dictionary()?.get("system-entities")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entity| entity.as_dictionary()?.get("mount-point")?.as_string())
+        .map(PathBuf::from)
+        .collect())
+}
+
 pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Result<()> {
     // Disk Arbitration can reject an image eject solely because mds monitors its root.
     // A normal kernel unmount releases the volume without forcing an editor's open files.
@@ -300,6 +321,11 @@ impl Lease {
         .is_err()
             && current_device(&self.provider, &self.image)?.as_deref() == Some(current.as_str())
         {
+            // A volume whose mount point moved with its folder (cl-1124: dragged to the Trash) refuses a detach, which unmounts it by
+            // Disk Arbitration: the kernel unmounts it where it is now, then the image detaches.
+            for point in mount_points(&self.provider, &current)? {
+                let _ = unix_unmount(&point, true, CONTROL_ACK);
+            }
             let mut forced = self.provider.command("detach");
             forced.arg("-force").arg(&current);
             let _ = run(
