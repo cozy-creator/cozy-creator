@@ -70,11 +70,12 @@ fetch() {
   done < "$2.err"
   [ -s "$2/latents" ] || fail "run $1's outputs did not land in $2: $(tail -c 300 "$2.err")"
 }
-# completed <step>: its run's record in $OUT/<step>.json, completed, or the session fails.
+# completed <step>: its run's number, its record in $OUT/<step>.json; else why not, and 1.
 completed() {
-  local n; n=$(runno "$1"); [ -n "$n" ] || fail "$1 named no run"
+  local n; n=$(runno "$1"); [ -n "$n" ] || { echo "$1 named no run"; return 1; }
   cozy run watch "$n" --once --json --full > "$OUT/$1.json" 2>&1
-  [ "$(jq -r .status "$OUT/$1.json")" = completed ] || fail "$1: run $n $(jq -r '.reason.message // .status' "$OUT/$1.json" | cut -c1-300)"
+  [ "$(jq -r .status "$OUT/$1.json")" = completed ] ||
+    { echo "$1: run $n $(jq -r '.reason.message // .status' "$OUT/$1.json" | cut -c1-300)"; return 1; }
   echo "$n"
 }
 # stage <record> <name>: the stage's seconds.
@@ -96,7 +97,8 @@ for a in "${NAMES[@]}"; do
   fi
   if [ "$a" = "$first" ]; then
     step encode run "${PKG[$a]}/vae_round_trip" --file "video=$CLIP" --on "$NAME" || fail "encode"
-    fetch "$(completed encode)" "$OUT/clip.out"
+    N=$(completed encode) || fail "$N"
+    fetch "$N" "$OUT/clip.out"
     LAT=$OUT/clip.out/latents
     say "clip latents: $(jq -c '.calls[]?.measurements.attribution.stages? // empty' "$OUT/encode.json" | head -1 | cut -c1-200)"
   fi
@@ -105,14 +107,16 @@ for a in "${NAMES[@]}"; do
     c=up-$a-$i
     step "$c" run "${PKG[$a]}/latent_upscale" --file "latents=$LAT" "resolution=$TO" "model.latent_upscaler=$model" --on "$NAME" ||
       fail "$c: $(tail -c 300 "$OUT/$c.txt")"
-    N=$(completed "$c"); s=$(stage "$OUT/$c.json" upscale_latent)
+    N=$(completed "$c") || fail "$N"
+    s=$(stage "$OUT/$c.json" upscale_latent)
     printf '%s\t%s\t%s\t%s\n' "$a" "$i" "$s" "$N" >> "$TSV"
     say "$c: run $N, upscale_latent ${s}s, plan $(jq -c '[.calls[]?.measurements.plan_reports? // empty] | .[0] // {} | with_entries(select(.key | test("conv")))' "$OUT/$c.json" 2>/dev/null | cut -c1-300)"
   done
   fetch "$N" "$OUT/$a.up"
   step "decode-$a" run "${PKG[$a]}/vae_round_trip" --file "video=$CLIP" --file "latents=$OUT/$a.up/latents" --on "$NAME" ||
     fail "decode $a"
-  fetch "$(completed "decode-$a")" "$OUT/$a.decode"
+  N=$(completed "decode-$a") || fail "$N"
+  fetch "$N" "$OUT/$a.decode"
   [ "$a" = "$first" ] && continue
   say "$a against $first, upscaled latents: $("${PY[@]}" latents "$OUT/$first.up/latents" "$OUT/$a.up/latents" 2>&1 | tail -1)"
   say "$a against $first, decoded frames: $("${PY[@]}" frames "$OUT/$first.decode/frames" "$OUT/$a.decode/frames" 2>&1 | tail -1)"
@@ -129,7 +133,7 @@ done
 if [ "$FULL" = true ]; then
   step "update-full" machine update "$NAME" --runtime "${WHEEL[$first]}" "${TENSORD[@]}" -y || fail "full: the update"
   if step full run "${PKG[$first]}/upscale" --file "video=$CLIP" "to=$TO" --on "$NAME"; then
-    N=$(completed full)
+    N=$(completed full) || say "$N"
     say "full upscale, run $N: $(jq -c '[.measurements, .calls[]?.measurements | .attribution.stages? // empty] | add' "$OUT/full.json" | cut -c1-500)"
   else
     say "full upscale failed: $(tail -c 400 "$OUT/full.txt")"
