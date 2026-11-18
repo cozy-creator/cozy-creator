@@ -97,10 +97,10 @@ fn unguessed(folder: &str, name: &str, why: &str) {
     if said.get(&(folder.to_owned(), name.to_owned())).is_some_and(|was| was == why) {
         return;
     }
-    match name.is_empty() {
-        true => tracing::info!(target: crate::prefetch::TARGET, "{folder}: no box is guessed: {why}"),
-        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} isn't guessed: {why}"),
-    }
+    crate::prefetch::say(folder, || match name.is_empty() {
+        true => format!("{folder}: no box is guessed: {why}"),
+        false => format!("{folder}: {name} isn't guessed: {why}"),
+    });
     said.insert((folder.to_owned(), name.to_owned()), why.to_owned());
 }
 
@@ -190,10 +190,10 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                     match round > *newest {
                         true => {
                             *newest = round;
-                            tracing::info!(target: crate::prefetch::TARGET, "{folder}: {} guesses in {} ms ({why})", guesses.len(), began.elapsed().as_millis());
+                            crate::prefetch::say(&folder, || format!("{folder}: {} guesses in {} ms ({why})", guesses.len(), began.elapsed().as_millis()));
                             api.machines.lists.guess(&api.machines, &folder, guesses);
                         }
-                        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: a newer round's guesses stand over these, {} ms ({why})", began.elapsed().as_millis()),
+                        false => crate::prefetch::say(&folder, || format!("{folder}: a newer round's guesses stand over these, {} ms ({why})", began.elapsed().as_millis())),
                     }
                     drop(newest);
                     let _ = ended.send(());
@@ -307,7 +307,7 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
     }
     if !kept_now.is_empty() {
         let names: Vec<&str> = kept_now.iter().map(|guess| guess.asset.as_str()).collect();
-        tracing::info!(target: crate::prefetch::TARGET, "{folder}: {names:?} keep their guesses: their requests and loads hold");
+        crate::prefetch::say(&folder, || format!("{folder}: {names:?} keep their guesses: their requests and loads hold"));
     }
     let names: Vec<String> = fresh.iter().map(|(name, ..)| name.clone()).collect();
     let each = fresh.into_iter().map(|boxed| Box::pin(guess(api, project, &host, &hub, &folder, on.clone(), boxed, &asking)));
@@ -330,7 +330,7 @@ async fn guesses_in(api: &Arc<Api>, project: &Arc<Project>) -> Vec<Guess> {
             }
             Guessed::Unknown(why) => {
                 let kept = api.machines.lists.last_guess(&folder, &name);
-                tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name}'s guess wasn't made ({why}); {}", if kept.is_some() { "it keeps the one it had" } else { "it has none" });
+                crate::prefetch::say(&folder, || format!("{folder}: {name}'s guess wasn't made ({why}); {}", if kept.is_some() { "it keeps the one it had" } else { "it has none" }));
                 kept
             }
         })
@@ -358,7 +358,7 @@ async fn guess(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, f
     let guessed = crate::stages::recorded(stages.clone(), staged(api, project, host, hub, folder, on, boxed, asking, &stages)).await;
     // One made says its stages as it goes; one not made, here.
     if !matches!(guessed, Guessed::Made(..)) && began.elapsed() >= SLOW {
-        tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name}'s guess took {} ms: {}", began.elapsed().as_millis(), lock(&*stages).said());
+        crate::prefetch::say(folder, || format!("{folder}: {name}'s guess took {} ms: {}", began.elapsed().as_millis(), lock(&*stages).said()));
     }
     guessed
 }
@@ -404,10 +404,10 @@ async fn staged(api: &Arc<Api>, project: &Arc<Project>, host: &Host, hub: &str, 
         Err(why) => return Guessed::Unknown(Cow::Owned(format!("its request couldn't be read: {}", why.message))),
     };
     let took = began.elapsed();
-    match took < SLOW {
-        true => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms", took.as_millis()),
-        false => tracing::info!(target: crate::prefetch::TARGET, "{folder}: {name} guessed on {machine} in {} ms: {}", took.as_millis(), lock(stages).said()),
-    }
+    crate::prefetch::say(folder, || match took < SLOW {
+        true => format!("{folder}: {name} guessed on {machine} in {} ms", took.as_millis()),
+        false => format!("{folder}: {name} guessed on {machine} in {} ms: {}", took.as_millis(), lock(stages).said()),
+    });
     Guessed::Made(Box::new(Guess { project: Arc::downgrade(project), asset: name, machine: machine.clone(), hub: hub.to_owned(), item, function, placed, draft: draft(&with, &made), files }), key)
 }
 
@@ -483,11 +483,10 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         .flat_map(|(field, value)| value["references"].as_array().into_iter().flatten().map(move |reference| format!("{field}: {}", reference["type"].as_str().unwrap_or("?"))))
         .collect();
     let (needed, unneeded, unanswered) = (answers.as_ref().map(|answers| &answers.needed), answers.as_ref().map(|answers| &answers.unneeded), answers.as_ref().map(|answers| &answers.unanswered));
-    tracing::info!(
-        target: crate::prefetch::TARGET,
+    crate::prefetch::say(&dir.to_string_lossy(), || format!(
         "guess {name} on {machine}: {}/{} with {fields:?}, referencing {references:?}; its rules hold for {needed:?}, not for {unneeded:?}, give no answer for {unanswered:?}",
         package.name, renderer.function
-    );
+    ));
     // Once a box's function is guessed, what any edit of it reads of the Hub is read behind it.
     if READ_AHEAD.lock().expect("read-ahead lock").insert((hub.to_owned(), package.name.clone(), package.release.clone(), renderer.function.clone())) {
         let (api, hub, package, function, made) = (api.clone(), hub.to_owned(), package.clone(), renderer.function.clone(), made.clone());

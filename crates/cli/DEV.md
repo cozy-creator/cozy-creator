@@ -25,8 +25,9 @@ then runs every 16th replay of a region's CUDA graph against its call as written
 ## A dev machine may run its predictions ahead (cl-1123 D)
 
 Off by default (Paul 11-18). A machine downloads and loads what the page predicts, and never runs it. With `dev = true` and
-this in its own config.toml, a dedicated machine also runs a loaded prediction once its draft has stood still for 3 s, and
-a render of the same request adopts that run:
+this in its own config.toml, a dedicated rental also runs a loaded prediction once its draft has stood still for 3 s, and
+a render of the same request adopts that run. This computer's own machine never does: its predictions come with no
+project's scope, so a draft run there would run outside its project (cl-1123).
 
 ```toml
 [machine]

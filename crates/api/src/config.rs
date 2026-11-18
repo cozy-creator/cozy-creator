@@ -143,7 +143,7 @@ pub struct MachineConfig {
     /// Tests only: recorded GPU readings (JSON lines of `platform::gpu::Sample`) every call reads in place of its GPUs' own,
     /// so a throttling host's go through the real path (cl-913). The Hub is never told of them.
     pub gpu_samples: Option<PathBuf>,
-    /// Dev only, read with `dev = true` (crates/cli/DEV.md): a dedicated machine runs a loaded prediction ahead as if it were
+    /// Dev only, read with `dev = true` (crates/cli/DEV.md): a dedicated rental runs a loaded prediction ahead as if it were
     /// sent (cl-1123 D). Off by default (Paul 11-18: "I would stop short at actually doing the full run").
     pub speculate: bool,
 }

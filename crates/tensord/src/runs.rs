@@ -509,7 +509,8 @@ impl Runs {
                 digest: &spec.digest,
                 invocation: std::mem::take(&mut **invocation),
                 objects: references,
-                spec: &spec.journaled,
+                // Nor is it kept for a restart: its list is sent again, and the start forgets it (`Journal::forget_lists`).
+                spec: if crate::ahead::item(id) { &[] } else { spec.journaled.as_slice() },
             })
             .collect();
         let accepted = self.service.engine.accept_runs(actor, accepting, synced)?;
@@ -602,7 +603,11 @@ impl Runs {
             generation: String::new(),
             module: String::new(),
             entrypoint: spec.entrypoint.clone(),
-            input: spec.input.clone(),
+            // A list item's request stays in memory (cl-1123): it comes with no project's scope, and a draft is the project's.
+            input: match crate::ahead::item(id) {
+                true => serde_json::Value::Object(Default::default()),
+                false => spec.input.clone(),
+            },
             attention_kernel: spec.attention_kernel.clone(),
             attention_capture: spec.attention_capture.clone(),
             gpus: spec.gpus,
