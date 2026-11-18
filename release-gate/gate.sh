@@ -141,7 +141,11 @@ if [ -n "$PREFLIGHT" ]; then
 fi
 # Local code, a --packages checkout's or the suites' own, warms through this helper (e2e/warm.py --stage-code).
 if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
+  # With the checkout's toolchain (rust-toolchain.toml, as e2e.yaml builds): cargo runs here, outside the checkout, where
+  # rustup would take this computer's default (1.91 failed the workspace's 1.99).
+  toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$HERE/../rust-toolchain.toml")
+  { rustup toolchain install "$toolchain" --profile minimal &&
+    cargo "+$toolchain" build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build"; } > stage-code-build.log 2>&1 \
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
 fi
