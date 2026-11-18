@@ -1554,6 +1554,13 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         return Err(Error::Invalid("activate this Varena device before Torch GPU work"));
     }
     if bytes == 0 { return Ok(0); }
+    // PROOF ONLY (var-030; never merge): each new largest working allocation asked of this process.
+    {
+        static LARGEST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(32 << 20);
+        if bytes > LARGEST.fetch_max(bytes, Ordering::Relaxed) {
+            eprintln!("varena-var030 largest allocation so far: {bytes} bytes on stream {stream} (graph pool: {})", pool.is_some());
+        }
+    }
     let class = size_class(bytes, owner.page())?;
     let exact = if class <= LARGE { owner.page() } else { class };
     let mut pool = pool;
