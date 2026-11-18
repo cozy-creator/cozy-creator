@@ -661,20 +661,22 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
     let lanes: Vec<(&Lane, &String, Vec<String>)> = (resolved.needed.into_iter())
         .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _)| (lane, written, components)))
         .collect();
+    // A checkpoint read whole less what its call reads none of (a `component_needs` rule that doesn't hold): its header names the rest.
+    let unread = |checkpoint: &str| resolved.unread.iter().find(|(held, _)| held == checkpoint).map_or(&[][..], |(_, components)| components.as_slice());
     let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components)| async move {
         match &lane.header {
-            Some(header) => crate::hub::headers::wanted(api, hub, header, components).await,
+            Some(header) => crate::hub::headers::wanted(api, hub, header, components, unread(&lane.checkpoint)).await,
             None => None,
         }
     })))
     .await;
     let mut counted: HashSet<String> = HashSet::new();
     let mut models = vec![];
-    for ((lane, written, components), chunks) in lanes.into_iter().zip(headers) {
+    for ((lane, written, components), read) in lanes.into_iter().zip(headers) {
         let checkpoint = lane.checkpoint.clone();
-        let bytes = match chunks {
-            Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
-            None => lane.bytes,
+        let (bytes, components) = match read {
+            Some((named, chunks)) => (chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(), named),
+            None => (lane.bytes, components),
         };
         models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components });
     }

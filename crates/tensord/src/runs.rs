@@ -1248,8 +1248,8 @@ impl Runs {
         if crate::ahead::item(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
-                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}; planned in {} ms, its code ready in {installed_ms} ms",
-                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras, planning.elapsed().as_millis()
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}, reads none of {:?}; planned in {} ms, its code ready in {installed_ms} ms",
+                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras, wants.unread, planning.elapsed().as_millis()
             );
         }
         // What a root call reads, for its function's next quote on any machine (cl-967).

@@ -134,27 +134,34 @@ pub(crate) async fn header(endpoint: &Endpoint, object: &types::ObjectRef) -> Re
     Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("This version of Cozy can't read the model's header {} ({why}). Update Cozy.", object.id())).next("cozy update"))
 }
 
-/// The chunks a slot's checkpoint is fetched as, by Hub, header and components: content-addressed, so read once and kept.
-type Wanted = HashMap<(String, String, Vec<String>), Arc<Vec<ObjectRef>>>;
+/// The components a slot's checkpoint is fetched as, and their chunks, by Hub, header, components and those left out: content-addressed,
+/// so read once and kept.
+type Wanted = HashMap<(String, String, Vec<String>, Vec<String>), (Vec<String>, Arc<Vec<ObjectRef>>)>;
 static WANTED: LazyLock<Mutex<Wanted>> = LazyLock::new(Mutex::default);
 
-/// The chunks and assets `components` of the checkpoint `header` read (every one when empty), each once (cl-1071): what a machine that
-/// holds none of it fetches for a slot, as TensorD fetches it (`tensorfs::fetch::wanted`). Only the header is read, as `cozy model show`
-/// reads it. None: it can't be read, or names no such component.
-pub(crate) async fn wanted(api: &Api, hub: &str, header: &types::ObjectRef, components: &[String]) -> Option<Arc<Vec<ObjectRef>>> {
+/// The chunks and assets `components` of the checkpoint `header` read (every one when empty, less `unread`: those its call reads none
+/// of, `needs::Resolved::unread`), each once (cl-1071): what a machine that holds none of it fetches for a slot, as TensorD fetches it
+/// (`tensorfs::fetch::wanted`), and the components named (none: all). Only the header is read, as `cozy model show` reads it. None: it
+/// can't be read, or names no such component.
+pub(crate) async fn wanted(api: &Api, hub: &str, header: &types::ObjectRef, components: &[String], unread: &[String])
+    -> Option<(Vec<String>, Arc<Vec<ObjectRef>>)> {
     let hub = origin(api, Some(hub)).ok()?;
-    let key = (hub.to_string(), header.sha256.clone(), components.to_vec());
+    let key = (hub.to_string(), header.sha256.clone(), components.to_vec(), unread.to_vec());
     if let Some(held) = WANTED.lock().expect("wanted lock").get(&key) {
         return Some(held.clone());
     }
     let endpoint = distribution(&reader(api, &hub).ok()?, &hub).await.ok()?;
     let read = self::header(&endpoint, header).await.inspect_err(|why| tracing::debug!("{}", why.message)).ok()?;
-    let chunks = tensorfs::fetch::wanted(&read, (!components.is_empty()).then_some(components))
+    let named: Vec<String> = match components.is_empty() && !unread.is_empty() {
+        true => read.components().iter().map(|c| c.name.clone()).filter(|name| !unread.contains(name)).collect(),
+        false => components.to_vec(),
+    };
+    let chunks = tensorfs::fetch::wanted(&read, (!named.is_empty()).then_some(named.as_slice()))
         .inspect_err(|why| tracing::debug!("header {}: {}", header.sha256, why.detail))
         .ok()?;
-    let chunks = Arc::new(chunks);
-    WANTED.lock().expect("wanted lock").insert(key, chunks.clone());
-    Some(chunks)
+    let held = (named, Arc::new(chunks));
+    WANTED.lock().expect("wanted lock").insert(key, held.clone());
+    Some(held)
 }
 
 fn class(class: &ClassRef) -> [String; 3] {

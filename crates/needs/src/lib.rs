@@ -2,7 +2,9 @@
 //! arbitrary code"). A package says it in its interface: on a model slot or a called function, `needs` is one CEL boolean
 //! expression over `request`, the request as JSON with each field it leaves out at its declared default. Calcifer (a quote, what a
 //! box prepares) and TensorD (what a call fetches before it starts) read it here, with one evaluator. A slot with no rule is always
-//! needed, and one whose rule gives no answer for a request is as one with none.
+//! needed, and one whose rule gives no answer for a request is as one with none. A slot may rule its components too
+//! (`component_needs`, the Runtime's `needs={"model.vision": …}`): one whose rule doesn't hold isn't fetched for the call; one with
+//! no rule, or whose rule gives no answer, comes with its slot.
 //!
 //! What a call then wants of its models is one walk here too (`wants`, `resolved`): its slots by the rules' answers and, for a
 //! function that calls others, theirs, its own package's or another's (cl-1123: Orbit's `render_shot` is H3's). Calcifer walks it
@@ -32,8 +34,8 @@ const MAX_NESTED: usize = 2;
 /// What a rule may do, said where it does something else.
 const MAY: &str = "a rule has `&&`, `||`, `!`, comparisons, `in`, `size()`, `has()`, and `exists`, `all`, `exists_one` over a list";
 
-/// One call's answers: each ruled model slot (by its parameter) or called function (by its name) of its function, by what its
-/// rule says of the request.
+/// One call's answers: each ruled model slot (by its parameter), component of one (`<parameter>.<component>`) or called function (by
+/// its name) of its function, by what its rule says of the request.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Answers {
     /// Its rule holds: the call waits on its weights.
@@ -44,15 +46,28 @@ pub struct Answers {
     pub unanswered: Vec<(String, String)>,
 }
 
-/// Each rule of an interface's entrypoint: a model slot's by its parameter, a called function's by its name.
+/// Each rule of an interface's entrypoint: a model slot's by its parameter, one of its components' by `<parameter>.<component>`, a
+/// called function's by its name.
 pub fn rules(entry: &Value) -> Vec<(String, String)> {
-    let slots = api::interface::models(entry).iter().filter_map(|slot| {
-        let parameter = api::interface::slot_path(slot)?.rsplit_once(".models.")?.1;
-        Some((parameter.to_owned(), slot["needs"].as_str()?.to_owned()))
-    });
+    let mut rules = vec![];
+    for slot in api::interface::models(entry) {
+        let Some(parameter) = api::interface::slot_path(slot).and_then(|path| path.rsplit_once(".models.")).map(|(_, parameter)| parameter) else {
+            continue;
+        };
+        rules.extend(slot["needs"].as_str().map(|rule| (parameter.to_owned(), rule.to_owned())));
+        for (component, rule) in slot["component_needs"].as_object().into_iter().flatten() {
+            rules.extend(rule.as_str().map(|rule| (component_rule(parameter, component), rule.to_owned())));
+        }
+    }
     let calls = (entry["calls"].as_array().into_iter().flatten())
         .filter_map(|call| Some((call["function"].as_str()?.to_owned(), call["needs"].as_str()?.to_owned())));
-    slots.chain(calls).collect()
+    rules.extend(calls);
+    rules
+}
+
+/// The name a component's rule answers under: `model.vision`.
+fn component_rule(parameter: &str, component: &str) -> String {
+    format!("{parameter}.{component}")
 }
 
 /// What `entry`'s rules say of the request `sent`, as its function gets it bound; one sent as nothing is its defaults.
@@ -142,13 +157,15 @@ fn normalized(name: &str) -> String {
 /// `<distribution>/<function>.models.<parameter>`), as its function's needs rules say of its request
 /// (`wants`): the slots it waits for before it starts; for each function it may call that no rule answers for, the slots that one
 /// waits for, of which what they all read is waited for; and what it may read besides, by group, fetched only in the background. A
-/// slot named in none is never fetched for it. Each side resolves a slot to a checkpoint itself (`resolved`): Calcifer by its Hub
-/// card, to quote a call; a machine for its lane and store, to fetch one.
+/// slot named in none is never fetched for it. `unread`: the components of a slot its call reads none of, by the slot (its
+/// `component_needs` rules don't hold), wherever the slot is named. Each side resolves a slot to a checkpoint itself (`resolved`):
+/// Calcifer by its Hub card, to quote a call; a machine for its lane and store, to fetch one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Wants {
     pub needed: Vec<String>,
     pub either: Vec<Vec<String>>,
     pub extras: Vec<(String, Vec<String>)>,
+    pub unread: Vec<(String, Vec<String>)>,
 }
 
 impl Wants {
@@ -184,6 +201,7 @@ pub fn wants(document: &Value, others: &[Other<'_>], entrypoint: &str, answers: 
         if !extras.is_empty() {
             wants.extras.push((ON_DEMAND.to_owned(), extras));
         }
+        wants.unread = unread(entry, answers);
         return wants;
     }
     let (packages, unasked) = (Packages { own: document, others }, Answers::default());
@@ -231,6 +249,24 @@ fn split(entry: &Value, answers: &Answers, behind: &str) -> (Vec<String>, Vec<St
     (needed, extras)
 }
 
+/// `entry`'s slots (by path) with the components its rules say the request doesn't read (`<parameter>.<component>` among `unneeded`).
+fn unread(entry: &Value, answers: &Answers) -> Vec<(String, Vec<String>)> {
+    let mut unread = vec![];
+    for slot in api::interface::models(entry) {
+        let Some(path) = api::interface::slot_path(slot) else { continue };
+        let parameter = path.rsplit_once(".models.").map_or(path, |(_, parameter)| parameter);
+        let components: Vec<String> = (slot["component_needs"].as_object().into_iter().flatten())
+            .map(|(component, _)| component)
+            .filter(|component| answers.unneeded.contains(&component_rule(parameter, component)))
+            .cloned()
+            .collect();
+        if !components.is_empty() {
+            unread.push((path.to_owned(), components));
+        }
+    }
+    unread
+}
+
 /// The functions that construct a model and that `entrypoint` of `document`, loading none itself, calls: those its `calls` name (the
 /// Runtime's static reading, through its own helpers), its package's own or one of `others`' (cl-1123: Orbit's `render_shot`, H3's),
 /// and theirs in turn, in each package's order, its own first (cl-1077: H3's `edit` brought `upscale`'s upscaler). Another package's
@@ -274,17 +310,32 @@ pub fn callees(document: &Value, others: &[Other<'_>], entrypoint: &str, uncalle
 /// Checkpoints by their id, each with the components read of it (none: all of it).
 pub type Selected = Vec<(String, Vec<String>)>;
 
-/// `Wants` as checkpoints: what the call waits for, and its extras by group.
+/// `Wants` as checkpoints: what the call waits for, and its extras by group. `unread`: of a checkpoint resolved whole (no components
+/// named) in `needed`, the components the call reads none of, which only its header can take out (`wanted`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Resolved {
     pub needed: Selected,
     pub extras: Vec<(String, Selected)>,
+    pub unread: Selected,
 }
 
-/// `wants` as checkpoints, each slot by `resolve` (its checkpoint and the components read of it; none: it reads nothing here): what
-/// the call waits for is what every function of its `either` reads, each one resolved whole (one that doesn't is left out), and
-/// each needed slot's; then each group of extras. Each checkpoint once in each, with the components any of its slots reads.
+/// `wants` as checkpoints, each slot by `resolve` (its checkpoint and the components read of it; none: it reads nothing here), less
+/// the components its call doesn't read (`Wants::unread`): what the call waits for is what every function of its `either` reads,
+/// each one resolved whole (one that doesn't is left out), and each needed slot's; then each group of extras. Each checkpoint once in
+/// each, with the components any of its slots reads.
 pub fn resolved(wants: &Wants, resolve: impl Fn(&str) -> Option<(String, Vec<String>)>) -> Resolved {
+    let unread = |slot: &str| wants.unread.iter().find(|(held, _)| held == slot).map_or(&[][..], |(_, components)| components.as_slice());
+    // A slot whose components are named reads them less its unread ones (none left: nothing here); one read whole keeps them, said
+    // in `Resolved::unread`.
+    let resolve = |slot: &str| {
+        resolve(slot).and_then(|(checkpoint, components)| match components.is_empty() {
+            true => Some((checkpoint, components)),
+            false => {
+                let kept: Vec<String> = components.into_iter().filter(|component| !unread(slot).contains(component)).collect();
+                (!kept.is_empty()).then_some((checkpoint, kept))
+            }
+        })
+    };
     let selected = |slots: &[String]| {
         let mut selected = Selected::new();
         joined(&mut selected, slots.iter().filter_map(|slot| resolve(slot.as_str())).collect());
@@ -304,7 +355,19 @@ pub fn resolved(wants: &Wants, resolve: impl Fn(&str) -> Option<(String, Vec<Str
         .map(|(group, slots)| (group.clone(), selected(slots.as_slice())))
         .filter(|(_, selected)| !selected.is_empty())
         .collect();
-    Resolved { needed, extras }
+    // A whole checkpoint read stays whole when any of its slots reads all of it.
+    let mut whole = Selected::new();
+    for (slot, components) in &wants.unread {
+        let Some((checkpoint, named)) = wants.needed.contains(slot).then(|| resolve(slot.as_str())).flatten() else { continue };
+        let read_whole = (wants.needed.iter())
+            .filter(|other| *other != slot)
+            .filter_map(|other| resolve(other.as_str()))
+            .any(|(held, named)| held == checkpoint && named.is_empty());
+        if named.is_empty() && !read_whole && needed.iter().any(|(held, all)| *held == checkpoint && all.is_empty()) {
+            joined(&mut whole, vec![(checkpoint, components.clone())]);
+        }
+    }
+    Resolved { needed, extras, unread: whole }
 }
 
 /// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
