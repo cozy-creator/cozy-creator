@@ -650,6 +650,13 @@ pub struct Call {
     pub memo_basis: String,
 }
 
+impl Call {
+    /// Where it sits under its run: its request less the run's (`0`; call 1 of call 0: `0/1`).
+    pub fn path(&self) -> String {
+        self.run.split_once('/').map_or_else(|| self.index.to_string(), |(_, path)| path.to_owned())
+    }
+}
+
 /// Why a run or call did not succeed, as its machine said it (with its traceback) or as
 /// Calcifer did.
 pub use crate::machine::Reason;

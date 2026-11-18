@@ -15,7 +15,7 @@ and TensorFS wheels, and runs:
 
 | Case | Expected |
 |---|---|
-| media | PNG 4×3, pixel (0,0) RGBA (7,11,19,95); `prime`, `squared=289` from the memoized leaf, a 16-hex xxhash fingerprint |
+| media | PNG 4×3, pixel (0,0) RGBA (7,11,19,95); `prime`, `squared=289` from the memoized leaf, a 16-hex xxhash fingerprint; `run watch --full` lists every call at its place (`0` shade, `0/…` judge and square, `0/…/…` private) and reports a nested one's measurements |
 | assets | the same, with the image passed through `assets=Files(...)` to the child's `pictures` |
 | failure | the caller catches `ChildCallError`: `typed_fixture_failure` and the child's request id |
 | model one/two | two tiny local F32 checkpoints chosen by `models={...}` read 1.25 and -2.5, with different checkpoints |

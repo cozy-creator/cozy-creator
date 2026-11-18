@@ -151,8 +151,27 @@ def main() -> None:
             assert pixels.getpixel((0, 0)) == (7, 11, 19, 95)
             assert pixels.getpixel((1, 0)) == (15, 63, 127, 255)
 
+    def call_paths(checked: CheckedRun) -> dict[str, str]:
+        """Each call of the run, however deep, by where it sits (`0`, `0/1`): its function."""
+        calls = checked["watched"].get("calls")
+        assert isinstance(calls, list), sorted(checked["watched"])
+        return {
+            as_text(as_object(call)["run"]).split("/", 1)[1]: as_text(as_object(call)["function"])
+            for call in calls
+        }
+
     media = run("media")
     check_media(media, "media")
+    # A call of a call is its run's too, with what it measured (a nested call's GPU time read as
+    # unaccounted when only its parent's log held it).
+    paths = call_paths(media)
+    assert paths.get("0") == "shade", paths
+    assert sorted(f for p, f in paths.items() if p.count("/") == 1) == ["judge", "square"], paths
+    assert [f for p, f in paths.items() if p.count("/") == 2] == ["private"], paths
+    rows = as_object(media["watched"].get("report") or {}).get("measured") or []
+    assert isinstance(rows, list), rows
+    measured = {as_text(as_object(m)["by"]) for m in rows}
+    assert {p for p in paths if p.count("/") >= 1} & measured, (paths, measured)
     assets = run("assets", "use_assets=true")
     check_media(assets, "assets")
 
