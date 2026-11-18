@@ -128,7 +128,17 @@ if [ "$RENTING" != true ]; then
   cozy machine update local -y > "$OUT/local-update.txt" 2>&1 || say "cozy machine update local: $(tail -c 300 "$OUT/local-update.txt")"
   stage dry local
   # Nothing waits for a GPU here. `waiting` stands in this machine's line behind `holding` on its CPU, a run whose box and rows must
-  # tell one story (cl-1263): each page reads it, and a page named red must fail.
+  # tell one story (cl-1263). The pages are read once Calcifer says why it waits: a page holds its machines as it loaded them, so one
+  # loaded before the reason has none of it on the tab (pre-flight 44304182764). Each page reads it, and a page named red must fail.
+  # In its line (its place) and saying why, not Calcifer's "sending to …" before it has a place.
+  inline='select(.queue_position != null) | .waiting // empty'
+  for _ in $(seq 120); do
+    [ -n "$(watched "$WAITING_RUN" | jq -r "$inline")" ] && break
+    sleep 1
+  done
+  said=$(watched "$WAITING_RUN" | jq -r "$inline")
+  [ -n "$said" ] || fail "dry: run $WAITING_RUN never said why it stands in line: $(watched "$WAITING_RUN" | jq -c '{status, machine_state, queue_position, waiting}')"
+  say "dry: run $WAITING_RUN stands in line: \"$said\""
   for page in "${PAGE_NAMES[@]}"; do pw "$page" "$([ "$page" = red ] && echo fail || echo pass)" WAIT_BOX=waiting WAIT_RUN="$WAITING_RUN" WAIT_MACHINE=local; done
   ended dry
   exit "$RC"
