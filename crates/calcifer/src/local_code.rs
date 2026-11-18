@@ -1414,11 +1414,17 @@ fn locked_requirement(root: &Path, name: &str) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    // A lock for several platforms holds a row for each (TensorFS: the RC's build by URL for a rental's, the index's elsewhere,
-    // xs-216): the one this computer installs, a wheel built for it first.
+    // A lock for several platforms holds a row for each (TensorFS: the RC's build by URL for a rental's, a candidate's wheel by path,
+    // the index's elsewhere, xs-216): the one this computer installs, a wheel built for it first.
     let rows: Vec<Locked> = lock.package.into_iter().filter(|p| p.name == name).collect();
-    let fits = |p: &&Locked| p.source.get("url").and_then(toml::Value::as_str).is_none_or(installs_here);
-    let locked = rows.iter().filter(|p| p.source.contains_key("url")).find(fits).or_else(|| rows.iter().find(fits))?;
+    fn file(p: &Locked) -> Option<&str> {
+        ["url", "path"].into_iter().find_map(|kind| p.source.get(kind).and_then(toml::Value::as_str))
+    }
+    let fits = |p: &&Locked| file(p).is_none_or(installs_here);
+    let wheel = |p: &&Locked| file(p).is_some_and(|at| at.ends_with(".whl") && installs_here(at));
+    let locked = rows.iter().find(wheel)
+        .or_else(|| rows.iter().filter(|p| p.source.contains_key("url")).find(fits))
+        .or_else(|| rows.iter().find(fits))?;
     if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
         return Some(format!("{name} @ {url}"));
     }
