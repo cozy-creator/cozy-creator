@@ -37,7 +37,12 @@ h3_vae_judge() {
   [ "$fused" = applied ] || { expect h3-vae-encode FAIL "cr-306's fused encoder was declared and not applied: the encoder regressed (vae_encode ${enc}s)"; return 0; }
   read -r _ c_sm c_rd c_own source < <(awk -F'\t' -v s="$SKU" '$1 == s' "$HERE/suites/runtime/h3-vae.tsv")
   read -r _ c_enc c_dec _ < <(awk -F'\t' -v s="$SKU" '$1 == s' "$H3_VAE_REFS" 2> /dev/null)
-  if [ -z "${c_enc:-}" ] || [ -z "${c_sm:-}" ]; then log "h3-vae: encode ${enc}s, decode ${dec}s on $SKU; no ComfyUI time for it (refs/h3-vae.tsv)"; return 0; fi
+  if [ -z "${c_sm:-}" ]; then log "h3-vae: encode ${enc}s, decode ${dec}s on $SKU; h3-vae.tsv has no ComfyUI time for it"; return 0; fi
+  # A card with a bar whose ComfyUI side can't be read is never passed over: before the move it was always judged.
+  [ -n "${c_enc:-}" ] && [ -n "${c_dec:-}" ] || {
+    expect h3-vae-encode FAIL "ComfyUI's bar for $SKU unread ($H3_VAE_REFS: the benchmarks checkout at comfyui.sh's BENCHMARKS_AT, BENCHMARKS_DIR): vae_encode ${enc}s, vae_decode ${dec}s not judged"
+    return 0
+  }
   if awk -v r="$rd" -v c="$c_rd" 'BEGIN { exit !(r >= 3 * c) }'; then
     log "h3-vae: encode ${enc}s, decode ${dec}s at ${sm} MHz on a slow host (read_video ${rd}s against ${c_rd}s): noted, not judged"
     return 0
