@@ -8,6 +8,11 @@
 # - speech: a man speaking to the camera across two joins, his mouth in view.
 # - claps: sharp hits with a visible cause.
 # The package opens the first beat with `[Shot 1]` itself (`shot.written`): a beat that writes it too sends it twice.
+# `-f only=join-pairs-new` makes the `-new` takes alone, on a pod of their own: this probe's cozy (6c55c655) has #3843 without
+# its fix (cl-1225, #3889), so on one pod the second arm's first segment, an exact repeat of the first arm's, fails
+# `object bookkeeping: attempt to write a readonly database` (44389597659). A fresh machine holds no memo.
+JP_ARMS='today new'
+[[ $ONLY != *,join-pairs-new,* ]] || JP_ARMS=new
 ONLY=  # the suites' --only chose their cells, not these
 jp_beats() { jq -cn '[$ARGS.positional | _nwise(2) | {duration: (.[0] | tonumber), description: .[1]}]' --args "$@"; }
 JP_MUSIC=(summary="A vinyl record turns on a turntable in warm lamplight, seen from above in one fixed shot."
@@ -42,7 +47,7 @@ JP=()
 # jp <name> <inputs...>: the shot butted as today, then joined, and each take exported while the pod is here.
 jp() {
   local name=$1 arm; shift
-  for arm in today new; do
+  for arm in $JP_ARMS; do
     if [ "$arm" = today ]; then cell "jp-$name-today" "$(pkg minimax-h3 generate)" "$@" probe_butt:=true
     else cell "jp-$name-new" "$(pkg minimax-h3 generate)" "$@"; fi
     run_outputs "$OUT" "jp-$name-$arm" > "jp-$name-$arm.outputs" 2>> join-pairs.err || true
