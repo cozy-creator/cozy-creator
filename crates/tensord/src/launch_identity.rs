@@ -275,6 +275,9 @@ impl Seal {
         let path = |path: PathBuf| path.to_string_lossy().into_owned();
         let mut imposed = BTreeMap::from([
             ("CUDA_VISIBLE_DEVICES".to_string(), self.devices.clone()),
+            // CUDA then numbers an index entry as NVML, nvidia-smi and this machine do (cr-326); its default numbers unlike
+            // cards fastest first, and the executor would drive another GPU than the one the machine counts.
+            ("CUDA_DEVICE_ORDER".into(), "PCI_BUS_ID".into()),
             ("OMP_NUM_THREADS".into(), THREADS.to_string()),
             ("COZY_HOME".into(), path(self.home.clone())),
             // A temporary folder of its own, apart from the compiler caches beside it: what an executor writes outside a call (an
