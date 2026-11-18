@@ -614,6 +614,16 @@ WEB_NATIVE=(
 )
 web_cells=()
 web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }
+# in_lanes <cell> <lane>...: whether one of those lists above runs <cell>.
+in_lanes() {
+  local cell=$1 lane cells
+  shift
+  for lane in "$@"; do
+    eval "cells=\" \${$lane[*]-} \""
+    case $cells in *" $cell "*) return 0 ;; esac
+  done
+  return 1
+}
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
@@ -1107,6 +1117,9 @@ case $SHARD in
   web-*)
     if [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
       web_cells=("${SHARD#web-}"); parts="web_lane logs"
+      # A cell only the 2D lanes run (opens, large, nogpu) runs alone as they run it: its bars are the 2D path's (cl-1226: opens alone
+      # on the runner's software WebGL took 885–1,530 ms to a warm preview against its 1,000 ms bar, 600–700 ms in web-2d-solo).
+      if in_lanes "${SHARD#web-}" WEB_2D WEB_2D_SOLO && ! in_lanes "${SHARD#web-}" WEB_1 WEB_2 WEB_3 WEB_SOLO WEB_ENGINES; then export WEB_RENDERER=2d; fi
     else
       [ -f "$(dirname "$0")/web/${SHARD#web-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
       WEB_ALONE_CELL=${SHARD#web-}; parts="tools_read web_alone logs"
