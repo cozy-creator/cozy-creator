@@ -256,7 +256,8 @@ def main() -> int:
     running = [c for c in cells if "skip" not in c and c.get("ranks", 1) == 1]
     started = time.monotonic()
     try:
-        manifests = tiny(fixture, package_dir, out, store) if running else {}
+        # --mirrored: run.sh --mirror published them, and a second build needn't be the same bytes (qwen3's MoE wasn't).
+        manifests = tiny(fixture, package_dir, out, store) if running and "--mirrored" not in flags else {}
         refs = wanted(interface, manifests, running)
         line(True, "-", "tiny-weights", started)
     except Exception as exc:

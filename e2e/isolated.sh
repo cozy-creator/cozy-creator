@@ -433,7 +433,7 @@ if [ "$suite" = cpu ]; then
     done
   fi
   log "the cpu suite starts against its owned Hub with the installed candidate"
-  exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
+  exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" ${dependencies:+--mirrored}
 fi
 
 if [ "$suite" = imports ]; then

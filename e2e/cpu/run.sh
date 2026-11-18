@@ -5,7 +5,7 @@
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--shard K/N] [--refs DIR] [--helpers pkg,...] [--record]
-#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes] [--mirror]
+#                  [--keep] [--lock fresh] [--lanes-key FILE | --public-lanes] [--mirror | --mirrored]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, signed in to the suite's Hub as its admin, and --project a project folder of it: each
 # package's cells run through it (real.py), its code is also uploaded and locked (cli.sh), and each slot's default lane
@@ -21,12 +21,12 @@
 # --lanes-key FILE: lanes.py reads tensorhub.com as the CI account (an RC's run, its held defaults NOTEs); --public-lanes: as
 # anyone, a default that isn't public failing (the release, before any package final).
 # --mirror (isolated.sh's first pass, th-412): each package's tiny builds published at the releases its cells read, and no cell
-# run, so the packages that default to them can publish first.
+# run, so the packages that default to them can publish first. --mirrored: that pass ran, so no package builds or publishes again.
 #
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK='' MIRROR=''
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 SHARD=1/1 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT='' LOCK='' MIRROR='' MIRRORED=''
 RUN_CODE_STAGE=${RUN_CODE_STAGE:-} LANES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
     --mirror) MIRROR=1; shift; continue ;;
+    --mirrored) MIRRORED=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -73,7 +74,7 @@ fi
 NEEDS_ANSWERS=$(abs "$NEEDS_ANSWERS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK MIRROR
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE NEEDS_ANSWERS LOCK MIRROR MIRRORED
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
@@ -193,7 +194,7 @@ one() {
   local driver=(drive.py "$PACKAGES/$p")
   standin "$p" || driver=(real.py "$COZY" "$PROJECT" "$PACKAGES/$p" "$pkg")
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/${driver[0]}" "${driver[@]:1}" "$out/interface.json" \
-    "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
+    "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD ${MIRRORED:+--mirrored} 2> "$out/drive.err" || true
   # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
   ! grep -q '^Traceback' "$out/drive.err" || echo "FAIL $p - drive 0s: $(grep -v '^\s*$' "$out/drive.err" | tail -n1 | cut -c1-300)"
   [ -z "$COZY" ] || "$HERE/cli.sh" "$COZY" "$PROJECT" "$PACKAGES/$p" "$out"
