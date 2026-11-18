@@ -165,8 +165,8 @@ timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json"
 # cl-1235 (11-18, the #3810 review): Status counted a model as one a download may take only when no process held it, while the machine
 # itself (room_for) also takes one only idle executors hold, ending them. So a call that fits once a warm model goes was refused
 # `machine_disk_full` by its quote and never sent: a rental with Qwen-Image warm waited "Needs N more" for H3 until it released idle.
-# Here a stand-in machine (another user's cozy on this runner) has its store on a 6 GiB disk, 1 GiB of it the reserve, and a file
-# leaves 1900 MiB past the reserve once e2e/disk-warm (1.5 GiB) lands. disk.py runs e2e/disk-warm there; its executor goes idle,
+# Here a stand-in machine (another user's cozy on this runner) has its store on an 8 GiB disk, 1 GiB of it the reserve, and a file
+# leaves 1900 MiB past the reserve once e2e/disk-warm (2.5 GiB) lands. disk.py runs e2e/disk-warm there; its executor goes idle,
 # holding it. Status's room then counts it, and `cozy run` of e2e-roomless/still (published, so quoted), whose e2e/disk-big is 2 GiB,
 # goes there and completes, e2e/disk-warm evicted for it and named in its warning. Before, it was refused `machine_disk_full`.
 disk_freeable() {
@@ -174,17 +174,17 @@ disk_freeable() {
 local name=stand-f script=$here/script/disk.py img=$RUNNER_TEMP/tfs-free.img mnt=/mnt/tfs-free size avail reserve filler room=0 i said
 step "cl-1235: a call that fits once an idle executor's model goes is sent there, that model evicted for it"
 id "cozy-$name" > /dev/null 2>&1 || sudo useradd -m "cozy-$name" || { check "disk freeable: $name: no user"; return 0; }
-truncate -s 6144M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
-  && sudo chown "cozy-$name:" "$mnt" || { check "disk freeable: $name's 6 GiB disk was not made"; return 0; }
+truncate -s 8192M "$img" && mkfs.ext4 -q -F -m 0 "$img" && sudo mkdir -p "$mnt" && sudo mount -o loop "$img" "$mnt" \
+  && sudo chown "cozy-$name:" "$mnt" || { check "disk freeable: $name's 8 GiB disk was not made"; return 0; }
 sudo -u "cozy-$name" -H bash -c 'mkdir -p ~/.cozy && printf "[machine]\nstore = \"%s\"\n" "$1" > ~/.cozy/config.toml' _ "$mnt" \
   || { check "disk freeable: $name's store was not set"; return 0; }
 cozy --json machine show local > "$OUT/set-local.json" || { check "disk freeable: machine show local: $(head -c 300 "$OUT/set-local.json")"; return 0; }
 stand_in "$name" || return 0
 read -r size avail < <(df -B1 --output=size,avail "$mnt" | tail -1)
 reserve=$((size / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30))
-# Once e2e/disk-warm landed, 148 MiB short of e2e/disk-big's 2 GiB: e2e/disk-warm's 1.5 GiB covers it with room to spare, as a
-# download's objects in flight take room before they land (a 192 MiB spare was refused mid-download, e2e 44284650344).
-filler=$((avail - reserve - ((1900 + 1536) << 20)))
+# Once e2e/disk-warm landed, 148 MiB short of e2e/disk-big's 2 GiB. e2e/disk-warm's 2.5 GiB covers that twice over: the room check
+# at its install's end counts the bytes the early fetch has in flight again (a separate bug: 44284650344, 44291227672).
+filler=$((avail - reserve - ((1900 + 2560) << 20)))
 sudo fallocate -l "$filler" "$mnt/cl-1235-filler" || { check "disk freeable: $name's filler was not made"; return 0; }
 if ! run_cell "$OUT" free-warm "$script" --model "weights=e2e/disk-warm@0.1.0" text=warm --on "$name"; then
   check "disk freeable: e2e/disk-warm on $name: $(run_get "$OUT" free-warm .reason.message | head -c 300) $(tail -c 300 "$OUT/free-warm.err" 2> /dev/null)"

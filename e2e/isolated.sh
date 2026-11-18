@@ -543,7 +543,7 @@ if [ -n "$needs" ]; then
   fi
   if [[ " $needs " == *" room "* ]]; then
     # disk_freeable's warm model (cl-1235): an idle executor holds it while disk_room's tool needs its room.
-    random_weights "$seed/disk.safetensors" 1536 disk-warm
+    random_weights "$seed/disk.safetensors" 2560 disk-warm
     mirror "$seed/disk.safetensors" e2e/disk-warm bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
     rm -f "$seed/disk.safetensors"
   fi
