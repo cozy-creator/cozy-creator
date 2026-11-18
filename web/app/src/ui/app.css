@@ -4236,13 +4236,16 @@ input[type="checkbox"] {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* Still ends, so what waits on an animation's end still hears it. */
+  /* An animation still ends, so what waits on its end (Card, Media) still hears it: only one an element declares runs. A transition is
+     none: a duration here would make every change of every property one (transition-property is `all` unless set), each drawn a frame
+     late, a pan, a carried box and the canvas moving too (cl-1208). Nothing waits on a transition's end. */
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
   }
 }
 
