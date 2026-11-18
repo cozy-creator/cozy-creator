@@ -64,6 +64,17 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     await page.locator('aside.drawer').getByRole('link', { name: 'Close', exact: true }).click();
     await expect.poll(() => new URL(page.url()).pathname, { message: 'back at its canvas' }).toBe(new URL(url).pathname);
   };
+  // PROOF ONLY (cl-1264, never merged): the page cancels its own candidate requests in flight, as a live theme change does.
+  await page.evaluate(async () => {
+    const own = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))]
+      .filter((u) => { const at = new URL(u); return at.origin === location.origin && !at.pathname.startsWith('/v1'); });
+    own.slice(0, 16).forEach((u, i) => {
+      const stop = new AbortController();
+      fetch(u, { cache: 'reload', signal: stop.signal }).catch(() => {});
+      setTimeout(() => stop.abort(), i % 4);
+    });
+    await new Promise((done) => setTimeout(done, 4000));
+  });
   /** What each place says of the run now: its box's face, its machine's tab, its machine's queue. */
   const seen = {};
   const face = async () => (await canvasCard(page, box))?.rendered?.progress?.state ?? null;
