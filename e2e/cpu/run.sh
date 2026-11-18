@@ -137,7 +137,7 @@ one() {
   # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
   # those sources are its sibling folders, and it is locked so.
   local read=$PACKAGES/$p staged
-  staged=$(python3 -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME") \
+  staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME") \
     || { echo "FAIL $p - describe $((SECONDS - t))s: staging it from the checkout failed"; typed; return 1; }
   if [ -n "$staged" ]; then
     nice -n 19 uv lock -q --project "$staged" > "$out/staged-lock.log" 2>&1 \

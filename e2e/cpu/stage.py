@@ -2,14 +2,23 @@
 Calcifer's `checkout::stage`). Each `{ index = "tensorhub" }` source naming a package the checkout holds becomes a path to
 that folder, copied beside it, and so on through what those take. The Runtime it is read with is `<runtime>` when that is
 a wheel or a source folder, and it is locked for this computer alone, as a machine's lock is. Prints the staged package's
-folder; prints nothing when it takes no first-party package."""
+folder; prints nothing when it takes no first-party package. <dest>/unpublished.txt names each first-party dependency whose
+checkout version production's Hub doesn't hold yet: a committed lock pins only what a machine can fetch, so it leaves that one out
+until the gated publish relocks it on (cli.sh's lock cell locks a copy without it)."""
 
 import platform
 import re
 import shutil
 import sys
 import tomllib
+import urllib.request
 from pathlib import Path
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
+
+INDEX = "https://tensorhub.com/v1/index/_"
 
 packages, package, dest, runtime = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[4]
 
@@ -49,4 +58,34 @@ for name, siblings in closure.items():
     project.write_text(text)
 
 
+def published(name: str) -> list[Version] | None:
+    """Its versions on production's index. One it can't read is taken as published: the lock check then runs and says why."""
+    try:
+        with urllib.request.urlopen(f"{INDEX}/simple/{name}/", timeout=30) as page:
+            html = page.read().decode()
+    except OSError as error:
+        print(f"stage.py: {name} on {INDEX}: {error}", file=sys.stderr)
+        return None
+    found = []
+    for version in set(re.findall(rf'href="/v1/index/_/{re.escape(name)}/([^/"]+)/', html)):
+        try:
+            found.append(Version(version))
+        except InvalidVersion:
+            pass
+    return found
+
+
+wanted = {canonicalize_name(Requirement(r).name) for r in tomllib.loads((packages / package / "pyproject.toml").read_text())["project"].get("dependencies", [])}
+
+
+def unmet(key: str) -> bool:
+    """The checkout's own version of `key` isn't on production's index: what a lock of this checkout takes of it, no machine can
+    fetch (orbit's minimax-h3 0.16.0rc5 while production's newest, 0.15.0, caps the RC's Runtime)."""
+    versions = published(key)
+    own = Version(tomllib.loads((packages / key / "pyproject.toml").read_text())["project"]["version"])
+    return versions is not None and own not in versions
+
+
+unpublished = [key for key in closure[package] if canonicalize_name(key) in wanted and unmet(key)]
+(dest / "unpublished.txt").write_text("".join(f"{key}\n" for key in unpublished))
 print(dest / package)
