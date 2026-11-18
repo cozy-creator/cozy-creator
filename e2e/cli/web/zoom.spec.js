@@ -52,8 +52,8 @@ const middleOf = (page) => page.evaluate(() => {
 const within = (box, point) => ({ u: (point.x - box.x) / box.width, v: (point.y - box.y) / box.height });
 
 /** Every pan Focus draws from now, by its frame's style as it's set, and every pointer move and up under it, each at its time: `stop()`
- *  returns them. A pan goes only the way the pointer went, and is where it went within a frame or two of the up (cl-1208: 44222701495
- *  read 90, 30 of a 120, 40 pan 9 ms after the up). */
+ *  returns them (cl-1208). 44222701495 read 90, 30 of a 120, 40 orbit pan 9 ms after the up: React wrote each move on time, but with less
+ *  motion asked for (as this cell asks for the orbit), app.css's 0.01 ms transition on every property drew each move a frame late. */
 const recordPan = (page) => page.evaluate(() => {
   const frame = document.querySelector('.focus-viewer .focus-image-transform');
   const seen = [], quit = new AbortController();
@@ -70,10 +70,12 @@ const recordPan = (page) => page.evaluate(() => {
   window.__panStop = () => { observer.disconnect(); cancelAnimationFrame(raf); quit.abort(); return seen; };
 }).then(() => ({ stop: () => page.evaluate(() => window.__panStop()) }));
 
-/** The pan's record: kept with the cell, and it never went back against the pointer, on either axis. */
+/** The pan's record, kept with the cell: drawn where React wrote it on every move, so on the pointer, and never back against it. */
 function panWent(seen, sign, what) {
   test.info().annotations.push({ type: `pan: ${what}`, description: JSON.stringify(seen) });
   console.log(`pan, ${what}: ${JSON.stringify(seen)}`);
+  const late = seen.filter((one) => one.set && (one.set[0] !== one.drawn[0] || one.set[1] !== one.drawn[1]));
+  expect.soft(late.map((one) => `set ${one.set} drawn ${one.drawn}`), `${what}: each move drawn as it's set, not a frame later`).toEqual([]);
   const drawn = seen.filter((one) => one.drawn || one.frame).map((one) => one.drawn ?? one.frame);
   const back = drawn.findIndex((now, i) => i > 0 && [0, 1].some((axis) => (now[axis] - drawn[i - 1][axis]) * sign[axis] < -1));
   expect.soft(back, `${what}: drawn only the way the pointer went, never back (${drawn.map((one) => one.join(',')).join(' → ')})`).toBe(-1);
