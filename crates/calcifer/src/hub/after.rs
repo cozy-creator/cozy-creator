@@ -144,7 +144,7 @@ async fn retire(
     package: &str,
     release: &str,
 ) -> Vec<Retired> {
-    let held = match crate::machines::fresh(machines, machine).await {
+    let held = match crate::machines::fresh(machines, machine, &[]).await {
         Ok(held) => held,
         Err(e) => {
             warn!(run = %id, "an install's older releases stay: {e}");

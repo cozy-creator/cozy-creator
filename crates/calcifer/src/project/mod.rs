@@ -619,6 +619,12 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     Ok(known(api, text)?.path)
 }
 
+/// Whether a reader of project `id` hears its names now (runs, boxes, local packages): one this computer knows, never a locked one.
+/// The one test for its events and for machines' pictures (cl-1230).
+pub(crate) fn readable(api: &Api, id: &str) -> bool {
+    api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| vault::require_path(&known.path).is_ok())
+}
+
 /// The index, last used first: each project opened here whose folder still holds it. One whose folder is gone (deleted, moved, on a
 /// drive that isn't there) leaves the index as it's found so, and its name is free. Its `project.db` keeps its id and name: opened
 /// again by its path it is back as it was, or as `<name>_2` if another took the name meanwhile.
