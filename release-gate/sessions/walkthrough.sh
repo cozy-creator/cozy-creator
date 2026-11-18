@@ -129,7 +129,7 @@ media() {
   ffprobe -v error -show_entries stream=codec_type,width,height,duration,nb_frames -of compact "$f" 2> /dev/null | tr '\n' ' '
 }
 # 4. Rented: one machine by the CLI, the tools chained on it.
-if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock; then
+if has tools || has idle || has cancel || has seeds || has lost || has updates || has relock || has predict; then
   STEPS=$ROOT/$(param tools release-gate/sessions/fixtures/walkthrough/tools.json)
   for p in $(jq -r '[.[] | .tool // empty | split("/")[0]] | unique | .[]' "$STEPS"); do kernels "$SOURCE/$p"; done
   DIR=$W c rent-quote-text machine rent "$SKU" --disk-gb "$DISK"
@@ -137,6 +137,34 @@ if has tools || has idle || has cancel || has seeds || has lost || has updates |
   quote "$(param seconds 3600)"
   t0=$SECONDS; order; ready; say "rented $NAME ($RID) in $((SECONDS - t0)) s by the CLI"
   DIR=$W c machine-ls-rented machine ls; DIR=$W c machine-show-rented machine show "$NAME"
+fi
+# Predict (#3932): the rental ready, a Qwen Image 2.1 box and a Klein box made and their words written, the project shown as an open
+# page holds it, nothing rendered: within about a minute the rental installs the packages and fetches their models ahead, and `local`
+# (this GPU-less runner) receives nothing; then Render starts without a fresh download. Each 10 s: what the pod and local hold.
+if has predict; then
+  ms() { date +%s%3N; }
+  holds() { cozy model ls --on "$1" < /dev/null 2> /dev/null | awk 'NR > 1 && $1 == "'"$1"'" {print $2}' | sort | paste -sd, -; }
+  DIR=$P c predict-local-before model ls --on local; DIR=$P c predict-pod-before model ls --on "$NAME"
+  t0=$(ms)
+  PAGE add "$P" pq --tool "$(tid qwen-image-2/image)" --fields '{"instructions": "a paper lantern festival on a river at night, wide shot"}' > "$W/out/pq.add.json" 2>&1
+  PAGE add "$P" pk --tool "$(tid flux.3-klein/image)" --fields '{"instructions": "a paper lantern festival on a river at night, oil painting"}' > "$W/out/pk.add.json" 2>&1
+  ( timeout 240 python3 -I "$ROOT/e2e/page.py" show "$P" > "$W/predict-show.json" 2>&1 ) & shown=$!
+  for i in $(seq 1 24); do
+    sleep 10
+    printf '%s\t+%ss\tpod: %s\tlocal: %s\tpod jobs: %s\n' "$(date -u +%T)" $(( ($(ms) - t0) / 1000 )) "$(holds "$NAME")" "$(holds local)" \
+      "$(cozy machine show "$NAME" < /dev/null 2> /dev/null | grep -aiE '^(running|queued|activity|installing|downloading)' | tr -s ' ' | tr '\n' ';' | cut -c1-200)" >> "$W/predict.tsv"
+  done
+  wait "$shown" 2> /dev/null
+  cut -c1-400 "$W/predict.tsv" | sed 's/^/    predict: /' >> "$R"
+  DIR=$P c predict-local-after model ls --on local; DIR=$P c predict-pod-after model ls --on "$NAME"
+  say "predict: local holds $(holds local | tr ',' '\n' | grep -c .) model(s) after (before: $(awk 'NR > 1 && $1 == "local"' "$W/cli/predict-local-before.txt" | wc -l)); the pod $(holds "$NAME")"
+  for b in pq pk; do
+    t1=$(ms); timeout 1800 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" "$b" > "$W/out/$b.render.json" 2> "$W/out/$b.render.err"; rc=$?
+    say "predict: $b rendered after the guess: exit $rc in $(( ($(ms) - t1) / 1000 )) s; $(tail -c 200 "$W/out/$b.render.err" | tr '\n' ' ')"
+  done
+  DIR=$P c predict-runs run ls
+  sed -n 2,3p "$W/cli/predict-runs.txt" | cut -c1-300 | sed 's/^/    predict: /' >> "$R"
+  DIR=$P c predict-pod-final model ls --on "$NAME"
 fi
 # Relock (W-D1; `cozy update` restarts Calcifer): in the ENCRYPTED project, a render going on the rental, then one on `local`, Calcifer
 # restarted as an update does, the project unlocked again: does the take land, was the run canceled or did it finish, what does the box
