@@ -415,6 +415,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     });
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());
+    crate::tools::install_at_start(api.machines.hubs.home().clone());
     crate::project::previews(api.clone());
     crate::project::resume(&api);
     crate::project::purge::start(api.clone());
