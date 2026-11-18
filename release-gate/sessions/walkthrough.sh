@@ -132,6 +132,8 @@ media() {
 going() { (cd "$1" && cozy run ls < /dev/null 2> /dev/null) | awk -v t="$2" 'NR > 1 && $2 ~ t && $4 ~ /^(in_progress|running)/ {print; exit}'; }
 # stepof <run ls line>: the step it is at, from its progress (`3/40`, `step 3 of 40`), else 0.
 stepof() { grep -oE '([0-9]+) ?(/|of) ?[0-9]+' <<< "$1" | head -1 | grep -oE '^[0-9]+' || echo 0; }
+# pctof <run ls line>: how far it says it is, when it says so as a share (`drawing 40% · 24s left`), else 0.
+pctof() { grep -oE '[0-9]+%' <<< "$1" | head -1 | tr -d % || echo 0; }
 # Zero ($0, this computer's CPU; coordinator 11-18, cl-1271): Render on a box that has a take and unchanged inputs (BiRefNet, which takes
 # no seed; a memoized tool at seed 42), seen in the page at 1, 5 and 30 s and by `cozy render`; how a take gets onto the disk from the
 # page and where its seed reads; a cancel landing mid-run, by `cozy run ls`'s STATUS and PROGRESS, then the same box again.
@@ -364,7 +366,7 @@ if has cancel; then
     printf '%s\t%s\n' "$((SECONDS - t1))" "$line" >> "$W/out/qr-cancel.poll.tsv"
     if [ -n "$line" ]; then
       first=${first:-$SECONDS}; step=$(stepof "$line")
-      if [ "${step:-0}" -ge 3 ] || [ $((SECONDS - first)) -ge 8 ]; then
+      if [ "${step:-0}" -ge 3 ] || [ "$(pctof "$line")" -ge 8 ] 2> /dev/null || [ $((SECONDS - first)) -ge 20 ]; then
         PAGE cancel "$P" qr > "$W/out/qr.cancel.json" 2>&1; cancelled="at $((SECONDS - t1)) s, at step ${step:-?} ($line)"; break
       fi
     fi
