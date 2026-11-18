@@ -561,18 +561,7 @@ WEB_2D=(
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
-  upload
-  type
-  create
-  move
-  open
-  vault
-  tool-retry
-  glloss
-  keyboard
-  input
-  fullscreen
-  play-link
+  ranges
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(

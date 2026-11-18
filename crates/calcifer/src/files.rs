@@ -45,6 +45,7 @@ pub(crate) fn send(
     let (response, status, first, count) = match ranged(range, len) {
         Ok(None) => (response, StatusCode::OK, 0, len),
         Ok(Some((first, last))) => {
+            let last = probe(headers, "probe_cap").map_or(last, |cap| last.min(first.saturating_add(cap.max(1) - 1)));
             let response = response.header(header::CONTENT_RANGE, format!("bytes {first}-{last}/{len}"));
             (response, StatusCode::PARTIAL_CONTENT, first, last - first + 1)
         }
@@ -61,8 +62,15 @@ pub(crate) fn send(
     Ok(response
         .status(status)
         .header(header::CONTENT_LENGTH, count)
-        .body(Body::from_stream(tokio_util::io::ReaderStream::new(bytes)))
+        .body(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(bytes, probe(headers, "probe_piece").map_or(4096, |n| n.clamp(1024, 8 << 20) as usize))))
         .expect("a response"))
+}
+
+/// PROBE (cl-1215, never merged): a request's `probe_cap` cookie is the most bytes a Range answer carries, and `probe_piece` how many
+/// are read out at once.
+fn probe(headers: &HeaderMap, name: &str) -> Option<u64> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookies.split(';').filter_map(|pair| pair.trim().split_once('=')).find(|(key, _)| *key == name)?.1.trim().parse().ok()
 }
 
 /// `?download=<name>` on a file route: a browser saves it as `name`, not shows it (cl-891).
