@@ -99,14 +99,14 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
       await themed(page, theme);
       await expect.poll(() => canvasVisible(page, box), { timeout: 60_000 }).toBe(true);
       await fit(page);
-      await page.screenshot({ path: join(shots, `${which}-face-${theme}.png`) });
+      await page.screenshot({ path: join(shots, `${which}-face-${theme}.png`), animations: 'disabled' });
       await page.getByRole('navigation', { name: 'Machines', exact: true }).locator(`.mtab[data-machine="${machine}"]`).click();
       await expect(page.getByRole('dialog', { name: /^What .+ is doing$/ })).toBeVisible();
-      await page.screenshot({ path: join(shots, `${which}-tab-${theme}.png`) });
+      await page.screenshot({ path: join(shots, `${which}-tab-${theme}.png`), animations: 'disabled' });
       await page.keyboard.press('Escape');
       await away(`${url}/machines/${encodeURIComponent(machine)}`);
       await expect(page.locator(`li.qrow[data-run="${run}"]`)).toBeVisible({ timeout: 60_000 });
-      await page.screenshot({ path: join(shots, `${which}-queue-${theme}.png`) });
+      await page.screenshot({ path: join(shots, `${which}-queue-${theme}.png`), animations: 'disabled' });
     }
   });
 });
