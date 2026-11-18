@@ -79,7 +79,8 @@ replaces them, and a SKU with none needs `--establish` once.
   `escaped-accepted.tsv` (printed `ACCEPTED`; never one that ran and failed), or, with `--unchanged FILE`, stands on an earlier
   gate's pass when `git diff` between the two sets touches none of its `escaped-paths.tsv` paths (printed `UNCHANGED`, never as
   passed; both sets' commits must be in the checkouts here). `promote.sh <run id>` then hands it to
-  users: PyPI, cozy Latest and Homebrew, the packages, the held models, the worker images last.
+  users: PyPI, cozy Latest and Homebrew, the held models (a package release refuses a private default, th-412), the packages,
+  the worker images last.
 
 ## Sessions
 

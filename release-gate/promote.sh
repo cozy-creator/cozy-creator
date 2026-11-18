@@ -7,24 +7,26 @@
 #   smoke     e2e cpu: the release cozy locks a gated source package fresh against PyPI's Runtime and runs it from that lock
 #             (hard stop); its committed lock, the RC's, isn't the question;
 #   cozy      cozy-promote.yaml: the v<V> prerelease becomes Latest (`cozy update`, the installer) and Homebrew's;
+#   models    each held private release the set uses (candidate.json `models`) published again with its checkpoints: public.
+#             Before packages: the Hub refuses a package release whose slot default is not a public model release
+#             (tensorhub #1627, th-412: `422 package_release.default_not_public`);
 #   packages  `task publish -- --gated <packages_ref>` in the packages checkout (--packages, on master with the RC merged):
 #             the gated source's finals, only the version changed (Paul 11-13: software before the packages that need it), each
 #             with its benchmarks (cl-1024): `bench.py references` of the newest stored baseline (`bench.py baseline` after the
 #             gate), else benchmarks-seed.json, into each package's benchmarks.json, which its publish attaches;
-#   models    each held private release the set uses (candidate.json `models`) published again with its checkpoints: public;
 #   images    tensorhub worker-images-publish.yaml promote: the digests staged from those wheels (--images) become the tags.
 #             Last (cl-1164): a new package runs on an old image (its machine moves its Runtime up), an old package never on a
 #             new one (a release refuses a Runtime its cap leaves out), so new pods boot the new Runtime once its packages exist.
-# --phases pypi,smoke,cozy,packages,models,images (default all): only those, always in that order, so the release can stop
+# --phases pypi,smoke,cozy,models,packages,images (default all): only those, always in that order, so the release can stop
 # between them (a check that needs PyPI's Runtime before Latest moves). A phase whose earlier phases this run leaves out stands
 # on the world as they leave it, read before anything moves: PyPI serving the set's Runtime and TensorFS by the gate's digests,
-# a successful smoke (e2e.yaml) on the cozy release's tag, the cozy release Latest, every gated package's final on the Hub,
-# each held model public. Unread (PyPI, GitHub or the Hub not answering) is not done.
+# a successful smoke (e2e.yaml) on the cozy release's tag, the cozy release Latest, each held model public, every gated
+# package's final on the Hub. Unread (PyPI, GitHub or the Hub not answering) is not done.
 # Whatever the phases (so --packages for any), a set that holds packages is refused before anything moves unless every model a
 # slot of theirs loads by default is public, or held in `models` for the models phase (defaults.sh, cl-1243: th-412's 404s).
 # The Hub pin (/v1/software) stays the release owner's, after this.
 set -euo pipefail
-DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,packages,models,images
+DRY= IMAGES= PKGS= ALL=pypi,smoke,cozy,models,packages,images
 PHASES=$ALL
 while [ $# -gt 0 ]; do
   case $1 in
@@ -168,18 +170,20 @@ c=$(field cozy)
 if want cozy && [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
   go cozy-creator/cozy-creator cozy-promote.yaml -f tag="v$c" -f gate="$gate"
 fi
+# The held models first: a package release whose slot default is still private is refused (th-412).
+if want models; then
+  for m in "${models[@]}"; do
+    shown=$(cozy --json model show "$m")
+    [ "$(jq -r '.visibility // empty' <<< "$shown")" != public ] || { echo "  $m is public already"; continue; }
+    mapfile -t checkpoints < <(jq -r '[.. | objects | select(has("lane") and has("checkpoint")) | .checkpoint] | unique[]' <<< "$shown")
+    run cozy model publish "${m%@*}" "${m#*@}" "${checkpoints[@]}" -y
+  done
+fi
 if want packages && [ -n "$ref" ]; then
   base=$(ls "$HERE"/baselines/*.json 2> /dev/null | sort -V | tail -1 || true)
   run uv run -q --no-project --with numpy python -I "$HERE/bench.py" references "${base:-$HERE/benchmarks-seed.json}" --packages "$PKGS"
   if [ -n "$DRY" ]; then (cd "$PKGS" && run task publish -- --dry-run --gated "$ref")
   else (cd "$PKGS" && run task publish -- --gated "$ref"); fi
 fi
-want models || models=()
-for m in "${models[@]}"; do
-  shown=$(cozy --json model show "$m")
-  [ "$(jq -r '.visibility // empty' <<< "$shown")" != public ] || { echo "  $m is public already"; continue; }
-  mapfile -t checkpoints < <(jq -r '[.. | objects | select(has("lane") and has("checkpoint")) | .checkpoint] | unique[]' <<< "$shown")
-  run cozy model publish "${m%@*}" "${m#*@}" "${checkpoints[@]}" -y
-done
 ! want images || [ -z "$IMAGES" ] || go cozy-creator/tensorhub worker-images-publish.yaml --ref master -f mode=promote -f digests="$IMAGES"
 echo "promoted (${PHASES//,/, }): $(jq -c . <<< "$set_").$(want images && echo ' Then the Hub pin, to this set.')"
