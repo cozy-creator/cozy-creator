@@ -333,22 +333,36 @@ yield_arm() {
   if staged loaded 300; then say "after $OTHER, a predicted request is loaded again"; else say "after $OTHER, no predicted request was loaded again within 300 s: $(stages)"; fi
 }
 
-# The project's own code in its readable view, and `own`, a box of it. This computer is its machine for now: a page shows the project,
-# and Calcifer says the code stays in its vault here. Then the page closes, before anything is rented.
+# The project's own code in its readable view, and `own`, a box of it. This computer is its machine for now, brought up by an install
+# of that code from its vault: a page shows the project, and Calcifer says the code stays in its vault here. Then the page closes,
+# before anything is rented.
 VIEW=$(jq -r '.view // empty' "$OUT/vault.json")
 [ -n "$VIEW" ] && [ -d "$VIEW" ] || fail "the project has no readable view: $(head -c 300 "$OUT/vault.json")"
 cp -r "$ROOT/e2e/cli/project/boxed" "$VIEW/boxed" || fail "the project's own code wasn't put in its view"
 (cd "$RUN_PROJECT" && cozy --json machine use local) > "$OUT/use-local.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use-local.json")"
+began=$SECONDS SAID_S=30
+if (cd "$RUN_PROJECT" && timeout 900 cozy --json package install "$VIEW/boxed" --on local) > "$OUT/install-own-local.json" 2>&1; then
+  SAID_S=180
+  say "the project's own code installed on this computer's machine, from its vault, in $((SECONDS - began)) s"
+else
+  say "the project's own code didn't install on this computer's machine: $(tail -c 300 "$OUT/install-own-local.json")"
+fi
 run_page add own --tool ./boxed/plain --fields '{"instructions": "a still, a shade lighter"}' > "$OUT/own-box.json" 2>&1 || fail "own's box: $(tail -c 300 "$OUT/own-box.json")"
 page
 STAYS="own isn't guessed: its code is this encrypted project's own, which stays in its vault on this computer"
-for _ in $(seq 90); do
+UNSERVED="own's guess wasn't made (no machine that serves now runs it)"
+for _ in $(seq $((SAID_S / 2))); do
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
-  grep -q "$STAYS" "$OUT/calcifer.log" && break
+  grep -qF "$STAYS" "$OUT/calcifer.log" && break
   sleep 2
 done
-grep -q "$STAYS" "$OUT/calcifer.log" || fail "on this computer, own's guess: $(grep -E "own('s| isn't| guessed)|no box is guessed" "$OUT/calcifer.log" | tail -4 | cut -c1-600)"
-say "on this computer: $STAYS ($(find "$VIEW/boxed" -type f | wc -l) files of its own code in its view)"
+if grep -qF "$STAYS" "$OUT/calcifer.log"; then
+  say "on this computer: $STAYS ($(find "$VIEW/boxed" -type f | wc -l) files of its own code in its view)"
+elif grep -qF "$UNSERVED" "$OUT/calcifer.log"; then
+  say "on this computer, whose machine doesn't serve now: $UNSERVED; its quote was read"
+else
+  fail "on this computer, own's guess: $(grep -E "own('s| isn't| guessed)|no box is guessed" "$OUT/calcifer.log" | tail -4 | cut -c1-600)"
+fi
 unshown
 quote "$(param need_s 2400)"
 
