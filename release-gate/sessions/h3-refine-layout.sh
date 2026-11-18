@@ -66,7 +66,8 @@ for s in 15 5; do
     -movflags +faststart "$M/clip$s.mp4" || fail "clip$s"
   say "clip$s: $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_read_frames -of compact=p=0:nk=1 "$M/clip$s.mp4"), sha256 $(sha256sum < "$M/clip$s.mp4" | cut -c1-16)"
 done
-ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -vf "fps=2/3,scale=480:-2,tile=4x3" -frames:v 1 "$OUT/clip-sheet.jpg" || fail "clip sheet"
+# Each second's first frame and the last, 4x4.
+ffmpeg -nostdin -v error -y -i "$M/clip15.mp4" -vf "select='not(mod(n\,24))+eq(n\,359)',scale=480:-2,tile=4x4" -vsync 0 -frames:v 1 "$OUT/clip-sheet.jpg" || fail "clip sheet"
 if [ "$SHEET" = true ]; then
   for i in $(seq 0 29); do
     at=$((SHEET_FROM + i * SHEET_STEP))
