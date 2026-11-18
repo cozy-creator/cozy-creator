@@ -42,17 +42,6 @@
    "max_s": 2700
   },
   {
-   "name": "qi2-edit-chain-2",
-   "target": "qwen-image-2/generate_turbo",
-   "args": [
-    "prompt=Edit <photo>: add a small red boat on the water. Keep everything else exactly the same.",
-    "references:=[{\"name\":\"photo\",\"image\":\"{out:qi2-edit-chain-1|{pic2}}\"}]",
-    "megapixels:=4",
-    "seed:=30026"
-   ],
-   "max_s": 2700
-  },
-  {
    "name": "qi2-upscale",
    "target": "qwen-image-2/upscale",
    "args": [

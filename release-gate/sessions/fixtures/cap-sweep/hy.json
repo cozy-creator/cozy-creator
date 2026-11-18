@@ -36,7 +36,16 @@
     "prompt_upsampling:=true",
     "seed:=30022"
    ],
-   "after": "hunyuan-turbo-hardest",
+   "max_s": 4500
+  },
+  {
+   "name": "hunyuan-gen-default",
+   "target": "hunyuan-image-3/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, a paper banner overhead reads \"WELCOME\"",
+    "seed:=30033"
+   ],
+   "unless": "hunyuan-gen-hardest",
    "max_s": 4500
   }
  ]

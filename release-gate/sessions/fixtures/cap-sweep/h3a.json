@@ -33,16 +33,48 @@
    "max_s": 6000
   },
   {
-   "name": "h3-gen-full50",
+   "name": "h3-gen-full-easycache",
    "target": "minimax-h3/generate",
    "args": [
     "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}]",
     "turbo:=false",
-    "steps:=50",
     "quality=full",
     "seed:=30003"
    ],
    "max_s": 3600
+  },
+  {
+   "name": "h3-gen-sparse-draft",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+    "quality=draft",
+    "seed:=30030"
+   ],
+   "max_s": 3000
+  },
+  {
+   "name": "h3-gen-full-fbcache",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+    "turbo:=false",
+    "quality=draft",
+    "seed:=30031"
+   ],
+   "max_s": 3600
+  },
+  {
+   "name": "h3-gen-full-easycache-default",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+    "turbo:=false",
+    "quality=full",
+    "seed:=30032"
+   ],
+   "max_s": 3600,
+   "unless": "h3-gen-full-easycache"
   },
   {
    "name": "orbit-refs",
