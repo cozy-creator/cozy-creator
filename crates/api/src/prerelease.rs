@@ -102,13 +102,19 @@ pub fn rc_build(sums: &str, distribution: &str, platform: &str) -> Option<Build>
     (!version.is_empty()).then(|| Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
 }
 
-/// The pure wheel (`-py3-none-any.whl`) of `distribution` an RC's `SHA256SUMS` names: what a lock and a publish's floor check
-/// read, on any platform.
+/// The pure wheel (`-py3-none-any.whl`) of `distribution` an RC's `SHA256SUMS` names first, its newest: what a publish's floor
+/// check reads, on any platform.
 pub fn rc_pure(sums: &str, distribution: &str) -> Option<Build> {
+    rc_pures(sums, distribution).next()
+}
+
+/// Each pure wheel of `distribution` an RC's `SHA256SUMS` names, as it lists them (newest first): the builds a lock may take.
+pub fn rc_pures<'a>(sums: &'a str, distribution: &str) -> impl Iterator<Item = Build> + 'a {
     let prefix = format!("{}-", distribution.replace('-', "_"));
-    let (file, sha256) = listed(sums).find(|(file, _)| file.starts_with(&prefix) && file.ends_with("-py3-none-any.whl"))?;
-    let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
-    Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+    listed(sums).filter(move |(file, _)| file.starts_with(&prefix) && file.ends_with("-py3-none-any.whl")).filter_map(|(file, sha256)| {
+        let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
+        Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+    })
 }
 
 /// Whether `version` is a dev build: the open RC's Runtime (`0.47.0.dev2260+g1a2b3c4d`) or cozy (`0.26.0-dev+g1a2b3c4d`), or

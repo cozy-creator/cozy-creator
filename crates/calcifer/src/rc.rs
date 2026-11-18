@@ -152,14 +152,17 @@ impl Rc {
     }
 }
 
-/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge makes a newer one
-/// (the prerelease keeps the newest 20, so a lock on one read before stays good).
+/// How long a read of the RC's Runtime builds stands for a lock or a floor check: each Runtime merge makes a newer one (the
+/// prerelease keeps the newest 20, so a lock on one read before stays good while it is there).
 const RUNTIME_FRESH: Duration = Duration::from_secs(20);
 
-/// The open RC's newest Runtime build: its pure wheel and that wheel's URL (cl-952), read at most once a [`RUNTIME_FRESH`]. What
-/// a package whose floor only the RC meets locks and is checked against (`floor::rc_runtime`, xs-194). None: the RC has no build.
-pub(crate) async fn runtime_now() -> Result<Option<(Build, String)>, Error> {
-    static READ: Mutex<Option<(Instant, Option<(Build, String)>)>> = Mutex::new(None);
+/// Builds and their wheels' URLs, newest first.
+pub(crate) type Builds = Arc<Vec<(Build, String)>>;
+
+/// The open RC's Runtime builds, newest first: each one's pure wheel and that wheel's URL (cl-952), read at most once a
+/// [`RUNTIME_FRESH`]. What a package whose floor only the RC meets locks and is checked against (`floor::rc_runtime`, xs-194).
+pub(crate) async fn runtime_builds() -> Result<Builds, Error> {
+    static READ: Mutex<Option<(Instant, Builds)>> = Mutex::new(None);
     if let Some((at, read)) = READ.lock().expect("rc lock").clone() {
         if at.elapsed() < RUNTIME_FRESH {
             return Ok(read);
@@ -167,10 +170,12 @@ pub(crate) async fn runtime_now() -> Result<Option<(Build, String)>, Error> {
     }
     let base = prerelease::rc("cozy-runtime", &open());
     let sums = text(&base).await?;
-    let read = prerelease::rc_pure(&sums, "cozy_runtime").map(|build| {
+    let mut read: Vec<(Build, String)> = prerelease::rc_pures(&sums, "cozy_runtime").map(|build| {
         let url = format!("{base}/{}", build.file);
         (build, url)
-    });
+    }).collect();
+    read.sort_by_cached_key(|(build, _)| std::cmp::Reverse(build.version.parse::<pep440_rs::Version>().ok()));
+    let read = Arc::new(read);
     *READ.lock().expect("rc lock") = Some((Instant::now(), read.clone()));
     Ok(read)
 }
