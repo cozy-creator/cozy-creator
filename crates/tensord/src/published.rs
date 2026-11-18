@@ -379,9 +379,13 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 /// The rule held answers and the preparations made of them were resolved under: one moved makes them again.
 const RESOLVE: &str = "resolve-v6";
 
+/// What a capability's reads resolved to (`Publisher::resolve`), by it and the name and hardware asked, and when: kept `ASKED_FOR`.
+static ASKED: std::sync::LazyLock<Mutex<HashMap<String, Arc<Mutex<Option<(Instant, Answer)>>>>>> = std::sync::LazyLock::new(Mutex::default);
+const ASKED_FOR: Duration = Duration::from_secs(300);
+
 /// A name as its Hub resolved it, with the hardware it was asked for: read again, it is asked as
 /// it was then (free VRAM moves; the first answer's stands).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Answer {
     release: String,
     lane: String,
@@ -805,12 +809,34 @@ impl Publisher {
     /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
+    /// `kept`: a list item's (`ahead::item`), whose capability's answer is kept a while for it (`ASKED`); a call's is asked fresh.
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64, kept: bool) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
-        let answer = if source.capability.is_some() {
+        let answer = if let Some(capability) = source.capability.as_ref().filter(|_| kept) {
+            // An account's earlier read does not authorize this capability's frozen root set: what this one read is kept a while for it
+            // alone, asked once however many plans want it at once (cl-1123: a list item's slots resolve while its code installs, and
+            // its plan after reads them here).
+            let key = json!([RESOLVE, capability.identity(), named.model, named.release, named.lane, hardware.gpus, hardware.plain,
+                hardware.components, hardware.free_vram.is_some()]).to_string();
+            let asked = {
+                let mut held = ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // One being asked stays; one older than it is kept for goes.
+                held.retain(|_, answer| answer.try_lock().map_or(true, |answer| answer.as_ref().is_none_or(|(at, _)| at.elapsed() < ASKED_FOR)));
+                held.entry(key).or_default().clone()
+            };
+            let mut asked = asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match asked.as_ref().filter(|(at, _)| at.elapsed() < ASKED_FOR) {
+                Some((_, answer)) => answer.clone(),
+                None => {
+                    let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                    *asked = Some((Instant::now(), answer.clone()));
+                    answer
+                }
+            }
+        } else if source.capability.is_some() {
             // An account's earlier read does not authorize this capability's frozen root set.
             Answer::ask(&self.machine, source, &named, hardware)?
         } else {
@@ -949,7 +975,7 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, order, false).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, order, stop, Some(room), bytes).map_err(failed)?;
@@ -1645,11 +1671,16 @@ impl Publisher {
             let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), free_vram, ..hardware.clone() };
             let source = request.hub(&format!("the model for {path}"))?;
             // What it waits on shows: the Hub's grant of the run's reads, each attempt it doesn't answer (cl-1189), then the Hub's answer.
+            let began = std::time::Instant::now();
             if let Some(capability) = &source.capability {
                 capability.granted(job.stop.as_ref(), &|said| job.stage(said));
             }
+            let granted = began.elapsed();
             job.stage(format!("resolving {}", named.shown()));
-            let named = self.resolve(service, source, named, &hardware, job.order)?;
+            let named = self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller))?;
+            if crate::ahead::item(&job.caller) {
+                tracing::info!("{}: {path}: the Hub granted its reads in {} ms, resolved {} in {} ms", job.caller, granted.as_millis(), named.model, (began.elapsed() - granted).as_millis());
+            }
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1669,7 +1700,11 @@ impl Publisher {
             let (mut grant, named, mut warnings) = pick(slot)?;
             // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
             if let Some(named) = named {
+                let began = std::time::Instant::now();
                 self.structure(request.hub("a Hub model")?, &named, job)?;
+                if crate::ahead::item(&job.caller) {
+                    tracing::info!("{}: {}: its structure landed in {} ms", job.caller, grant.slot, began.elapsed().as_millis());
+                }
             }
             if grant.components.is_empty() && !grant.model.is_empty() {
                 grant.components = self.components(&grant.manifest)?;
@@ -1677,7 +1712,7 @@ impl Publisher {
             let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
             if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller));
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
                 if !installation.generation.is_empty() {

@@ -272,7 +272,7 @@ impl Lists {
         if planned.is_some() {
             return planned;
         }
-        let sent = identity(&v1::Predicted { key: String::new(), spec: v1::RunSpec { predicted: None, ..spec.clone() } });
+        let sent = identity(&v1::Predicted { key: String::new(), spec: v1::RunSpec { predicted: None, ..spec.clone() }, interface: None });
         let held = lock(&self.pinned).iter().find(|((on, _), pinned)| on == machine && pinned.asset == asset && identity(&pinned.item) == sent).map(|((_, key), _)| key.clone());
         if let Some(key) = held {
             tracing::info!(target: TARGET, "{asset}'s render names {key} on {machine}, the request it made ready");

@@ -1135,6 +1135,7 @@ impl Runs {
         let install_only = spec.warm && spec.entrypoint.is_empty();
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         // Its weights come at its place in the download line while its code installs (cl-966).
+        let planning = std::time::Instant::now();
         let mut early = self.early(actor, id, &spec, hub.clone(), &stoppable.stop);
         let caller = self.service.engine.caller_id(id);
         if early.is_some() {
@@ -1159,7 +1160,21 @@ impl Runs {
                     let observe = observe.clone();
                     move |stage: &str, done: u64, total: u64| observe(stage, done, total)
                 });
-                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, self.order(id, &spec, 0), observer)?;
+                // A list item whose caller said its interface: its slots resolve, and its needs come, while its code installs
+                // (cl-1123: one after the other, a package's first plan here took 2 s, its describe 0.5 s of it).
+                let read = (early.is_none() && !install_only && crate::ahead::item(&caller)).then(|| crate::ahead::interface(&caller)).flatten();
+                let (installed, ahead) = std::thread::scope(|scope| {
+                    // In the run's project, as this thread is.
+                    let (private, spec, stop, hub) = (crate::private_io::current(), &spec, &stoppable.stop, hub.clone());
+                    let ahead = read.map(|interface| scope.spawn(move || crate::private_io::within(private, || self.early_local(actor, id, spec, hub, digest, interface, stop))));
+                    let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, self.order(id, &spec, 0), observer);
+                    (installed, ahead.and_then(|ahead| ahead.join().ok()).flatten())
+                });
+                if ahead.is_some() {
+                    early = ahead;
+                    crate::ahead::lined(self, &caller);
+                }
+                let installed = installed?;
                 self.supersede(actor, &installed)?;
                 local.collect(actor, &installed.package);
                 Some(installed)
@@ -1169,6 +1184,7 @@ impl Runs {
             Some(installed) => Some(self.callee_view(installed, &spec.application)?),
             None => None,
         };
+        let installed_ms = planning.elapsed().as_millis();
         let release = match &spec.source {
             Source::Release { package, release, digest, card } => Some((package.clone(), release.clone(), digest.clone(), card.clone())),
             _ => None,
@@ -1209,8 +1225,8 @@ impl Runs {
         if crate::ahead::item(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
-                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}",
-                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras
+                "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}; planned in {} ms, its code ready in {installed_ms} ms",
+                fields.len(), ruled.needed, ruled.unneeded, ruled.unanswered, wants.needed, wants.either, wants.extras, planning.elapsed().as_millis()
             );
         }
         // What a root call reads, for its function's next quote on any machine (cl-967).
@@ -1576,6 +1592,34 @@ impl Runs {
     /// A release's weights from its card, its static reading, wanted before its environment builds (cl-966): what its
     /// function reads (`reads`) at its place in the download line. None when nothing installs (its release is held) or
     /// reads ahead (a child, a warm run of no function, a warm set), or its card doesn't answer: its plan wants them then.
+    /// `early` for local code (cl-1123): its slots resolved by `interface`, as its caller read it, and its needs wanted, while its code
+    /// installs. The plan after its install reads what this resolved (`Publisher::resolve`'s answers, the structures landed).
+    #[allow(clippy::too_many_arguments)]
+    fn early_local(&self, actor: &str, id: &str, spec: &Spec, hub: Option<hub::Source>, digest: &str, interface: Vec<u8>, stop: &Stop) -> Option<Arc<crate::access::Fetch>> {
+        let began = std::time::Instant::now();
+        let (package, release) = self.local.named(actor, digest)?;
+        let read: Value = serde_json::from_slice(&interface).ok()?;
+        let installation = Installation { actor: actor.to_owned(), package, release, interface, ..Default::default() };
+        let asker = self.asker(id, spec);
+        let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
+        let wanted = (|| -> Result<(), Refused> {
+            let reads = self.needs(id, &installation, &[], hub, &asker, &spec.entrypoint, &wants_of(&read, &[], spec), (&spec.models, &spec.lane), None, Some(stop))?;
+            self.want_reads(id, fetches_ahead(spec), &fetch, &reads, true)
+        })();
+        let caller = self.service.engine.caller_id(id);
+        match wanted {
+            Ok(()) => {
+                tracing::info!("{caller}: its needs are wanted by its caller's reading, {} ms in, while its code installs", began.elapsed().as_millis());
+                Some(fetch)
+            }
+            Err(_) if stop.is_cancelled() => None,
+            Err(refusal) => {
+                tracing::info!("{caller}: its needs aren't wanted before its code installs: {}", refusal.message);
+                None
+            }
+        }
+    }
+
     fn early(&self, actor: &str, id: &str, spec: &Spec, hub: Option<hub::Source>, stop: &Stop) -> Option<Arc<crate::access::Fetch>> {
         let Source::Release { package, release, digest, card } = &spec.source else { return None };
         if spec.entrypoint.is_empty() || !spec.parent.is_empty() || spec.set.is_some() || spec.remove {

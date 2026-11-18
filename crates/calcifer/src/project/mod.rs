@@ -4753,7 +4753,9 @@ impl Walk {
         if let Some(asking) = &asking {
             spec.inputs = predicted_inputs(self.folder(), &asking.lock, &spec).0;
         }
-        Ok(Some((v1::Predicted { key: key.to_owned(), spec }, package.name.clone() + "/" + &renderer.function)))
+        // Local code's interface as read here: its machine resolves its slots while it installs the code (cl-1123).
+        let interface = renderer.local.as_ref().and_then(|_| v1::Json::parse(package.document().to_string()).ok());
+        Ok(Some((v1::Predicted { key: key.to_owned(), spec, interface }, package.name.clone() + "/" + &renderer.function)))
     }
 
     /// Job `key` as its machines `on` quote it: the function its tool names, with `made`'s choices, its package read with nothing done on

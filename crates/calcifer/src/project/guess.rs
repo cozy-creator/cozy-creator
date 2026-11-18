@@ -518,7 +518,9 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
         spec.inputs = inputs;
     }
     // Its key is its machine's list's to give (`Lists::key`).
-    Ok(Ok((v1::Predicted { key: String::new(), spec }, package.name.clone() + "/" + &renderer.function, key)))
+    // Local code's interface as read here: its machine resolves its slots while it installs the code (cl-1123).
+    let interface = renderer.local.as_ref().and_then(|_| v1::Json::parse(package.document().to_string()).ok());
+    Ok(Ok((v1::Predicted { key: String::new(), spec, interface }, package.name.clone() + "/" + &renderer.function, key)))
 }
 
 /// `machine` holds local source `manifest` whole, as Calcifer kept it.

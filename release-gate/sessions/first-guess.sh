@@ -77,9 +77,9 @@ def lines(path, keep):
             yield ms(stamp), line.split("  INFO ", 1)[-1].strip()
 box, on = sys.argv[7], sys.argv[8]
 said = sorted(list(lines(calcifer, lambda l: folder in l or f"lists to {on}" in l or f"lists put on {on}" in l or f"guess {box} " in l))
-              + [(at, "tensord: " + text) for at, text in lines(tensord, lambda l: "cozy:prepare" in l and ("admitted" in l or "its request" in l))])
+              + [(at, "tensord: " + text) for at, text in lines(tensord, lambda l: "cozy:prepare" in l and any(said in l for said in ("admitted", "its request", "granted its reads", "its structure landed", "described for", "local install")))])
 print(f"asked {asked}, answered +{answered - asked} ms, edit typed +{edit - asked} ms (Unix ms, this runner's clock)")
-for at, text in said[:40]:
+for at, text in said[:60]:
     print(f"+{at - asked:>6} ms (edit {at - edit:+} ms)  {text[:400]}")
 PY
 }
