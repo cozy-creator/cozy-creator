@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import cast
 
 from cell import Cell, Json, Seen, Source
-from drive import (HERE, Failed, Files, Interface, Reply, compact, first_line, graphs_off_cuda, judged, load_fixture,
-                   same_model, slot_ref, steered, stored, tiny, tolerance, twin_gap)
+from drive import (HERE, Failed, Files, Interface, Reply, built, compact, first_line, graphs_off_cuda, judged, load_fixture,
+                   slot_ref, steered, stored, tiny, tolerance, twin_gap)
 
 #: An author's page for every tiny model this suite mirrors.
 PAGE = "https://github.com/cozy-creator/cozy-creator/tree/master/e2e/cpu"
@@ -127,8 +127,7 @@ def wanted(interface: Interface, manifests: dict[str, str], cells: list[Cell]) -
         for slot in entry.get("models", []):
             if slot.get("weights") or "default" not in slot:
                 continue
-            ref = slot_ref(slot)
-            want(ref, manifests.get(slot["path"]) or manifests.get(ref) or same_model(manifests, ref))
+            want(slot_ref(slot), built(manifests, slot))
     for cell in cells:
         for ref in [*cell.get("models", {}).values(), *cell.get("sources", {}).values()]:
             want(ref, manifests.get(ref))
