@@ -17,7 +17,7 @@
 #                  the same rows in batches of 1 to 16 and in prefills of three sizes, through the leaf and as one launch.
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (wheel sources as lib.sh `wheel_from`
 # takes). Nothing here is judged against a bar: it reports, and fails only where a case does.
-# params: tensorfs, runtime (required), seconds (1500).
+# params: tensorfs, runtime (required), seconds (1500), cases ("kv-tiers batch-shapes"; also engine-step, engine-loop).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 DRIVE=$(cd "$HERE/../suites/varena/drive" && pwd)
@@ -47,22 +47,36 @@ ran() {
 }
 
 # host-cache and runtime-cache passed on both cards (44405240305, 44405244533) and their code is unchanged since: by the
-# owner's rule they don't run again. kv-tiers asks the probe itself; its line comes first.
-ran kv-tiers
-say "probe: $(jq -c '.rows[0].probe' "$OUT/kv-tiers.json")$(jq -r '.rows[0].host // empty | " · " + .' "$OUT/kv-tiers.json")"
-ran batch-shapes
+# owner's rule they don't run again. `cases` names what this session runs (kv-tiers was measured: 44407876384, 44407881866).
+CASES=$(param cases "kv-tiers batch-shapes")
+for c in $CASES; do ran "$c"; done
 {
-  jq -r '.rows[0] | "K/V \(.layout.kv_gib) GiB (\(.layout.tokens) tokens, \(.layout.attn_layers) layers, \(.layout.parts) parts) · link: H2D \(.h2d_gb_s // "?") GB/s, D2H \(.d2h_gb_s // "?") GB/s · stand-in: \(.standin.model), \(.standin.bytes_step / 1e9 * 100 | round / 100) GB a step\(if .host then " · host tier: " + .host else "" end)\(if .cleanup then " · cleanup: " + .cleanup else "" end)"' "$OUT/kv-tiers.json"
-  echo
-  echo "| off the card | served | stand-in | ms a step | steps/s | host GiB a step | utilisation % | power W | worst error |"
-  echo "|---|---|---|---|---|---|---|---|---|"
-  jq -r '.rows[0].arms[] | "| \(.off_card) | \(.mode) | \(if .standin then "yes" else "no" end) | \(.ms_step * 100 | round / 100) | \(.steps_s * 100 | round / 100) | \(.host_gib_step * 100 | round / 100) | \(if .watched then (.utilization_pct | round) else "-" end) | \(if .watched then (.power_w | round) else "-" end) | \(.worst_error) |"' "$OUT/kv-tiers.json"
-  echo
-  jq -r '.rows[0] | if .served then "batch shapes (\(.serving)\(if .leaf_failed != "" then ", leaf failed: " + .leaf_failed else "" end)):" else "batch shapes: not served: \(.why)" end' "$OUT/batch-shapes.json"
-  echo
-  echo "| type | site | path | rows | against | kernels | rows identical | max abs diff |"
-  echo "|---|---|---|---|---|---|---|---|"
-  jq -r '.rows[0].shapes[]? | "| \(.type) | \(.site) | \(.path) | \(.rows) | \(.against) | \(.kernel) / \(.kernel_against) | \(.rows_identical) of \(.rows) | \(.max_abs_diff) |"' "$OUT/batch-shapes.json"
+  if [ -s "$OUT/kv-tiers.json" ]; then
+    say "probe: $(jq -c '.rows[0].probe' "$OUT/kv-tiers.json")$(jq -r '.rows[0].host // empty | " · " + .' "$OUT/kv-tiers.json")"
+    jq -r '.rows[0] | "K/V \(.layout.kv_gib) GiB (\(.layout.tokens) tokens, \(.layout.attn_layers) layers, \(.layout.parts) parts) · link: H2D \(.h2d_gb_s // "?") GB/s, D2H \(.d2h_gb_s // "?") GB/s · stand-in: \(.standin.model), \(.standin.bytes_step / 1e9 * 100 | round / 100) GB a step\(if .host then " · host tier: " + .host else "" end)\(if .cleanup then " · cleanup: " + .cleanup else "" end)"' "$OUT/kv-tiers.json"
+    echo
+    echo "| off the card | served | stand-in | ms a step | steps/s | host GiB a step | utilisation % | power W | worst error |"
+    echo "|---|---|---|---|---|---|---|---|---|"
+    jq -r '.rows[0].arms[] | "| \(.off_card) | \(.mode) | \(if .standin then "yes" else "no" end) | \(.ms_step * 100 | round / 100) | \(.steps_s * 100 | round / 100) | \(.host_gib_step * 100 | round / 100) | \(if .watched then (.utilization_pct | round) else "-" end) | \(if .watched then (.power_w | round) else "-" end) | \(.worst_error) |"' "$OUT/kv-tiers.json"
+    echo
+  fi
+  if [ -s "$OUT/batch-shapes.json" ]; then
+    jq -r '.rows[0] | if .served then "batch shapes (\(.serving)\(if .leaf_failed != "" then ", leaf failed: " + .leaf_failed else "" end)):" else "batch shapes: not served: \(.why)" end' "$OUT/batch-shapes.json"
+    echo
+    echo "| type | site | path | rows | against | repeat | kernels | rows identical | max abs diff |"
+    echo "|---|---|---|---|---|---|---|---|---|"
+    jq -r '.rows[0].shapes[]? | "| \(.type) | \(.site) | \(.path) | \(.rows) | \(.against) | \(.repeat // false) | \(.kernel) / \(.kernel_against) | \(.rows_identical) of \(.rows) | \(.max_abs_diff) |"' "$OUT/batch-shapes.json"
+    echo
+  fi
+  if [ -s "$OUT/engine-step.json" ]; then
+    echo "engine step:"
+    jq -c '.rows[0] | del(.case)' "$OUT/engine-step.json"
+    echo
+  fi
+  if [ -s "$OUT/engine-loop.json" ]; then
+    echo "engine loop:"
+    jq -c '.rows[0] | del(.case)' "$OUT/engine-loop.json"
+  fi
 } > "$OUT/summary.md"
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-say "PASS: the Caches' cells and the K/V serving measurement on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
+say "PASS: $CASES on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
