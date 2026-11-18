@@ -598,20 +598,6 @@ impl State {
         }
     }
 
-    /// When `id` is next used, soonest least, as `rank` reads the plan: later in this pass, this loop's
-    /// next pass, then a later phase by how far ahead. None where the plan names no next use.
-    pub(crate) fn next_at(&self, id: u64, order: &plan::Order) -> Option<(u64, u64)> {
-        let entry = self.entries.get(&id)?;
-        let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
-        let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);
-        match order.next_use(id)? {
-            (0, position) if !touched => Some((0, position)),
-            (0, position) if looping => Some((1, position)),
-            (0, _) => order.later_use(id).map(|(phases, position)| (phases + 1, position)),
-            (phases, position) => Some((phases + 1, position)),
-        }
-    }
-
     /// Another phase's region, furthest first, and a loop's after every single pass's: a single pass
     /// reads what doesn't fit once a cycle whatever goes, while a loop that stays never reads again.
     fn later(&self, order: &plan::Order, (phases, position): (u64, u64)) -> (u8, u64) {
