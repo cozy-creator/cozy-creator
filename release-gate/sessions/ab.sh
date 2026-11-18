@@ -79,6 +79,15 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
 fi
+# {pic1}..{pic16} and {depth}: cap-sweep's 2048x2048 pictures and depth map, made here when a cell names one (var-030).
+PICS=$OUT/media
+if jq -e 'any(.[].args[]?; test("\\{pic[0-9]+\\}|\\{depth\\}"))' <<<"$CELLS" > /dev/null; then
+  mkdir -p "$PICS"; FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd); SRC=("$REF/seed.jpg" "$FX/lighthouse.jpg" "$FX/teapot.jpg")
+  for i in $(seq 16); do
+    ffmpeg -nostdin -v error -y -i "${SRC[$((i % 3))]}" -vf "hue=h=$((i * 22)),scale=2048:2048:flags=lanczos" -q:v 2 "$PICS/pic$i.jpg" || fail "picture $i"
+  done
+  ffmpeg -nostdin -v error -y -i "$REF/seed.jpg" -vf "format=gray,gblur=sigma=8" "$PICS/depth.png" || fail "the depth map"
+fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do
@@ -271,7 +280,8 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{depth\}/$PICS/depth.png}
+    while [[ $a =~ \{pic([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/$PICS/pic${BASH_REMATCH[1]}.jpg}; done
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
