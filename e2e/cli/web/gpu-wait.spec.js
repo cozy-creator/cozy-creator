@@ -38,6 +38,16 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     const [now, shown] = [await waiting(), await read()];
     return now && shown === words(now) ? 'agrees' : `shows ${JSON.stringify(shown)}; Calcifer says ${JSON.stringify(now)}`;
   }, { message, timeout: 30_000 }).toBe('agrees');
+  /** The page's own files still coming (its scripts, styles, fonts: not /v1): a navigation cancels them, which a candidate page's
+   *  delivery counts as its errors (pre-flight 44274095291: `Invalid InterceptionId`). Each `away` waits for none before it goes. */
+  const coming = new Set();
+  const own = (request) => { const at = new URL(request.url()); return at.origin === new URL(url).origin && !at.pathname.startsWith('/v1') && request.method() === 'GET'; };
+  page.on('request', (request) => { if (own(request)) coming.add(request); });
+  for (const done of ['requestfinished', 'requestfailed']) page.on(done, (request) => coming.delete(request));
+  const away = async (to) => {
+    await expect.poll(() => coming.size, { message: 'the page\'s own files arrived before it navigates', timeout: 30_000 }).toBe(0);
+    await page.goto(to);
+  };
   /** What each place says of the run now: its box's face, its machine's tab, its machine's queue. */
   const seen = {};
   const face = async () => (await canvasCard(page, box))?.rendered?.progress?.state ?? null;
@@ -45,7 +55,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   const drawn = async () => (await canvasCard(page, box))?.rendered?.labels?.progress?.text ?? null;
 
   await test.step(`${which}: its box's face`, async () => {
-    await page.goto(url);
+    await away(url);
     await expect(page.locator('.stage')).toBeVisible();
     await expect.poll(() => canvasVisible(page, box), { timeout: 60_000 }).toBe(true);
     await fit(page);
@@ -69,7 +79,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
   });
 
   await test.step(`${which}: its machine's queue`, async () => {
-    await page.goto(`${url}/machines/${encodeURIComponent(machine)}`);
+    await away(`${url}/machines/${encodeURIComponent(machine)}`);
     const row = page.locator(`li.qrow[data-run="${run}"] .said`);
     await expect(row).toBeVisible({ timeout: 60_000 });
     if (said) await agrees('the queue says its wait', () => row.textContent(), line);
@@ -81,7 +91,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
     // Its own appearance, as the page's switch sets it.
     for (const theme of ['paper', 'dark']) {
       await api.call('PUT', `/v1/projects/${encodeURIComponent(id)}/appearance`, { appearance: { theme } });
-      await page.goto(url);
+      await away(url);
       await expect(page.locator('.stage')).toBeVisible();
       await themed(page, theme);
       await expect.poll(() => canvasVisible(page, box), { timeout: 60_000 }).toBe(true);
@@ -91,7 +101,7 @@ test('gpu-wait: a run waiting for the GPU says so on its face, its machine tab a
       await expect(page.getByRole('dialog', { name: /^What .+ is doing$/ })).toBeVisible();
       await page.screenshot({ path: join(shots, `${which}-tab-${theme}.png`) });
       await page.keyboard.press('Escape');
-      await page.goto(`${url}/machines/${encodeURIComponent(machine)}`);
+      await away(`${url}/machines/${encodeURIComponent(machine)}`);
       await expect(page.locator(`li.qrow[data-run="${run}"]`)).toBeVisible({ timeout: 60_000 });
       await page.screenshot({ path: join(shots, `${which}-queue-${theme}.png`) });
     }
