@@ -440,6 +440,7 @@ const test = base.extend({
     });
     for (const receipt of receipts) {
       await receipt.dispose();
+      if (receipt.aborted.length) console.log(`candidate delivery: ${receipt.aborted.length} requests the page cancelled itself, not counted as errors: ${[...new Set(receipt.aborted.map(a => a.path))].join(' ')}`);
       expect.soft(receipt.errors, 'candidate delivery errors').toEqual([]);
       expect.soft(receipt.documents.some(document => document.replaced), 'the candidate replaced a real Calcifer HTML/CSP response').toBe(true);
     }
