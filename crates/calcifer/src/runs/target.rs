@@ -375,6 +375,13 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             )
             .next(format!("cozy machine update {machine}"))
         }
+        api::release::Refused::Unmet { release, needs } if held.moves == api::release::Moves::Busy => Error::new(
+            Kind::Unavailable,
+            "runtime_unmet_busy",
+            format!("{shown} {release} needs cozy-runtime{needs}, but {machine} runs {}, and another computer's runs are on it now: Cozy moves it only when it is idle.", held.runtime),
+        )
+        .remedy(format!("Run it again once {machine} is idle, or on another machine."))
+        .next(format!("cozy machine show {machine}")),
         api::release::Refused::Unmet { release, needs } => Error::new(
             Kind::Conflict,
             "runtime_unmet",
@@ -395,6 +402,7 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
         api::release::Chosen::Older { release, newest, needs } => {
             let why = match held.moves {
                 api::release::Moves::No => "only its owner can change it",
+                api::release::Moves::Busy => "another computer's runs are on it now",
                 _ => "no Runtime it can move to does",
             };
             let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and {why}, so this run uses {release}.", held.runtime);

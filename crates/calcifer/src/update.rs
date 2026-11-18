@@ -126,8 +126,8 @@ impl Machines {
                 _ => Ok(Some(run)),
             };
         }
-        // An update would hold new runs behind the work it has going: they go as it is.
-        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 {
+        // An update would hold new runs behind the work it has going, this computer's or another's (cl-1224): they go as it is.
+        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 || self.others_on(&frame) > 0 {
             return Ok(None);
         }
         // What it takes to run this build: `local`, the cozy installed here; else this release, or a dev build's own binary.

@@ -162,6 +162,8 @@ pub enum Moves {
     Held,
     /// Not this computer's to move (another's, added here): it takes an older release.
     No,
+    /// Another client's runs are on it now, which a move would drain (cl-1224): it takes an older release, as `No`.
+    Busy,
 }
 
 /// A machine, as `choose` reads it.
@@ -273,7 +275,7 @@ pub fn takes(needs: &VersionSpecifiers, machine: &Machine<'_>) -> Takes {
     match (newest(machine.runtimes), machine.moves) {
         (Some(runtime), Moves::Yes) => return Takes::Moves(runtime),
         (Some(runtime), Moves::Held) => return Takes::Held(runtime),
-        (Some(_), Moves::No) => return Takes::No,
+        (Some(_), Moves::No | Moves::Busy) => return Takes::No,
         (None, _) => {}
     }
     let Some(newer) = machine.newer else { return Takes::No };
