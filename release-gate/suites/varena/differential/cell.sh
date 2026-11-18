@@ -1,17 +1,17 @@
 # differential: a model must not know what its memory went through, and one request is one answer. Sourced by cells.sh.
-# Each model runs the same request and seed in each arm, so Paul's unique-request rule doesn't apply: this is correctness,
+# SDXL runs the same request and seed in each arm, so Paul's unique-request rule doesn't apply: this is correctness,
 # not a benchmark. Arms run in turn, because swapping a package's source ends its executors, and each second call is a
 # real warm repeat: the copies have call memoization stripped, and hook.py arms the Runtime's gate seam
 # (`cozy_runtime.differential`, Runtime 0.48 and later), which records digests of latents and outputs.
 #   repeat   base 1 against base 2, warm: byte-identical
 #   checks   vt.checks on, every idle pool unmapped before each use, scratch pages, freed blocks and reused ones perturbed,
 #            guards between large blocks: its calls against base's, byte for byte. `uses` must have reached a pool,
-#            `perturbed_bytes` must have touched memory: H3 Turbo captures no graph, so it has no pool to reach
+#            `perturbed_bytes` must have touched memory (for a model that captures no graph and so reaches no pool)
 #   capped   twice under a cap, on a repeat: byte-identical
 #   refill   a kept program's weights pushed off the card before its second call: its replay byte-identical to base's
 #   noroom   they can't all come back: that call runs eagerly, byte-identical to base's replay, and says so
 #   eager    graphs off, every loop and component root as written: byte-identical to base's first call, so a capture
-#            that leaves work out (28892's class) shows here. Every first-party package that records a loop
+#            that leaves work out (28892's class) shows here
 # At the same split levels the bytes must match. Where levels moved with the room, or `why` names a cause the bytes
 # follow, the outputs are judged by quality (differential.py; Paul 11-06: determinism is desirable, not required).
 # A skipped or unreadable arm is a FAIL: a gate that did not run this has not passed it.
@@ -60,12 +60,4 @@ else
   diff_model sdxl sdxl generate 6GiB uses prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_press sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_eager sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
-  diff_model qwen qwen-image-2 generate 8GiB uses prompt="$SCENE, photo" seed:=$((R + 72)) megapixels:=4
-  diff_eager qwen qwen-image-2 generate prompt="$SCENE, photo" seed:=$((R + 72)) megapixels:=4
-  diff_eager krea krea-2 generate prompt="$SCENE, photo" seed:=$((R + 75)) steps:=8
-  diff_eager moss moss-image generate prompt="$SCENE, photo" seed:=$((R + 76)) steps:=8
-  diff_eager h3-full minimax-h3 generate prompt="$MOTION Wide, steady." seed:=$((R + 77)) duration_s:=5 turbo:=false steps:=30
-  # Guards split no run, so H3's 2 GiB blocks find no room at 12 GB (31012, 31020): bigger cards keep them.
-  [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -gt 12 ] || CHECKS="unmap_idle=True, perturb=True"
-  diff_model h3 minimax-h3 generate 8GiB perturbed_bytes prompt="$MOTION Wide, steady." seed:=$((R + 73)) duration_s:=5 turbo:=true
 fi

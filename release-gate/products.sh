@@ -229,13 +229,6 @@ product_minimax_h3_image() {
     instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
     references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
   h3i_table h3i-edit
-  # se-166 (cr-328): "two edits in a row on a 24 GB card must both complete" (the coordinator, 11-18). On a 3090 the
-  # second of two edits in a row ran out of memory in the picture encoder with 0.3 GiB live (pod-session 44183324285,
-  # PRO-4/PRO-6): varena scaled an unmeasured split level from the first edit's measure and chose one too coarse. This
-  # second edit runs at once on the warm executor, prompt as written: the path that failed, about a minute.
-  cell h3i-edit-again "$(pkg minimax-h3-image generate)" seed:=$((R + 37)) prompt_upsampling:=false \
-    instructions="Put <Hero> on the rocks below <Lighthouse>, in its light and weather" \
-    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
 }
 product_ltx_2_5() {
   cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))

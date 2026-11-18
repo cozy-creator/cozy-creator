@@ -1,2 +1,0 @@
-[application]
-object = "ci_quantize_fp8:app"

@@ -20,7 +20,6 @@ members = [
     "crates/varena",
     "crates/varena-client",
     "crates/varena-ledger",
-    "release-gate/suites/varena/ledger",
 ]
 
 [workspace.package]

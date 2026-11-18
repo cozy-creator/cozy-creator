@@ -583,30 +583,12 @@ class QualityPass(TypedDict):
     label: str
 
 
-class VarenaPass(TypedDict):
-    shares: dict[str, float]  # '<cell> <copy kind>': its share of the ceiling
-
-
-class CaseGood(TypedDict):
-    """A tensorfs suite case's known-good (suites/tensorfs/check.py): its time and bytes, and the gate that passed it."""
-    seconds: float
-    bytes: NotRequired[int]
-    label: str
-    at: str
-
-
-class Suites(TypedDict, total=False):
-    tensorfs: dict[str, list[CaseGood]]  # per case
-
-
 class Baseline(TypedDict, total=False):
     """The SKU's baseline file (gate-<SKU>.json): each cell's passes and each check's history."""
     sku: str
     cells: dict[str, CellHistory]
     quality_ref: dict[str, QualityRef]
     quality: list[QualityPass]
-    varena: list[VarenaPass]
-    suites: Suites
 
 
 class KnownFailing(TypedDict):

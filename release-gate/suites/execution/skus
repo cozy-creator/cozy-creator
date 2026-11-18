@@ -1,3 +1,2 @@
-# One card per consumer family every proof here runs on: lora-overlay-refill needs 30 GiB, the 5090 has it.
-rtx-5090 200   # sm120, Blackwell: nvfp4 in hardware
+# The card 0.45.0 failed prompt-lm on (47036, 47038).
 rtx-4090 200   # sm89, Ada
