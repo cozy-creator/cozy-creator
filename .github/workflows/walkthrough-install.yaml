@@ -34,8 +34,8 @@ jobs:
       - name: The documented install (Linux, macOS)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p "$OUT"; t0=$(date +%s)
-          curl -LsSf https://tensorhub.com/install.sh | sh > "$OUT/install.txt" 2>&1 < /dev/null; code=$?
+          set +e; mkdir -p "$OUT"; t0=$(date +%s)
+          curl -LsSf https://tensorhub.com/install.sh | sh > "$OUT/install.txt" 2>&1; code=$?
           echo "EXIT $code in $(( $(date +%s) - t0 )) s" >> "$OUT/install.txt"; cat "$OUT/install.txt"
       - name: The documented install (Windows)
         if: runner.os == 'Windows'
@@ -48,12 +48,12 @@ jobs:
           Get-Content "$env:OUT/install.txt"
       - name: Today's release in a new terminal
         run: |
-          export PATH="$HOME/.cozy/bin:$PATH"
+          set +e; export PATH="$HOME/.cozy/bin:$PATH"
           { echo "which: $(command -v cozy)"; cozy --version; t0=$(date +%s); cozy doctor; echo "EXIT $? in $(( $(date +%s) - t0 )) s"; } > "$OUT/released-doctor.txt" 2>&1 < /dev/null
           cat "$OUT/released-doctor.txt"
       - name: The RC build in its place
         run: |
-          export PATH="$HOME/.cozy/bin:$PATH"
+          set +e; export PATH="$HOME/.cozy/bin:$PATH"
           mkdir -p "$RUNNER_TEMP/rc"
           case $RUNNER_OS in
             Linux) gh run download "$DEV_BUILD" -R "$GITHUB_REPOSITORY" -p 'cozy-*' -D "$RUNNER_TEMP/rc" ;;
@@ -69,7 +69,7 @@ jobs:
           cat "$OUT/rc-doctor.txt"
       - name: A first project and its page
         run: |
-          export PATH="$HOME/.cozy/bin:$PATH"
+          set +e; export PATH="$HOME/.cozy/bin:$PATH"
           mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
           head -c 24 /dev/urandom | base64 > "$RUNNER_TEMP/pass.txt"
           { t0=$(date +%s); cozy new garden; echo "EXIT $? (no flags, no terminal) in $(( $(date +%s) - t0 )) s"
