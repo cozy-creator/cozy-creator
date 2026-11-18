@@ -7,7 +7,7 @@
 # Before renting, at $0, for each tree in its own locked env: the Runtime and TensorFS it resolves (both arms must match),
 # and what its own code guides (fixtures/h3-edit-sound/guided.py: the guide read and the frames its encode keeps); then
 # each tree's edit described through cozy, and its Triton sets built.
-# Cells, in order (params.cells; every run names its machine, `--on`):
+# Cells, in the order params.cells names them (the cap run may go first, so the pod ends with the last arm), every run `--on` its machine:
 #   warm        pk on the first 5 s of the plate: fetches every weight, never compared
 #   a1 b1 b2 a2 rc, pk, pk, rc: each its own arm (derived state reset, TensorD restarted, uncapped)
 #   c1 c2       pg (optional): its own arms too
@@ -95,20 +95,27 @@ file_of() {
 arm() {
   derived_state "$1" reset
   step "arm-$1" machine update "$NAME" --gpu-memory-limit "$2" -y || fail "$1: the restart"
+  answers "$1" "$SECONDS"
   derived_state "$1" settle
   derived_zero || fail "$1: its arm starts with derived state it did not make: $DERIVED"
-  answers "$1"
   say "$1: arm at $2, pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
 }
-# answers <label>: wait (10 min at most) until the pod answers this runner's Calcifer: in 44289620346 a render 4 s after a
-# restart couldn't install its code ("bickslow didn't answer … Connection refused", machine_unreachable) for 3 min.
+# answers <label> [since]: wait (10 min at most) until the pod answers this runner's Calcifer, live (`machine show` with no
+# unreachable word, and `model ls` from it): in 44289620346 a render 4 s after a settings-only restart couldn't install its
+# code ("bickslow didn't answer … Connection refused", machine_unreachable) for 3 min. The seconds from `since` (the
+# update's reported completion) go to restarts.tsv; a wait past 5 s keeps the pod's TensorD log from just after it answers.
 answers() {
-  local t0=$SECONDS
-  until timeout 60 cozy model ls --on "$NAME" --json > "$OUT/answers-$1.json" 2>&1; do
+  local t0=${2:-$SECONDS} tries=0
+  until timeout 60 cozy machine show "$NAME" --json > "$OUT/answers-$1-show.json" 2>&1 &&
+        ! grep -q -i -E 'unreachable|answer' "$OUT/answers-$1-show.json" &&
+        timeout 60 cozy model ls --on "$NAME" --json > "$OUT/answers-$1.json" 2>&1; do
     [ $((SECONDS - t0)) -lt 600 ] || { podlog "$1-unanswered"; fail "$1: $NAME hasn't answered in 10 min: $(tail -c 300 "$OUT/answers-$1.json")"; }
-    sleep 15
+    tries=$((tries + 1)); sleep 5
   done
-  say "$1: $NAME answers ($((SECONDS - t0)) s)"
+  local waited=$((SECONDS - t0))
+  printf '%s\t%s\t%s\n' "$1" "$waited" "$tries" >> "$OUT/restarts.tsv"
+  say "$1: $NAME answers $waited s after the update reported completed ($tries refused probes)"
+  [ "$waited" -le 5 ] || { podlog "$1-answered"; say "$1: waited ${waited}s: $1-answered-tensord.log kept"; }
 }
 # podlog <label>: the pod's TensorD log, its last 300 lines (bounded, agent-rules).
 podlog() { timeout 60 cozy machine logs "$NAME" tensord -n 300 > "$OUT/$1-tensord.log" 2>&1 || true; }
@@ -127,7 +134,7 @@ cell() {
     podlog "$k"
     if grep -q -E 'machine_unreachable|didn.t answer' "$OUT/render-$k.txt"; then
       say "$k: $NAME unreachable ($(grep -o -m1 -E 'hasn.t answered[^)]*' "$OUT/render-$k.txt")); once more when it answers"
-      answers "$k-again"
+      answers "$k-again" "$SECONDS"
       run_page render --on "$NAME" "$k" > "$OUT/render-$k-again.txt" 2>&1 || { podlog "$k-again"; say "FAIL $k again: $(tail -c 600 "$OUT/render-$k-again.txt")"; }
     else
       say "FAIL $k: $(tail -c 600 "$OUT/render-$k.txt")"
@@ -177,6 +184,7 @@ for r in "${RIDS[@]}"; do
   say "GONE $r; billed $(billed "$r")"
 done
 column -t -s $'\t' "$OUT/ab.tsv" | tee -a "$R"
+[ ! -s "$OUT/restarts.tsv" ] || say "restarts (cell, seconds from the update's completion to an answer, refused probes): $(tr '\t\n' ' ;' < "$OUT/restarts.tsv")"
 md5() { ffmpeg -nostdin -v error -i "$OUT/$1.mp4" -map 0:v -f framemd5 - 2> /dev/null | grep -v '^#' | md5sum | cut -c1-16; }
 for p in "a1 a2" "b1 b2" "c1 c2"; do
   set -- $p; [ -s "$OUT/$1.mp4" ] && [ -s "$OUT/$2.mp4" ] || continue
