@@ -89,6 +89,8 @@ ended() {
       sleep 1
     done
     [ "$status" = completed ] || { say "FAIL $1: run $run $status: $(watched "$run" | jq -c .reason)"; RC=1; }
+    # Its whole record, its stages and what it waited on: what each phase its face could say came from.
+    (cd "$RUN_PROJECT" && cozy --json run watch "$run" --full) > "$OUT/$1-run-$run.ndjson" 2>&1
   done
   say "$1: runs $HOLDING_RUN and $WAITING_RUN ended"
 }
