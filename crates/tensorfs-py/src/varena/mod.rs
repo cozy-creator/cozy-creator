@@ -641,6 +641,13 @@ impl PyNoCapture {
     }
 }
 
+/// The host's number less what its processes hold and its headroom (`varena_ledger::host`): what
+/// more this process may hold. Negative: over it.
+#[pyfunction]
+fn _varena_host_room(py: Python<'_>) -> i64 {
+    py.detach(|| varena_ledger::host::budget().room())
+}
+
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 fn _varena_core_identity() -> u64 {
@@ -687,6 +694,7 @@ fn _varena_fill(
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_host_room, module)?)?;
     #[cfg(feature = "store")]
     module.add_function(wrap_pyfunction!(_varena_fill, module)?)?;
     cache_owner::install(module)?;

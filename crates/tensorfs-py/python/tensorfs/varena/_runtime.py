@@ -41,6 +41,13 @@ def activate(device: int, *, shared: bool) -> None:
     _ext._varena_activate(device, shared)
 
 
+def host_room() -> int:
+    """What more this process may hold in host RAM: the host's number (varena's, sized from what
+    the kernel accounts, with the reserve for programs outside cozy left out) less what its
+    processes hold and its headroom. Negative: over it. A CPU executor's weights draw on it."""
+    return _ext._varena_host_room()
+
+
 def poisoned() -> str | None:
     """Why native state can no longer be trusted, if it can't. Opens nothing."""
     return _ext._varena_poisoned()
