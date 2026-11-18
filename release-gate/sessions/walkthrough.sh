@@ -178,7 +178,7 @@ if has updates; then
     done
     (cd "$PJ/plain" && timeout 1800 cozy --json run sdxl/generate prompt="a red apple on a wooden table, $arm" seed=$RANDOM --on "$NAME") > "$W/upd-$arm-run.ndjson" 2>&1 < /dev/null
     run=$(handle "$W/upd-$arm-run.ndjson")
-    (cd "$PJ/plain" && cozy --json run show "$run" --full) > "$W/upd-$arm-record.json" 2>&1 < /dev/null
+    (cd "$PJ/plain" && cozy --json run watch "$run" --full) > "$W/upd-$arm-record.json" 2>&1 < /dev/null
     local times; times=$(jq -c '[paths(scalars) as $p | select(($p[-1] | tostring) | test("_at_ms$")) | {key: ($p | map(tostring) | join(".")), value: getpath($p)}] | from_entries' "$W/upd-$arm-record.json" 2> /dev/null)
     gap=$(jq -r '((.accepted_at_ms // .["run.accepted_at_ms"] // 0) - (.created_at_ms // .["run.created_at_ms"] // 0))' <<< "$times" 2> /dev/null)
     say "update $arm ($*): exit $rc in $((t1 - t0)) ms ($(grep -v '^\s*$' "$W/upd-$arm.txt" | tail -2 | tr '\n' ' ' | cut -c1-200)); machine show ready $(( ${first:-$t1} - t1 )) ms after it returned$([ -n "$first" ] || echo ' (never answered ready in 15 min)'); run ${run:-?}: $times; created→accepted ${gap:-?} ms"
@@ -262,7 +262,7 @@ if has tools; then
   # Every run's full record, and what each failed one says about its credential.
   mkdir -p "$W/records"
   for r in $(cd "$P" && cozy --json run ls 2> /dev/null < /dev/null | jq -r '(.runs // .)[]? | (.name // .id)' 2> /dev/null | head -40); do
-    (cd "$P" && cozy --json run show "$r" --full) > "$W/records/$r.json" 2>&1 < /dev/null
+    (cd "$P" && cozy --json run watch "$r" --full) > "$W/records/$r.json" 2>&1 < /dev/null
   done
   for f in "$W"/records/*.json; do
     jq -e '(.status // .run.status) == "failed"' "$f" > /dev/null 2>&1 || continue
@@ -291,7 +291,7 @@ if has cancel; then
   t1=$SECONDS; timeout 3600 python3 -I "$ROOT/e2e/page.py" render "$P" --on "$NAME" qr > "$W/out/qr-after.render.json" 2> "$W/out/qr-after.render.err"; rc=$?
   say "qr again after the cancel: exit $rc in $((SECONDS - t1)) s; $(media qr-after) $(tail -c 300 "$W/out/qr-after.render.err" | tr '\n' ' ')"
   for r in $(cd "$P" && cozy --json run ls 2> /dev/null | jq -r '(.runs // .)[]? | (.name // .id)' | head -4); do
-    (cd "$P" && cozy --json run show "$r" --full) > "$W/out/run-$r.json" 2>&1 < /dev/null
+    (cd "$P" && cozy --json run watch "$r" --full) > "$W/out/run-$r.json" 2>&1 < /dev/null
     say "run $r: $(jq -c '{status: (.status // .run.status), reason: ((.reason // .run.reason) | tostring | .[0:160]), created: (.created_at_ms // .run.created_at_ms), started: (.started_at_ms // .run.started_at_ms), settled: (.settled_at_ms // .run.settled_at_ms)}' "$W/out/run-$r.json" 2> /dev/null)"
   done
 fi
