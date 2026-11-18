@@ -92,16 +92,17 @@ struct Installing {
 }
 
 impl Installing {
-    /// Its turn for run `caller`, at `order` in the install line. While another install holds it, `waiting` hears whose, and that
-    /// install goes at this run's place in line until it lets go (`line::Line::raise`): a run never waits behind a guess's place.
-    fn take(&self, caller: &str, order: u64, waiting: impl FnOnce(Option<&str>)) -> (Holder<'_>, std::sync::MutexGuard<'_, ()>) {
+    /// Its turn for run `caller`, at `order` in the install line. While another install holds it, `waiting` hears whose, what it
+    /// answers is kept until the turn is this run's (how the wait is shown), and that install goes at this run's place in line until
+    /// it lets go (`line::Line::raise`): a run never waits behind a guess's place.
+    fn take<W>(&self, caller: &str, order: u64, waiting: impl FnOnce(Option<&str>) -> W) -> (Holder<'_>, std::sync::MutexGuard<'_, ()>) {
         let turn = match self.turn.try_lock() {
             Ok(turn) => turn,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
                 let holder = self.holder.lock().unwrap().clone();
                 let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, order));
-                waiting(holder.as_deref());
+                let _shown = waiting(holder.as_deref());
                 self.turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             }
         };
@@ -370,9 +371,13 @@ impl LocalSources {
         // Reused, it is in use again: reclaim drops only an environment no generation names that
         // has been left alone a while (`reclaim::IDLE`).
         let _ = platform::durable::set_times(&environment, fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
-        // Its turn to build it, then whether it's built: another install may have built it meanwhile. Held while it is built.
+        // Its turn to build it, then whether it's built: another install may have built it meanwhile. Held while it is built. One
+        // another project's install builds is the machine's one install of it, which this run waits on and says so (cl-1218).
         let building = self.building.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(environment.clone()).or_default().clone();
-        let turn = building.take(&job.caller, job.order, |_| {});
+        let turn = building.take(&job.caller, job.order, |holder| {
+            tracing::info!(run = %job.caller, "local install: waiting for {} to build {}'s environment", holder.unwrap_or("another install"), manifest.package);
+            job.awaits(&manifest.package)
+        });
         if !ready.is_file() {
             let stage = format!("installing {} on this machine", manifest.package);
             job.stage(stage.clone());
@@ -539,38 +544,6 @@ impl LocalSources {
     ) -> Result<Installation, Refused> {
         let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
         let installer = self.installer(&package);
-        let caller = service.engine.caller_id(run);
-        let tell = |reason| match run.is_empty() {
-            true => Ok(()),
-            false => service.engine.waiting(run, reason),
-        };
-        let mut waited = false;
-        let project = crate::private_io::current();
-        let _installing = installer.take(&caller, order, |holder| {
-            // The package is this run's own; the run installing it as this run's readers hear it (cl-1223).
-            let reads = |id: &str| crate::others::read_by(&service.engine, actor, project.as_ref(), id);
-            let reason = match crate::others::Others::of(holder, reads).said("and") {
-                Some(holder) => format!("waiting for {holder} to install {package}"),
-                None => format!("waiting for another render to install {package}"),
-            };
-            tracing::info!(run = %caller, "local install: {reason}");
-            waited = true;
-            if let Err(error) = tell(Some(reason)) {
-                tracing::warn!(run = %caller, "its waiting reason was not shown: {error}");
-            }
-        });
-        if waited {
-            tracing::info!(run = %caller, "local install: its turn");
-            tell(None)?;
-        }
-        let alias = alias(&self.publisher, digest);
-        if let Some(held) = service.engine.installation(actor, &alias)? {
-            if service.catalog.resolve(&held.generation).is_ok() {
-                self.preparing.lock().unwrap().insert(run.to_string(), held.generation.clone());
-                return Ok(held);
-            }
-        }
-        let (manifest, object) = open_manifest(&self.objects, actor, digest)?;
         let (engine, waiter) = (service.engine.clone(), run.to_string());
         let job = Job {
             observer: Some(observer),
@@ -578,6 +551,7 @@ impl LocalSources {
             order,
             caller: service.engine.caller_id(run),
             reads: published::reads_of(&service.engine, actor),
+            installs: published::installs_of(&service.engine, run),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
                     if let Err(error) = engine.waiting(&waiter, reason) {
@@ -587,6 +561,32 @@ impl LocalSources {
             }),
             ..Default::default()
         };
+        let caller = &job.caller;
+        let mut waited = false;
+        // Another run's install of the package holds its turn: the machine's one install of it, which this run waits on (cl-1218).
+        let _installing = installer.take(caller, order, |holder| {
+            // The package is this run's own; the run installing it as this run's readers hear it (cl-1223).
+            let reason = match crate::others::Others::of(holder, |id| job.reads(id)).said("and") {
+                Some(holder) => format!("waiting for {holder} to install {package}"),
+                None => format!("waiting for another render to install {package}"),
+            };
+            tracing::info!(run = %caller, "local install: {reason}");
+            waited = true;
+            job.waiting(Some(reason));
+            job.awaits(&package)
+        });
+        if waited {
+            tracing::info!(run = %caller, "local install: its turn");
+            job.waiting(None);
+        }
+        let alias = alias(&self.publisher, digest);
+        if let Some(held) = service.engine.installation(actor, &alias)? {
+            if service.catalog.resolve(&held.generation).is_ok() {
+                self.preparing.lock().unwrap().insert(run.to_string(), held.generation.clone());
+                return Ok(held);
+            }
+        }
+        let (manifest, object) = open_manifest(&self.objects, actor, digest)?;
         let installed = self.install_live(service, actor, digest, manifest, &object.sha256, &job)?;
         self.preparing.lock().unwrap().insert(run.to_string(), installed.generation.clone());
         Ok(installed)

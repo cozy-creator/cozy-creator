@@ -6,7 +6,7 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../../app/Connection"
 import { machinesQuery, runFullQuery } from "../../api/queries"
-import { downloadsOf, ownActivity, waitsOnOf } from "../../panels/machines/activity"
+import { installingOf, ownActivity, waitsOnOf } from "../../panels/machines/activity"
 import { useSignal, tabShown } from "../../ui/signal"
 import { theme } from "../../ui/theme"
 import type { CanvasStore, ElementNode, ElementView } from "../CanvasStore"
@@ -203,13 +203,10 @@ export function Stage(props: StageProps) {
         }
       }
       const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
-      const activity = ownActivity(machine, store.projectId)
-      const on = run ? waitsOnOf(activity, run) : undefined
-      const downloads = run ? downloadsOf(activity, run) : undefined
+      const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
       const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
-      const pkg = tool?.installs ?? tool?.package
-      const installing = !run && pkg ? machines.flatMap((m) => ownActivity(m, store.projectId)).find((o) => o.kind === "install" && o.subject === pkg) : undefined
-      return run || installing ? { run, machine, on, downloads, installing } : undefined
+      const installing = run ? undefined : installingOf(machines, tool?.installs ?? tool?.package, store.projectId)
+      return run || installing ? { run, machine, on, installing: installing?.operation, installingOn: installing?.machine } : undefined
     }
 
     const placeWorld = () => {
@@ -322,7 +319,7 @@ export function Stage(props: StageProps) {
             const said = view && (hit?.part === "title" ? view.name : dotsSaid(view))
             if (said) element.title = said
             else element.removeAttribute("title")
-          }, setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box) },
+          }, setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box), leadsOf: (name) => scene?.leadsOf(name) },
         props: () => latest.current, invalidate,
       })
       const resize = new ResizeObserver(() => {

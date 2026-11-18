@@ -14,9 +14,9 @@ export interface RunContext {
   run?: Run
   machine?: Machine
   on?: Operation
-  /** The downloads its run waits on, each its machine's one (cl-1205). */
-  downloads?: Operation[]
+  /** Its package installing before its run is sent, and on which machine (cl-1218). */
   installing?: Operation
+  installingOn?: string
 }
 
 /** Logical geometry remains in CanvasStore/controller even when its display objects are culled. */

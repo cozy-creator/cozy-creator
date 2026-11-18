@@ -896,8 +896,8 @@ pub struct Progress {
     /// The number of the run's newest preview (`path::PREVIEW`), from 1; 0: none.
     #[serde(skip_serializing_if = "no_preview")]
     pub preview: u64,
-    /// The downloads it waits on (cl-1205), by their `Operation::id` in `StatusFrame::activity`: while it does, `stage` says so and
-    /// its bytes are theirs, never its own.
+    /// The downloads it waits on (cl-1205) and the installs another job builds (cl-1218), by their `Operation::id` in
+    /// `StatusFrame::activity`, installs first: while it does, `stage` says so and its bytes are theirs, never its own.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<String>,
 }
@@ -1668,8 +1668,8 @@ pub struct Operation {
     pub started_at_unix_ms: i64,
     /// The runs waiting on it, by the caller's ids: a call's root, the run its caller knows. Only the caller's own.
     pub runs: Vec<String>,
-    /// The runs waiting on it the caller can't read (another project's, another client's), counted: a download is the machine's,
-    /// listed to every caller (cl-1205; Paul: models are machine-wide, projects isolate files and runs).
+    /// The runs waiting on it the caller can't read (another project's, another client's), counted: a download or an install is the
+    /// machine's, listed to every caller (cl-1205, cl-1218; Paul: packages and models are machine-wide, projects isolate files and runs).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub unnamed: u32,
 }

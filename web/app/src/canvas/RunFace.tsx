@@ -6,9 +6,9 @@ import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useTo } from "../app/project"
 import { useNow } from "../panels/common"
-import { anchorOf, packageWords, useDownloadsOf, useInstalling, useWaitsOn } from "../panels/machines/activity"
+import { anchorOf, boxWaitWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { ordinal } from "../panels/format"
-import { attemptWords, bytesKind, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
+import { attemptWords, bytesKind, phaseOf, rateWords, size, stageParts, waitFor, waitReason, waitWords } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -32,12 +32,12 @@ export interface Face {
   state: string
   /** How far within it and how fast (`frame 3 of 12`, `2GB of 7GB, 100MB/s`): never cut (cl-953). */
   count?: string
-  /** The download it waits on, on its machine, which its words lead to: that alone shows how far it is (cl-1205). */
-  leads?: { machine: string; download: string }
+  /** The download or install it waits on, on its machine, which its words lead to: that alone shows how far it is (cl-1205, cl-1218). */
+  leads?: { machine: string; on: string }
 }
 
-/** Where a box's "Waiting for … to download" leads: its machine's drawer, at that download's row. */
-export const leadsTo = (leads: NonNullable<Face["leads"]>) => `machines/${encodeURIComponent(leads.machine)}#${anchorOf(leads.download)}`
+/** Where a box's "Waiting for download" or "Waiting for install" leads: its machine's drawer, at that one's row. */
+export const leadsTo = (leads: NonNullable<Face["leads"]>) => `machines/${encodeURIComponent(leads.machine)}#${anchorOf(leads.on)}`
 
 /** A span as Paul writes it: `3s`, `2m 5s`, `5m`, `1h 4m`. */
 export function short(s: number): string {
@@ -79,10 +79,9 @@ export interface Seen {
   machine?: Machine
   /** What its run waits on there: its package's install or its weights. */
   on?: Operation
-  /** The downloads its run waits on there, each its machine's one (cl-1205). */
-  downloads?: Operation[]
-  /** Its package installing before its run is sent. */
+  /** Its package installing before its run is sent, and on which machine. */
   installing?: Operation
+  installingOn?: string
   /** The box it waits for: that one's render is that box's to show, not this one's (cl-905). */
   waits?: string
   /** What its machine prepares for it meanwhile: its code and weights, fetched ahead. */
@@ -147,11 +146,15 @@ export function faceSettles(slot: string): number | null {
 }
 
 function faceNow(seen: Seen): Face {
-  const { view, run, machine, on, installing, waits, ahead, preparing, downloads } = seen
+  const { view, run, machine, on, installing, installingOn, waits, ahead, preparing } = seen
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()
   const where = run?.machine ? (rented && card ? `${run.machine} (renting ${card})` : run.machine) : "Choosing a machine"
   const face = (phase: string, state: string, on = where, count?: string): Face => ({ phase, machine: on, state, ...(count ? { count } : {}) })
+  // Waiting on its machine's install or download it says so, with nothing of how far that is: each is its machine's, shown once there,
+  // where its words lead (cl-1205, cl-1218; Paul: "the 3 jobs that are like 'waiting for download...'"). Which package or models, its
+  // machine's rows say: a box's line has no room for them.
+  const waitingOn = (kind: string, at: string, id: string, line = where): Face => ({ ...face(kind, boxWaitWords(kind), line), leads: { machine: at, on: id } })
   if (seen.canceling || run?.cancel_requested) return face("canceling", "Canceling…")
   if (run?.status === "failed") return face("failed", `Failed: ${run.reason?.message ?? "the run failed"}`)
   if (waits && !on) return prepared(`Waiting for <${waits}>`, preparing)
@@ -160,7 +163,7 @@ function faceNow(seen: Seen): Face {
     if (view.noRoom) return face("queued", "Needs", "Waiting for disk space", `${view.noRoom.short} more`)
     // Its machines have no GPU, and nothing measured says it runs without one (cl-1279): it waits for a machine that can run it.
     if (view.noGpu) return face("queued", "Needs", "Waiting for a machine", "a GPU")
-    if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
+    if (installing && installingOn) return waitingOn("install", installingOn, installing.id, "Choosing a machine")
     if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued, ${ordinal((ahead?.length ?? 0) + 1)} in line`, preparing)
     if (view.queued) return face("queued", "Queued,", "Choosing a machine", `${ordinal((ahead?.length ?? 0) + 1)} in line`)
     return face("queued", "Queued", "Choosing a machine")
@@ -172,10 +175,7 @@ function faceNow(seen: Seen): Face {
   }
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Starting up")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
-  if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? `: ${on.stage}` : ""}`)
-  // Waiting on downloads it says so, with no bytes of its own: each is its machine's, shown once there, where its words lead (cl-1205;
-  // Paul: "the 3 jobs that are like 'waiting for download...'"). Which models, its machine's rows say: a box's line has no room for them.
-  if (on?.kind === "download") return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: (downloads?.[0] ?? on).id } }
+  if (on) return waitingOn(on.kind, run.machine, on.id)
   if (run.queue_position != null) return face("queued", "Queued,", where, `${ordinal(run.queue_position)} in line`)
   if (run.status === "completed") {
     const arriving = run.arriving
@@ -183,7 +183,8 @@ function faceNow(seen: Seen): Face {
     return face("result", owed(run) ? "Downloading the result" : "Saving")
   }
   const progress = run.progress
-  if (progress?.waiting_on?.length) return { ...face("download", "Waiting for download"), leads: { machine: run.machine, download: progress.waiting_on[0] } }
+  // Its machine's list not here yet, its own stage says which it is.
+  if (progress?.waiting_on?.length) return waitingOn(phaseOf(progress.stage) === "installing" ? "install" : "download", run.machine, progress.waiting_on[0])
   // Waiting on anything else, it says what for, not the stage it waits in (cl-1197: "Preparing, time left unknown" read as stuck
   // through a 96 s wait for 2 GPUs): `Waiting for 2 GPUs`, whole on a box's line. Who holds them and about how long, its machine's rows
   // and its drawer say.
@@ -240,7 +241,6 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
-  const downloads = useDownloadsOf(run)
   const to = useTo()
   const { data: machines } = useQuery(machinesQuery(client))
   const machine = run?.machine ? machines?.machines.find((held) => held.name === run.machine) : undefined
@@ -254,7 +254,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   // Its clock ticks only while it has a time to show.
   const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const slot = later ? `${name}\0${number}` : name
-  const face = faceOf({ view, run, machine, on, downloads, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n), slot })
+  const face = faceOf({ view, run, machine, on, installing: installing?.operation, installingOn: installing?.machine, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n), slot })
   // A phase held back is drawn once it has lasted, though nothing else changes by then.
   const settles = faceSettles(slot)
   const [, wake] = useState(0)
@@ -277,7 +277,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
       <p className="face-state">
         <b>
           {face.leads ? (
-            <Link className="face-words face-leads" to={to(leadsTo(face.leads))} title="See its download on its machine" onClick={(event) => event.stopPropagation()}>
+            <Link className="face-words face-leads" to={to(leadsTo(face.leads))} title={`See its ${face.phase === "install" ? "install" : "download"} on its machine`} onClick={(event) => event.stopPropagation()}>
               {face.state}
             </Link>
           ) : (

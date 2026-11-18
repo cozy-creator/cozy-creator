@@ -4395,8 +4395,8 @@ p.warn.slow {
   margin: 8px 4px 2px;
 }
 
-/* A run waiting on downloads says so and leads to each, which alone shows how far it is (cl-1205): its words a link, the download's
-   row lit a moment. */
+/* A run waiting on downloads or an install says so and leads to each, which alone shows how far it is (cl-1205, cl-1218): its words
+   a link, that one's row lit a moment. */
 .activity .doing a.said.waits,
 .qrow a.said.waits {
   color: var(--ember2);
@@ -4406,7 +4406,7 @@ p.warn.slow {
 .qrow a.said.waits:hover {
   text-decoration: underline;
 }
-[data-download].lit {
+[data-operation].lit {
   animation: download-lit 1.4s ease-out;
 }
 @keyframes download-lit {
@@ -4418,7 +4418,7 @@ p.warn.slow {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-download].lit {
+  [data-operation].lit {
     animation: none;
     outline: 2px solid var(--ember2);
   }

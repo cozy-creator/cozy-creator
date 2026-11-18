@@ -8,7 +8,8 @@ is doing, where, how far and how long the whole run has left:
   cell (`-cold`) installs, and its weights say their bytes coming (downloaded first, or streamed as it loads them).
 - **numbers:** a download, a load and the result count bytes; a stage that counts says what it counts. A run waiting on its
   machine's download (`progress.waiting_on`, cl-1205) says no bytes of its own: that download says them, once however many runs wait
-  on it, in its machine's activity as the cell saw it (<cell>.machine.ndjson).
+  on it, in its machine's activity as the cell saw it (<cell>.machine.ndjson). An install it waits on that another job builds
+  (cl-1218) counts none: its stage says it waits.
 - **words:** every stage it names is one the page knows (`web/app/src/panels/runs/stages.json`); a count the page calls
   steps is a denoising loop's, never tokens or a cap (Paul, 11-12: "Denoise steps: 65 / 2176" was a rewriter's tokens).
 - **a time left:** a warm cell's throughout; a cold cell's while bytes move at a known rate, and while a stage steps from its
@@ -227,8 +228,9 @@ def judge(name: str, events: list[Event], seen: list[Seen], stages: Stages, item
         waited = sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])})
         if not moved and not any(came(items.get(on, [])) for on in waited):
             fails.append(f'{name}: a cold run whose weights never said their bytes coming (no download or load with bytes)')
-    # Every download it waited on says its bytes coming, on its machine.
-    for on in sorted({str(on) for s in seen for on in cast(list[object], s.progress.get('waiting_on') or [])}):
+    # Every download it waited on says its bytes coming, on its machine: what it names while its stage says it waits to download.
+    # Waiting on an install (cl-1218) its stage says that, and an install counts no bytes.
+    for on in sorted({str(on) for s in seen if s.kind != 'installing' for on in cast(list[object], s.progress.get('waiting_on') or [])}):
         if not came(items.get(on, [])):
             fails.append(f'{name}: it waited on {on!r}, whose download never said its bytes coming on its machine')
     if not name.endswith('-memo') and not any(k in WORK for k in kinds):

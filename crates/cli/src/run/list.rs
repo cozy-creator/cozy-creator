@@ -246,10 +246,10 @@ pub(crate) fn status(run: &Run) -> String {
 
 /// Its progress while it goes, or why it ended; empty when there's nothing to say.
 pub(crate) fn progress(run: &Run) -> String {
-    // Waiting on a download it says so, in line or not (cl-1205): its place in line is its own column.
-    let downloading = run.progress.as_ref().is_some_and(|progress| !progress.waiting_on.is_empty());
+    // Waiting on a download or an install it says so, in line or not (cl-1205, cl-1218): its place in line is its own column.
+    let waits = run.progress.as_ref().is_some_and(|progress| !progress.waiting_on.is_empty());
     let progress = match (run.status, &run.progress) {
-        _ if run.queue_position.is_some() && !downloading => String::new(),
+        _ if run.queue_position.is_some() && !waits => String::new(),
         (Status::InProgress, Some(p)) => {
             let mut shown = match p.done_fraction {
                 Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),

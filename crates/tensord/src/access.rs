@@ -328,6 +328,7 @@ pub(crate) fn waits_of(waits: &BTreeMap<String, crate::activity::Waiting>, left:
         on: waits.values().map(|wait| wait.shown().to_owned()).collect(),
         models: waits.keys().cloned().collect(),
         left,
+        installs: vec![],
     })
 }
 

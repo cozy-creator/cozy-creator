@@ -10,7 +10,7 @@ import { Bar } from "../common"
 import { ordinal } from "../format"
 import { downloadWait, runName as runLabel, waitWords, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
-import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waits, working } from "./activity"
+import { anchorOf, byRelation, clientFraction, clientFrom, clientFunction, clientWords, type Doing, doingOf, fetchedWords, fetchesWords, fractionOf, namedOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waits, working } from "./activity"
 import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 import "./MachineTabs.css"
@@ -114,7 +114,7 @@ function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, 
     const { operation } = doing
     const fraction = fractionOf(operation)
     return (
-      <li className="doing" data-doing={doing.kind} data-download={doing.kind === "download" ? operation.id : undefined}>
+      <li className="doing" data-doing={doing.kind} data-operation={operation.id}>
         <MarkOf mark={doing.kind} />
         <b title={fetchesWords(operation)}>{operationName(operation)}</b>
         <span className="kind">{doing.kind === "download" ? "Download" : "Install"}</span>
@@ -128,10 +128,10 @@ function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, 
   const { run, on } = doing
   const fraction = run.progress?.done_fraction
   const going = working(run, on)
-  // Waiting on downloads, it says so and leads to each, which alone shows how far it is (cl-1205).
-  const downloads = on?.kind === "download" ? downloadsOf(activity, run) : []
-  const said = on
-    ? waitingWords(downloads.length ? downloads : [on])
+  // Waiting on an install or downloads, it says so and leads there, which alone shows how far it is (cl-1205, cl-1218).
+  const waited = namedOf(activity, run, on)
+  const said = waited.length
+    ? waitingWords(waited)
     : waits(run) && !downloadWait(run)
       ? waitWords(run.waiting) || (run.queue_position ? `Queued, ${ordinal(run.queue_position)} in line` : "Queued")
       : workWords(run)
@@ -143,8 +143,8 @@ function Row({ doing, boxes, to, activity }: { doing: Doing; boxes: Map<number, 
       </Link>
       <span className="kind">{run.project_id ? `Run ${runLabel(run)}` : "Job"}</span>
       {going && fraction != null && <Bar fraction={fraction} />}
-      {downloads.length ? (
-        <a className="said waits" href={`#${anchorOf(downloads[0].id)}`} title={downloads.map(fetchesWords).join("; ")} onClick={(event) => { event.preventDefault(); showRow(event.currentTarget, downloads[0].id) }}>
+      {waited.length ? (
+        <a className="said waits" href={`#${anchorOf(waited[0].id)}`} title={waited.map(fetchesWords).join("; ")} onClick={(event) => { event.preventDefault(); showRow(event.currentTarget, waited[0].id) }}>
           {said}
         </a>
       ) : (

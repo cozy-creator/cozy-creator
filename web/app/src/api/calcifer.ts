@@ -2466,8 +2466,8 @@ eta_basis?: EtaBasis | null,
  */
 preview?: number | null,
 /**
- * The downloads it waits on (cl-1205), by their `Operation::id` in its machine's `status.activity`: its box and row say it
- * waits and link there, and show no bytes of their own.
+ * The downloads and installs it waits on (cl-1205, cl-1218), by their `Operation::id` in its machine's `status.activity`,
+ * installs first: its box and row say it waits and link there, and show no bytes of their own.
  */
 waiting_on?: Array<string>, };
 

@@ -536,7 +536,7 @@ pub(crate) struct ProgressSnapshot {
     /// What the run waits for, while it waits (`Execution::waiting`), and its place in line (`Execution::place`).
     pub waiting: Option<String>,
     pub place: Option<u32>,
-    /// The downloads it waits on while they arrive, shown in `detail` over its own detail, kept here.
+    /// The downloads and installs it waits on, shown in `detail` over its own detail, kept here.
     pub waits: Option<(Waits, String)>,
     pub revision: u64,
     /// When it last moved (Unix ms).
@@ -566,34 +566,56 @@ pub(crate) struct Weights {
 /// The downloads a run waits on (cl-1205; Paul, 11-17: "it should show the download occurring, and then it should also show the 3
 /// jobs that are like 'waiting for download...' and they don't need to independently report the progress in theirs as well"):
 /// their items in this machine's activity (`activity::Waiting::shown`), their repositories, and the bytes of its own still to come,
-/// which only its line's estimate reads (`estimate::fetching`).
-#[derive(Clone, Debug)]
+/// which only its line's estimate reads (`estimate::fetching`). And the installs it waits on that another job builds (cl-1218):
+/// each one's item and package, an install wait said as a download wait is.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Waits {
     pub on: Vec<String>,
     pub models: Vec<String>,
     pub left: u64,
+    pub installs: Vec<(String, String)>,
 }
 
 impl Waits {
-    /// It waits on the same downloads as `other`, whatever bytes each has left.
+    /// It waits on the same downloads and installs as `other`, whatever bytes each has left.
     pub(crate) fn same(&self, other: &Waits) -> bool {
-        self.on == other.on && self.models == other.models
+        self.on == other.on && self.models == other.models && self.installs == other.installs
+    }
+
+    /// `downloads` and `installs` as one, each as its own observer says it (`Engine::observe_waits`, `observe_install`); none once
+    /// it waits on neither.
+    pub(crate) fn of(downloads: Option<Waits>, installs: Vec<(String, String)>) -> Option<Waits> {
+        match (downloads, installs.is_empty()) {
+            (None, true) => None,
+            (downloads, _) => Some(Waits { installs, ..downloads.unwrap_or_default() }),
+        }
+    }
+
+    /// Its downloads alone, as their observer said them; none: it waits on none.
+    pub(crate) fn downloads(&self) -> Option<Waits> {
+        (!self.on.is_empty()).then(|| Waits { installs: vec![], ..self.clone() })
     }
 
     /// The progress detail they show over the run's own `detail`: its enclosing scope (what the stage is part of) and that it waits
-    /// on them, by name, with no bytes of its own: they are the downloads'.
+    /// on them, by name, with no bytes of its own: they are the downloads'. An install it waits on says first: its weights come
+    /// meanwhile (cl-966).
     pub(crate) fn over(&self, detail: &str) -> String {
         let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        let label = format!("waiting for {} to download", said(&self.models));
+        let packages: Vec<String> = self.installs.iter().map(|(_, package)| package.clone()).collect();
+        let label = match packages.is_empty() {
+            true => format!("waiting for {} to download", said(&self.models)),
+            false => format!("waiting for {} to install", said(&packages)),
+        };
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} / {label}"),
             None => label,
         };
-        serde_json::json!({"stage": stage, "waiting_on": self.on, "bytes_left": self.left, "step_ms": 0.0}).to_string()
+        let on: Vec<&String> = self.installs.iter().map(|(on, _)| on).chain(&self.on).collect();
+        serde_json::json!({"stage": stage, "waiting_on": on, "bytes_left": self.left, "step_ms": 0.0}).to_string()
     }
 }
 
-/// Repositories as a run's stage names them: `minimax-h3`, `minimax-h3 and qwen3-vl`, `a, b and c`.
+/// Repositories and packages as a run's stage names them: `minimax-h3`, `minimax-h3 and qwen3-vl`, `a, b and c`.
 fn said(models: &[String]) -> String {
     let names: Vec<&str> = models.iter().map(|model| model.trim_end_matches('/').rsplit('/').next().unwrap_or(model)).collect();
     match names.split_last() {
