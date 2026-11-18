@@ -1748,8 +1748,8 @@ impl Calcifer {
             .get(id)
             .map_or((None, None, vec![]), |live| (live.waiting.clone(), live.progress.clone(), texts(&live.text)));
         for mut event in events {
-            // An update settling frees the runs held behind it.
-            if let Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. } = &event
+            // An update settling frees the runs held behind it; one its machine took tells them it runs there (cl-1236).
+            if let Event::InProgress { run, .. } | Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. } = &event
                 && run.kind == ::api::calcifer::Kind::Update
                 && let Some(machine) = &run.machine
             {
@@ -2133,6 +2133,8 @@ impl Calcifer {
         let mut pause = Pause::default();
         // When its machine began failing it, and how often it has been asked since; an attach that answers doesn't reset it.
         let mut broken: Option<(Instant, u32)> = None;
+        // The update it is held for, and that update's state, when its machine was last told someone waits on it (cl-1236).
+        let mut kept_for: Option<(RunId, RunStatus)> = None;
         loop {
             let run = match self.with_run_store(id.as_str(), |store| store.run(id.as_str())) {
                 Ok(Some(run)) => run,
@@ -2320,6 +2322,17 @@ impl Calcifer {
                 match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
+                        // A run held for its machine is its user's command (Paul: idle is no user command for 15 minutes). Its
+                        // machine's keepalive restarts the idle clock as it is held, and again once the machine runs the update, which
+                        // then restarts it at its end (TensorD's `update_ended`): the run goes there once it is updated, never to a
+                        // new rental (cl-1236).
+                        let state = (update.id.clone(), update.status);
+                        if kept_for.as_ref() != Some(&state) {
+                            if let Err(e) = Box::pin(machines.keepalive(&name)).await {
+                                warn!(run = %id, machine = %name, "the keepalive for the run held behind its update: {}", e.message);
+                            }
+                            kept_for = Some(state);
+                        }
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}

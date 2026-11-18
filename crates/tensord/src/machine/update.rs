@@ -1031,6 +1031,9 @@ impl Updates {
                     tracing::error!("update publication: {error}; rollback: {rollback}");
                     // The links cannot be trusted. Restart while admission remains closed;
                     // startup recovers before selecting software, or refuses this launch.
+                    if let Some(lifecycle) = &self.lifecycle {
+                        lifecycle.update_ended();
+                    }
                     exit(REPLACE_EXIT);
                 }
             }
@@ -1040,6 +1043,10 @@ impl Updates {
             "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );
+        // Its end, for the ledger the restarted service opens: a run held for it keeps this machine (cl-1236).
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.update_ended();
+        }
         exit(if binary.is_some() { super::binary::EXEC_EXIT } else { REPLACE_EXIT });
         Ok(())
     }

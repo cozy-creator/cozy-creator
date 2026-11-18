@@ -2,7 +2,8 @@
 //! or running on it, used or not (owner ruling 2026-10-10); every run asked of it is a job (a
 //! call, a job, a warm-up, an upload); an explicit keepalive restarts that clock once. An update
 //! is no use (cl-1203: an RC follower's updates every few minutes kept hougetsu up for hours): it
-//! holds the release while it runs and restarts nothing. The clock is durable state, never a
+//! holds the release while it runs and restarts nothing, unless a keepalive says someone waits on
+//! it (a run Calcifer holds for it, cl-1236): then its end restarts it. The clock is durable state, never a
 //! sample held in memory: the journal's last job end and the ledger's idle start (this rental's
 //! first boot, or a keepalive), so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
 //! executors outside the warm sets exit and give back every byte they held, after 15 it exits
@@ -65,6 +66,8 @@ pub(crate) struct Lifecycle {
     following: AtomicUsize,
     /// Updates in progress here: each is a job until it ends (`Updating`).
     updating: AtomicUsize,
+    /// A keepalive came while an update ran: someone waits on it (`update_ended`).
+    waited: AtomicBool,
     /// This computer's machine stays up: another computer's controller is authorized to use it.
     kept: AtomicBool,
     /// When an output read or an object upload last moved bytes (unix ms).
@@ -93,10 +96,12 @@ impl Drop for Follow {
     }
 }
 
-/// Holds the release while an update runs; its end restarts no clock: a deadline that passed meanwhile releases at once.
+/// Holds the release while an update runs. Its end restarts the clock only for someone waiting on it (`update_ended`): else a
+/// deadline that passed meanwhile releases at once.
 pub(crate) struct Updating(Arc<Lifecycle>);
 impl Drop for Updating {
     fn drop(&mut self) {
+        self.0.update_ended();
         self.0.updating.fetch_sub(1, Ordering::AcqRel);
         self.0.changed();
     }
@@ -165,6 +170,7 @@ impl Lifecycle {
             epoch: AtomicU64::new(0),
             following: AtomicUsize::new(0),
             updating: AtomicUsize::new(0),
+            waited: AtomicBool::new(false),
             kept: AtomicBool::new(false),
             transferred: AtomicI64::new(0),
             kept_alive: AtomicI64::new(0),
@@ -281,6 +287,28 @@ impl Lifecycle {
         Ok(Updating(self.clone()))
     }
 
+    /// An update ended, or activates (the service restarts on the ledger as this leaves it). A keepalive that came while it ran is a
+    /// user waiting on what it makes: Calcifer holds their run for it and says so with one (cl-1236). The idle clock starts again
+    /// now, so that run goes here once it is sent, never to a new rental. An update no one waits on restarts nothing (cl-1203).
+    pub(crate) fn update_ended(&self) {
+        if !self.waited.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.ledger.released {
+            return;
+        }
+        let mut ledger = state.ledger.clone();
+        ledger.idle_since_ms = ledger.idle_since_ms.max(now_ms());
+        if let Err(error) = self.save(&ledger) {
+            tracing::warn!("the idle clock's restart for the run an update was held for: {error}");
+            return;
+        }
+        state.ledger = ledger;
+        drop(state);
+        crate::activity::status_changed();
+    }
+
     /// An update begins to activate: new runs are held (accepted, queued) until it restarts the
     /// service or fails (`Activation`).
     pub(crate) fn hold(self: &Arc<Self>) -> Result<Activation, Error> {
@@ -340,7 +368,8 @@ impl Lifecycle {
         }
         let now = now_ms();
         let mut state = self.state.lock().unwrap();
-        if self.due(&state, now) {
+        // Past its deadline while an update holds the release, it isn't released: the keepalive is taken (cl-1236).
+        if state.ledger.released || (self.due(&state, now) && !self.working(&state)) {
             return Err(Error::unavailable(
                 "machine_released",
                 "this rental's idle release is already due or committed",
@@ -352,6 +381,10 @@ impl Lifecycle {
             Error::unavailable("idle_ledger_unwritable", format!("the idle ledger could not be written: {e}"))
         })?;
         self.kept_alive.store(ledger.idle_since_ms, Ordering::Release);
+        // One while an update runs is someone waiting on it: its end restarts the clock again (`update_ended`).
+        if self.updating.load(Ordering::Acquire) > 0 {
+            self.waited.store(true, Ordering::Release);
+        }
         state.ledger = ledger;
         crate::activity::status_changed();
         Ok(self.deadline(&state))
