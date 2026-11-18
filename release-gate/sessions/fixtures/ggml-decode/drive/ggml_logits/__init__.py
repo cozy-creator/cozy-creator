@@ -6,6 +6,9 @@
 
 import json
 import time
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import msgspec
 import torch
@@ -80,26 +83,63 @@ def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float,
     return time.perf_counter() - began, out[0].tolist()
 
 
+@contextmanager
+def _head_reads(net: torch.nn.Module) -> Iterator[list[list[int]]]:
+    """The output head's reads in the body, by pass of the decoder: [the pass's positions, the head's calls after it, the
+    rows they carried]. Only what Python runs shows: the prefill, and each step once as its graph is recorded (a replayed
+    step runs none), which is one step's reads. A plain head reads its weight once a row of a verify pass
+    (`lm._RowByRow`); a leaf's kernel takes a call's rows together."""
+    passes: list[list[int]] = []
+
+    def passed(_module: torch.nn.Module, _args: object, out: tuple[torch.Tensor, ...]) -> None:
+        passes.append([int(out[0].shape[-2]), 0, 0])
+
+    def read(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
+        if passes and args and isinstance(args[0], torch.Tensor):
+            passes[-1][1] += 1
+            passes[-1][2] += args[0].numel() // args[0].shape[-1]
+
+    handles = (
+        net.get_decoder().register_forward_hook(passed),
+        net.get_output_embeddings().register_forward_pre_hook(read),
+    )
+    try:
+        yield passes
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
 @app.entrypoint(accelerator=True)
 def decode(ctx: Context, model: VisionLM) -> Agreement:
     """`PROMPT` decoded greedily for 512 tokens, never stopping, with the MTP head drafting and without: wall tokens/s
     (its ~40-token prefill included), each after a warm-up of the same length, so the timed call captures nothing (the
-    windows a 512-token call grows into are captured by the warm-up), and whether both made the same tokens."""
+    windows a 512-token call grows into are captured by the warm-up), and whether both made the same tokens. Beside each:
+    the output head's bytes and its reads a pass, counted in the warm-up (`_head_reads`)."""
     net = model.pipe.components["model"]
     ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
     head = lm.HEADS.get(net)
     rows: dict[str, object] = {"prompt_tokens": int(ids.shape[1]), "gpu": torch.cuda.get_device_name()}
+    out = net.get_output_embeddings()
+    rows["head"] = {
+        "module": type(out).__name__,
+        "bytes": sum(t.numel() * t.element_size() for t in (*out.parameters(), *out.buffers())),
+    }
     made: dict[str, list[int]] = {}
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del lm.HEADS[net]
         try:
-            _timed(net, ids, 512)
+            with _head_reads(net) as passes:
+                _timed(net, ids, 512)
             seconds, made[mode] = _timed(net, ids, 512)
         finally:
             if head is not None:
                 lm.HEADS[net] = head
-        rows[mode] = {"tokens": len(made[mode]), "s": round(seconds, 3), "tok_s": round(len(made[mode]) / seconds, 1)}
+        # [positions, head calls, head rows, passes like it], the warm-up's: its prefill and each recorded step.
+        recorded = [[*key, n] for key, n in sorted(Counter(map(tuple, passes)).items())]
+        rows[mode] = {"tokens": len(made[mode]), "s": round(seconds, 3), "tok_s": round(len(made[mode]) / seconds, 1),
+                      "head_reads": recorded}
     if len(made) == 2:
         a, b = made["drafted"], made["plain"]
         rows["same_tokens"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
