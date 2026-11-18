@@ -518,7 +518,6 @@ WEB_2=(
   llm-reads
   orbit
   tools-local
-  zoom
   swap-words
 )
 WEB_3=(
