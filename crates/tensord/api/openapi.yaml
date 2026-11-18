@@ -5,8 +5,8 @@ info:
   description: |
     One machine's API on its pinned-TLS port (design/machine-http-api.md), served by TensorD
     (`crates/tensord/src/api/http.rs`) with the types of `api::machine`. Every request carries
-    `authorization: Cozy-Cap <token>`; refusals are the error envelope. Unknown fields are ignored and a
-    missing field reads as its empty value.
+    `authorization: Cozy-Cap <token>`, and a client names its computer in `cozy-client` (its host name, what Status says sent
+    each run). Refusals are the error envelope. Unknown fields are ignored and a missing field reads as its empty value.
 
     This file follows the server: a change to a route or a body lands here in the same PR.
     `scripts/machine-routes.sh` (the build check) holds TensorD's router and this file to the same
@@ -1286,7 +1286,7 @@ components:
       type: object
       properties:
         run: {type: string, description: "The caller's id for it; empty: another caller's."}
-        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: a private run's."}
+        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: an encrypted project's run."}
         size: {$ref: '#/components/schemas/JobSize'}
         widths: {type: array, items: {type: integer, format: int32, minimum: 0}}
         chooses: {type: boolean, description: "It gives the machine its width: no count asked, more than one width."}
@@ -1297,6 +1297,11 @@ components:
         gpu_waits: {type: boolean, description: "It runs on its CPU alone while its GPU work waits to begin: all its work is still ahead of it."}
         models: {type: array, items: {type: string}, description: "The repositories it waits to download, its calls' included."}
         bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come, its calls' included."}
+        own: {type: boolean, description: "The caller sent it (cl-1193)."}
+        client: {type: string, description: "The computer that sent it, as it named itself (the `cozy-client` header); absent: unnamed since this machine started (cl-1193)."}
+        stage: {type: string, description: "Its latest progress' stage; absent for an encrypted project's run."}
+        step: {type: integer, format: int64, minimum: 0, description: "Its step of `steps`, as its latest progress says."}
+        steps: {type: integer, format: int64, minimum: 0}
     Timed:
       type: object
       properties:
@@ -1360,6 +1365,7 @@ components:
           description: >-
             An idle rental's release, 15 min after its last job; 0: none (a job is queued or running, or it
             never releases).
+        kept_alive_unix_ms: {type: integer, format: int64, description: "When a keepalive last restarted the idle clock, while it counts from it; absent: none (cl-1193)."}
         kernels:
           type: array
           items: {$ref: '#/components/schemas/KernelVerdict'}
@@ -1412,6 +1418,7 @@ components:
           type: array
           items: {$ref: '#/components/schemas/RunState'}
           description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded, then its `readiness`: `loading`, `loaded` (its call's first step loads nothing) or `evicted` (cl-1123)."
+        ssh_sessions: {type: integer, format: int32, minimum: 0, description: "SSH sessions open on it now (cl-1193)."}
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

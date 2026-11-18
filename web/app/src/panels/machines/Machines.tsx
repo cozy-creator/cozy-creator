@@ -14,7 +14,8 @@ import { End } from "./End"
 import { GpuStrip } from "./GpuGauges"
 import { Rent } from "./Rent"
 import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
-import { endsWords, stableName } from "./words"
+import { byRelation, clientFrom, clientFunction, clientWords } from "./activity"
+import { endsWords, holdWords, stableName } from "./words"
 
 /** Its GPUs' gauges while it's up (cl-1191). */
 function MachineGpus({ machine }: { machine: Machine }) {
@@ -38,8 +39,15 @@ function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: num
           {machine.running ?? 0} running, {machine.queued ?? 0} queued
         </small>
       )}
+      {machine.status?.others?.map((other, at) => (
+        <small className="under" key={at} data-client={other.client}>
+          {clientFrom(other)}: {clientFunction(other)} · {clientWords(other, now)}
+        </small>
+      ))}
       {trying && machine.attempt && <small className="under">Starting up, attempt {machine.attempt.number}</small>}
-      {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
+      {machine.state === "ready" && machine.kind === "rental" && (
+        <small className="under">{[endsWords(machine, now), ...holdWords(machine, now), machine.ordered === false ? "Rented by another computer" : ""].filter(Boolean).join(" · ")}</small>
+      )}
       {full && (
         <small className="under warn">
           Disk nearly full: {bytes(full.room)} of room for models, and its usual models need {bytes(full.needs)}
@@ -125,7 +133,7 @@ export function Machines() {
   const ask: MachinesAsk = useLocation().state ?? {}
   const first = new Set(ask.first)
 
-  // Rentals other computers made, as `cozy machine ls` lists every Hub first. The list shows meanwhile, and a Hub that doesn't answer says so.
+  // Every Hub listed again, as `cozy machine ls` does, for rentals other computers made. The list shows meanwhile, and a Hub that doesn't answer says so.
   useEffect(() => {
     let live = true
     client
@@ -141,13 +149,12 @@ export function Machines() {
 
   const machines = data?.machines.filter((machine) => machine.state !== "ended") ?? []
   const now = useNow(machines.some((machine) => machine.state !== "stopped"))
-  // This computer's, and apart, what other computers rented on the same account.
+  // One list: every machine, and every rental of the account, whichever computer rented it (cl-1193): `local`, then those working for
+  // the open project, then the rest. Opened from "N more", those with no tab first.
   const byTab = (a: Machine, b: Machine) => Number(first.has(b.name)) - Number(first.has(a.name))
-  const mine = machines.filter((machine) => machine.ordered !== false).sort(byTab)
-  const others = machines.filter((machine) => machine.ordered === false).sort(byTab)
-  const hourlyOf = (list: Machine[]) => list.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
-  const rentals = mine.filter((machine) => machine.rental)
-  const hourly = hourlyOf(rentals)
+  const listed = [...machines].sort(byRelation(project ?? null, chosen)).sort(byTab)
+  const rentals = listed.filter((machine) => machine.rental)
+  const hourly = rentals.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
   const signedIn = useCanRent(data)
   const renting = !client.transport.channel
   // The project's machines that aren't up are listed too, so each can be taken off.
@@ -168,8 +175,8 @@ export function Machines() {
       ))}
       {project && data && !chosen.length && <p className="muted">Cozy picks where this project renders. Check Prefer on a machine to render there.</p>}
       <ul className="rows">
-        {mine.map((machine, at) => (
-          <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} tabbed={at > 0 && first.has(mine[at - 1].name) && !first.has(machine.name)} />
+        {listed.map((machine, at) => (
+          <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} tabbed={at > 0 && first.has(listed[at - 1].name) && !first.has(machine.name)} />
         ))}
         {gone.map((name) => (
           <li key={name} className="runrow machine render-here" data-machine={name}>
@@ -187,18 +194,6 @@ export function Machines() {
           </li>
         ))}
       </ul>
-      {others.length > 0 && (
-        <details className="sect" open={others.some((machine) => first.has(machine.name)) || undefined}>
-          <summary>
-            {others.length} rented by your other computers, {usd(hourlyOf(others))}/h
-          </summary>
-          <ul className="rows">
-            {others.map((machine) => (
-              <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
-            ))}
-          </ul>
-        </details>
-      )}
       {data && !machines.length && (
         <p className="muted">
           No machines yet.{" "}

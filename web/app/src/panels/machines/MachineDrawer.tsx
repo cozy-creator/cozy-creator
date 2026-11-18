@@ -18,7 +18,7 @@ import { MachineLogs } from "./MachineLogs"
 import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { statusWord, target } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
+import { brokenWords, called, endsWords, holdWords, kindWords, kernelsWords, named, spentWords } from "./words"
 import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
@@ -146,14 +146,18 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. Calcifer counts a job it sent as running;
- *  the machine says which of those it runs now and which wait there, as its queue does. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), every computer's, what it's cost so far, and when it ends. Calcifer counts a job it
+ *  sent as running; the machine says which of those it runs now and which wait there, as its queue does, and another computer's
+ *  (cl-1193). */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
   const runs = machine.status?.runs
+  const others = machine.status?.others ?? []
+  const theirs = others.filter((other) => other.running).length
   const total = machine.running + machine.queued
-  const running = runs ? Math.min(total, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running
+  const own = total - others.length
+  const running = (runs ? Math.min(own, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running - theirs) + theirs
   const jobs = total ? `${running} running, ${total - running} queued` : "Nothing running"
-  const ends = endsWords(machine, now)
+  const ends = [endsWords(machine, now), ...holdWords(machine, now)].filter(Boolean).join(" · ")
   const spent = spentWords(machine)
   return (
     <p className="doing-now">

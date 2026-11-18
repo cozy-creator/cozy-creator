@@ -554,6 +554,40 @@ complete?: boolean | null, };
 export type CheckpointRef = { repo_id: string, revision: string, lane: string, };
 
 /**
+ * A run another client sent a machine, as the machine says it (cl-1193): what it runs, for which computer, and how far it is. Nothing of
+ * its project's: no inputs or outputs, and an encrypted project's names no function, stage or models.
+ */
+export type ClientRun = {
+/**
+ * `<package>/<function>`; empty: an encrypted project's.
+ */
+function?: string,
+/**
+ * The computer that sent it, as it names itself; empty: unnamed.
+ */
+client?: string,
+/**
+ * It left its queue: it starts or runs.
+ */
+running?: boolean,
+/**
+ * When it began executing (unix ms).
+ */
+started_at_ms?: number | null,
+/**
+ * The GPUs it holds.
+ */
+width: number,
+/**
+ * How far it is: its stage, and its step of `steps` (0: none said).
+ */
+stage?: string, step: number, steps: number,
+/**
+ * The models it waits to download, and their bytes still to come.
+ */
+models?: Array<string>, bytes_left: number, };
+
+/**
  * A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
  */
 export type Clip = {
@@ -1352,7 +1386,8 @@ boot?: string | null,
  */
 attempt?: Attempt | null,
 /**
- * Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
+ * Its function runs, its GPUs' work, every client's: this computer's by its records, another's as the machine says (cl-1193).
+ * Installs, downloads, updates and removals aren't counted (cl-889).
  */
 running: number, queued: number,
 /**
@@ -1562,7 +1597,19 @@ busy_until_ms?: number | null,
 /**
  * This controller's predicted requests there (`PUT /v1/upcoming`, `/v1/prepare`), and how ready it is for each.
  */
-ahead?: Array<Readied>, };
+ahead?: Array<Readied>,
+/**
+ * The runs other clients sent there, as the machine says them (cl-1193): whose, and how far, never their project's content.
+ */
+others?: Array<ClientRun>,
+/**
+ * SSH sessions open there now (cl-1193).
+ */
+ssh_sessions: number,
+/**
+ * When a keepalive last restarted its idle clock, while the clock counts from it (cl-1193).
+ */
+kept_alive_ms?: number | null, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS

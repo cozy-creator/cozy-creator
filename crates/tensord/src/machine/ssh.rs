@@ -70,3 +70,42 @@ fn tool(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|dir| dir.join(name)).find(|file| file.is_file())
 }
+
+/// SSH sessions open now (cl-1193): sshd's process for each login, titled `sshd: <user>@<tty>` (`sshd-session:` from OpenSSH 9.8),
+/// never its listener or a login's `[priv]` monitor. Read at most every 10 s: Status looks every second while a run goes.
+#[cfg(target_os = "linux")]
+pub(crate) fn sessions() -> u32 {
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+    static READ: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
+    let mut read = READ.lock().unwrap();
+    if let Some((at, n)) = *read {
+        if at.elapsed() < Duration::from_secs(10) {
+            return n;
+        }
+    }
+    let numbered = |entry: &fs::DirEntry| entry.file_name().to_str().is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit()));
+    let n = fs::read_dir("/proc").map_or(0, |entries| {
+        (entries.filter_map(Result::ok))
+            .filter(numbered)
+            .filter(|entry| fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| login(&cmdline)))
+            .count() as u32
+    });
+    *read = Some((Instant::now(), n));
+    n
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn sessions() -> u32 {
+    0
+}
+
+/// A login's sshd: its title's first word after `sshd:` is `<user>@<tty>`.
+#[cfg(target_os = "linux")]
+fn login(cmdline: &[u8]) -> bool {
+    let title = cmdline.split(|b| *b == 0).next().map(String::from_utf8_lossy).unwrap_or_default();
+    let Some(rest) = title.strip_prefix("sshd: ").or_else(|| title.strip_prefix("sshd-session: ")) else { return false };
+    rest.split_whitespace().next().is_some_and(|word| word.contains('@'))
+}

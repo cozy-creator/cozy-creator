@@ -115,6 +115,17 @@ fn fetching(record: &Execution) -> u64 {
     count("bytes_total").saturating_sub(count("bytes_done"))
 }
 
+/// How far a run is, as its latest progress says: its stage (none for a private run's), and its step of its steps.
+fn stepped(record: &Execution, private: bool) -> v1::Queued {
+    let progress: serde_json::Value = record.progress.as_deref().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    let count = |key: &str| progress.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let stage = match private {
+        true => String::new(),
+        false => progress.get("stage").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(120).collect(),
+    };
+    v1::Queued { stage, step: count("position"), steps: count("total"), ..Default::default() }
+}
+
 /// Every root here not ended, every caller's, by acceptance.
 pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
     let engine = &service.engine;
@@ -153,7 +164,8 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
             (false, false) => (invocation.widths.clone(), invocation.package.clone()),
         };
         let running = matches!(record.state, State::Starting | State::Running);
-        let private = invocation.local_private.is_some();
+        // An encrypted project's: its function, models and stage are its project's. A plaintext project's are said, as `times` says them.
+        let private = invocation.local_private.as_ref().is_some_and(|scope| !scope.ordinary);
         let caller = |record: &Execution| {
             (record.submission.as_ref().map(|s| s.request_id.clone()))
                 .filter(|request| !request.is_empty())
@@ -199,6 +211,8 @@ pub(crate) fn roots(service: &Service) -> io::Result<Vec<Root>> {
                 true => mine.iter().filter(|call| call.state == State::Queued).map(|call| fetching(call)).sum(),
                 false => fetching(record),
             },
+            client: crate::clients::name(&actor),
+            ..stepped(record, private)
         };
         roots.push(Root { id: record.id.clone(), actor, caller_id, queued });
     }

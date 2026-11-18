@@ -214,12 +214,16 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
         let roots = crate::estimate::roots(service).map_err(problem)?;
         let busy = roots.iter().any(|root| !crate::ahead::hidden(&root.caller_id));
         let queue = (roots.into_iter())
-            .map(|root| v1::Queued {
-                run: match actor.owner || root.actor == reader {
-                    true => root.caller_id,
-                    false => String::new(),
-                },
-                ..root.queued
+            .map(|root| {
+                let own = root.actor == reader;
+                v1::Queued {
+                    run: match actor.owner || own {
+                        true => root.caller_id,
+                        false => String::new(),
+                    },
+                    own,
+                    ..root.queued
+                }
             })
             .collect();
         let mut times = service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?;
@@ -318,6 +322,8 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
     crate::ahead::progress(&mut ahead, &activity);
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
+        kept_alive_unix_ms: lifecycle.kept_alive_ms(),
+        ssh_sessions: crate::machine::ssh::sessions(),
         runs,
         activity,
         update: updates.current().map(|update| super::machine_update::state(&update.operation, &update)),

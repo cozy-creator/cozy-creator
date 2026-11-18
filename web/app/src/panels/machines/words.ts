@@ -109,6 +109,15 @@ export function endsWords(machine: Machine, now: number): string {
   return machine.status && machine.kind === "rental" ? "Ends 15 minutes after its last run" : ""
 }
 
+/** What keeps it up that is no job, as it says (cl-1193): `An SSH session is open`, `Kept up by a keepalive 2m ago`. */
+export function holdWords(machine: Machine, now: number): string[] {
+  const status = machine.status
+  if (!status || machine.state === "ended") return []
+  const ssh = status.ssh_sessions ? [status.ssh_sessions === 1 ? "An SSH session is open" : `${status.ssh_sessions} SSH sessions are open`] : []
+  const kept = status.kept_alive_ms != null ? [`Kept up by a keepalive ${span((now - status.kept_alive_ms) / 1000)} ago`] : []
+  return [...ssh, ...kept]
+}
+
 /** What it has cost so far: `$1.20 so far`, `About $1.20 so far` while that's an estimate. */
 export function spentWords(machine: Machine): string {
   const rental = machine.rental

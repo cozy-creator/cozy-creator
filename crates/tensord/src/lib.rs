@@ -25,6 +25,7 @@ mod gateway;
 mod hub;
 mod import_pages;
 mod calls;
+mod clients;
 mod journal;
 mod private_journal;
 mod project_objects;

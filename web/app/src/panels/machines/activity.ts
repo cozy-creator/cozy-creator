@@ -1,17 +1,21 @@
 import { useQuery } from "@tanstack/react-query"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { Machine, Operation, Run } from "../../api/calcifer"
-import { leftWords } from "../format"
-import { rateWords, size, target } from "../runs/words"
+import type { ClientRun, Machine, Operation, Run } from "../../api/calcifer"
+import { leftWords, shown, span } from "../format"
+import { rateWords, size, stageLine, target } from "../runs/words"
+import { holdWords } from "./words"
 
 /** One thing a machine is doing: a package installing, weights arriving, a run, a run of another project or of the open one while it's
- *  locked (`own`; its state alone), a locked project's run (`locked`: Calcifer says nothing more of it, cl-1130), or the machine coming
- *  up. */
+ *  locked (`own`; its state alone), a locked project's run (`locked`: Calcifer says nothing more of it, cl-1130), a run another computer
+ *  sent (`client`, as the machine says it, cl-1193), what holds it up with no job (`hold`: an SSH session, a keepalive), or the machine
+ *  coming up. */
 export type Doing =
   | { kind: "install" | "download"; key: string; operation: Operation }
   | { kind: "run"; key: string; run: Run; on?: Operation }
   | { kind: "other"; key: string; state: string; own?: boolean; locked?: boolean }
+  | { kind: "client"; key: string; other: ClientRun }
+  | { kind: "hold"; key: string; words: string }
   | { kind: "boot"; key: string; words: string }
 
 /** `qwen/qwen-image-2.1-turbo`, or a Hugging Face source of it, as people say it: `Qwen Image 2.1 Turbo`. Anything else is said as it is. */
@@ -62,8 +66,48 @@ export function doingOf(machine: Machine, project: string | null, locked = false
     return [{ kind: "run", key: `run ${run.project_id ?? ""} ${run.number}`, run, on: waitsOnOf(activity, run) }]
   })
   const going = (doing: Doing) => Number(doing.kind === "run" ? !working(doing.run, doing.on) : doing.kind === "other" && doing.state !== "running")
-  return [...booting, ...operations, ...runs.sort((a, b) => going(a) - going(b))]
+  const clients: Doing[] = [...(machine.status?.others ?? [])]
+    .sort((a, b) => Number(Boolean(b.running)) - Number(Boolean(a.running)))
+    .map((other, at) => ({ kind: "client", key: `client ${at}`, other }))
+  const holds: Doing[] = holdWords(machine, Date.now()).map((words) => ({ kind: "hold", key: `hold ${words}`, words }))
+  return [...booting, ...operations, ...runs.sort((a, b) => going(a) - going(b)), ...clients, ...holds]
 }
+
+/** Whether a machine works for `project` now, or the project prefers it (`chosen`): a run, an install or a download of it is that
+ *  project's (Paul, 11-17: "machines that are working on our current project (the project I have opened) should be to the left and
+ *  more visible (next to local)"). */
+export function forProject(machine: Machine, project: string | null, chosen: string[]): boolean {
+  if (chosen.includes(machine.name)) return true
+  if (!project) return false
+  return (machine.status?.runs ?? []).some((held) => held.run?.project_id === project) || (machine.status?.activity ?? []).some((operation) => operation.project === project)
+}
+
+/** The machines in Paul's order (11-17): `local`, then those working for the open project, then every other one of the account (other
+ *  projects' runs, other computers', idle), each group as listed. */
+export function byRelation(project: string | null, chosen: string[]) {
+  const rank = (machine: Machine) => (machine.kind === "local" ? 0 : forProject(machine, project, chosen) ? 1 : 2)
+  return (a: Machine, b: Machine) => rank(a) - rank(b)
+}
+
+/** Another computer's run by what it runs (cl-1193): its function, or that it's an encrypted project's, which says nothing more. */
+export const clientFunction = (other: ClientRun) => (other.function ? shown(other.function) : "An encrypted project's run")
+
+/** Who sent it: the computer as it names itself. */
+export const clientFrom = (other: ClientRun) => `From ${other.client || "another computer"}`
+
+/** How far another computer's run is, as its machine says it: `Rendering, step 7 of 30 · 2m 10s`, its weights still to come, `Queued`. */
+export function clientWords(other: ClientRun, now: number): string {
+  if (!other.running) {
+    if (!other.bytes_left) return "Queued"
+    const models = (other.models ?? []).map(modelWords).join(", ")
+    return `Waiting for ${size(other.bytes_left)}${models ? ` of ${models}` : ""} to download`
+  }
+  const said = other.stage || other.steps ? stageLine({ stage: other.stage ?? "", completed: other.step, total: other.steps, bytes_done: 0, bytes_total: 0, step_ms: 0, step_steady_ms: 0, at_ms: 0 }) : "Running"
+  return other.started_at_ms ? `${said} · ${span((now - other.started_at_ms) / 1000)}` : said
+}
+
+/** How far its steps are, for a bar; none before it says. */
+export const clientFraction = (other: ClientRun) => (other.running && other.steps ? Math.min(1, other.step / other.steps) : undefined)
 
 /** What a run's row is called: its box, where the open project has it, else what it runs. */
 export const runName = (run: Run, boxes: Map<number, string>) => (run.project_id ? boxes.get(run.number) : undefined) ?? target(run)

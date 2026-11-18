@@ -69,6 +69,8 @@ pub(crate) struct Lifecycle {
     kept: AtomicBool,
     /// When an output read or an object upload last moved bytes (unix ms).
     transferred: AtomicI64,
+    /// The idle clock's start a keepalive last set (unix ms), since this process started (cl-1193).
+    kept_alive: AtomicI64,
     /// Called when an activation starts or ends without its restart (the runs it holds change),
     /// and when an admission or a follower lets go: the idle clock may start.
     changed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -165,6 +167,7 @@ impl Lifecycle {
             updating: AtomicUsize::new(0),
             kept: AtomicBool::new(false),
             transferred: AtomicI64::new(0),
+            kept_alive: AtomicI64::new(0),
             changed: Default::default(),
             broken: Default::default(),
         });
@@ -348,8 +351,24 @@ impl Lifecycle {
         self.save(&ledger).map_err(|e| {
             Error::unavailable("idle_ledger_unwritable", format!("the idle ledger could not be written: {e}"))
         })?;
+        self.kept_alive.store(ledger.idle_since_ms, Ordering::Release);
         state.ledger = ledger;
+        crate::activity::status_changed();
         Ok(self.deadline(&state))
+    }
+
+    /// When a keepalive last restarted the idle clock, while the clock still counts from it: no job or transfer since, and nothing
+    /// working (cl-1193). 0: none.
+    pub(crate) fn kept_alive_ms(&self) -> i64 {
+        let kept = self.kept_alive.load(Ordering::Acquire);
+        if kept == 0 {
+            return 0;
+        }
+        let state = self.state.lock().unwrap();
+        match !self.working(&state) && self.idle_end(&state) - self.window() == kept {
+            true => kept,
+            false => 0,
+        }
     }
 
     /// Calls that may start work, in flight now.

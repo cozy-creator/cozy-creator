@@ -566,10 +566,23 @@ fn content_range(value: &str) -> Option<((u64, u64), u64)> {
 }
 
 fn authorized(request: RequestBuilder, auth: &Auth) -> RequestBuilder {
+    let request = request.header(api::machine::CLIENT, client_name());
     match auth.header() {
         Some(value) => request.header(header::AUTHORIZATION, value),
         None => request,
     }
+}
+
+/// This computer as its machines say it sent each run (`api::machine::CLIENT`, cl-1193): its host name.
+fn client_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(unix)]
+        let name = rustix::system::uname().nodename().to_string_lossy().into_owned();
+        #[cfg(not(unix))]
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+        name.chars().filter(|c| c.is_ascii_alphanumeric() || " .-_".contains(*c)).take(64).collect()
+    })
 }
 
 fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
