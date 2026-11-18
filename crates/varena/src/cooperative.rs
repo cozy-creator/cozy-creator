@@ -60,21 +60,23 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
         Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
     };
-    // The context's cost on this card and driver, measured as it comes up: what was free before it
-    // less what is free after. Torch's runtime and first stream come next, where a refusal reaches
-    // nobody who could give room (run 31653: an idle H3 left under 700 MiB), and they take about as
-    // much again: short of that much free, peers are asked for the rest. A refused context asks
-    // for what peers can give. 3 GiB was asked of them before, on any card.
+    // Once the context is up, the driver's room this process is expected to need (`expect`) must be
+    // free: Torch's runtime and first stream come next, where a refusal reaches nobody who could give
+    // room (run 31653: an idle H3 left under 700 MiB). Short of it, peers are asked for the rest; a
+    // refused context asks for what peers can give. The context's cost is measured as it comes up:
+    // what was free before it less what is free after. 3 GiB was asked of peers before, on any card.
     let before = card_free(device);
-    let mut cost = None;
+    let seeded = NVML.get_or_init(|| Nvml::init().ok()).as_ref()
+        .and_then(|nvml| seed(nvml, &nvml_device(nvml, &uuid)?));
     let mut last = false;
     loop {
         let started = working::initialize(device);
         let short = match &started {
             Err(Error::Cuda { code: 2, .. }) => Some(0),
             Ok(()) => card_free(device).and_then(|free| {
-                let cost = *cost.get_or_insert_with(|| before.map_or(0, |before| before.saturating_sub(free)));
-                (free < cost).then(|| cost - free)
+                let context = before.map_or(0, |before| before.saturating_sub(free));
+                let room = came_up(device, Expected { uuid, context, seeded });
+                (free < room).then(|| room - free)
             }),
             Err(_) => None,
         };
@@ -83,11 +85,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             _ => break started,
         }
     }?;
-    let seeded = NVML.get_or_init(|| Nvml::init().ok()).as_ref()
-        .and_then(|nvml| seed(nvml, &nvml_device(nvml, &uuid)?));
-    EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
-        .insert(device, Expected { uuid, context: cost.unwrap_or(0), seeded });
-    expect(device, false);
+    came_up(device, Expected { uuid, context: 0, seeded });
     // What other programs hold as this process begins: a wait is only ever for what they took since.
     let _ = others_came(device);
     if let Some(serving) = serving {
@@ -130,6 +128,7 @@ pub(crate) fn request_boundary(device: i32, begin: bool) {
 }
 
 /// What a process on each GPU is expected to hold outside its books, as read when it came up.
+#[derive(Clone, Copy)]
 struct Expected {
     uuid: [u8; 16],
     /// Its context's measured cost (`join`): 0 where NVML could not read the card.
@@ -139,6 +138,12 @@ struct Expected {
 }
 
 static EXPECTED: Mutex<BTreeMap<i32, Expected>> = Mutex::new(BTreeMap::new());
+
+/// This process is up on `device`, as `expected` read it the first time: the driver's room it needs.
+fn came_up(device: i32, expected: Expected) -> usize {
+    EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).entry(device).or_insert(expected);
+    expect(device, false)
+}
 
 /// The most bytes a process held outside its books, by card and driver major version, from the
 /// release gate's run records (`release-gate/ledger.py out-of-books`): developer-measured, as the
@@ -165,12 +170,12 @@ fn seed(nvml: &Nvml, gpu: &nvml_wrapper::Device<'_>) -> Option<u64> {
 /// cost. A fixed 800 MiB was left before, 10-13% of an 8 GB card. `learn`: a request ended, and what
 /// this process holds outside its books joins what the card's processes learned. Read where NVML's
 /// per-process figure is cheap enough: as the process comes up and at each request's boundaries.
-fn expect(device: i32, learn: bool) {
-    let Ok(gpu) = crate::gpu(device) else { return };
-    let Some((uuid, context, seeded)) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
-        .get(&device).map(|expected| (expected.uuid, expected.context, expected.seeded))
+fn expect(device: i32, learn: bool) -> usize {
+    let Ok(gpu) = crate::gpu(device) else { return 0 };
+    let Some(Expected { uuid, context, seeded }) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
+        .get(&device).copied()
     else {
-        return;
+        return 0;
     };
     let own = split(device).map(|(ours, _)| (ours as usize).saturating_sub(gpu.owned()));
     if learn && let Some(own) = own {
@@ -179,6 +184,7 @@ fn expect(device: i32, learn: bool) {
     let most = varena_ledger::out_of_books(&uuid).max(seeded);
     let room = most.map_or(context, |most| (most as usize).saturating_sub(own.unwrap_or(context)));
     gpu.expect_driver(room, own.unwrap_or(0));
+    room
 }
 
 fn nvml_device<'a>(nvml: &'a Nvml, b: &[u8; 16]) -> Option<nvml_wrapper::Device<'a>> {
