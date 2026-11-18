@@ -466,6 +466,8 @@ fn _varena_working_stats(
         ("managed_host_refusals", stats.managed_host_refusals),
         ("managed_rebinds", stats.managed_rebinds),
         ("managed_rebound_bytes", stats.managed_rebound_bytes),
+        ("managed_discards", stats.managed_discards),
+        ("managed_discarded_bytes", stats.managed_discarded_bytes),
     ]
     .into())
 }

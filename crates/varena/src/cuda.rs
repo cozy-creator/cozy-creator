@@ -74,6 +74,7 @@ type FreeManaged = unsafe extern "system" fn(Pointer) -> Status;
 type DiscardPrefetch = unsafe extern "system" fn(
     *mut Pointer, *mut usize, usize, *mut Location, *mut usize, usize, u64, Object,
 ) -> Status;
+type Discard = unsafe extern "system" fn(*mut Pointer, *mut usize, usize, u64, Object) -> Status;
 
 #[derive(Default)]
 pub(crate) struct Counters {
@@ -140,6 +141,7 @@ pub(crate) struct Driver {
     alloc_managed: Option<AllocManaged>,
     free_managed: Option<FreeManaged>,
     discard_prefetch: Option<DiscardPrefetch>,
+    discard: Option<Discard>,
     paged_stream: OnceLock<usize>,
     pub(crate) granularity: usize,
 }
@@ -229,6 +231,7 @@ impl Driver {
             alloc_managed: optional!("cuMemAllocManaged", AllocManaged),
             free_managed: optional!("cuMemFree_v2", FreeManaged),
             discard_prefetch: optional!("cuMemDiscardAndPrefetchBatchAsync", DiscardPrefetch),
+            discard: optional!("cuMemDiscardBatchAsync", Discard),
             paged_stream: OnceLock::new(),
             granularity: 0,
         };
@@ -522,6 +525,19 @@ impl Driver {
             call(ptrs.as_mut_ptr(), sizes.as_mut_ptr(), 1, card.as_mut_ptr(), first.as_mut_ptr(), 1, 0, stream as Object)
         });
         status("cuMemDiscardAndPrefetchBatchAsync", code)?;
+        Ok(true)
+    }
+
+    /// PROOF ONLY (var-030 section 8): a managed range whose contents are dead, dropped in `stream`'s order: its
+    /// pages leave the card and host memory with no copy, so an eviction never writes dead bytes out. False where
+    /// the driver has no such call.
+    pub(crate) fn discard(&self, ptr: u64, bytes: usize, stream: usize) -> Result<bool> {
+        let Some(call) = self.discard else { return Ok(false) };
+        let stream = if stream != 0 { stream } else { self.paged_stream()? };
+        let (mut ptrs, mut sizes) = ([ptr], [bytes]);
+        // SAFETY: one range inside an owned managed allocation whose contents are dead, arrays of one, zero flags.
+        let code = self.timed(|| unsafe { call(ptrs.as_mut_ptr(), sizes.as_mut_ptr(), 1, 0, stream as Object) });
+        status("cuMemDiscardBatchAsync", code)?;
         Ok(true)
     }
 

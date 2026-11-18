@@ -184,6 +184,8 @@ class WorkingStats(TypedDict):
     managed_host_refusals: int
     managed_rebinds: int
     managed_rebound_bytes: int
+    managed_discards: int
+    managed_discarded_bytes: int
 
 
 class SplitContext(TypedDict):

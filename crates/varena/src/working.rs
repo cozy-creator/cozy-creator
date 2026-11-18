@@ -167,6 +167,8 @@ pub struct WorkingStats {
     pub managed_host_refusals: u64,
     pub managed_rebinds: u64,
     pub managed_rebound_bytes: u64,
+    pub managed_discards: u64,
+    pub managed_discarded_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1119,10 +1121,18 @@ impl Device {
         }
     }
 
+    /// PROOF ONLY (var-030 section 8): `bytes` at `ptr` of a managed segment were freed and hold nothing wanted.
+    fn discard_dead(&self, ptr: u64, bytes: usize, stream: u64) {
+        let Ok(_context) = self.driver().enter() else { return };
+        if let Ok(true) = self.driver().discard(ptr, bytes, stream as usize) {
+            self.paged.discarded(bytes);
+        }
+    }
+
     /// `rebind` for a block just taken from a free list, where it is a large one of a managed segment and our
     /// bytes pass the card.
     fn rebind_taken(&self, state: &State, ptr: u64, stream: u64) {
-        if !self.paged.rebinds() || self.over(0) == 0 {
+        if !self.paged.rebinds() || (self.over(0) == 0 && !self.paged.dropped()) {
             return;
         }
         let Some(block) = state.blocks.get(&ptr) else { return };
@@ -1817,9 +1827,17 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         || (block.life == Life::Captured && block.reusable_on.is_some());
     let class = block.capacity;
     let reusable_on = block.reusable_on;
+    // var-030 section 8 (proof): a large managed block freed while our bytes pass the card drops its dead pages in
+    // its stream's order, so the driver never copies them out and their host pages go now.
+    let drop_dead = (owner.paged.on() && run && block.life == Life::Ready && !capturing
+        && segments[&block.segment].managed && owner.over(0) != 0)
+        .then(|| reusable_on.unwrap_or(block.stream));
     let observed = measured.then(|| (block.charge(), block.phase, block.segment));
     if let Some(key) = block.tally.take() {
         state.escapes.died(key, class);
+    }
+    if let Some(on) = drop_dead {
+        owner.discard_dead(ptr, class, on);
     }
     if reusable {
         state.list((pool, class, reusable_on), ptr);
@@ -2544,6 +2562,8 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     stats.managed_host_refusals = paged.host_refusals;
     stats.managed_rebinds = paged.rebinds;
     stats.managed_rebound_bytes = paged.rebound_bytes;
+    stats.managed_discards = paged.discards;
+    stats.managed_discarded_bytes = paged.discarded_bytes;
     Ok(stats)
 }
 

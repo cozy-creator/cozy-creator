@@ -345,7 +345,7 @@ declare -A RUNS=() DONE=()
 # run <cell> <name> <budget>: the cell's request once under <budget> (the cap, or `off` for its uncapped twin), as <name>.
 run() {
   local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
-  local mem procmib hostgrow hostpeak hostsys mg
+  local mem procmib hostgrow hostpeak hostsys h2d d2h fills mg
   local -a args
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   mapfile -t args < <(jq -r '.args[]' <<< "$c")
@@ -376,11 +376,12 @@ run() {
   [[ ${smi:-0} =~ ^[1-9][0-9]*$ ]] && echo "$smi" > "$OUT/$name.smi" || smi=unread
   # The cell's own process on the card (nvidia-smi's per-process MiB, the holder left out), and host memory that cannot be
   # given back: the container's growth over the cell, its peak, and the machine's peak (MiB).
-  mem=$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"pid\" && \$0 !~ /ab-vram/ {if (\$4 + 0 > p) p = \$4 + 0} \$2 == \"host\" {if (b == \"\") b = \$3; if (\$3 + 0 > h) h = \$3 + 0; if (\$4 + 0 > n) n = \$4 + 0} END {printf \"%d %d %d %d\", p, (h - b) / 1048576, h / 1048576, n / 1048576}"')
-  read -r procmib hostgrow hostpeak hostsys <<< "${mem:-? ? ? ?}"
-  echo "$procmib $hostgrow $hostpeak $hostsys" > "$OUT/$name.mem"
+  mem=$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"pid\" && \$0 !~ /ab-vram/ {if (\$4 + 0 > p) p = \$4 + 0} \$2 == \"host\" {if (b == \"\") b = \$3; if (\$3 + 0 > h) h = \$3 + 0; if (\$4 + 0 > n) n = \$4 + 0; split(\$1, c, \":\"); s = c[1] * 3600 + c[2] * 60 + c[3]; if (l != \"\" && s > l && s - l < 30) {r += \$5 * (s - l); x += \$6 * (s - l)}; l = s} END {printf \"%d %d %d %d %.1f %.1f\", p, (h - b) / 1048576, h / 1048576, n / 1048576, r / 1000, x / 1000}"')
+  read -r procmib hostgrow hostpeak hostsys h2d d2h <<< "${mem:-? ? ? ? ? ?}"
+  echo "$procmib $hostgrow $hostpeak $hostsys $h2d $d2h" > "$OUT/$name.mem"
   mg=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.working_allocator // empty)
-    | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add)" end' "$OUT/$name.json" 2> /dev/null)
+    | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add)" end' "$OUT/$name.json" 2> /dev/null)
+  fills=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.moved // empty | to_entries[] | .value.bytes // 0) | add // 0 | . / 1e9 | . * 10 | floor / 10' "$OUT/$name.json" 2> /dev/null)
   row "$name"
   steps=$(jq -r '"step 1 \(.phases.step1_s // "-") s, steady \(.phases.steady_s // "-") s x\(.phases.steps // "-")"' <<< "$ROW" 2> /dev/null)
   read -r total ex peak memo throttled stood < <(jq -r '[.measurements, (.calls[]?.measurements)] as $m
@@ -409,7 +410,7 @@ run() {
   RUNS[$name]=${N:-}; DONE[$name]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
-  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
+  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
   # The switch must have taken: a managed cell whose record says it was off measures nothing this session is for.
   if [ "$name" = "$k" ] && [ "$MANAGED" = true ] && [[ ${mg:-none} == "on 0,"* ]]; then fail "$name ran with managed working memory off: $mg"; fi
   publish "$name" "$verdict" "$why"

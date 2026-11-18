@@ -22,6 +22,11 @@ pub(crate) struct Books {
     baseline: AtomicU64,
     rebinds: AtomicU64,
     rebound_bytes: AtomicU64,
+    /// Freed blocks whose dead pages were dropped (and their bytes): their host pages go with them.
+    discards: AtomicU64,
+    discarded_bytes: AtomicU64,
+    /// Something was dropped: a large block taken again is placed on the card first, never left to first-touch faults.
+    dropped: AtomicBool,
 }
 
 /// `Books` for a run's record.
@@ -35,6 +40,8 @@ pub(crate) struct PagedStats {
     pub(crate) host_refusals: u64,
     pub(crate) rebinds: u64,
     pub(crate) rebound_bytes: u64,
+    pub(crate) discards: u64,
+    pub(crate) discarded_bytes: u64,
 }
 
 impl Books {
@@ -81,6 +88,16 @@ impl Books {
         self.rebound_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
+    pub(crate) fn discarded(&self, bytes: usize) {
+        self.discards.fetch_add(1, Ordering::Relaxed);
+        self.discarded_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.dropped.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Acquire)
+    }
+
     pub(crate) fn stats(&self) -> PagedStats {
         PagedStats {
             on: self.on(),
@@ -91,6 +108,8 @@ impl Books {
             host_refusals: self.host_refusals.load(Ordering::Relaxed),
             rebinds: self.rebinds.load(Ordering::Relaxed),
             rebound_bytes: self.rebound_bytes.load(Ordering::Relaxed),
+            discards: self.discards.load(Ordering::Relaxed),
+            discarded_bytes: self.discarded_bytes.load(Ordering::Relaxed),
         }
     }
 
@@ -126,44 +145,19 @@ impl Books {
     }
 }
 
-/// (bytes in use that cannot be given back, the limit) of what bounds this process's host memory: its
-/// cgroup's (a container's limit) where that leaves less room than the machine's own.
+/// (bytes held that the kernel cannot take back, what they may reach) under the tightest limit on this process's
+/// path: varena-ledger's host number (`host::budget`), which TensorD writes as the machine's `memory.max` and reads
+/// on every cgroup up the path. The executor's own cgroup is one of them, so reading the container's root file alone
+/// (the first proof build) saw no limit and let the kernel kill at 32 GB. The headroom is what a call grows by
+/// before anyone looks again.
 #[cfg(target_os = "linux")]
 fn host() -> Option<(u64, u64)> {
-    fn number(path: &str) -> Option<u64> {
-        std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    let budget = varena_ledger::host::budget();
+    if budget.total <= 0 {
+        return None;
     }
-    fn field(text: &str, name: &str) -> Option<u64> {
-        for line in text.lines() {
-            let mut parts = line.split_whitespace();
-            if parts.next() == Some(name) {
-                return parts.next()?.parse().ok();
-            }
-        }
-        None
-    }
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let total = field(&meminfo, "MemTotal:")? << 10;
-    let available = field(&meminfo, "MemAvailable:")? << 10;
-    let mut bound = (total.saturating_sub(available), total);
-    // cgroup v2, then v1. A file cache page is given back under pressure; nothing else is, with no swap.
-    let groups = [
-        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat",
-         ["inactive_file", "active_file"]),
-        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes",
-         "/sys/fs/cgroup/memory/memory.stat", ["total_inactive_file", "total_active_file"]),
-    ];
-    for (limit, current, stat, cache) in groups {
-        let (Some(limit), Some(current)) = (number(limit), number(current)) else { continue };
-        let stat = std::fs::read_to_string(stat).unwrap_or_default();
-        let cached: u64 = cache.iter().filter_map(|name| field(&stat, name)).sum();
-        let used = current.saturating_sub(cached);
-        if limit.saturating_sub(used) < bound.1.saturating_sub(bound.0) {
-            bound = (used, limit);
-        }
-        break;
-    }
-    Some(bound)
+    let limit = budget.total.saturating_sub(budget.headroom).max(0);
+    Some((u64::try_from(budget.held.max(0)).unwrap_or(0), u64::try_from(limit).unwrap_or(0)))
 }
 
 #[cfg(not(target_os = "linux"))]
