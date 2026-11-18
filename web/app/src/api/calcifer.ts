@@ -1400,10 +1400,15 @@ end_unconfirmed?: string | null,
  */
 rc?: RcFollow | null,
 /**
- * The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
- * package's floor until `cozy machine update <name>` names nothing (cl-952).
+ * The software an update by hand held it on, in that update's words: it moves to neither the open RC nor a package's floor
+ * until `cozy machine update <name>` names nothing (cl-952).
  */
-held?: string | null, };
+held?: string | null,
+/**
+ * What it runs that its hold names otherwise (`Runtime 0.48.0.dev2319 · cozy 0.27.0-dev`), while no update of it is going: the
+ * hold is what was asked, this what it runs (cl-1196).
+ */
+unheld?: string | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
@@ -2619,8 +2624,8 @@ export type RcFollow = {
  */
 rc: string,
 /**
- * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
- * other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+ * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand held it on
+ * other software, which `detail` says it runs or not; `none`: the RC has no build for it, or can't be read now.
  */
 state: string,
 /**

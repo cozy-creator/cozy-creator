@@ -2288,6 +2288,26 @@ impl Store {
         })
     }
 
+    /// Cancels `machine`'s updates yet to end whose key `superseded` names (cl-1196): an unsent one ends here saying `why`, a sent one
+    /// keeps the intent until its machine's outcome, as any cancel. Each one's events.
+    pub(crate) fn supersede(&self, machine: &str, superseded: impl Fn(&str) -> bool, why: &str) -> Result<Vec<(RunId, Vec<Event>)>> {
+        self.write(|tx| {
+            let ids: Vec<(String, String)> = tx
+                .prepare(
+                    "SELECT id, idempotency_key FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled'
+                         AND (?2 IS NULL OR owner = ?2) ORDER BY number",
+                )?
+                .query_map(params![machine, self.owner_id()], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut ended = vec![];
+            for (id, _) in ids.into_iter().filter(|(_, key)| superseded(key)) {
+                let events = cancel_saying(tx, &id, why)?;
+                ended.push((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, events));
+            }
+            Ok(ended)
+        })
+    }
+
     /// The name a renamed machine had before.
     pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
@@ -2779,6 +2799,11 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
 /// Records the intent to cancel run `id` in `tx`. Unsent work ends canceled here, in the transaction that the send boundary races;
 /// sent work keeps the intent until its machine's outcome arrives.
 pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
+    cancel_saying(tx, id, "canceled before it was sent")
+}
+
+/// `cancel_in`, an unsent run's reason saying `why`.
+fn cancel_saying(tx: &Transaction, id: &str, why: &str) -> Result<Vec<Event>> {
     let Some(row) = run_in(tx, id)? else {
         return Ok(vec![]);
     };
@@ -2787,7 +2812,7 @@ pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
         _ if row.cancel_requested => Ok(vec![]),
         State::Queued => {
             tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-            let reason = Reason { code: "canceled".into(), message: "canceled before it was sent".into(), ..Default::default() };
+            let reason = Reason { code: "canceled".into(), message: why.into(), ..Default::default() };
             end(tx, id, Status::Canceled, Some(reason))
         }
         State::Sent | State::Accepted => {
@@ -2999,6 +3024,7 @@ impl From<&MachineRow> for Machine {
             end_unconfirmed: None,
             rc: None,
             held: None,
+            unheld: None,
         }
     }
 }
