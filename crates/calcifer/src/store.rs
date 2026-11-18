@@ -801,6 +801,18 @@ macro_rules! journal_methods {
         })
     }
 
+    /// How many runs wait for `machine`, are being sent or go there, an update's aside: whether it is idle (cl-1201).
+    pub(crate) fn busy(&self, machine: &str) -> Result<u32> {
+        self.read(|conn| {
+            let busy = conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND (?2 IS NULL OR owner=?2)",
+                params![machine, self.owner_id()],
+                |r| r.get(0),
+            )?;
+            Ok(busy)
+        })
+    }
+
     /// Whether this journal is at rest: no run going or waiting but an update, and none ended in the last `quiet_ms` (xs-195:
     /// `local` moves to the RC only then, never between a render's steps).
     pub(crate) fn at_rest(&self, quiet_ms: i64) -> Result<bool> {
@@ -2305,6 +2317,41 @@ impl Store {
                 ended.push((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, events));
             }
             Ok(ended)
+        })
+    }
+
+    /// Ends `machine`'s moves to the open RC not sent yet, saying `why` (cl-1201): work came for it, which goes first, and the follower
+    /// moves it again once it is idle. One sent is under way and stays: its send (`mark_sent`) and this are one journal's writes, so a
+    /// move either yields or was sent. Each one ended, with its events.
+    pub(crate) fn yield_moves(&self, machine: &str, why: &str) -> Result<Vec<(RunId, Vec<Event>)>> {
+        self.write(|tx| {
+            let ids: Vec<String> = tx
+                .prepare(
+                    "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'queued' AND cancel_requested = 0
+                         AND idempotency_key LIKE ?2 AND (?3 IS NULL OR owner = ?3) ORDER BY number",
+                )?
+                .query_map(params![machine, format!("{}%", crate::rc::MOVE), self.owner_id()], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut ended = vec![];
+            for id in ids {
+                tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [&id])?;
+                let reason = Reason { code: crate::rc::YIELDED.into(), message: why.into(), ..Default::default() };
+                let events = end(tx, &id, Status::Canceled, Some(reason))?;
+                ended.push((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, events));
+            }
+            Ok(ended)
+        })
+    }
+
+    /// `machine`'s move to the open RC yet to end, if one is.
+    pub(crate) fn moving(&self, machine: &str) -> Result<Option<RunRow>> {
+        self.read(|db| {
+            let id = db.query_row(
+                "SELECT id FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled' AND idempotency_key LIKE ?2 ORDER BY number LIMIT 1",
+                params![machine, format!("{}%", crate::rc::MOVE)],
+                |r| r.get::<_, String>(0),
+            );
+            id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
         })
     }
 
