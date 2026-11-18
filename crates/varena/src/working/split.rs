@@ -267,6 +267,8 @@ struct Fit {
     tried: bool,
     full: usize,
     missing: usize,
+    /// var-030 section 8 (proof): the largest allocation class still missing (a split's whole output, as a rule).
+    largest: usize,
     preserve: BTreeSet<u64>,
     now: usize,
     after_idle: usize,
@@ -414,6 +416,7 @@ fn fits(
                     *count -= 1;
                 }
             }
+            let largest = missing.iter().rev().find(|(_, count)| **count != 0).map_or(0, |(class, _)| *class);
             let missing = backing(owner, &missing)?;
             let missing = if sample.is_none() { scaled(missing) } else { missing };
             // A refusal's bound over the estimate is missing too.
@@ -442,6 +445,7 @@ fn fits(
                 },
                 full,
                 missing,
+                largest,
                 preserve,
                 now: headroom(owner, free, 0),
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
@@ -636,7 +640,7 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
         other => return other,
     }
     // Only now a smaller legal choice, or what other threads and processes can give up.
-    reclaim::acquire(device, 0, Wait::Yes, keep, || {
+    let chosen = reclaim::acquire(device, 0, Wait::Yes, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
         let target = menu.target().max(least);
         let choices = &menu.plans[target..];
@@ -646,7 +650,22 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
         let least = choices.iter().min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle))
             .expect("copied menu");
         Err(least.short().into())
-    })
+    });
+    if !owner.paged.on() || !matches!(chosen, Err(Error::Exhausted { .. } | Error::OutOfMemory { .. })) {
+        return chosen;
+    }
+    // var-030 section 8 (proof): no level can be given room, and working memory is the driver's to page. The
+    // coarsest level that fits with its largest allocation left to the driver runs (where rung 4 put a split's
+    // whole on host and asked room for its windows only); else the level nearest to fitting. What it lacks leaves
+    // the card: a slice is still cheaper than a page, so the level is not made coarser for it.
+    let menu = snapshot(device, owner, key, stream)?;
+    let target = menu.target().max(least);
+    let choices = &menu.plans[target..];
+    let nearest = choices.iter()
+        .find(|plan| plan.missing.saturating_sub(plan.largest) <= plan.after_idle.saturating_add(plan.streamed))
+        .or_else(|| choices.iter().min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle)))
+        .expect("copied menu");
+    Ok(menu.selection(nearest, target, stream))
 }
 
 /// After `split_end` closed a leaf of `key` at `choice_id` in which an allocation was refused with
@@ -782,7 +801,8 @@ fn split_begin_inner(
                 let free = owner.spare(owner.driver().memory_info()?.0);
                 let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
                 let plan = plans.iter().find(|plan| plan.id == choice_id).expect("copied choice");
-                if plan.missing > plan.now {
+                // var-030 section 8 (proof): with working memory the driver's to page, the leaf opens short.
+                if plan.missing > plan.now && !owner.paged.on() {
                     return Err(Error::Exhausted {
                         requested_bytes: plan.missing,
                         available_bytes: plan.now,

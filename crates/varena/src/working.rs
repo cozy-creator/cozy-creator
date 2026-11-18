@@ -156,6 +156,17 @@ pub struct WorkingStats {
     pub cache_pending_bytes: usize,
     pub cache_ready_bytes: usize,
     pub caches: usize,
+    /// PROOF ONLY (var-030 section 8), driver-paged working memory: whether it is on, its segments' bytes now and
+    /// at most, the most our bytes passed the card by, segments mapped past it, allocations refused for host
+    /// memory, and blocks (and their bytes) handed out with their dead pages dropped and placed on the card.
+    pub managed_on: u64,
+    pub managed_bytes: usize,
+    pub managed_peak: usize,
+    pub managed_over_peak: usize,
+    pub managed_forced: u64,
+    pub managed_host_refusals: u64,
+    pub managed_rebinds: u64,
+    pub managed_rebound_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -200,7 +211,7 @@ impl Segment {
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0 }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, managed: false }
     }
 
     fn backed(&self) -> bool {
@@ -274,7 +285,13 @@ struct Segment {
     touched: u64,
     // Unmapped VA after it (`checks::guard`), which goes back with it.
     guard: usize,
+    // PROOF ONLY (var-030 section 8): one CUDA managed allocation at its own address, which the driver pages. Its
+    // one chunk's handle is `MANAGED`; it goes whole (`cuMemFree`), and none of the reserved space is its.
+    managed: bool,
 }
+
+/// A managed segment's chunk "handle": there is none, its pages are the driver's to place.
+const MANAGED: u64 = u64::MAX;
 
 #[derive(Default)]
 struct Pool {
@@ -1065,6 +1082,55 @@ impl Device {
         state.addresses.insert(ptr, bytes);
     }
 
+    /// PROOF ONLY (var-030 section 8): an eager segment the driver pages. `last`: the reclaim order has nothing
+    /// left to give for it, so it maps past the card (`Device::admit_managed`).
+    fn map_managed(&self, state: &mut State, bytes: usize, class: usize, last: bool) -> crate::AllocationResult<u64> {
+        self.admit_managed(bytes, last)?;
+        let ptr = self.driver().alloc_managed(bytes)?;
+        let mut segment = Segment::new(bytes, class, None);
+        segment.managed = true;
+        segment.chunks = vec![Chunk { offset: 0, bytes, handle: Some(MANAGED) }];
+        state.segments.insert(ptr, segment);
+        self.working.fetch_add(bytes, Ordering::AcqRel);
+        self.paged.mapped(bytes);
+        state.stats.mapped_bytes += bytes;
+        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+        if class > LARGE {
+            state.blocks.insert(ptr, Block::free(ptr, bytes));
+            state.list((None, bytes, None), ptr);
+        } else {
+            Self::slab(state, ptr, bytes, class);
+        }
+        Ok(ptr)
+    }
+
+    /// PROOF ONLY (var-030 section 8): `bytes` at `ptr` of a managed segment are about to be written by `stream`
+    /// and hold nothing wanted: a new segment's, or a large block handed out again while our bytes pass the card.
+    /// The driver drops what they held and places them on the card in the stream's order, with no copy (measured:
+    /// 2 ms a GiB on the card, 32 from host, 7 new, against 104 of first-touch faults or a copy out and back).
+    /// Never under a capture, which would record the call. A driver without the call pages as it will.
+    fn rebind(&self, ptr: u64, bytes: usize, stream: u64) {
+        if !self.paged.rebinds() || self.graph_active() {
+            return;
+        }
+        let Ok(_context) = self.driver().enter() else { return };
+        if let Ok(true) = self.driver().rebind(ptr, bytes, stream as usize) {
+            self.paged.rebound(bytes);
+        }
+    }
+
+    /// `rebind` for a block just taken from a free list, where it is a large one of a managed segment and our
+    /// bytes pass the card.
+    fn rebind_taken(&self, state: &State, ptr: u64, stream: u64) {
+        if !self.paged.rebinds() || self.over(0) == 0 {
+            return;
+        }
+        let Some(block) = state.blocks.get(&ptr) else { return };
+        if block.capacity > LARGE && state.segments.get(&block.segment).is_some_and(|segment| segment.managed) {
+            self.rebind(ptr, block.capacity, stream);
+        }
+    }
+
     fn map(
         &self,
         state: &mut State,
@@ -1249,6 +1315,16 @@ impl Device {
         let segment = state.segments.get_mut(&base).expect("owned segment");
         let chunk = segment.chunks[index];
         let Some(handle) = chunk.handle else { return Ok(0) };
+        if segment.managed {
+            // The whole allocation: its pages on the card and on host, and its address.
+            self.driver().free_managed(base)?;
+            segment.chunks[index].handle = None;
+            self.working.fetch_sub(chunk.bytes, Ordering::AcqRel);
+            self.paged.freed(chunk.bytes);
+            self.released.fetch_add(chunk.bytes as u64, Ordering::AcqRel);
+            state.stats.mapped_bytes -= chunk.bytes;
+            return Ok(chunk.bytes);
+        }
         let at = base + chunk.offset as u64;
         observer::retiring(self, at, chunk.bytes, segment.pool, segment.size_class)?;
         self.driver().unmap(at, chunk.bytes)?;
@@ -1348,8 +1424,10 @@ impl Device {
             for ptr in blocks {
                 state.blocks.remove(&ptr);
             }
-            let guard = state.segments.remove(&base).expect("owned segment").guard;
-            Self::return_address(state, base, bytes + guard);
+            let gone = state.segments.remove(&base).expect("owned segment");
+            if !gone.managed {
+                Self::return_address(state, base, bytes + gone.guard);
+            }
         }
         for (_, base) in large {
             if released >= limit {
@@ -1584,6 +1662,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         }
         if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool, || owner.over(exact) != 0) {
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
+            owner.rebind_taken(&state, ptr, stream);
             return Ok(Device::activate(&mut state, ptr, bytes, escape::current(device)));
         }
         if let Some(id) = pool {
@@ -1602,8 +1681,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let segment = rounded(class.max(SEGMENT), owner.page())?;
     // A loop's working allocation, like its weights, takes weights before its other pages: what one
     // step freed the next uses again.
-    let protect = Protect { reuse_working: true, keep_phase: looping, outside: true, ..Default::default() };
-    let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
+    // var-030 section 8 (proof): managed working memory never waits on other programs' memory, since the driver
+    // pages what does not fit.
+    let managed = owner.paged.on();
+    let protect = Protect { reuse_working: true, keep_phase: looping, outside: !managed, ..Default::default() };
+    let attempt = |last: bool| -> crate::AllocationResult<u64> {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -1614,12 +1696,22 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             owner.note_held();
             // The room as last read: a map reads the driver again, and so does reclaim.
             let ptr = match Device::take(&mut state, class, bytes, stream, None, || owner.over(exact) != 0) {
-                Some(ptr) => ptr,
+                Some(ptr) => {
+                    owner.rebind_taken(&state, ptr, stream);
+                    ptr
+                }
                 None => {
                     // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
                     let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
                     let mapped = if whole { segment } else { exact };
-                    owner.map(&mut state, mapped, None, class)?;
+                    if managed {
+                        let base = owner.map_managed(&mut state, mapped, class, last)?;
+                        if class > LARGE {
+                            owner.rebind(base, mapped, stream);
+                        }
+                    } else {
+                        owner.map(&mut state, mapped, None, class)?;
+                    }
                     Device::take(&mut state, class, bytes, stream, None, || false).expect("new slab has a block")
                 }
             };
@@ -1627,7 +1719,12 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             Ok(Device::activate(&mut state, ptr, bytes, escape::current(device)))
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
-    });
+    };
+    let mut result = reclaim::acquire(device, exact, Wait::Yes, protect, || attempt(false));
+    if managed && matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
+        // Nothing of ours is left to give for it: it maps past the card, and the driver pages what does not fit.
+        result = attempt(true).map_err(Error::from);
+    }
     if matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
@@ -2438,6 +2535,15 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     ) = owner.driver().times();
     stats.reclaim_step_ns = owner.driver().reclaim_steps();
     (stats.observed_mapped, stats.observed_retired, stats.observed_ns) = observer::observed();
+    let paged = owner.paged.stats();
+    stats.managed_on = u64::from(paged.on);
+    stats.managed_bytes = paged.bytes;
+    stats.managed_peak = paged.peak;
+    stats.managed_over_peak = paged.over_peak;
+    stats.managed_forced = paged.forced;
+    stats.managed_host_refusals = paged.host_refusals;
+    stats.managed_rebinds = paged.rebinds;
+    stats.managed_rebound_bytes = paged.rebound_bytes;
     Ok(stats)
 }
 

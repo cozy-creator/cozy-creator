@@ -271,7 +271,8 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
             let (need, room) = if again { (need.max(strict.saturating_add(1)), strict) } else { (need, room) };
             // What the last run held when refused counts as its working memory.
             let transient = learned.transient.max(learned.failed.saturating_sub(learned.escaped).saturating_sub(floor));
-            (need > room).then(|| Verdict {
+            // var-030 section 8 (proof): a pass over the room is no refusal where the driver pages working memory.
+            (need > room && !owner.paged.on()).then(|| Verdict {
                 need_bytes: need, room_bytes: room, held_bytes: held, escaped_bytes: learned.escaped,
                 transient_bytes: transient, floor_bytes: floor, learned: true, sites: vec![],
             })
@@ -315,7 +316,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     }
     let transient = held_loop.transient.unwrap_or(0);
     let need = held.saturating_add(transient).saturating_add(held_loop.growth.unwrap_or(0)).saturating_add(floor);
-    if need <= room || held_loop.refused.is_some() || unlike {
+    if need <= room || held_loop.refused.is_some() || unlike || owner.paged.on() {
         return Ok(None);
     }
     let verdict = Verdict {

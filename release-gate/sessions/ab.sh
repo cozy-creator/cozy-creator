@@ -29,7 +29,10 @@
 #              cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or, for runtime, a cozy-runtime dev-build
 #              run id, "tensord": true (this session's cozy as the pod's TensorD: a dev build's, `cozy` a run id,
 #              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
-#              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
+#              `off`: the development VRAM cap), and "managed_working" (PROOF ONLY, var-030 section 8: true or
+#              false, written with `dev = true` to the pod's config.toml before the update's restart: a proof
+#              TensorFS wheel then takes its eager working memory as CUDA managed memory, which the driver pages;
+#              with "managed_rebind": false, blocks handed out again are left to the driver's faults); the pod's `machine update` before this cell, so cells before and
 #              after compare two pairs; it starts an arm: see Arms)}];
 #              "warmup" (optional: true, the arm's own warm-up: run, never compared);
 #              "keep_state" (optional, on an update cell: true, its arm keeps the derived state before it; such an arm is
@@ -102,7 +105,27 @@ oneway=$(jq -r --argjson a "$ARMS" '[.[] | [$a[.[0]], $a[.[1]]] | select(.[0].bu
   fail "builds compared in one order only (run them A B B A, or say order one-way): $oneway"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
 wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
-declare -A UPDATE=()
+declare -A UPDATE=() MANAGED=()
+# managed_working <true|false> <true|false>: var-030 section 8's proof switch in the pod's config.toml (`dev = true` at its
+# top, `managed_working` and `managed_rebind` under [machine]), which the machine's executors read after the update's restart.
+managed_working() {
+  local script
+  script=$(base64 -w0 <<'POD'
+set -e
+f=~/.cozy/config.toml
+mkdir -p ~/.cozy; touch "$f"
+grep -q '^\[machine\]' "$f" || printf '\n[machine]\n' >> "$f"
+{ echo 'dev = true'
+  grep -v -e '^dev *=' -e '^managed_working *=' -e '^managed_rebind *=' "$f" |
+    awk -v a="managed_working = $1" -v b="managed_rebind = $2" '{print} /^\[machine\]$/ {print a; print b}'
+} > "$f.new"
+mv "$f.new" "$f"
+grep -x -e 'dev = true' -e "managed_working = $1" -e "managed_rebind = $2" "$f" | paste -sd, -
+POD
+)
+  timeout 120 cozy machine ssh "$NAME" -- "echo $script | base64 -d | sh -s -- $1 $2" < /dev/null 2> /dev/null |
+    grep -qx "dev = true,managed_working = $1,managed_rebind = $2"
+}
 for k in "${names[@]}"; do
   w=()
   for kind in runtime tensorfs; do
@@ -116,6 +139,13 @@ for k in "${names[@]}"; do
   cap=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.gpu_memory_limit // empty' <<<"$CELLS")
   [[ -z $cap || $cap =~ ^([0-9]+[MG]iB|off)$ ]] || fail "cell $k: gpu_memory_limit $cap"
   [ -z "$cap" ] || { say "cell $k: caps VRAM at $cap"; w+=(--gpu-memory-limit "$cap"); }
+  # var-030 section 8 (proof): the managed working memory switch, alone, still restarts the machine.
+  mw=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update // {} | if .managed_working == null then "" else "\(.managed_working) \(if .managed_rebind == null then true else .managed_rebind end)" end' <<<"$CELLS")
+  [[ -z $mw || $mw =~ ^(true|false)\ (true|false)$ ]] || fail "cell $k: managed_working $mw"
+  if [ -n "$mw" ]; then
+    say "cell $k: managed working memory $mw (managed_working, managed_rebind)"; MANAGED[$k]=$mw
+    [ "${#w[@]}" != 0 ] || w+=(--gpu-memory-limit off)
+  fi
   [ "${#w[@]}" = 0 ] || UPDATE[$k]="${w[*]}"
 done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
@@ -266,6 +296,11 @@ for k in "${names[@]}"; do
     # An arm begins: the derived state before it goes, and the update's restart ends every executor (see Arms).
     keep=$(jq -r --arg k "$k" '.[$k].keep' <<<"$ARMS")
     [ "$keep" = true ] || derived_state "$k" reset
+    if [ -n "${MANAGED[$k]:-}" ]; then
+      # shellcheck disable=SC2086 # two words
+      managed_working ${MANAGED[$k]} || fail "$k: the pod's config.toml did not take managed_working ${MANAGED[$k]}"
+      say "$k: the pod's config.toml says dev = true and machine.managed_working, managed_rebind = ${MANAGED[$k]}"
+    fi
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"

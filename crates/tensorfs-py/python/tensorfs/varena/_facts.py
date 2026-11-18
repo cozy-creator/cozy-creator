@@ -175,6 +175,15 @@ class WorkingStats(TypedDict):
     cache_mapped_bytes: int
     cache_live_bytes: int
     cache_pending_bytes: int
+    # PROOF ONLY (var-030 section 8): driver-paged working memory
+    managed_on: int
+    managed_bytes: int
+    managed_peak: int
+    managed_over_peak: int
+    managed_forced: int
+    managed_host_refusals: int
+    managed_rebinds: int
+    managed_rebound_bytes: int
 
 
 class SplitContext(TypedDict):

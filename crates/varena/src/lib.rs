@@ -21,6 +21,7 @@ pub use source::Source;
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
+mod paged;
 mod retirement;
 pub mod working;
 pub(crate) mod tensor_consumers;
@@ -654,6 +655,10 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
+/// var-030 section 8 (proof): under this many free bytes a card holding managed pages is full of them (one
+/// eager working segment; a paging card read 2-18 MiB free).
+const CARD_FULL: usize = 64 << 20;
+
 /// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
 /// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
 /// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
@@ -743,6 +748,8 @@ pub struct Device {
     plan_generation: AtomicU64,
     cooperation_bound: AtomicBool,
     ahead: source::Ahead,
+    /// PROOF ONLY (var-030 section 8): driver-paged working memory's books.
+    paged: paged::Books,
 }
 
 impl Device {
@@ -784,6 +791,7 @@ impl Device {
             plan_generation: AtomicU64::new(0),
             cooperation_bound: AtomicBool::new(false),
             ahead: source::Ahead::default(),
+            paged: paged::Books::default(),
         }
     }
 
@@ -903,8 +911,17 @@ impl Device {
             #[cfg(target_os = "linux")]
             self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
         }
+        // var-030 section 8 (proof): which managed pages are on the card is the driver's choice. With the card
+        // full of them its free bytes say nothing of what others hold, so the last reading stands; and no
+        // reading with managed bytes out lowers the floor, since pages on host read as others' memory gone.
+        let managed = self.paged.bytes();
+        if managed != 0 && free < CARD_FULL {
+            return Ok(free);
+        }
         let outside = total.saturating_sub(free).saturating_sub(self.owned());
-        self.outside_floor.fetch_min(outside, Ordering::AcqRel);
+        if managed == 0 {
+            self.outside_floor.fetch_min(outside, Ordering::AcqRel);
+        }
         if outside > self.outside.swap(outside, Ordering::AcqRel) {
             self.room_outside.fetch_add(1, Ordering::Relaxed);
             self.room_shrank();
@@ -922,11 +939,41 @@ impl Device {
     /// beside the reserve, is `ReserveShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
-        if self.over(bytes) != 0 {
+        // var-030 section 8 (proof): managed working memory gives way to pages the driver cannot move (measured:
+        // a map beside a card full of managed pages takes their room), so it is no part of this limit. What it
+        // pushes off the card must still fit host memory.
+        let managed = self.paged.bytes();
+        let over = self.over(bytes);
+        if over.saturating_sub(managed) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if managed != 0 && !self.paged.host_admits(self.ordinal, 0, managed, over) {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if over != 0 {
+            self.paged.past(over);
         }
         if bytes <= free && bytes > self.spare(free) {
             return Err(AllocationFailure::ReserveShort(bytes));
+        }
+        Ok(())
+    }
+
+    /// PROOF ONLY (var-030 section 8). Room for `bytes` more driver-paged working memory. Over the card, the
+    /// caller runs the reclaim order first, so idle weights and everything else of ours that can go does. With
+    /// nothing left to give (`last`) the map proceeds and the driver pages what does not fit, unless host memory
+    /// cannot hold it.
+    fn admit_managed(&self, bytes: usize, last: bool) -> AllocationResult<()> {
+        self.sample()?;
+        let over = self.over(bytes);
+        if over != 0 && !last {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if !self.paged.host_admits(self.ordinal, bytes, self.paged.bytes().saturating_add(bytes), over) {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if over != 0 {
+            self.paged.forced(over);
         }
         Ok(())
     }
@@ -2065,6 +2112,15 @@ fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
 /// of them fail as a physical out of memory would. `times` 0 clears it.
 pub fn fail_create_after(device: i32, n: u64, times: u64) -> Result<()> {
     gpu(device)?.driver.get().ok_or(Error::Invalid("device not opened"))?.fail_create_after(n, times);
+    Ok(())
+}
+
+/// PROOF ONLY (var-030 section 8), development only: this GPU's eager working memory as CUDA managed memory, which
+/// the driver pages to host and back when it does not fit the card; with `rebind`, a large block handed out
+/// again past the card has its dead pages dropped and put on the card with no copy. Segments mapped before the
+/// call stay as they are.
+pub fn working_managed(device: i32, on: bool, rebind: bool) -> Result<()> {
+    gpu(device)?.paged.set(on, rebind);
     Ok(())
 }
 

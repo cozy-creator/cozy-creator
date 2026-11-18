@@ -458,6 +458,14 @@ fn _varena_working_stats(
         ("cache_pending_bytes", stats.cache_pending_bytes as u64),
         ("cache_ready_bytes", stats.cache_ready_bytes as u64),
         ("caches", stats.caches as u64),
+        ("managed_on", stats.managed_on),
+        ("managed_bytes", stats.managed_bytes as u64),
+        ("managed_peak", stats.managed_peak as u64),
+        ("managed_over_peak", stats.managed_over_peak as u64),
+        ("managed_forced", stats.managed_forced),
+        ("managed_host_refusals", stats.managed_host_refusals),
+        ("managed_rebinds", stats.managed_rebinds),
+        ("managed_rebound_bytes", stats.managed_rebound_bytes),
     ]
     .into())
 }
@@ -531,6 +539,16 @@ fn _varena_escapes_take<'py>(py: Python<'py>, device: i32, failed: bool) -> PyRe
 #[pyfunction]
 fn _varena_fail_create_after(py: Python<'_>, device: i32, n: u64, times: u64) -> PyResult<()> {
     py.detach(|| varena::fail_create_after(device, n, times)).map_err(|e| super::raise(py, e))
+}
+
+/// PROOF ONLY (var-030 section 8): this GPU's eager working memory as driver-paged (CUDA managed) memory.
+#[pyfunction]
+fn _varena_working_managed(py: Python<'_>, device: i32, on: bool, rebind: bool) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working_managed(device, on, rebind)
+    })
+    .map_err(|e| super::raise(py, e))
 }
 
 #[pyfunction]
@@ -918,6 +936,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_managed, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;

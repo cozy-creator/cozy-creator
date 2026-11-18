@@ -23,6 +23,37 @@ def activate(device: int, *, shared: bool) -> None:
     yields idle memory to foreign programs; every participant donates to every other either way.
     """
     _ext._varena_activate(device, shared)
+    on, rebind = _managed_working()
+    if on:
+        import sys
+
+        _ext._varena_working_managed(device, True, rebind)
+        print(
+            f"[memory] GPU {device}: var-030 proof build: working memory is driver-paged (CUDA managed)"
+            f"{'' if rebind else ', reused blocks left to faults'}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _managed_working() -> tuple[bool, bool]:
+    """PROOF ONLY (var-030 section 8), never merged: the machine's dev switch for driver-paged working
+    memory, `machine.managed_working = true` under a top-level `dev = true` in its config.toml
+    (`machine.managed_rebind = false` leaves blocks handed out again to the driver's faults). Read here
+    because the executor's Start carries no such field: a product switch would arrive there, as `dev` does.
+    """
+    import os
+    import tomllib
+
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".cozy", "config.toml"), "rb") as file:
+            config = tomllib.load(file)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False, False
+    machine = config.get("machine")
+    if config.get("dev") is not True or not isinstance(machine, dict):
+        return False, False
+    return machine.get("managed_working") is True, machine.get("managed_rebind") is not False
 
 
 def poisoned() -> str | None:
