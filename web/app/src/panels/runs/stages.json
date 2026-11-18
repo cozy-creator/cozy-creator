@@ -140,23 +140,5 @@
     { "match": "turn", "says": "Turn", "scope": true },
     { "match": "loop join", "says": "Joining the loop", "scope": true },
     { "match": "{part} {#k} of {#n}", "says": "{part} {k} of {n}", "scope": true }
-  ],
-  "waits": [
-    { "match": "waiting for {gpus}, held by ", "box": "Waiting for {gpus}" },
-    { "match": "waiting for an earlier process to let go of the GPUs", "box": "Waiting for the GPUs" },
-    { "match": "waiting for the models to download", "box": "Waiting for download" },
-    { "match": "waiting for {what}'s download", "box": "Waiting for download" },
-    { "match": "waiting for {what} to finish downloading", "box": "Waiting for download" },
-    { "match": "waiting for {what}'s install", "box": "Waiting for install" },
-    { "match": "waiting for {who} to install ", "box": "Waiting for install" },
-    { "match": "waiting for {who} to finish with this machine's CPU", "box": "Waiting for the CPU" },
-    { "match": "waiting for this machine's CPU", "box": "Waiting for the CPU" },
-    { "match": "waiting for {name} to finish updating", "box": "Waiting for an update" },
-    { "match": "waiting for this machine to start or finish its current update", "box": "Waiting for an update" },
-    { "match": "waiting for {name} to finish a locked project's clean-up", "box": "Waiting for a clean-up" },
-    { "match": "waiting for {origin} to grant the run's reads", "box": "Waiting for access" },
-    { "match": "waiting for {holder} to upload ", "box": "Waiting for an upload" },
-    { "match": "waiting for {name} to start", "box": "Waiting for its machine" },
-    { "match": "waiting for a machine that can take it", "box": "Waiting for a machine" }
   ]
 }
