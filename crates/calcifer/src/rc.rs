@@ -194,14 +194,18 @@ fn client(timeout: Duration) -> Result<reqwest::Client, Error> {
     builder.timeout(timeout).build().map_err(|e| failed(e.to_string()))
 }
 
-/// A prerelease's SHA256SUMS; one with none yet names nothing.
+/// A prerelease's SHA256SUMS; while rc-dev swaps it, by rename, its last one, SHA256SUMS.old (cl-1128: a lock that found none for
+/// those seconds took no RC build); one with neither yet names nothing.
 async fn text(base: &str) -> Result<String, Error> {
-    let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "rc_unreadable", format!("{base}/SHA256SUMS: {e}"));
-    let answer = client(Duration::from_secs(30))?.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
-    if answer.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(String::new());
+    for name in ["SHA256SUMS", "SHA256SUMS.old"] {
+        let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "rc_unreadable", format!("{base}/{name}: {e}"));
+        let answer = client(Duration::from_secs(30))?.get(format!("{base}/{name}")).send().await.map_err(failed)?;
+        if answer.status() == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        return answer.error_for_status().map_err(failed)?.text().await.map_err(failed);
     }
-    answer.error_for_status().map_err(failed)?.text().await.map_err(failed)
+    Ok(String::new())
 }
 
 /// The RC's `cozy` for a machine, held here to stage with its update: fetched once, one fetch at a time (the one ahead of a boot and
