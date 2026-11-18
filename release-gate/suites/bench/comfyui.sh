@@ -1,7 +1,7 @@
 # Suite bench's ComfyUI pass (bench.sh --comfyui; gate.sh sources it after cells.sh): ComfyUI at the benchmarks runner's pins
 # on this pod, under the same host RAM, for the cells whose `comfyui` column names a benchmarks cell, with their prompts and
 # seeds. Its rows go to comfyui-rows.json, which bench.py judges beside the cells and puts in the next baseline.
-BENCHMARKS=https://github.com/cozy-creator/benchmarks.git BENCHMARKS_AT=72a02800719b963f1fa96ab9d0fbdab9acc7310f
+BENCHMARKS=https://github.com/cozy-creator/benchmarks.git BENCHMARKS_AT=0181b3912fb793e1850f7fa364158c6901e8880d
 COMFY_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/suites/bench/comfy.py")
 # cells.sh's retried, for a gate that sourced an older cells.sh.
 declare -F retried > /dev/null || retried() { local w=2 t=$SECONDS; until "$@"; do [ $((SECONDS - t)) -lt 300 ] || return 1; sleep $((w + RANDOM % (w + 1))); w=$((w * 2 > 60 ? 60 : w * 2)); done; }

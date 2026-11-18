@@ -73,12 +73,13 @@ def request_of(record: dict[str, object]) -> tuple[Request, int | None]:
     req = record.get('request')
     inp = req.get('input') if isinstance(req, dict) else None
     inp = inp if isinstance(inp, dict) else {}
-    seed = req.get('seed') if isinstance(req, dict) else None
+    seed = req.get('seed') if isinstance(req, dict) and req.get('seed') is not None else inp.get('seed')
     beats = inp.get('beats')
     if isinstance(beats, list) and beats:  # H3: its one beat's description is ComfyUI's prompt, its length the video's
         length = sum(int(b.get('duration') or 0) for b in beats if isinstance(b, dict))
         return {'prompt': text_of(beats[0].get('description') if isinstance(beats[0], dict) else ''), 'seed': int(str(seed))}, length
-    return {'prompt': text_of(inp.get('prompt')), 'seed': int(str(seed))}, None
+    seconds = inp.get('duration_s')  # LTX: the video's length in seconds
+    return {'prompt': text_of(inp.get('prompt')), 'seed': int(str(seed))}, round(float(seconds)) if isinstance(seconds, (int, float)) else None
 
 
 def exchange_of(records: list[dict[str, object]]) -> str:

@@ -24,3 +24,11 @@ rtx-4070x1.matrixh3 1024 300 480
 rtx-4090x1.matrixh3 1024 300 300
 rtx-5060x1.matrix8h3 1024 300 720
 rtx-5090x1.matrixh3 1024 300 240
+# LTX-2.5 against ComfyUI (ltx: 5 s, 20 s and first frame on one card; ltxmg: 1, 2 and 4 GPUs of one 4-GPU pod; ltxmg2: 1 and 2), at
+# each pod's own host RAM (1024 holds nothing) so neither engine is cut by a container limit.
+rtx-4090x1.ltx 1024 250 150
+rtx-5090x1.ltx 1024 250 150
+rtx-3090x1.ltx 1024 250 210
+h100-pciex1.ltx 1024 250 150
+rtx-3090x4.ltxmg 1024 300 240
+rtx-5090x2.ltxmg2 1024 300 180
