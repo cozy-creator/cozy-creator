@@ -70,7 +70,7 @@ ballast() {  # ballast <bytes>: the file that takes the disk, at that size
 # this disk can make free, and its refusal names what the models no call holds would give: at least the bakes, at most the store.
 ballast $((free - reserve - (10 << 30)))
 cd "$TREE" || fail "no $TREE"
-step ltx run ./ltx-2.5/generate prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
+step ltx run ./ltx-2.5/generate instructions="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
 cd "$OUT" || fail "no $OUT"
 # The refusal as the CLI said it: `Run PRO-8 failed [machine_disk_full]: … (… free, plus 12GB in models nothing queued or running needs)`.
 said=$(grep -m1 -F '[machine_disk_full]' "$OUT/ltx.txt")

@@ -95,11 +95,21 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     return {REF: out}
 
 
-_SMALL: dict[str, Json] = {"prompt": "A red ball rolls across a wooden table. Quiet room tone.",
-                           "duration_s": 1, "resolution": "720p", "seed": 7}
+_TEXT = "A red ball rolls across a wooden table. Quiet room tone."
+
+
+def _instructions(text: str, *keys: str) -> dict[str, Json]:
+    return {"text": text, "references": [{"key": key, "type": "image"} for key in keys]}
+
+
+# The enhancer (Gemma 4 E2B, on by default) has no tiny fixture: these cells read the text as written.
+_SMALL: dict[str, Json] = {"instructions": _instructions(_TEXT), "duration": 1, "resolution": "720p", "seed": 7,
+                           "prompt_upsampling": False}
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text-audio", "payload": dict(_SMALL), "check": video(1280, 704, 25, 48000)},
     {"entry": "generate", "name": "silent", "payload": {**_SMALL, "audio": False}, "check": video(1280, 704, 25)},
-    {"entry": "generate", "name": "first-frame", "payload": {**_SMALL, "aspect_ratio": "16:9"},
-     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": video(1280, 704, 25, 48000)},
+    # se-141: the first picture the instructions mention is the first frame, as on every canvas box.
+    {"entry": "generate", "name": "first-frame",
+     "payload": {**_SMALL, "instructions": _instructions(f"<opening> {_TEXT}", "opening"), "aspect_ratio": "16:9"},
+     "files": {"instructions.references.0.file": _shared.picture("opening", 96, 64)}, "check": video(1280, 704, 25, 48000)},
 ]

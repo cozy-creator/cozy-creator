@@ -202,7 +202,7 @@ product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon
 # product_qwen3's writer).
 product_p_h3_image() { cell ph3 "$(pkg p-h3-image generate)" instructions="$SCENE, photo" seed:=$((R + 30)); }
 product_ltx_2_5() {
-  cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
+  cell ltx "$(pkg ltx-2.5 generate)" instructions="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
   av ltx 1080
 }
 product_relayvsr() {
