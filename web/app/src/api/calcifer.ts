@@ -2375,7 +2375,15 @@ prepare_ms: number,
 /**
  * Its weights' bytes it downloads there first.
  */
-fetch_bytes: number, };
+fetch_bytes: number,
+/**
+ * Its request's size as its plan read it (cl-1286): its function's own variables, else the guess.
+ */
+size?: { [key in string]: number },
+/**
+ * Its time there on one GPU by its function's own formula (cl-1286); none: it declares none, or it gave none there.
+ */
+formula_ms?: number | null, };
 
 /**
  * `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
