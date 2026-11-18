@@ -1,0 +1,1 @@
+Under a development VRAM cap, TensorFS keeps the driver the room a card of that size would (what it still expects the driver to allocate on its own for the process, var-024), where it kept a fixed 128 MiB sized by one run; a map short only of that room evicts what is idle and then takes it, as on a real card (var-025).
