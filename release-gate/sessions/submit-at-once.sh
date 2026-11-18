@@ -16,13 +16,12 @@
 #   rc_wait_min  how long the rc arm waits for the RC to move (default 25)
 #   seconds      what the cap must buy (default 3600)
 #   arms         which arms run (default "install rc")
-#   probe        threads: the pod's TensorD threads sampled through the install arm (tensord-threads.py, over SSH); gdb: also
-#                their backtraces as its first import pages are recorded (a build that allows a ptracer). Default none.
+#   probe        threads: the pod's TensorD threads sampled through the install arm (tensord-threads.py, over SSH). Default none.
 . "$(dirname "$0")/lib.sh"
 PICTURE=$REF/seed.jpg TREE=$(param tree '') RC_WAIT=$(param rc_wait_min 25) BEGAN=$(date +%s)
 ARMS=$(param arms 'install rc') PROBE=$(param probe '')
 [[ $RC_WAIT =~ ^[0-9]+$ ]] || fail "rc_wait_min $RC_WAIT"
-[[ $PROBE =~ ^(|threads|gdb)$ ]] || fail "probe $PROBE"
+[[ $PROBE =~ ^(|threads)$ ]] || fail "probe $PROBE"
 [[ " $ARMS " == *" install "* ]] || fail "arms $ARMS: the install arm runs first"
 if [ -n "$PROBE" ]; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -123,13 +122,11 @@ pod() { cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
 # install: Calcifer started again with the project shown; the renders asked the moment the pod lists a guess.
 mine install
 if [ -n "$PROBE" ]; then
-  [ "$PROBE" != gdb ] || pod 'export DEBIAN_FRONTEND=noninteractive; apt-get -qq update && apt-get -qq install -y gdb > /dev/null; gdb --version | head -1' \
-    >> "$OUT/probe.txt" || say "probe: no gdb on $NAME"
   pod "mkdir -p /root/cl1202 && echo $(base64 -w0 "$(dirname "$0")/tensord-threads.py") | base64 -d > /root/cl1202/threads.py &&
-    (setsid nohup python3 /root/cl1202/threads.py 240 /root/cl1202/out $([ "$PROBE" = gdb ] && echo gdb) < /dev/null > /root/cl1202/sampler.log 2>&1 &
+    (setsid nohup python3 /root/cl1202/threads.py 240 /root/cl1202/out < /dev/null > /root/cl1202/sampler.log 2>&1 &
      echo \$! > /root/cl1202/pid)" ||
     fail "probe: the sampler didn't start on $NAME"
-  say "probe: $NAME's TensorD threads sampled ($PROBE)"
+  say "probe: $NAME's TensorD threads sampled"
 fi
 cozy restart > "$OUT/restart-install.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart-install.txt")"
 shown install
