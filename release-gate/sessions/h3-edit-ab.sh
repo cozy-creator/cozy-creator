@@ -11,16 +11,16 @@
 #   warm        pk on the first 5 s of the plate: fetches every weight, never compared
 #   a1 b1 b2 a2 rc, pk, pk, rc: each its own arm (derived state reset, TensorD restarted, uncapped)
 #   c1 c2       pg (optional): its own arms too
-#   cap         pk under an 8 GiB VRAM cap (params.cap): it must complete
+#   cap         pk under an 8 GiB VRAM cap (params.vram_cap): it must complete
 # Per run (results.txt, ab.tsv): exec, conditioning wall (the guide read and encoded), each denoise step (step 1, the dense
 # 2-4 and the sparse 5-8 means, steady 2-8), decode, peak VRAM (driver and allocated), SM clock and throttle share, and its
 # Runtime and TensorFS: a run on another pair than the first's fails the session. A1/A2 and B1/B2 are checked for the same
 # frames (one build, one seed). The pod ends before the summary.
-# params: runtime (the Runtime wheel, https://…#sha256=<hex>), cells, cap (8GiB), need_s (7800)
+# params: runtime (the Runtime wheel, https://…#sha256=<hex>), cells, vram_cap (8GiB), need_s (7800). (`cap` is lib.sh's dollar cap.)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/h3-edit-sound" && pwd) || fail "no fixtures"
-CELLS=$(param cells "warm a1 b1 b2 a2 cap") CAP=$(param cap 8GiB)
-[[ $CAP =~ ^[0-9]+GiB$ ]] || fail "cap $CAP"
+CELLS=$(param cells "warm a1 b1 b2 a2 cap") VCAP=$(param vram_cap 8GiB)
+[[ $VCAP =~ ^[0-9]+GiB$ ]] || fail "vram_cap $VCAP"
 declare -A TREE=([warm]=pk [a1]=rc [a2]=rc [b1]=pk [b2]=pk [c1]=pg [c2]=pg [cap]=pk)
 for c in $CELLS; do [ -n "${TREE[$c]:-}" ] || fail "no cell $c"; done
 for t in $(for c in $CELLS; do echo "${TREE[$c]}"; done | sort -u); do
@@ -140,7 +140,7 @@ cell() {
 for c in $CELLS; do
   case $c in
     warm) ;;
-    cap) arm "$c" "$CAP" ;;
+    cap) arm "$c" "$VCAP" ;;
     *) arm "$c" off ;;
   esac
   cell "$c"
