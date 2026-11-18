@@ -145,9 +145,13 @@ if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
   # rustup would take this computer's default (1.91 failed the workspace's 1.99).
   toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$HERE/../rust-toolchain.toml")
   { rustup toolchain install "$toolchain" --profile minimal &&
-    cargo "+$toolchain" build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build"; } > stage-code-build.log 2>&1 \
+    cargo "+$toolchain" build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code; } > stage-code-build.log 2>&1 \
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
-  RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
+  # Built in cargo's own target directory for the checkout, never in this gate's output: there its 0.9 GB went up with
+  # every artifact (889 MB of gate 44384060967's 911).
+  RUN_CODE_STAGE=$(cargo "+$toolchain" metadata --no-deps --format-version 1 --manifest-path "$HERE/../Cargo.toml" 2>> stage-code-build.log |
+    jq -r .target_directory)/debug/examples/stage-code
+  [ -x "$RUN_CODE_STAGE" ] || { log "no staging helper at $RUN_CODE_STAGE: $(tail -c 300 stage-code-build.log)"; exit 1; }
 fi
 # The --packages checkout's packages that declare Triton sets: built into it while the rental boots (`pkg` waits for one).
 if [ -n "$PKGS" ] && [ -x "$PKGS/scripts/triton.sh" ]; then

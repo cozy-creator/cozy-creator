@@ -7,6 +7,7 @@ tracker as `benchmarks/<sku>/<YYYY-MM>.jsonl`, so a new version is compared with
     ledger.py backfill <artifact id>         a run's ledger.jsonl that could not be pushed (no key, or the push kept racing)
     ledger.py query --sku SKU [--target PKG/FN]
     ledger.py compare <rows.jsonl> [--against runtime=0.46.0]   each row against the newest comparable recorded row
+    ledger.py throttled <record.json>...     a line for each run whose GPU was held back (its times aren't its card's)
     ledger.py ask [--stop N] [--harness DIGEST] <target> <args>   a gate cell's request, its files by content (gate.sh `cell`)
     ledger.py skip <gate dir> <rows.jsonl> <cell> <target> <ask> [--packages DIR]   SKIP and the row it stands on, or why it runs
     ledger.py fetch <artifact id> <dir> [GLOB ...]             an artifact's small files, read by HTTP ranges (for seeding)
@@ -53,6 +54,26 @@ def load(path: str) -> JSON:
 def measurements(rec: dict[str, JSON]) -> list[dict[str, JSON]]:
     """The run's own measurements, then each call's (H3's are in its calls)."""
     return [m for m in [obj(rec.get('measurements'))] + [obj(obj(c).get('measurements')) for c in arr(rec.get('calls'))] if m]
+
+
+# A GPU busy LOADED_MS or more in a run and held back for heat, or at a power limit its host set, more than HOT of that: the
+# machine's own "slowed down" (platform::gpu's LOADED_MS and HOT_SHARE, Calcifer's slow.rs). Not `throttled_share`: that counts
+# every driver limit, and a healthy card at full load sits at its own rated power cap (every rtx-3090 host on record reads
+# 0.45-0.99 there).
+LOADED_MS, HOT = 20_000, 0.5
+
+
+def throttled(rec: dict[str, JSON]) -> str:
+    """Why this run's times aren't its card's: each loaded GPU that was held back, or '' when none was."""
+    said: dict[int, str] = {}
+    for m in measurements(rec):
+        for d in (obj(x) for x in arr(obj(m.get('memory')).get('driver'))):
+            heat, capped = (num(d.get(k)) or 0 for k in ('heat_share', 'capped_share'))
+            if (num(d.get('busy_ms')) or 0) >= LOADED_MS and max(heat, capped) > HOT:
+                gpu = int(num(d.get('gpu')) or 0)
+                said[gpu] = (f"GPU {gpu} held back {max(heat, capped):.0%} of its run by {'heat' if heat > HOT else 'its host power limit'} "
+                             f"({d.get('sm_mhz_mean')} of {d.get('sm_mhz_limit')} MHz, {d.get('temperature_max_c')} C)")
+    return '; '.join(said[g] for g in sorted(said))
 
 
 def phases(rec: dict[str, JSON]) -> dict[str, JSON]:
@@ -297,7 +318,7 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             'host': host(rec, machine),
             'outcome': {'status': rec.get('status'), 'verdict': verdict.get(name),
                         'output': [obj(o).get('sha256') for o in arr(rec.get('output')) if obj(o).get('sha256')]},
-            'flaws': list[JSON](flaws.get(name, []) + flaws.get('*', []))}
+            'flaws': list[JSON](flaws.get(name, []) + flaws.get('*', []) + (['host_throttled'] if throttled(rec) else []))}
 
 
 # The tracker side: a shallow, sparse clone of `benchmarks/` in a cache of its own (never a shared checkout), one writer at a
@@ -391,7 +412,7 @@ def recorded(repo: str, sku: str) -> list[Row]:
 
 
 # Comparing: a candidate row against the newest recorded row of the same SKU, function, request form, GPUs, cap and state.
-UNFIT = {'cold_shared_state', 'local_stage_memo_miss', 'fetched_weights', 'no_ballast'}
+UNFIT = {'cold_shared_state', 'local_stage_memo_miss', 'fetched_weights', 'no_ballast', 'host_throttled'}
 
 
 def key(r: Row) -> tuple[str, ...]:
@@ -457,6 +478,9 @@ def compare(path: str, repo: str, against: list[str]) -> None:
                 != {k: mine.get(k) for k in ('tensord', 'runtime', 'tensorfs', 'package')}]
         w = obj(c.get('workload'))
         name = f"{sku} {w.get('package')}/{w.get('function')} {obj(c.get('source')).get('cell')} {st.get('temperature')}"
+        if 'host_throttled' in arr(c.get('flaws')):
+            print(f'{name}: void: its GPU was held back, so its times are no measure of this build; run it again on another host')
+            continue
         if not base:
             print(f'{name}: no comparable row recorded')
             continue
@@ -608,6 +632,8 @@ def main() -> None:
     c.add_argument('rows')
     c.add_argument('--against', action='append', default=[], help='VERSION=VALUE the base rows must have (runtime=0.46.0)')
     c.add_argument('--repo')
+    t = sub.add_parser('throttled')
+    t.add_argument('records', nargs='+')
     a = sub.add_parser('ask')
     a.add_argument('target')
     a.add_argument('--stop', default='')
@@ -642,6 +668,10 @@ def main() -> None:
                 print(json.dumps(row, sort_keys=True))
     elif args.cmd == 'compare':
         compare(args.rows, repo_url(args.repo), args.against)
+    elif args.cmd == 'throttled':
+        for path in args.records:
+            if why := throttled(obj(load(path))):
+                print(f'{os.path.basename(path)[:-5]}: {why}')
     elif args.cmd == 'ask':
         print(ask(args.target, args.stop, args.harness, args.args))
     elif args.cmd == 'skip':
