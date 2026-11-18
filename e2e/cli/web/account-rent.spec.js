@@ -460,7 +460,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
     });
 
-    await test.step('Machines › Rent a machine › cpu › Rent, then Rent 1× CPU at its price', async () => {
+    await test.step('Machines › Rent a machine › cpu › Rent, then Rent CPU at its price', async () => {
       // The Hub restored now, not after: Calcifer keeps a key per Hub origin, and the account signed in is the isolated Hub's own.
       await page.goto('about:blank');
       await calciferControl.hub();
@@ -472,11 +472,13 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       // Runs 43405964751, 43415541836: tensorhub's docker provider left its shape off the offer it lists (internal/provider/docker.go,
       // Inventory), and the row said "? vCPU".
       expect.soft(width.vcpu_count, 'its vCPUs, as the Hub lists them').toBeGreaterThan(0);
+      // th-402: the CPU machine's one width is 1 and it has no GPU, so its order names no count ("Rent 1× CPU" before).
+      expect.soft([width.accelerator_count, width.gpus], "its width and its machine's GPUs, as the Hub counts them").toEqual([1, 0]);
       await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
       await expect.soft(rent.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what the quote costs').toBeVisible();
-      const order = rent.getByRole('button', { name: /^Rent 1× CPU at \$\d+\.\d{2}\/h$/ });
+      const order = rent.getByRole('button', { name: /^Rent CPU at \$\d+\.\d{2}\/h$/ });
       await expect(order, 'one click on its stated price').toBeEnabled();
       const placed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/machines');
       await order.click();
