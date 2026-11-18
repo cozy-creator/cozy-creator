@@ -76,7 +76,8 @@ with plan.phase("decode", key):
 ```
 
 - The budget is `min(max(C - W, C/4), C - live - pinned)`, with `C` the capacity and `W` the active phase's weights. Free memory doesn't move it.
-- `level["bytes"]` is what the level was chosen at: its measure (`measured`), or the estimate scaled as its nearest measured sibling came out. An estimate is
+- `level["bytes"]` is what the level was chosen at: its measure (`measured`), or the estimate scaled as its nearest measured sibling came out. A level
+  more than one coarser than every measured one keeps its declaration, unless a measure scales it higher. An estimate is
   compared at 125%. So a good estimate is confirmed on the second pass, and a high one runs coarser.
 - `key` names the operation's geometry, and its menu may not change. One split at a time on a GPU; a measure publishes only when its phase completes.
 - `select` reclaims what the level needs but reserves nothing. Only `alloc` decides.
