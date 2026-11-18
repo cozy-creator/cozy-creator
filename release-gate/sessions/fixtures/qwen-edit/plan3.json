@@ -1,0 +1,236 @@
+{
+ "cases": {
+  "M": [
+   {
+    "name": "miyara-bg",
+    "input": "miyara",
+    "kind": "keep",
+    "seed": 1531,
+    "prompt": "Edit <photo>: remove the background and replace it with a plain, evenly lit pure white backdrop. Keep the woman exactly as she is: the same face, curly hair, expression, pose, striped shirt, necklace, framing and lighting."
+   },
+   {
+    "name": "summer-bg",
+    "input": "summer",
+    "kind": "keep",
+    "seed": 1532,
+    "prompt": "Edit <photo>: remove the yellow background and replace it with a plain, evenly lit pure white backdrop. Keep the woman and her flower crown exactly as they are: the same face, smile, skin, flowers, framing and lighting."
+   },
+   {
+    "name": "clogs-bg",
+    "input": "clogs",
+    "kind": "keep",
+    "seed": 1533,
+    "prompt": "Edit <photo>: remove the sand and replace it with a plain, evenly lit pure white studio backdrop, as a product photo. Keep the two yellow clogs exactly as they are: the same shape, holes, texture, position and framing."
+   },
+   {
+    "name": "sneakers-bg",
+    "input": "sneakers",
+    "kind": "keep",
+    "seed": 1534,
+    "prompt": "Edit <photo>: remove the background and replace it with a plain, evenly lit pure white backdrop, as a product photo. Keep the white FILA sneakers and the jeans exactly as they are: the same shape, logo, laces, texture, position and framing."
+   },
+   {
+    "name": "summer-bw",
+    "input": "summer",
+    "kind": "gray",
+    "seed": 1535,
+    "prompt": "Edit <photo>: turn it into a black-and-white photograph. Keep everything else exactly the same: the framing, her face, smile, skin texture and the flower crown."
+   },
+   {
+    "name": "miyara-fullbody",
+    "input": "miyara",
+    "kind": "none",
+    "seed": 1536,
+    "aspect_ratio": "5:8",
+    "prompt": "Edit <photo>: make this a full body shot of the same woman standing in front of the same pink backdrop, showing her whole body down to her shoes. Keep her face, curly hair, expression and striped shirt the same."
+   }
+  ],
+  "X": [
+   {
+    "name": "miyara-golden",
+    "input": "miyara",
+    "kind": "none",
+    "seed": 1541,
+    "prompt": "Edit <photo>: relight the photo with warm golden-hour sunlight coming from the left. Keep her pose, face, hair and clothes the same."
+   },
+   {
+    "name": "sneakers-night",
+    "input": "sneakers",
+    "kind": "none",
+    "seed": 1542,
+    "prompt": "Edit <photo>: make it night, the scene lit by a single warm streetlight. Keep the sneakers, jeans and framing the same."
+   },
+   {
+    "name": "clogs-watercolor",
+    "input": "clogs",
+    "kind": "none",
+    "seed": 1543,
+    "prompt": "Edit <photo>: turn this photo into a loose watercolor painting."
+   },
+   {
+    "name": "summer-film",
+    "input": "summer",
+    "kind": "none",
+    "seed": 1544,
+    "prompt": "Edit <photo>: give it a faded 1970s film-photo look with warm, washed-out colours and soft grain."
+   },
+   {
+    "name": "clogs-red",
+    "input": "clogs",
+    "kind": "keep",
+    "seed": 1545,
+    "boxes": "0.05,0.02,0.95,0.25",
+    "prompt": "Edit <photo>: make the clogs bright red. Keep everything else exactly the same."
+   },
+   {
+    "name": "summer-sunglasses",
+    "input": "summer",
+    "kind": "keep",
+    "seed": 1546,
+    "boxes": "0.24,0.14,0.82,0.38;0.20,0.76,0.90,0.98",
+    "prompt": "Edit <photo>: add round tortoiseshell sunglasses to her face. Keep everything else exactly the same."
+   },
+   {
+    "name": "sneakers-laces",
+    "input": "sneakers",
+    "kind": "keep",
+    "seed": 1547,
+    "boxes": "0.12,0.55,0.93,0.70;0.60,0.00,1.00,0.30",
+    "prompt": "Edit <photo>: make the shoelaces bright red. Keep everything else exactly the same."
+   },
+   {
+    "name": "miyara-beret",
+    "input": "miyara",
+    "kind": "keep",
+    "seed": 1548,
+    "boxes": "0.32,0.62,0.70,0.97",
+    "prompt": "Edit <photo>: add a red beret on her head. Keep everything else exactly the same."
+   }
+  ]
+ },
+ "chains": [
+  {
+   "name": "miyara",
+   "start": "miyara",
+   "steps": [
+    {
+     "seed": 1551,
+     "prompt": "Edit <photo>: make her striped shirt red. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1552,
+     "prompt": "Edit <photo>: add small gold hoop earrings. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1553,
+     "prompt": "Edit <photo>: change the pink backdrop to a sunny park with green trees. Keep the woman exactly the same."
+    },
+    {
+     "seed": 1554,
+     "prompt": "Edit <photo>: make her necklace silver. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1555,
+     "prompt": "Edit <photo>: make her lipstick deep red. Keep everything else exactly the same."
+    }
+   ]
+  },
+  {
+   "name": "summer",
+   "start": "summer",
+   "steps": [
+    {
+     "seed": 1561,
+     "prompt": "Edit <photo>: make all the roses in her flower crown white. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1562,
+     "prompt": "Edit <photo>: add small gold stud earrings. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1563,
+     "prompt": "Edit <photo>: change the yellow backdrop to a light blue one. Keep the woman and her flower crown exactly the same."
+    },
+    {
+     "seed": 1564,
+     "prompt": "Edit <photo>: add a thin gold necklace. Keep everything else exactly the same."
+    },
+    {
+     "seed": 1565,
+     "prompt": "Edit <photo>: make the leaves in her flower crown a darker green. Keep everything else exactly the same."
+    }
+   ]
+  }
+ ],
+ "chains_first": true,
+ "seconds": 2700,
+ "chain_mp": 2,
+ "arms": [
+  {
+   "name": "keep",
+   "tree": "fx",
+   "fn": "generate_turbo",
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2
+     ]
+    },
+    {
+     "cases": "X",
+     "mps": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "off",
+   "tree": "fx",
+   "fn": "generate_turbo",
+   "fields": {
+    "keep_unchanged": false
+   },
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2
+     ]
+    },
+    {
+     "cases": "X",
+     "mps": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rc",
+   "tree": "rc",
+   "fn": "generate_turbo",
+   "sets": [
+    {
+     "cases": "M",
+     "mps": [
+      2
+     ]
+    }
+   ]
+  }
+ ],
+ "chain_arms": [
+  {
+   "name": "rc",
+   "tree": "rc",
+   "fn": "generate_turbo"
+  },
+  {
+   "name": "keep",
+   "tree": "fx",
+   "fn": "generate_turbo"
+  }
+ ]
+}
