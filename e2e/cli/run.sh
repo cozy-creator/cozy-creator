@@ -49,6 +49,7 @@ parse "$@"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/holdwins.sh"
+. "$(dirname "$0")/rcmoves.sh"
 . "$(dirname "$0")/reports.sh"
 . "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
@@ -860,6 +861,8 @@ case $SHARD in
   dev-start) parts="dev_start logs" ;;
   # A hand update supersedes the RC update queued at a rental's boot, and machine show says what it runs (cl-1196).
   hold-wins) parts="hold_wins logs" ;;
+  # A dev home's moves to the open RC never hold up work: none from a request, and a pending one yields to a render (cl-1201).
+  rc-moves) parts="rc_moves logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;

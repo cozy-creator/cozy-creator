@@ -94,10 +94,11 @@ impl Machines {
         };
         let own = this_release();
         // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
-        // said the last release (cl-976). A dev home's rental not on the open RC's builds yet moves to them first, when it has no
-        // work going (cl-922); one on them is never moved ahead of work (cl-1123).
+        // said the last release (cl-976). A dev home's rental moves to the RC's builds only from the follower, at idle; work waits
+        // only for a move already sent, and one not sent yet yields to it (cl-1201). Nothing moves, nor is fetched, from a send or a
+        // request (cl-1123).
         if same_minor(&frame.version, own) || rc_version() {
-            return Ok(self.follow_rc(name, true).await);
+            return Ok(self.rc_moving(name));
         }
         if !older_minor(&frame.version, own) {
             return Ok(None);

@@ -596,6 +596,8 @@ impl Machines {
                     }
                     self.follow_boot(row.clone());
                     self.placing.notify_one();
+                    // A dev home's RC `cozy` is fetched while it boots (cl-1201).
+                    self.rc_ready.notify_one();
                     tell(&Ok(row.clone()));
                     return Ok(row);
                 }

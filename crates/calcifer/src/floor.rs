@@ -306,10 +306,48 @@ impl Machines {
     /// A machine that meets it already moves for nothing, so a second refusal there fails.
     pub(crate) async fn refloored(self: &Arc<Self>, row: &crate::store::RunRow, outcome: &api::machine::Outcome) -> Option<Refloor> {
         let refused = outcome.reason.as_ref().is_some_and(|reason| reason.code == "runtime_floor_unmet");
-        if !refused || outcome.status != "failed" || row.cancel_requested || !matches!(row.kind, api::calcifer::Kind::Call | api::calcifer::Kind::Warm) {
+        if !refused || outcome.status != "failed" || row.cancel_requested {
+            return None;
+        }
+        let elsewhere = |why: String| (!row.pinned && row.wants == "any").then_some(Refloor::Elsewhere(why));
+        let upgrade = match self.floor_move(row).await? {
+            Ok(upgrade) => upgrade,
+            Err(why) => return elsewhere(why),
+        };
+        match self.upgrade(&upgrade).await {
+            Ok(_) => Some(Refloor::Moved(upgrade.note().message)),
+            Err(e) => elsewhere(e.message),
+        }
+    }
+
+    /// Before run `row` is sent to a dev home's rental not on the RC's Runtime: the move its package's `cozy-runtime` requirement
+    /// needs there (`upgrade`), for it to wait for (cl-1201). Such a rental moves to the RC only at idle, so work sent as it boots meets
+    /// its image's Runtime, which a request made before it said what it runs couldn't foresee (LAB2-47826). None: it runs there, or
+    /// can't move (its refusal says so, `refloored`).
+    pub(crate) async fn floor_first(self: &Arc<Self>, row: &crate::store::RunRow) -> Option<Run> {
+        let name = row.machine.as_deref()?;
+        let frame = self.frame(name).filter(|frame| !frame.runtime.is_empty())?;
+        if prerelease::dev(&frame.runtime) || self.follows(name).is_none() {
+            return None;
+        }
+        let upgrade = self.floor_move(row).await?.ok()?;
+        match self.upgrade(&upgrade).await {
+            Ok(run) => run,
+            Err(e) => {
+                tracing::warn!(machine = name, "{}: {}", upgrade.note().message, e.message);
+                None
+            }
+        }
+    }
+
+    /// The move of run `row`'s machine to the newest Runtime it can take that meets its package's `cozy-runtime` requirement: None
+    /// when it runs there (or names none, or the machine hasn't said what it runs), else the move, or why there is none.
+    async fn floor_move(self: &Arc<Self>, row: &crate::store::RunRow) -> Option<Result<Upgrade, String>> {
+        if !matches!(row.kind, api::calcifer::Kind::Call | api::calcifer::Kind::Warm) {
             return None;
         }
         let name = row.machine.as_deref()?;
+        let frame = self.frame(name).filter(|frame| !frame.runtime.is_empty())?;
         let (package, needs) = match row.spec.source.as_ref()? {
             api::machine::Source::Release(release) => {
                 let hub = row.hub.as_ref()?.as_str();
@@ -319,8 +357,9 @@ impl Machines {
             api::machine::Source::Local(local) => (row.target.clone(), crate::local_code::needs_of(&local.manifest)?),
             api::machine::Source::Installation(_) => return None,
         };
-        let elsewhere = |why: String| (!row.pinned && row.wants == "any").then_some(Refloor::Elsewhere(why));
-        let frame = self.frame(name).filter(|frame| !frame.runtime.is_empty())?;
+        if api::release::runs(&needs, &frame.runtime) {
+            return None;
+        }
         // Whether it takes the RC's build reads what the RC's prereleases last named: read once, if never yet.
         if self.dev && let Err(e) = self.rc.now().await {
             tracing::warn!(machine = name, "the open RC's builds: {}", e.message);
@@ -328,16 +367,11 @@ impl Machines {
         let rc = self.takes_rc(name, &api::calcifer::On::Machine(name.to_owned()));
         let (runtimes, moves, newer) = self.runtimes(name, &frame, rc).await;
         let machine = api::release::Machine { runtime: &frame.runtime, runtimes: &runtimes, moves, newer: newer.as_ref() };
-        let to = match api::release::takes(&needs, &machine) {
-            api::release::Takes::Moves(to) => to,
+        Some(match api::release::takes(&needs, &machine) {
+            api::release::Takes::Moves(to) => Ok(Upgrade { machine: name.to_owned(), from: frame.runtime.clone(), to, release: package }),
             api::release::Takes::Runs => return None,
-            _ => return elsewhere(format!("{package} needs cozy-runtime{needs}, which {name} can't move to")),
-        };
-        let upgrade = Upgrade { machine: name.to_owned(), from: frame.runtime.clone(), to, release: package };
-        match self.upgrade(&upgrade).await {
-            Ok(_) => Some(Refloor::Moved(upgrade.note().message)),
-            Err(e) => elsewhere(e.message),
-        }
+            _ => Err(format!("{package} needs cozy-runtime{needs}, which {name} can't move to")),
+        })
     }
 }
 

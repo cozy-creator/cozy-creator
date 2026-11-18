@@ -95,7 +95,8 @@ pub(crate) struct Machines {
     /// The config's `download_url` (`COZY_DOWNLOAD_URL`): where cozy's own update reads its release in place of GitHub (cl-978).
     pub(crate) download_url: Option<String>,
     pub(crate) rc: crate::rc::Rc,
-    /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
+    /// Told when a rental is ordered or a machine is ready on a new boot: a dev home's RC follower fetches the RC's `cozy` for one on its
+    /// way and moves one that is idle (cl-1201).
     pub(crate) rc_ready: Notify,
     /// What each machine is told to have ready (cl-967).
     pub(crate) lists: crate::prefetch::Lists,
@@ -1331,16 +1332,17 @@ impl Machines {
             let ready = frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready");
             if ready {
                 self.placing.notify_one();
-                self.rc_ready.notify_one();
             }
             // Room made on its disk: a run of Calcifer's queue waiting for it may go there now (cl-1175).
             let room = |frame: &v1::StatusFrame| frame.disk.as_ref().map(v1::Disk::room);
             if seen.frame.as_ref().is_some_and(|last| room(&frame) > room(last)) {
                 self.placing.notify_one();
             }
-            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
+            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now, and the RC's
+            // follower looks at it (cl-1201).
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
                 self.arrivals.send_modify(|n| *n += 1);
+                self.rc_ready.notify_one();
             }
             seen.stopped &= frame.phase == "releasing";
             seen.streaming = true;

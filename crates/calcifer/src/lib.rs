@@ -893,9 +893,38 @@ impl Calcifer {
         Ok(load)
     }
 
-    /// How many runs `machine` was sent and hasn't settled, in every journal.
-    pub(crate) fn working(&self, machine: &str) -> store::Result<u32> {
-        Ok(self.each_store(|store| store.working(machine))?.into_iter().sum())
+    /// How many runs wait for `machine`, are being sent or go there, in every journal (`Store::busy`, cl-1201).
+    pub(crate) fn busy(&self, machine: &str) -> store::Result<u32> {
+        Ok(self.each_store(|store| store.busy(machine))?.into_iter().sum())
+    }
+
+    /// Ends `machine`'s moves to the open RC not sent yet (`Store::yield_moves`, cl-1201): work came for it, which goes first. Whether
+    /// one ended.
+    pub(crate) fn yield_moves(&self, machine: &str) -> bool {
+        let why = format!("work came for {machine} before this move was sent: it went first, and {machine} moves once it's idle");
+        match self.store.yield_moves(machine, &why) {
+            Ok(ended) => {
+                let yielded = !ended.is_empty();
+                for (id, events) in ended {
+                    tracing::info!(machine, run = %id, "a move to the open RC yields to work");
+                    self.publish(&id, events);
+                    self.wake(&id);
+                }
+                yielded
+            }
+            Err(e) => {
+                warn!(machine, "yielding its move to the open RC: {e}");
+                false
+            }
+        }
+    }
+
+    /// Whether `run`, an update not sent yet, is a move to the open RC while work waits for `machine` or goes there: it yields, ended
+    /// here (cl-1201).
+    fn yields(&self, run: &RunRow, machine: &str) -> bool {
+        self.store.key(run.id.as_str()).ok().flatten().is_some_and(|key| key.starts_with(rc::MOVE))
+            && self.busy(machine).is_ok_and(|busy| busy > 0)
+            && self.yield_moves(machine)
     }
 
     /// Whether every journal is at rest (`Store::at_rest`).
@@ -2071,11 +2100,19 @@ impl Calcifer {
             {
                 continue;
             }
+            // A move to the open RC goes only to an idle machine: work that waits for it or goes there meanwhile goes first (cl-1201).
+            if run.state == State::Queued && run.kind == ::api::calcifer::Kind::Update && self.yields(&run, &name) {
+                continue;
+            }
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
-            // finishes what it has first, and what's held here goes to what it became.
+            // finishes what it has first, and what's held here goes to what it became. A move to the open RC not sent yet yields to it
+            // instead (cl-1201): only one already sent is waited for.
             if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {
                 let mut settled = self.machine_watch(&name);
                 if self.store.updating(&name).unwrap_or_default() {
+                    if self.yield_moves(&name) {
+                        continue;
+                    }
                     self.waiting(id, format!("waiting for {name} to finish updating"));
                     tokio::select! {
                         _ = settled.changed() => {}
@@ -2181,7 +2218,13 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
             {
                 let mut settled = self.machine_watch(&name);
-                match machines.current(&name).await {
+                // A move its package needs there that its request couldn't foresee (its machine booting then) goes first (cl-1201).
+                // Boxed: inline, the update's future grows every driver's.
+                let current = match machines.current(&name).await {
+                    Ok(None) => Ok(Box::pin(machines.floor_first(&run)).await),
+                    current => current,
+                };
+                match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));
@@ -2406,8 +2449,31 @@ impl Calcifer {
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
             State::Queued => {
-                let carried = self.write_inputs(link, run, machine, CARRIED_TOTAL).await?;
+                let write = self.write_inputs(link, run, machine, CARRIED_TOTAL);
+                let carried = match run.kind {
+                    // A move to the open RC writes its `cozy` while work may come: one that yields meanwhile stops, leaving the link to
+                    // that work (cl-1201).
+                    ::api::calcifer::Kind::Update => {
+                        tokio::pin!(write);
+                        loop {
+                            tokio::select! {
+                                carried = &mut write => break carried?,
+                                () = wake.notified() => {
+                                    let ended = self.with_run_store(run.id.as_str(), |store| store.run(run.id.as_str()));
+                                    if ended.ok().flatten().is_none_or(|row| row.state == State::Settled) {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => write.await?,
+                };
                 let _turn = sending.lock().await;
+                // Looked at again as it goes: work that came while it was written goes first (cl-1201).
+                if run.kind == ::api::calcifer::Kind::Update && self.yields(run, machine) {
+                    return Ok(());
+                }
                 match self.deliver(run, machine, link, carried).await? {
                     Some(delivered) => delivered,
                     // Sent with another run of its batch, or canceled: as its row now says.
