@@ -379,7 +379,7 @@ fn run_machine(
         let lifecycle = lifecycle.clone();
         let service = service.clone();
         let provider = grant.provider.clone();
-        let (state, origin) = (layout.state.clone(), machine.clone());
+        let state = layout.state.clone();
         // Its check-ins (reads of its keys) on a thread and runtime of their own: the Hub hears it while it serves, whatever its
         // API or a download or an install does meanwhile, and releases it only once it falls silent (cl-977).
         let check_ins = crate::machine::hub::Hub::for_check_ins(&hub)?;
@@ -398,7 +398,7 @@ fn run_machine(
             .name("rental-lifecycle".into())
             .spawn(move || {
                 runtime.block_on(async {
-                    crate::machine::speed::serve(hub.clone(), state, origin);
+                    crate::machine::speed::serve(hub.clone(), state);
                     crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, service.engine.clone()).await;
                 });
                 // The Hub accepted the release, or the rental ended itself: this process ends.

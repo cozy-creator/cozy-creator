@@ -306,7 +306,7 @@ case $key in
   cli:ondemand) needs='packages birefnet downloads calls enhancer' ;;
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
-  cli:ondemand-ramp) needs='packages spare' ;;
+  cli:ondemand-ramp | cli:slow-link) needs='packages spare' ;;
   cli:ondemand-enhancers) needs='packages enhancer enhancers' ;;
   cli:disk) needs='packages disk' ;;
   # A tool whose model a small disk has no room for (cl-1175).

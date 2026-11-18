@@ -112,7 +112,6 @@ pub(crate) struct Machine {
     runtime: Arc<tokio::runtime::Runtime>,
     volume: Option<VolumeOrigin>,
     fetchers: Mutex<Vec<(Key, Arc<Fetcher>)>>,
-    returned: Arc<tokio::sync::Notify>,
 }
 
 impl Machine {
@@ -120,7 +119,7 @@ impl Machine {
     pub(crate) fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
         let runtime = tensorfs::fetch::runtime().map_err(io::Error::other)?;
         let volume = volume.and_then(|path| VolumeOrigin::mounted(path, VOLUME_TTL));
-        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default(), returned: Arc::default() }))
+        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default() }))
     }
 
     pub(crate) fn store(&self) -> &Arc<Store> {
@@ -151,11 +150,6 @@ impl Machine {
         Ok(fetcher)
     }
 
-    /// Told as each fetch returns: what `received` says may have moved.
-    pub(crate) fn returned(&self) -> Arc<tokio::sync::Notify> {
-        self.returned.clone()
-    }
-
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
     pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
@@ -177,13 +171,12 @@ impl Machine {
     /// Runs `work` on the fetch runtime and waits for it, or for `stop`.
     pub(crate) fn block<T: Send + 'static>(&self, stop: &Stop, work: impl Future<Output = Result<T>> + Send + 'static) -> Result<T> {
         let (sent, answer) = std::sync::mpsc::channel();
-        let (stop, returned) = (stop.clone(), self.returned.clone());
+        let stop = stop.clone();
         self.runtime.spawn(async move {
             let answered = tokio::select! {
                 answered = work => answered,
                 () = stop.cancelled() => refuse(Code::TRANSFER_FAILED, "stopped"),
             };
-            returned.notify_one();
             let _ = sent.send(answered);
         });
         answer.recv().unwrap_or_else(|_| refuse(Code::TRANSFER_FAILED, "the fetch runtime ended"))
@@ -269,12 +262,11 @@ impl Machine {
         &self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64,
         settled: impl FnOnce(&Result<Landed>) + Send + 'static,
     ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
-        let (fetcher, origin, returned) = (self.of(remote)?, remote.origin.clone(), self.returned.clone());
+        let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
         let completion = FetchCompletion(Some(settled));
         let mut wanted = Box::pin(async move {
             let mut completion = completion;
             let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
-            returned.notify_one();
             if let Some(settled) = completion.0.take() { settled(&result); }
             result
         });
