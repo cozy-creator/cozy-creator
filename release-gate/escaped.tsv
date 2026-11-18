@@ -7,3 +7,5 @@ h3-u2-short-exchange	h100-*	xs-182: the copy-engine exchange unmapped under vare
 h3-u2-finetune-video	*	cl-935: a 2-GPU call with a model fetched from the Hub failed credential_at_seam (0.45.0/0.45.1: 47352, 47432; fixed in Runtime 0.45.2; suite multi-gpu)
 upscale-qwen-dists	*	se-147: qwen-image-2's Upscale sharpened a small JPEG's blocks, no closer to the picture than Lanczos (Paul 11-17; suite upscale)	packages=qwen-image-2
 upscale-seedvr2-dists	*	se-149: SeedVR2's picture Upscale at 1080p fell short of its 2160p restoration (suite upscale)	packages=seedvr2
+rental-idle-through-updates	cpu	cl-1203: hougetsu's RC updates every few minutes restarted its 15-minute idle clock; it never idled out (Paul 11-17; suite rentals)
+rental-stop-closes	cpu	th-404: vast stopped hougetsu and it sat "offline" at list price until 15 min after its last reach (Paul 11-17; suite rentals)
