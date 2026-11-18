@@ -12,7 +12,8 @@
 #   update     the candidate: ab's `update` ({"runtime", "tensorfs", "tensord", "gpu_memory_limit"})
 #   cells      [{"name", "key" (ltx25, ltx25_i2v, ltx25_ms), "duration_s", "gpus", "picture" (true: first frame
 #              release-gate/ref/seed.jpg), "prompt", "seed"}]: each a cold request and a warm one (its prompt with
-#              ", at dawn" and seed + 100000), ComfyUI's and Cozy's the same
+#              ", at dawn" and seed + 100000), ComfyUI's and Cozy's the same; "comfy": false runs Cozy's alone (ComfyUI's
+#              4-GPU run would repeat its 2-GPU one: it splits nothing more)
 #   stall_s    no ComfyUI progress for this long ends the session (1800)
 #   need_s     seconds the cap must buy (7200)
 . "$(dirname "$0")/lib.sh"
@@ -32,10 +33,10 @@ jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")
   and (.seed | type == "number") and (.duration_s | type == "number") and (.gpus | type == "number"))' <<<"$CELLS" > /dev/null || fail "cells"
 while read -r k; do grep -q "^\[models\.$k\]" "$BENCH/cells.toml" || fail "cells.toml has no model $k"; done < <(jq -r '.[].key' <<<"$CELLS")
 # The requests: cold, then warm, each cell's own.
-REQS=$(jq -c 'map({name, key, duration_s, gpus, picture: (.picture // false),
+REQS=$(jq -c 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true),
   requests: [{prompt, seed}, {prompt: (.prompt + ", at dawn"), seed: (.seed + 100000)}]})' <<<"$CELLS")
 PLAIN=${RUNNER_TEMP:-$OUT/..}/ltx-comfy-plain; rm -rf "$PLAIN"; mkdir -p "$PLAIN"
-jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | {cell: .name, key, tiers: ["cold", "w1"], requests,
+jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | select(.comfy) | {cell: .name, key, tiers: ["cold", "w1"], requests,
   length: .duration_s, cap_gib: null, scout_s: null, gpus, exchange: "host", record: $rec[0]}]' > "$PLAIN/jobs.json" || fail "jobs"
 # Cozy's cells for ab: the same requests; the first updates the pod and installs the model, so no run fetches weights.
 AB=$(jq -c --arg tree "$TREE" --argjson update "$UPDATE" --argjson gpus "$GPUS" '{gpus: $gpus, cells: ([.[] | . as $c | range(0; 2) as $i

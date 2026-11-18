@@ -45,7 +45,8 @@
    "gpus": 4,
    "picture": false,
    "prompt": "A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind. A third view.",
-   "seed": 64306
+   "seed": 64306,
+   "comfy": false
   },
   {
    "name": "lg-ltx-20s-g1",
@@ -72,7 +73,8 @@
    "gpus": 4,
    "picture": false,
    "prompt": "A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music. A third view.",
-   "seed": 64307
+   "seed": 64307,
+   "comfy": false
   }
  ]
 }
