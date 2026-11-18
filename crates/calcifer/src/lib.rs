@@ -2202,7 +2202,13 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
             {
                 let mut settled = self.machine_watch(&name);
-                match machines.current(&name).await {
+                // A move its package needs there that its request couldn't foresee (its machine booting then) goes first (cl-1201).
+                // Boxed: inline, the update's future grows every driver's.
+                let current = match machines.current(&name).await {
+                    Ok(None) => Ok(Box::pin(machines.floor_first(&run)).await),
+                    current => current,
+                };
+                match current {
                     Ok(None) => {}
                     Ok(Some(update)) => {
                         self.waiting(id, format!("updating {name} first (run {}, {})", update.name, update.target));

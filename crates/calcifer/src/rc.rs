@@ -374,7 +374,7 @@ impl Machines {
 
     /// Whether `name` follows the RC: a rental of this dev home that this computer ordered, up; or `local`, where a dev home runs
     /// its first-party packages from a checkout of the RC's source, which the RC's Runtime runs (xs-195).
-    fn follows(&self, name: &str) -> Option<crate::store::MachineRow> {
+    pub(crate) fn follows(&self, name: &str) -> Option<crate::store::MachineRow> {
         let row = self.store().machine(name).ok()??;
         let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row);
         let local = row.kind == MachineKind::Local && crate::checkout::configured();
