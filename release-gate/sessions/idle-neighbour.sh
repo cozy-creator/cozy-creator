@@ -25,6 +25,10 @@
 #   calls      B's calls in each arrangement (3)
 #   idle_s     seconds A is left idle before B (30)
 #   need_s     seconds the cap must buy (3000)
+#   probe      {"file": "<package-relative .py of A's function>", "after": "<regex of the line its start goes after>",
+#              "before": "<regex of the line its end goes before>", "field": "<an input field its warnings name>"}: proof
+#              only, `pinprobe.py` in A's function: the residency blocks still bound, varena's pins and what holds each CUDA
+#              storage alive, at its start (and again after a garbage collection) and at its end; said after each A call
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree) A=$(param a '{}') B=$(param b '{}') CALLS=$(param calls 3) IDLE=$(param idle_s 30) EXPECT=$(param expect '{}')
 VARIANTS=$(param variants '{}') ENDED=$(param ended true)
@@ -43,6 +47,20 @@ for m in "$A" "$B"; do
     xargs -r sed -i -E -e '/^ *memoize=(True|Memoize\(requires=\["seed"\]\)),$/d' -e 's/, *memoize=True//; s/memoize=True, *//'
   say "$(jq -r .target <<<"$m"): $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD) $(grep -m1 '^version' "$PACKAGES/$TREE/$p/pyproject.toml"), memoize left in $(grep -rE --include='*.py' -c 'memoize=' "$PACKAGES/$TREE/$p" | awk -F: '{n += $2} END {print n + 0}') places"
 done
+PROBE=$(param probe '{}')
+if [ "$(jq length <<<"$PROBE")" != 0 ]; then
+  FILE=$PACKAGES/$TREE/$(jq -r '.target | split("/") | first' <<<"$A")/$(jq -r '.file // ""' <<<"$PROBE")
+  AFTER=$(jq -r '.after // ""' <<<"$PROBE") BEFORE=$(jq -r '.before // ""' <<<"$PROBE") FIELD=$(jq -r '.field // ""' <<<"$PROBE")
+  [ -f "$FILE" ] && [ -n "$AFTER" ] && [ -n "$BEFORE" ] && [[ $FIELD =~ ^[a-z_]+$ ]] || fail "probe: file, after, before and field"
+  for re in "$AFTER" "$BEFORE"; do
+    [ "$(grep -cE "$re" "$FILE")" = 1 ] || fail "probe: '$re' matches $(grep -cE "$re" "$FILE") lines of $FILE, not one"
+  done
+  sed -i -E -e "/$BEFORE/i\\    for _line in _pinprobe(\"end\"): adj.warn(\"$FIELD\", _line)" \
+    -e "/$AFTER/a\\    for _line in _pinprobe(\"start\"): adj.warn(\"$FIELD\", _line)" "$FILE"
+  cat "$(dirname "$0")/pinprobe.py" >> "$FILE"
+  python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$FILE" || fail "$FILE does not parse with the probe"
+  say "probe in ${FILE#"$PACKAGES/"}: $(grep -nE '_pinprobe\("(start|end)"\)' "$FILE" | cut -c1-90 | tr '\n' ' ')"
+fi
 flags=()
 [ "$(param tensord false)" != true ] || flags+=(--tensord "$(command -v cozy)")
 for kind in runtime tensorfs; do
@@ -173,6 +191,8 @@ call() {
        (($w.pinned_bytes // 0) / 1048576 | floor), ([.measurements.residency.graphs // {} | to_entries[] | .value.active_graphs // 0] | add // 0)] | @tsv' "$OUT/$n.json" >> "$OUT/calls.tsv" 2> /dev/null
   local st; st=$(jq -r '.status // "none"' "$OUT/$n.json" 2> /dev/null)
   say "$n run ${N:-none} ${st:-none}: $(tail -n 1 "$OUT/calls.tsv" | cut -f3- | tr '\t' ' ')"
+  jq -r '.. | strings | select(contains("PINPROBE"))' "$OUT/$n.json" 2> /dev/null | awk '!seen[$0]++' | cut -c1-900 |
+    sed "s/^/$n: /" | tee -a "$R"
   [ "$st" = completed ] || { failed=$((failed + 1)); say "$n reason: $(jq -r '.reason.message // .reason // empty' "$OUT/$n.json" 2> /dev/null | head -c 600)"; }
 }
 # restart <label>: the machine's service restarts, ending every executor; the sampler again, and the card as it then is.
