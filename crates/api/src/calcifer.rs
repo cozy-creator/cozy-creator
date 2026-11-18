@@ -2073,13 +2073,17 @@ impl MachineList {
 /// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of the
 /// account up or on its way, whichever of its computers ordered it (cl-1224), any other computer's that's up, then this one, the last
 /// choice, which starts when used. With none of them, `local`, which says why it can't where it can't. Never a test pod, a rental whose
-/// GPU memory is capped (a VRAM-capped matrix pod): it runs only what names it (cl-920).
+/// GPU memory is capped (a VRAM-capped matrix pod): it runs only what names it (cl-920). The rentals up come first, then the least busy,
+/// every client's runs counted: what takes the first of the set (local code, which installs where it resolves; a run no machine quoted)
+/// takes the idlest, never another computer's busy pod for being listed first (cl-1224).
 pub fn render_set(machines: &[Machine]) -> Vec<On> {
     let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
-    let rented = machines.iter()
-        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));
+    let mut rented: Vec<&Machine> = machines.iter()
+        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine))
+        .collect();
+    rented.sort_by_key(|machine| (machine.state != MachineState::Ready, machine.running + machine.queued));
     let added = machines.iter().filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
-    let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+    let mut set: Vec<On> = rented.into_iter().chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
     if set.is_empty() || platform::Os::CURRENT.local_inference() {
         set.push(On::Machine("local".into()));
     }
