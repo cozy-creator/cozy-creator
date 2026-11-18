@@ -18,7 +18,9 @@
 #   cpu_sku  refused (above)
 #   t2i, i2i the enhancers' repositories (default: qwen-image-2's defaults)
 #   link_mbit the GPU rental's download link shaped to this many Mbit/s from step 2 on (tc police on its ingress, over SSH; default
-#            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s)
+#            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s).
+#            A host that refuses it (`RTNETLINK answers: Operation not permitted`, 44319564258) runs as rented: if expander_t2i is
+#            whole before the edit, the cut can't be timed, and step 3 is judged by TensorD's drop of the text-to-image item alone.
 #   need_s   the seconds the cap must buy of every rental together (default 3600)
 . "$(dirname "$0")/lib.sh"
 # A failure keeps the rental's TensorD log first: what it planned and fetched says why.
@@ -67,7 +69,7 @@ else
   boxes "$OUT/boxes.json" "$WORDS" first
 fi
 say "cozy $V, a dev home; qwen-image-2 $(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE/qwen-image-2/pyproject.toml" | head -1) from $TREE $(git -C "$SOURCE" rev-parse --short=8 HEAD 2> /dev/null)${CPU_SKU:+; steps 2–3 on $CPU_SKU}"
-LINK=$(param link_mbit 800)
+LINK=$(param link_mbit 800) SHAPED=''
 [[ -z $LINK || $LINK =~ ^[0-9]+$ ]] || fail "link_mbit $LINK"
 if [ -n "$LINK" ]; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -181,10 +183,16 @@ switch() {
   # expander_t2i's own bytes coming: 1 s on, the draft changes, most of its 11 GB still to come. expander_i2i never comes meanwhile.
   local began=$SECONDS guessed='' had series=$OUT/t2i-series.tsv
   printf 'unix_ms\tt2i_own\ti2i_own\ttensord\n' > "$series"
+  UNTIMED=''
   while [ $((SECONDS - began)) -lt 300 ]; do
     sample "$OUT/guess.json" "$series"
     [ "$(held "$OUT/guess.json" "$I2I")" -le "$HEADER" ] || fail "expander_i2i came for a text-to-image draft: $(models "$OUT/guess.json")"
-    ! whole "$OUT/guess.json" "$T2I" || fail "expander_t2i was whole before the edit could cut it (no unfinished bytes to stop): $(models "$OUT/guess.json")"
+    if whole "$OUT/guess.json" "$T2I"; then
+      [ -z "$SHAPED" ] || fail "expander_t2i was whole before the edit could cut it on a link shaped to $LINK Mbit/s: $(models "$OUT/guess.json")"
+      UNTIMED=1
+      say "the cut can't be timed: $NAME's link isn't shaped and expander_t2i was whole before the edit; step 3 is judged by TensorD's drop of the text-to-image item"
+      break
+    fi
     [ "$(held "$OUT/guess.json" "$T2I")" -gt "$HEADER" ] && break
     sleep 0.5
   done
@@ -213,7 +221,8 @@ switch() {
   local grew dropped at_edit
   at_edit=$(awk -F'\t' -v e="$EDIT_MS" 'NR > 1 && $1 <= e {b = $2} END {print b + 0}' "$series")
   grew=$(awk -F'\t' 'NR > 1 {if ($2 > last) {at = $1}; last = $2} END {print at + 0}' "$series")
-  dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its run ends" "$OUT/tensord-$NAME.log" | cut -c1-40)
+  # A live item's run ends at its drop; one whose needs had landed (untimed) ended before it, and its drop ends its extras.
+  dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its (run ends|extras stop)" "$OUT/tensord-$NAME.log" | cut -c1-40)
   say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; TensorD's drop: ${dropped:-not in its log}; series in t2i-series.tsv"
   # Judged at TensorD's drop: expander_t2i's own bytes grow no more 3 s after it (what was in flight, and `cozy machine show`'s lag).
   # On a 2 GB/s pod the 2–3 s from the edit to the drop lands gigabytes first (44065133454): that is the edit's latency (`first_fetch`),
@@ -235,7 +244,7 @@ for line in open(sys.argv[1], errors="replace"):
     found = re.search(r"landed object=(\w+) bytes=(\d+)", line)
     if found:
         landed.setdefault(found.group(1), at)
-    if drop is None and "cozy:prepare:" in line and "dropped: its run ends" in line:
+    if drop is None and "cozy:prepare:" in line and re.search(r"dropped: its (run ends|extras stop)", line):
         drop = at
 if drop is None:
     print("none 0 0 0 0")
@@ -247,14 +256,18 @@ PY
 )
   read -r dropped_at landed_after landed_bytes stopped stopped_bytes <<< "$stop"
   say "at TensorD's drop (${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit), of every model: $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes); expander_t2i's own last grew $((grew - dropped_at)) ms after it"
-  if whole "$OUT/switch.json" "$T2I"; then
+  if [ -n "$UNTIMED" ]; then
+    [ "$dropped_at" != none ] || MISMATCH+=("TensorD logged no drop of the text-to-image item")
+  elif whole "$OUT/switch.json" "$T2I"; then
     MISMATCH+=("expander_t2i came whole after the draft stopped needing it")
   elif [ "$dropped_at" = none ]; then
     MISMATCH+=("TensorD logged no drop of the text-to-image item")
   elif [ $((grew - dropped_at)) -gt 3000 ]; then
     MISMATCH+=("expander_t2i's own bytes grew until $((grew - dropped_at)) ms after TensorD's drop")
   fi
-  say "after the edit: expander_t2i $([ ${#MISMATCH[@]} = 0 ] && echo stopped, unfinished || echo "${MISMATCH[-1]}"); expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
+  local t2i_was="stopped, unfinished"
+  [ -z "$UNTIMED" ] || t2i_was="whole before the edit (the cut untimed), its item dropped"
+  say "after the edit: expander_t2i $([ ${#MISMATCH[@]} = 0 ] && echo "$t2i_was" || echo "${MISMATCH[-1]}"); expander_i2i whole; draw ready on $NAME: $(models "$OUT/switch.json")"
 }
 
 if [ -n "$CPU_SKU" ]; then
@@ -292,7 +305,8 @@ say "first: quoted $quoted bytes to download ($(jq -c .placed "$OUT/first.json")
 [ "$waited" -gt 0 ] && [ $(( (quoted > waited ? quoted - waited : waited - quoted) * 200 )) -le "$waited" ] ||
   fail "first's cold quote $quoted bytes is off the $waited it waited for by more than 0.5%"
 
-# shaped: $NAME's download link at $LINK Mbit/s, as a slower pod's is: what a guess fetches takes long enough to be cut.
+# shaped: $NAME's download link at $LINK Mbit/s, as a slower pod's is: what a guess fetches takes long enough to be cut. SHAPED
+# says it is; a host that refuses, or no LINK, runs as rented.
 shaped() {
   [ -n "$LINK" ] || return 0
   local dev _
@@ -303,7 +317,7 @@ shaped() {
   dev=$(timeout 120 cozy machine ssh "$NAME" "ip route show default | awk '{print \$5; exit}'" < /dev/null 2> /dev/null | tr -d '\r')
   if timeout 120 cozy machine ssh "$NAME" "tc qdisc add dev $dev handle ffff: ingress && tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 police rate ${LINK}mbit burst 4m drop flowid :1" \
       < /dev/null > "$OUT/link.txt" 2>&1; then
-    say "$NAME's link ($dev) is shaped to $LINK Mbit/s"
+    SHAPED=1; say "$NAME's link ($dev) is shaped to $LINK Mbit/s"
   else
     say "$NAME refused the shaped link: $(tail -c 200 "$OUT/link.txt"); it runs as rented"
   fi
