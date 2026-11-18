@@ -1,0 +1,73 @@
+{
+ "cells": [
+  {
+   "name": "card-woman-t",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"This is an RGBA image with transparency. <p1> with the background removed, in the same pose. The image has alpha channel and the background is transparent.\"",
+    "turbo:=true",
+    "prompt_upsampling:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "card-woman-f",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"This is an RGBA image with transparency. <p1> with the background removed, in the same pose. The image has alpha channel and the background is transparent.\"",
+    "turbo:=false",
+    "prompt_upsampling:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "card-dragon-t",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"This is an RGBA image with transparency. A cute cartoon dragon sticker. The image has alpha channel and the background is transparent.\"",
+    "turbo:=true",
+    "prompt_upsampling:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"1:1\""
+   ]
+  },
+  {
+   "name": "card-dragon-f",
+   "tree": "m",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"This is an RGBA image with transparency. A cute cartoon dragon sticker. The image has alpha channel and the background is transparent.\"",
+    "turbo:=false",
+    "prompt_upsampling:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"1:1\""
+   ]
+  }
+ ],
+ "alpha": [
+  "card-woman-t",
+  "card-woman-f",
+  "card-dragon-t",
+  "card-dragon-f"
+ ],
+ "order": "one-way",
+ "need_s": 1800,
+ "max_failures": 2,
+ "install": [
+  "m"
+ ],
+ "relock": [
+  "m"
+ ]
+}
