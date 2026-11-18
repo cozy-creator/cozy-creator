@@ -149,7 +149,11 @@ impl Upgrade {
     /// The line the run says: `upgrading vanitas's Runtime 0.45.1 → 0.47.0.dev2260 for minimax-h3 0.12.0rc3`.
     pub(crate) fn note(&self) -> Note {
         let (from, to) = (prerelease::shown(&self.from), prerelease::shown(&self.to));
-        Note { level: NoteLevel::Info, message: format!("Updating {}'s Runtime from {from} to {to} for {}.", self.machine, self.release) }
+        let message = match self.from.is_empty() {
+            true => format!("Installing {}'s Runtime {to} for {}.", self.machine, self.release),
+            false => format!("Updating {}'s Runtime from {from} to {to} for {}.", self.machine, self.release),
+        };
+        Note { level: NoteLevel::Info, message }
     }
 }
 

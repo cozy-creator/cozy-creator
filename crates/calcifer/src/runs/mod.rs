@@ -319,7 +319,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
     };
     match prepared {
         Prepared::Install(run) => {
-            let notes = updating(&run).into_iter().collect();
+            let notes = updating(api, &run, ask.project.is_some()).await.into_iter().collect();
             Ok(Submitted { run, replay: false, notes, preparing: true, lock })
         }
         // The run waits behind cozy's own update: its client follows it, then asks again (cl-978).
@@ -446,9 +446,20 @@ enum Prepared {
 }
 
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
-fn updating(run: &api::calcifer::Run) -> Option<Note> {
+async fn updating(api: &Arc<Api>, run: &api::calcifer::Run, project: bool) -> Option<Note> {
     let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
-    Some(Note { level: NoteLevel::Info, message: format!("Updating {machine} to cozy {} first.", crate::update::this_release()) })
+    let own = crate::update::this_release();
+    // `local` on this cozy's TensorD below its Runtime minor moves its Runtime alone (cl-1254): said as a project's move says it (cl-1055).
+    if let Some(frame) = api.machines.frame(machine).filter(|frame| crate::update::same_minor(&frame.version, own))
+        && let Ok(Some(to)) = api.machines.own_runtime(machine, &frame).await
+    {
+        let release = match project {
+            true => "this project".to_owned(),
+            false => format!("cozy {own}"),
+        };
+        return Some(crate::floor::Upgrade { machine: machine.to_owned(), from: frame.runtime, to, release }.note());
+    }
+    Some(Note { level: NoteLevel::Info, message: format!("Updating {machine} to cozy {own} first.") })
 }
 
 /// What a prepared ask is for.
