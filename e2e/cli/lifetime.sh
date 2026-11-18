@@ -323,3 +323,35 @@ wait "$first" || check "queued: the first download failed: $(tail -c 300 "$OUT/q
 wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT/queued-second.ndjson")"
 sudo tc qdisc del dev lo root || check "queued: the store's link wasn't restored"
 }
+
+# service_killed (cl-1268, the release coordinator 11-18: "the user-facing message on that path becomes one plain line in the product's
+# voice saying what happened and what to do"): a run whose machine's own service died under it, as a host's memory limit killed an
+# executor and TensorD's service on a runner (e2e 44302237049) and on W-S12's requeued run (pod-session 44338350009). local's service is
+# stopped, the run's executor killed, then the service killed; its parent starts it again, and the new one finds the run's executor
+# ended. The run fails `machine_stopped` in one plain line naming local, with no custody words; those are in TensorD's log.
+service_killed() {
+step "a run whose machine's service died under it says so in one line (cl-1268)"
+[ "${RUNNER_OS:-Linux}" = Linux ] || { echo "service killed: Linux runners only"; return; }
+local service parent executors pid said log=$HOME/.cozy/machine/var/lib/cozy/machine/logs
+machine_ready
+launch killed silent seconds:=600 || return
+parent=$(machine_pid)
+service=$(ps -o pid=,stat=,comm= --ppid "$parent" | awk '$3 == "tensord" && $2 !~ /^Z/ { print $1 }' | tail -1)
+[ -n "$service" ] || { check "service killed: local's machine (pid $parent) has no live service"; settled killed 5; return; }
+kill -STOP "$service"
+executors=$(pgrep -f 'cozy_runtime[.]internal[.](executor|trampoline)' || true)
+[ -n "$executors" ] || check "service killed: run $n has no executor process to kill"
+for pid in $executors; do kill -KILL "$pid" 2> /dev/null || true; done
+kill -KILL "$service"
+settled killed 180
+machine_ready
+said=$(jq -r '.reason.message // empty' "$OUT/killed.show.json")
+echo "service killed: run $n $(jq -c '[.status, .reason.code]' "$OUT/killed.show.json"): $said"
+J '.status == "failed" and .reason.code == "machine_stopped"' "$OUT/killed.show.json" \
+  || check "service killed: run $n is $(jq -c '[.status, .reason.code]' "$OUT/killed.show.json"), not failed machine_stopped"
+[ "$said" = "local's worker stopped while this run was going, so the run did not finish. Nothing was saved from it; run it again." ] \
+  || check "service killed: run $n doesn't say what happened in one plain line: $said"
+! grep -qiE 'custody|birth' <<< "$said" || check "service killed: run $n's message has TensorD's custody words: $said"
+cat "$log"/tensord.*.log 2> /dev/null | grep -q "owner lost before durable result custody" \
+  || check "service killed: TensorD's log doesn't keep how it knew run $n's executor had ended"
+}

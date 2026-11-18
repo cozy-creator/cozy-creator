@@ -1752,10 +1752,13 @@ impl Engine {
                 // A journaled cancel ends it CANCELED, however it stopped.
                 journal.finish(&record.id, Outcome::Canceled)?;
             } else {
+                // One plain line for its user (cl-1268); how this incarnation knows, in its log.
                 let failure = if record.process.is_none() {
-                    crate::journal::Failure::machine("output_owner_lost", "owner lost after executor return and before durable output custody; CPU output work is not replayed; the historical executor is not owned by this invocation")
+                    tracing::warn!(execution = %record.id, "owner lost after executor return and before durable output custody; CPU output work is not replayed; the historical executor is not owned by this invocation");
+                    crate::journal::Failure::machine("output_owner_lost", "<machine>'s worker stopped as this run's outputs were being saved, so the run did not finish. Nothing was saved from it; run it again.")
                 } else {
-                    crate::journal::Failure::machine("machine_stopped", "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed")
+                    tracing::warn!(execution = %record.id, "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed");
+                    crate::journal::Failure::machine("machine_stopped", "<machine>'s worker stopped while this run was going, so the run did not finish. Nothing was saved from it; run it again.")
                 };
                 journal.finish(&record.id, Outcome::Failed(failure))?;
             }

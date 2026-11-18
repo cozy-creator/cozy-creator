@@ -739,12 +739,15 @@ case $SHARD in
   executors) parts="
     second_executor
     lifetime
+    service_killed
     kept_preparing
     released_project
     update
     installed_follow
     remove
   " ;;
+  # A run whose machine's service died under it says so in one plain line (cl-1268), alone.
+  service-killed) parts="service_killed logs" ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
   # Paul's no-traces invariant on this runner's OS (macOS, Windows): containment's lock scans without its browser or root (cl-984).
   notraces) parts="no_traces logs" ;;
