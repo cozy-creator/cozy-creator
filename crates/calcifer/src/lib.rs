@@ -3039,37 +3039,47 @@ impl Calcifer {
         length > 0 && link.held(digest, length).await.is_ok_and(|held| held >= length)
     }
 
-    /// `inputs` written to `machine`, each it doesn't hold whole, one write of an object at a time as a run's are (`writing`): local
-    /// code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a predicted request reads
-    /// (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as any upload's do.
+    /// `inputs` written to `machine`, each it doesn't hold whole, `SHIPPING` at once, one write of an object at a time as a run's are
+    /// (`writing`): local code carried to the machine a box's guess goes to, as a run of it carries it (cl-1104), and the files a
+    /// predicted request reads (cl-1123), so its machine has them before a render of it is sent. The bytes moving hold its idle clock as
+    /// any upload's do. One file at a time, an Orbit box's first guess carried orbit and H3's 392 files to its pod in 83 s (44195761797).
     pub(crate) async fn ship(&self, machine: &str, inputs: &[StagedInput]) -> Result<(), String> {
+        const SHIPPING: usize = 16;
         let machines = self.machines().ok_or("no machines yet")?;
         let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
         let digests: Vec<Digest> = inputs.iter().map(|input| input.digest).collect();
         let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
         let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
-        for (input, held) in inputs.iter().zip(held) {
-            if whole(&held, input.length) {
-                continue;
-            }
-            let key = (machine.to_owned(), input.digest);
-            let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
-            let mine = turn.0.lock().await;
-            let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
-            let written = match whole(&now, input.length) {
-                true => Ok(()),
-                false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
-            };
-            drop(mine);
-            {
-                let mut writing = lock(&self.writing);
-                if Arc::strong_count(&turn) <= 2 {
-                    writing.remove(&key);
+        let writes = (inputs.iter().zip(held)).filter(|(input, held)| !whole(held, input.length)).map(|(input, held)| {
+            let link = &link;
+            async move {
+                let key = (machine.to_owned(), input.digest);
+                let turn = lock(&self.writing).entry(key.clone()).or_default().clone();
+                // Another write of it going: what it wrote is read again once it's done.
+                let (mine, now) = match turn.0.try_lock() {
+                    Ok(mine) => (mine, held),
+                    Err(_) => {
+                        let mine = turn.0.lock().await;
+                        let now = link.held_many(std::slice::from_ref(&input.digest)).await.map_err(|e| e.to_string())?.into_iter().next().unwrap_or_default();
+                        (mine, now)
+                    }
+                };
+                let written = match whole(&now, input.length) {
+                    true => Ok(()),
+                    false => link.write(&input.digest, input.length, &input.path, now, |_, _| {}).await.map_err(|e| e.to_string()),
+                };
+                drop(mine);
+                {
+                    let mut writing = lock(&self.writing);
+                    if Arc::strong_count(&turn) <= 2 {
+                        writing.remove(&key);
+                    }
                 }
+                written
             }
-            written?;
-        }
-        Ok(())
+        });
+        let written: Vec<Result<(), String>> = futures_util::stream::iter(writes).buffer_unordered(SHIPPING).collect().await;
+        written.into_iter().collect()
     }
 
     /// Reads the machine's warm set before a warm run's set is merged into it, if none was seen

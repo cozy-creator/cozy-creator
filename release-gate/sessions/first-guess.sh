@@ -6,13 +6,15 @@
 # params:
 #   tree  the packages_refs checkout whose packages run (`-f packages_refs=pk=<packages ref>`, tree pk)
 #   kind  qwen (default) or orbit
+#   pod   a SKU to rent one pod of and guess on, in place of this runner's machine (an Orbit box needs a GPU to be guessed for, and a
+#         pod is where its code is carried over the network); the session's TensorD runs there (cozy=<dev-build run id>)
 . "$(dirname "$0")/lib.sh"
 fail() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
-  cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local.log" 2>&1
+  cozy machine logs "${ON:-local}" tensord --since 2h -n 0 > "$OUT/tensord-${ON:-local}.log" 2>&1
   say "FAIL: $*"; RC=1; exit 1
 }
-TREE=$(param tree '') KIND=$(param kind qwen)
+TREE=$(param tree '') KIND=$(param kind qwen) POD=$(param pod '') ON=local
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen-image-2/pyproject.toml" ] || fail "dispatch with -f packages_refs=<name>=<packages ref> and params.tree=<name>"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 V=$(cozy --version | awk '{print $2}')
@@ -60,8 +62,8 @@ show() {
 # the tool's going on: each guess of it and its stages, each round, each list put to local, and each item TensorD admitted and planned.
 timeline() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
-  cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local.log" 2>&1 || true
-  python3 -I - "$OUT/calcifer.log" "$OUT/tensord-local.log" "$RUN_PROJECT" "$2" "$3" "$4" "$BOX" <<'PY' | tee "$OUT/timeline-$1.txt"
+  cozy machine logs "$ON" tensord --since 2h -n 0 > "$OUT/tensord-$ON.log" 2>&1 || true
+  python3 -I - "$OUT/calcifer.log" "$OUT/tensord-$ON.log" "$RUN_PROJECT" "$2" "$3" "$4" "$BOX" "$ON" <<'PY' | tee "$OUT/timeline-$1.txt"
 import datetime, sys
 calcifer, tensord, folder, asked, answered, edit = sys.argv[1], sys.argv[2], sys.argv[3], *map(int, sys.argv[4:7])
 def ms(stamp):
@@ -71,8 +73,8 @@ def lines(path, keep):
         stamp = line.split(" ", 1)[0]
         if stamp[:4].isdigit() and ms(stamp) >= asked and keep(line):
             yield ms(stamp), line.split("  INFO ", 1)[-1].strip()
-box = sys.argv[7]
-said = sorted(list(lines(calcifer, lambda l: folder in l or "lists to local" in l or "lists put on local" in l or f"guess {box} " in l))
+box, on = sys.argv[7], sys.argv[8]
+said = sorted(list(lines(calcifer, lambda l: folder in l or f"lists to {on}" in l or f"lists put on {on}" in l or f"guess {box} " in l))
               + [(at, "tensord: " + text) for at, text in lines(tensord, lambda l: "cozy:prepare" in l and ("admitted" in l or "its request" in l))])
 print(f"asked {asked}, answered +{answered - asked} ms, edit typed +{edit - asked} ms (Unix ms, this runner's clock)")
 for at, text in said[:40]:
@@ -105,7 +107,7 @@ measure() {
 # its first guess waited for (4 min at most).
 turned() {
   run_project "$RUN_PROJECT" > "$OUT/project-$1.json" 2>&1 || fail "project $1: $(tail -c 300 "$OUT/project-$1.json")"
-  (cd "$RUN_PROJECT" && cozy --json machine use local) > "$OUT/use-$1.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use-$1.json")"
+  (cd "$RUN_PROJECT" && cozy --json machine use "$ON") > "$OUT/use-$1.json" 2>&1 || fail "machine use $ON: $(tail -c 300 "$OUT/use-$1.json")"
   run_page import "$OUT/photo.png" --name photo > "$OUT/photo-$1.json" 2>&1 || fail "import photo: $(tail -c 300 "$OUT/photo-$1.json")"
   show
   sleep 3
@@ -115,13 +117,26 @@ turned() {
   run_page boxes "$OUT/boxes-$1.json" > "$OUT/boxes-$1.txt" 2>&1 || fail "turned: $(tail -c 300 "$OUT/boxes-$1.txt")"
   answered=$(date +%s%3N)
   until cozy machine logs local calcifer --lines 3000 2> /dev/null | grep -q "$RUN_PROJECT: turned guessed on"; do
-    [ $((SECONDS - began)) -lt 60 ] || { say "project $1: turned not guessed in 1 min"; break; }
+    [ $((SECONDS - began)) -lt 180 ] || { say "project $1: turned not guessed in 3 min"; break; }
     sleep 2
   done
   timeline "$1" "$asked" "$answered" "$answered" > /dev/null
   say "project $1: $(head -1 "$OUT/timeline-$1.txt")"
   tail -n +2 "$OUT/timeline-$1.txt" | sed 's/^/  /' | tee -a "$R"
 }
+if [ -n "$POD" ]; then
+  # The pod on the session's TensorD: the open RC's builds once, then this cozy's (edit-ahead.sh `ours`).
+  quote "$(param need_s 900)" "$POD"
+  rent
+  ON=$NAME
+  step rc machine update "$ON" -y || fail "$ON didn't move to the open RC's builds"
+  for _ in 1 2 3; do
+    [ "$(cozy --json machine show "$ON" 2> /dev/null | jq -r '.status.version // empty')" = "$V" ] && break
+    step tensord machine update "$ON" --tensord "$(command -v cozy)" -y || fail "$ON refused the session's TensorD"
+    sleep 30
+  done
+  say "$ON runs TensorD $(cozy --json machine show "$ON" 2> /dev/null | jq -r '.status.version // empty')"
+fi
 if [ "$KIND" = orbit ]; then
   turned a
   RUN_PROJECT=$OUT/project-b
