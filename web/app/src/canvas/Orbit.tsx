@@ -83,6 +83,10 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const seek = useRef<{ pending: number | null; busy: boolean }>({ pending: null, busy: false })
   const drag = useRef<{ x: number; from: number; last: number; t: number; v: number } | null>(null)
   const frameId = useRef(0)
+  // Its slot taken by another tab's newer play (cl-1208): its poster shows, and the next turn or Spin takes one again (`round`).
+  const lost = useRef(false)
+  const [round, setRound] = useState(0)
+  const spinOnLoad = useRef(false)
   const fps = shown.fps ?? 24
   const frames = Math.max(1, shown.frames ?? (Math.round(((shown.duration_ms ?? 0) / 1000 || length) * fps) || 1))
   const sign = orbit.direction === "ccw" ? -1 : 1
@@ -94,7 +98,16 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
     const waiting = new AbortController()
     let release: (() => void) | null = null
     let playback: Playback | null = null
-    holdMedia(waiting.signal)
+    holdMedia(waiting.signal, () => {
+      playback?.stop()
+      playback = null
+      release = null
+      lost.current = true
+      seek.current = { pending: null, busy: false }
+      cancelAnimationFrame(frameId.current)
+      setReady(false)
+      setSpinning(false)
+    })
       .then((held) => {
         release = held
         const el = video.current
@@ -108,7 +121,14 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
       playback?.stop()
       release?.()
     }
-  }, [client, path])
+  }, [client, path, round])
+  /** Its slot again, if another tab took it: true while that's on its way. */
+  const regain = () => {
+    if (!lost.current) return false
+    lost.current = false
+    setRound((now) => now + 1)
+    return true
+  }
 
   const flush = () => {
     const el = video.current
@@ -138,6 +158,10 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
     if (!el) return
     if (spinning) return stopSpin()
     setUsed(true)
+    if (regain()) {
+      spinOnLoad.current = true
+      return
+    }
     setSpinning(true)
     el.loop = orbit.loops
     el.play().catch(() => setSpinning(false))
@@ -153,6 +177,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
 
   const down = (event: PointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest("button")) return
+    regain()
     stopSpin()
     cancelAnimationFrame(frameId.current)
     setUsed(true)
@@ -188,6 +213,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
     const by = event.key === "ArrowRight" ? STEP : event.key === "ArrowLeft" ? -STEP : 0
     if (!by) return
     event.preventDefault()
+    regain()
     stopSpin()
     setUsed(true)
     turn(at.current + sign * by)
@@ -222,6 +248,10 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
         onLoadedData={() => {
           setReady(true)
           turn(at.current)
+          if (spinOnLoad.current) {
+            spinOnLoad.current = false
+            spin()
+          }
         }}
         onSeeked={() => {
           seek.current.busy = false
@@ -240,6 +270,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
           type="button"
           className="orbit-act canvas-control"
           onClick={() => {
+            regain()
             stopSpin()
             turn(0)
           }}

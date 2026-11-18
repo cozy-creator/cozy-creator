@@ -216,7 +216,8 @@ export class Preview {
     this.waiting = waiting
     if (playingHere.length >= 2) playingHere[0]()
     playingHere.push(this.stop)
-    const holding: Promise<boolean> = holdMedia(waiting.signal).then((release) => {
+    // Another tab's newer play taking its slot lets it go, as another player here does (cl-1208).
+    const holding: Promise<boolean> = holdMedia(waiting.signal, this.stop).then((release) => {
       if (waiting.signal.aborted) {
         release()
         return false

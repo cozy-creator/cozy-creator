@@ -1,0 +1,1 @@
+A video or an orbit you play plays at once, whatever other tabs hold: the newest play takes a player from the tab that took one longest ago, which goes back to its poster until it plays again. Before, it waited on its poster with nothing said, its Play doing nothing.
