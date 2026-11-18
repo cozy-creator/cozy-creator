@@ -330,7 +330,7 @@ impl Objects {
         let key = resource_actor(actor);
         let actor = key.as_str();
         let _custody = self.guard();
-        let Some(raw) = self.engine.read_journal(|j| j.held_memo(actor, computation))? else {
+        let Some(raw) = self.engine.with_journal(|j| j.held_memo(actor, computation))? else {
             return Ok(None);
         };
         let Ok(mut record) = serde_json::from_slice::<ResultRecord>(&raw) else {
