@@ -118,20 +118,10 @@ done
 # it is, so only what was given is held together.
 RESOLVE=("${GATE_PKGS[@]}")
 [ -z "$PKGS" ] || for d in "$PKGS"/*/; do grep -qs cozy.application "$d/pyproject.toml" && RESOLVE+=("${d%/}"); done
-RC=$(sed -n 's|.*/releases/download/rc-\([0-9][0-9.]*\)/.*|\1|p' <<< "$RW")
-[ -n "$RC" ] || RC=$(sed -n 's/^version = "\([0-9.]*\)-dev"$/\1/p' "$HERE/../Cargo.toml" | head -1)
-HUB_URL=https://tensorhub.com
-[ "$HUB_TARGET" = prod ] || HUB_URL=${COZY_HUB_URL:-}
-[ -z "$ON" ] || HUB_URL=
-if ! said=$(uv run -q --no-project --with packaging python -I "$HERE/resolve.py" --hub "$HUB_URL" --rc "$RC" "${RWF:-}" "${TWF:-}" "${RESOLVE[@]}" 2>&1); then
+if ! said=$(uv run -q --no-project --with packaging python -I "$HERE/resolve.py" "${RWF:-}" "${TWF:-}" "${RESOLVE[@]}" 2>&1); then
   log "the candidate set does not resolve: $(paste -sd';' <<< "$said")"
   printf 'FAIL candidate set: %s\nVERDICT FAIL (candidate set does not resolve)\n' "$(paste -sd';' <<< "$said")" | tee verdict.txt
   exit 1
-fi
-if [[ $said == tensorfs=* ]]; then
-  # Named from here on: a gate started again on another host takes the same build (`again`).
-  TW=${said#tensorfs=}; TWF=$(fetch "$TW") || exit 1; ARGS+=(--tensorfs "$TW")
-  log "TensorFS $(basename "$TWF" | cut -d- -f2): rc-$RC's build, beside the RC Runtime $(basename "$RWF" | cut -d- -f2)"
 fi
 # --preflight (release-gate.yml's rent=false): the $0 checks alone.
 if [ -n "$PREFLIGHT" ]; then
