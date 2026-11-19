@@ -139,6 +139,10 @@ if [ -n "$CAPPED" ] && [ -z "$ONLY" ]; then
     say "FAILED: $label at $limit (its step's output above)"; FAILED+=("capped-$label")
   fi
 fi
+# The executors' own lines on kernels, the engine and lm, with their times (a bounded tail of TensorD's log): where a cold
+# start's time goes (a kernel's verify, a compile, a capture).
+cozy machine logs "$NAME" tensord -n 4000 2> /dev/null | grep -aE '\[kernels\]|\[engine\]|\[lm\]|Building|opening' > "$OUT/kernel-lines.txt" || true
+say "kernel lines: $(wc -l < "$OUT/kernel-lines.txt"); first: $(head -3 "$OUT/kernel-lines.txt" | cut -c1-200 | paste -sd ';' -)"
 # A settings-only update drains and restarts TensorD: its executors let the GPU go before llama.cpp starts.
 step uncap machine update "$NAME" --gpu-memory-limit off -y || fail "restart TensorD"
 
