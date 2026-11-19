@@ -564,9 +564,6 @@ struct Session {
     launch: Launch,
     /// Its row of `Serving`: the manifests its constructions read.
     serving: u64,
-    /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
-    /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
-    ledger: bool,
     /// Why its Runtime serves its GPUs none of its native kernels, as its Start said (cl-913); empty: it does.
     kernels_absent: String,
     /// Whose call or predicted request it served last (`load_ahead`): another's model is never evicted for a guess.
@@ -1083,9 +1080,6 @@ struct Device {
     /// What its executors hold and ask for. They and it meet here without any wire.
     #[cfg(target_os = "linux")]
     ledger: Option<Arc<varena_ledger::Table>>,
-    /// Its own view of that ledger, for asks on behalf of an executor outside it.
-    #[cfg(target_os = "linux")]
-    asking: Option<Mutex<varena_ledger::Table>>,
     /// Open while it drove a display at the pool's start: its use is read for each request.
     display: Option<platform::gpu::Device>,
 }
@@ -1177,8 +1171,6 @@ impl Pool {
                 memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
                 #[cfg(target_os = "linux")]
                 ledger: open().map(Arc::new),
-                #[cfg(target_os = "linux")]
-                asking: open().map(Mutex::new),
                 display: memory::row(entry, &config.inventory)
                     .and_then(|row| platform::gpu::Device::open(&row.device_uuid).ok())
                     .filter(|device| device.display_active().unwrap_or(false))
@@ -1379,31 +1371,9 @@ impl Pool {
         let key = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| which(session))
             .filter(|(_, session)| !executor_births(&session.executor.birth, &session.followers).iter().any(|birth| askers.contains(&birth.pid)))
-            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.ledger, session.used))
+            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.used))
             .map(|(key, _)| key.clone());
         key.is_some_and(|key| self.end_session(&key))
-    }
-    /// Before an executor outside the ledger (`Session::ledger`) serves a call on `lane`, room for
-    /// it, as v1 made it: it sizes itself by what the driver has free, which no peer gives it.
-    /// Idle executors outside the ledger there end, since nothing else returns what they hold; for
-    /// a construction it has not loaded, idle ledger members too, whose contexts no ask returns
-    /// (v1 ended every idle neighbour for a first call); then every member left gives back what it
-    /// holds idle. Warm sets stay.
-    fn room_outside_ledger(&self, lane: std::ops::Range<usize>, loading: bool) {
-        let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
-            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        let keys: Vec<String> = self.sessions.lock().unwrap().iter()
-            .filter(|(_, s)| s.degree != 0 && s.start < lane.end && lane.start < s.start + s.degree as usize)
-            .filter(|(_, s)| (loading || !s.ledger) && !s.loaded.keys().any(|key| warm.contains(key)))
-            .map(|(key, _)| key.clone()).collect();
-        let ended = keys.iter().filter(|key| self.end_session(key)).count();
-        #[cfg(target_os = "linux")]
-        let given: u64 = self.devices[lane.clone()].iter().filter_map(|device| device.asking.as_ref())
-            .filter_map(|table| table.lock().unwrap().ask_all_idle(Instant::now() + std::time::Duration::from_secs(2))).sum();
-        #[cfg(not(target_os = "linux"))]
-        let given = 0;
-        self.notes.note(serde_json::json!({"event": "room_outside_ledger", "gpus": lane, "loading": loading,
-            "ended": ended, "given": given, "free": self.free(&lane)}));
     }
     /// The lane's least room now: each GPU's size less what its executors hold (their ledger), 0
     /// where the inventory doesn't name it. How `place` ranks lanes for a new executor; a reading
@@ -4101,12 +4071,10 @@ impl Pool {
             serving: self.serving.clone(),
             id,
         });
-        let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
             // An executor of a project's own local code (its generation in the project) ends with the project's files
             // (`close_private_namespace`).
             private_project: crate::private_io::project_of(&held.record.python),
-            ledger,
             env: plan.executor.clone(),
             start,
             generation: plan.generation.clone(),
@@ -4148,9 +4116,6 @@ impl Pool {
         let _live = self.live(session.executor.birth.pid, &construction);
         self.released(session);
         let gpus = self.lane(start, degree)?;
-        if !session.ledger && degree > 0 {
-            self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
-        }
         // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one slowed most of its load (heat, a host's power limit) warns as it goes.
         let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
         let replayed = samples.is_some();
@@ -4579,13 +4544,6 @@ impl Pool {
 /// interpreter's own Runtime; its builders inherit that path.
 const RUNTIME_FIRST: &str = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); \
     runpy.run_module('cozy_runtime.internal.machine_kernels', run_name='__main__')";
-
-/// Whether an executor of TensorFS `version` shares its GPUs through their ledgers: varena v2,
-/// TensorFS 0.21 on. One that names none is taken as current.
-fn in_ledger(version: &str) -> bool {
-    use std::str::FromStr;
-    pep440_rs::Version::from_str(version).map_or(true, |version| version.release() >= &[0, 21][..])
-}
 
 /// A Runtime wheel's importable tree, unpacked once per wheel digest under `into`.
 fn unpack_runtime(wheel: &Path, into: &Path) -> io::Result<PathBuf> {
