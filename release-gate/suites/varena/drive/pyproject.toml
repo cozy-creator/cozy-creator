@@ -9,7 +9,7 @@ description = "The varena suite's calls of the Runtime's own varena exercisers (
 requires-python = ">=3.12"
 # The exercisers run in this environment: they need torch and the Runtime's TensorFS.
 # Transformers: the engine-step case builds a small Qwen3.5 (xs-213).
-dependencies = ["cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19", "torch>=2.14", "transformers>=5.17,<6"]
+dependencies = ["cozy-runtime>=0.48.0.dev0,<0.50", "msgspec>=0.19", "torch>=2.14", "transformers>=5.17,<6"]
 
 [project.entry-points."cozy.application"]
 default = "varena_drive:app"
