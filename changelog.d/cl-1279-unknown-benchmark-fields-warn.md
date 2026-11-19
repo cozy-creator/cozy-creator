@@ -1,0 +1,1 @@
+`cozy package publish` warns of a `benchmarks.json` field this cozy doesn't read instead of refusing the package: one line per field names it and its rows, the field is left out, and the rows publish. A newer cozy's benchmark fields no longer stop an older one from publishing (cl-1279).

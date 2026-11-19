@@ -561,7 +561,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         .map(|f| PackageDeclaredFile { digest: f.digest.clone(), length: f.length, path: f.path.clone() })
         .collect();
     let interface = files.iter().find(|f| f.path == INTERFACE).ok_or_else(|| refuse("package_interface_missing", "the build described nothing"))?;
-    let benchmarks = blocking(|| benchmarks(&project.root, &interface.local))?;
+    let benchmarks = blocking(|| benchmarks(&project.root, &interface.local, say))?;
     if !benchmarks.is_empty() {
         say(&format!("with {} benchmarks from {BENCHMARKS}", benchmarks.len()));
     }
@@ -679,17 +679,22 @@ const INTERFACE: &str = "metadata/package-interface.json";
 pub(crate) const BENCHMARKS: &str = "benchmarks.json";
 
 /// The benchmarks a release of the package at `root` declares (cl-1024): its `benchmarks.json`, every row whole and naming a function
-/// of its interface (`interface`, as the build described it), refused by row before anything uploads. None without the file.
-fn benchmarks(root: &Path, interface: &Path) -> Result<Vec<PackageBenchmark>, Error> {
+/// of its interface (`interface`, as the build described it), refused by row before anything uploads. None without the file. A field
+/// this cozy doesn't read is left out of its rows and said once, with them (cl-1279, Paul: "warning, not error"): a newer cozy's
+/// rows publish.
+fn benchmarks(root: &Path, interface: &Path, say: Say<'_>) -> Result<Vec<PackageBenchmark>, Error> {
     let path = root.join(BENCHMARKS);
     let Ok(text) = fs::read(&path) else { return Ok(vec![]) };
     let wrong = |why: String| refuse("benchmarks_invalid", format!("{BENCHMARKS}: {why}"));
-    let mut unknown = vec![];
-    let rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| unknown.push(at.to_string()))
-        .map_err(|e| wrong(format!("not a list of benchmarks: {e}")))?;
-    if let Some(at) = unknown.first() {
-        return Err(wrong(format!("{at} is no field of a benchmark")));
-    }
+    let mut unread: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| {
+        let mut steps = vec![];
+        walk(&at, &mut steps);
+        if let Some((row, field)) = steps.split_first().and_then(|(row, field)| Some((row.parse().ok()?, field.join(".")))) {
+            unread.entry(field).or_default().insert(row);
+        }
+    })
+    .map_err(|e| wrong(format!("not a list of benchmarks: {e}")))?;
     let document: serde_json::Value = serde_json::from_slice(&fs::read(interface).map_err(|e| refuse("package_interface_unreadable", e))?)
         .map_err(|e| refuse("package_interface_unreadable", e))?;
     let callables = ::api::interface::Interface::parse(&document).map_err(|e| refuse("package_interface_unreadable", e.to_string()))?.callables;
@@ -710,7 +715,40 @@ fn benchmarks(root: &Path, interface: &Path) -> Result<Vec<PackageBenchmark>, Er
             return Err(wrong(format!("row {at}: {why}")));
         }
     }
+    for (field, at) in unread {
+        say(&format!("{BENCHMARKS}: `{field}` in {} is no field this cozy reads: left out of the release", runs(&at)));
+    }
     Ok(rows)
+}
+
+/// `at`'s steps from the document's root, an option's left out: `3`, `ran_on`, `os`.
+fn walk(at: &serde_ignored::Path<'_>, steps: &mut Vec<String>) {
+    use serde_ignored::Path;
+    match at {
+        Path::Root => {}
+        Path::Seq { parent, index } => {
+            walk(parent, steps);
+            steps.push(index.to_string());
+        }
+        Path::Map { parent, key } => {
+            walk(parent, steps);
+            steps.push(key.clone());
+        }
+        Path::Some { parent } | Path::NewtypeStruct { parent } | Path::NewtypeVariant { parent } => walk(parent, steps),
+    }
+}
+
+/// Rows by their numbers, in runs: `row 4`, `rows 0-2, 5`.
+fn runs(rows: &BTreeSet<usize>) -> String {
+    let mut runs: Vec<(usize, usize)> = vec![];
+    for &row in rows {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == row => *last = row,
+            _ => runs.push((row, row)),
+        }
+    }
+    let said: Vec<String> = runs.iter().map(|&(first, last)| if first == last { first.to_string() } else { format!("{first}-{last}") }).collect();
+    format!("{} {}", if rows.len() == 1 { "row" } else { "rows" }, said.join(", "))
 }
 
 /// A release's file declaration, which the Hub answers with a grant for each file it lacks: declared

@@ -67,6 +67,7 @@ parse "$@"
 . "$(dirname "$0")/installfail.sh"
 . "$(dirname "$0")/grants.sh"
 . "$(dirname "$0")/heldmemo.sh"
+. "$(dirname "$0")/benchfields.sh"
 
 # This proof owns its foreground Calcifer. Keep it out of the ordinary raw-log/body
 # collectors and never emit its private CLI data.
@@ -712,6 +713,7 @@ case $SHARD in
     choice_clamp
     orbit_angles
     old_runtime
+    bench_fields
     hostile_media
     egress
     token_scope
@@ -794,6 +796,8 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # A request's size by its function's own variables, in its plan and its run's record; a broken one refused (cl-1286).
   estimate) parts="estimate_plan logs" ;;
+  # A benchmarks.json field this cozy doesn't read warns and publishes (cl-1279), alone.
+  bench-fields) parts="bench_fields logs" ;;
   # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
   answers) parts="answers_while_committing logs" ;;
   # A run repeated on another computer's machine is answered from its held memo (cl-1225): a stand-in, three runs.
@@ -903,6 +907,7 @@ case $SHARD in
     choice_clamp
     orbit_angles
     old_runtime
+    bench_fields
     hostile_media
     egress
     token_scope
