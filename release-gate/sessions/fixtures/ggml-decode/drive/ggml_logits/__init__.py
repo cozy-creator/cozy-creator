@@ -152,6 +152,26 @@ def _forced(net: torch.nn.Module, prompt: list[int], made: list[int]) -> dict[st
             "lead": [round(x, 3) for x in lead[:12]]}
 
 
+def _profile(decoder: object, ids: list[int]) -> dict[str, object]:
+    """One warm 64-token call of `decoder` under the torch profiler (CUDA activity): its kernels and device time a
+    step, and the kernels taking the most device time."""
+    from torch.profiler import ProfilerActivity, profile
+
+    from cozy_runtime.engine.decoder import Request
+
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        made = decoder(Request(prompts=[ids], max_new=64, stops=[]))  # type: ignore[operator]  # a Decoder
+        torch.cuda.synchronize()
+    kernels = [(e.key, e.count, float(getattr(e, "device_time_total", 0.0) or getattr(e, "cuda_time_total", 0.0)))
+               for e in prof.key_averages()]
+    kernels = [k for k in kernels if k[2] > 0]
+    kernels.sort(key=lambda k: -k[2])
+    steps = max(made.steps, 1)
+    return {"steps": made.steps, "kernels_a_step": round(sum(k[1] for k in kernels) / steps, 1),
+            "device_ms_a_step": round(sum(k[2] for k in kernels) / 1e3 / steps, 3),
+            "top": [[n[:90], c, round(t / 1e3, 3)] for n, c, t in kernels[:30]]}
+
+
 @app.entrypoint(accelerator=True)
 def engine(ctx: Context, model: VisionLM) -> Agreement:
     """The engine's decoder (xs-213 phase 2, `cozy_runtime.engine.decoder`) on `PROMPT`: 512 greedy tokens, never
@@ -169,11 +189,12 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     head = getattr(net, "mtp", None)
     sampled: dict[str, list[int]] = {}
     made_by: dict[str, list[int]] = {}
+    decoders: dict[str, object] = {}
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del net.mtp
         try:
-            decoder = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
+            decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
             request = Request(prompts=[ids], max_new=512, stops=[])
             decoder(request)
             torch.cuda.synchronize()
@@ -199,6 +220,7 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             "kept_a_step": round(sum(kept) / max(len(kept), 1), 3),
             "same_as_today": next((i for i, (x, y) in enumerate(zip(tokens, today)) if x != y), min(len(tokens), len(today))),
         }
+    rows["profile"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
     rows["forced"] = {"today": _forced(net, ids, today)}
     for mode in made_by:
         rows["forced"][mode] = _forced(net, ids, made_by[mode])
