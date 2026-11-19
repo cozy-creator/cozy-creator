@@ -153,8 +153,10 @@ pub struct Stats {
     pub driver_room_bytes: usize,
     /// That room as the last request began, before what the driver took during it.
     pub driver_room_begin_bytes: usize,
-    /// This process's context's measured cost (free before less after), the room of a model set the
-    /// card never ran; 0 where NVML could not read the card.
+    /// What this process held outside its books as the last request began (estimated where unmeasured).
+    pub out_of_books_begin_bytes: usize,
+    /// This process's context's measured cost (free before less after), what a process of a model set
+    /// the card never ran is expected to hold outside its books; 0 where NVML could not read the card.
     pub context_bytes: usize,
     /// The most a process running this model set on this card held outside its books, as learned
     /// when the room was last measured; 0 for a set the card never ran.
@@ -737,9 +739,10 @@ pub struct Device {
     driver_room_outside: AtomicUsize,
     /// This process's bytes outside its books, as last measured (`cooperative::expect`).
     out_of_books: AtomicUsize,
-    /// For the record (`DeviceStats`): the room as the last request began, the context's measured
-    /// cost, and the learned figure the room was measured from.
+    /// For the record (`DeviceStats`): the room and what this process held outside its books as the last
+    /// request began, the context's measured cost, and the learned figure the room was measured from.
     driver_room_begin: AtomicUsize,
+    out_of_books_begin: AtomicUsize,
     context_cost: AtomicUsize,
     out_of_books_learned: AtomicUsize,
     // The most weight bytes held for use at once in this plan phase (`enter_plan_phase` resets it).
@@ -795,6 +798,7 @@ impl Device {
             driver_room_outside: AtomicUsize::new(0),
             out_of_books: AtomicUsize::new(0),
             driver_room_begin: AtomicUsize::new(0),
+            out_of_books_begin: AtomicUsize::new(0),
             context_cost: AtomicUsize::new(0),
             out_of_books_learned: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
@@ -969,10 +973,11 @@ impl Device {
         self.out_of_books_learned.store(learned, Ordering::Release);
     }
 
-    /// A request began with `room` kept for the driver.
+    /// A request began with `room` kept for the driver, this process holding `own` outside its books.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) fn driver_room_began(&self, room: usize) {
+    pub(crate) fn driver_room_began(&self, room: usize, own: usize) {
         self.driver_room_begin.store(room, Ordering::Release);
+        self.out_of_books_begin.store(own, Ordering::Release);
     }
 
     /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the card
@@ -1282,6 +1287,7 @@ impl Device {
             out_of_books_bytes: self.out_of_books.load(Ordering::Acquire),
             driver_room_bytes: self.driver_room(),
             driver_room_begin_bytes: self.driver_room_begin.load(Ordering::Acquire),
+            out_of_books_begin_bytes: self.out_of_books_begin.load(Ordering::Acquire),
             context_bytes: self.context_cost.load(Ordering::Acquire),
             out_of_books_learned_bytes: self.out_of_books_learned.load(Ordering::Acquire),
             poisoned: state.poison.is_some(),
