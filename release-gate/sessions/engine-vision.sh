@@ -9,16 +9,23 @@
 #   pictures  the engine's decoder on a picture, a picture in an earlier turn, a short video and text, as one bucket of four rows
 #             (four rope deltas) and each alone, drafted and plain, every row against Transformers' teacher-forced forward with
 #             the pixel values at every clear position; tokens kept a step on each;
-#   caption   Caption's question on both engines on one executor, warm, the same seeds: CozyEngine must be faster a call.
-# And on q8_0, through `cozy run` as a person runs them, each note "by the engine", no engine kernel compiled on the request:
-# `qwen3/caption` (a mentioned picture), `qwen3/ask` with a picture and with a video file, the drive's `ask` with a picture in an
-# earlier turn. The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime.
-# params: tree (required), tensorfs, runtime (required), small (the CPU check's model), seconds (2400), skus and quoted.
+#   caption   Caption's question on both engines on one executor, warm, the same seeds: CozyEngine must be faster a call;
+#   bucket    the four cases as one call through both engines likewise (Transformers' engine reads their pictures in one
+#             vision pass, CozyEngine a row at a time): CozyEngine must be faster a call.
+# Then on q8_0, through `cozy run` as a person runs them (`routes`), each note "by the engine", no engine kernel compiled on the
+# request: `qwen3/caption` (a mentioned picture), `qwen3/ask` with a picture and with a video file, the drive's `ask` with a
+# picture in an earlier turn; and (`cap`) a picture call with the GPU limited to 6 GiB completes, its `.engine` note told.
+# Every run's record must name the candidate Runtime and none may be memoized. The pod runs this session's cozy as its TensorD
+# and the candidate TensorFS and Runtime.
+# params: tree (required), tensorfs, runtime (required), small (the CPU check's model), seconds (2400), skus and quoted;
+#         parts (default: inputs pictures caption bucket routes cap), lanes (default: q8 int8).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
 DRIVE=$HERE/fixtures/engine-vision/drive
 TREE=$(param tree '') SMALL=$(param small huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0)
+PARTS=" $(param parts 'inputs pictures caption bucket routes cap') " LANES=$(param lanes 'q8 int8')
+part() { [[ $PARTS == *" $1 "* ]]; }
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 command -v ffmpeg > /dev/null || fail "no ffmpeg"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
@@ -26,7 +33,8 @@ Q8=qwen/qwen3.5-9b@sha256:c1059b7b191259ecd579df4640b6abd4e419aa25761135f0bd12c8
 INT8=qwen/qwen3.5-9b@sha256:37a131b745e22e0c074592f349d6fd6778e5b127dd2a4b277e64ffd053742bd7
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
-say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version)"
+say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · parts${PARTS% } · lanes $LANES"
+BUILD=${RUNTIME##*/cozy_runtime-} BUILD=${BUILD%%-cp*}
 mkdir -p "$OUT/inputs"
 ffmpeg -v error -y -f lavfi -i testsrc=duration=2:size=320x240:rate=10 -pix_fmt yuv420p "$OUT/inputs/clip.mp4" || fail "no clip"
 kernels "$SOURCE/qwen3"
@@ -34,7 +42,15 @@ kernels "$SOURCE/qwen3"
 drive_check "$DRIVE" engine_vision "qwen3=$SOURCE/qwen3/uv.lock"
 drive_lock "$DRIVE"
 
-record() { local n; n=$(runno "$1"); [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> /dev/null; }
+# record <step>: the run's record; it must name the candidate Runtime and be no memo's answer.
+record() {
+  local n ran memo; n=$(runno "$1")
+  [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> /dev/null
+  ran=$(jq -r '[.. | objects | .measurements?.software?.runtime? // empty] | first // ""' "$OUT/$1.json" 2> /dev/null)
+  memo=$(jq -r '[.. | objects | .memo?.memoized?, (.calls[]?.memoized?) | select(. != null)] | any' "$OUT/$1.json" 2> /dev/null)
+  [ "$ran" = "$BUILD" ] && [ "$memo" != true ] ||
+    { say "FAILED: $1: its record names Runtime '${ran:-none}' (not $BUILD) or is memoized ($memo)"; FAILED+=("$1-record"); }
+}
 detail() { jq -r '.result.detail // ""' "$OUT/$1.json" > "$OUT/$1-detail.json" 2> /dev/null; }
 # note <step>: the run's `.engine` note (which engine served it, and why not the engine).
 note() { jq -r '[.. | objects | to_entries[] | select((.key | endswith(".engine")) and (.value | type == "string")) | .value] | first // ""' "$OUT/$1.json" 2> /dev/null; }
@@ -52,7 +68,9 @@ inputs() {
     { say "FAILED: $1: a case's top token or rope delta isn't Transformers'"; FAILED+=("$1"); }
 }
 # The CPU check, on this runner's own machine with the candidates: what a $0 pre-flight is for.
-if step local-candidates machine update local --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y; then
+if ! part inputs; then
+  say "inputs: not asked (parts)"
+elif step local-candidates machine update local --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y; then
   inputs inputs-cpu local "$SMALL"
 else
   say "FAILED: the candidates on this runner's machine: $(tail -c 400 "$OUT/local-candidates.txt")"; FAILED+=("local-candidates")
@@ -84,7 +102,7 @@ route() {
 served_from() {
   local label=$1 model=$2 i began=$SECONDS
   for i in $(seq 1 20); do
-    step "$label-$i" run "$SOURCE/qwen3/ask" --model "model=$model" "prompt=Name a colour." max_tokens:=8 temperature:=0 \
+    step "$label-$i" run "$SOURCE/qwen3/ask" --model "model=$model" "prompt=Name a colour." max_tokens:=8 temperature:=0 seed:="$i" \
       --on "$NAME" || { FAILED+=("$label-$i"); return; }
     record "$label-$i"
     if [[ $(note "$label-$i") == *"by the engine"* ]]; then say "$label: the engine serves from call $i, $((SECONDS - began)) s in"; return; fi
@@ -92,11 +110,12 @@ served_from() {
   done
   say "FAILED: $label: the engine never served in 20 calls"; FAILED+=("$label")
 }
-for lane in q8:$Q8 int8:$INT8; do
-  l=${lane%%:*} model=${lane#*:}
+for l in $LANES; do
+  case $l in q8) model=$Q8 ;; int8) model=$INT8 ;; *) fail "lane $l: q8 or int8" ;; esac
   step "pull-$l" model install "$model" --on "$NAME" || fail "pull $l"
   served_from "cold-$l" "$model"
-  inputs "inputs-$l" "$NAME" "$model"
+  ! part inputs || inputs "inputs-$l" "$NAME" "$model"
+  if part pictures; then
   step "pictures-$l" run "$DRIVE/pictures" --model "model=$model" --file "image=$REF/seed.jpg" --on "$NAME" ||
     { tail -c 2000 "$OUT/pictures-$l.txt" | tee -a "$R"; FAILED+=("pictures-$l"); }
   record "pictures-$l"; detail "pictures-$l"
@@ -104,12 +123,24 @@ for lane in q8:$Q8 int8:$INT8; do
   jq -e '.declared and ([.drafted, .plain] | map(select(. != null)) | length == 2 and all(to_entries | length == 4 and
          all(.value.bucket.agreed == .value.bucket.clear and .value.alone.agreed == .value.alone.clear and .value.alone.clear >= 20)))' \
     "$OUT/pictures-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: pictures-$l: a clear position disagreed, or too few"; FAILED+=("pictures-$l-forced"); }
+  say "pictures-$l: tokens kept a step (alone, bucket): $(jq -c '[.drafted // {} | to_entries[] | {(.key): [.value.kept_a_step, .value.bucket_kept_a_step]}] | add' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
+  fi
+  if part caption; then
   step "caption-$l" run "$DRIVE/caption" --model "model=$model" --file "image=$REF/seed.jpg" runs:=3 --on "$NAME" ||
     { tail -c 2000 "$OUT/caption-$l.txt" | tee -a "$R"; FAILED+=("caption-$l"); }
   record "caption-$l"; detail "caption-$l"
   say "caption-$l: $(jq -c '{call_x, token_x, engine: [.engine[] | [.s, .tokens, .prefill_s]], transformers: [.transformers[] | [.s, .tokens]]}' "$OUT/caption-$l-detail.json" 2> /dev/null)"
   jq -e '.call_x > 1' "$OUT/caption-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: caption-$l: CozyEngine is no faster a call"; FAILED+=("caption-$l-speed"); }
+  fi
+  if part bucket; then
+    step "bucket-$l" run "$DRIVE/bucket" --model "model=$model" --file "image=$REF/seed.jpg" runs:=3 --on "$NAME" ||
+      { tail -c 2000 "$OUT/bucket-$l.txt" | tee -a "$R"; FAILED+=("bucket-$l"); }
+    record "bucket-$l"; detail "bucket-$l"
+    say "bucket-$l: $(jq -c '{call_x, engine: [.engine[] | [.s, .tokens, .prefill_s, .decode_s]], transformers: [.transformers[] | [.s, .tokens]]}' "$OUT/bucket-$l-detail.json" 2> /dev/null)"
+    jq -e '.call_x > 1' "$OUT/bucket-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket-$l: CozyEngine is no faster a call"; FAILED+=("bucket-$l-speed"); }
+  fi
 done
+if part routes; then
 route caption "$SOURCE/qwen3/caption" --model "model=$Q8" "instructions=<picture>" \
   "references:=[{\"name\": \"picture\", \"image\": \"$REF/seed.jpg\"}]" seed:=7
 route picture "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=What is in this picture?" --file "images=$REF/seed.jpg" \
@@ -117,6 +148,17 @@ route picture "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=What is in this pi
 route video "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=What happens in this video?" --file "videos=$OUT/inputs/clip.mp4" \
   max_tokens:=32 temperature:=0
 route earlier "$DRIVE/ask" --model "model=$Q8" --file "image=$REF/seed.jpg" case=earlier
+fi
+if part cap; then  # a picture call at 6 GiB completes, which engine served it and why in its note
+  step cap machine update "$NAME" --gpu-memory-limit 6GiB -y || fail "limit the GPU to 6 GiB"
+  step capped run "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=What is in this picture?" --file "images=$REF/seed.jpg" \
+    max_tokens:=32 temperature:=0 seed:=11 --on "$NAME" || { tail -c 2000 "$OUT/capped.txt" | tee -a "$R"; FAILED+=("capped"); }
+  record capped
+  said=$(jq -r '.result.texts[0] // ""' "$OUT/capped.json" 2> /dev/null)
+  say "capped (6 GiB): engine note: $(note capped) · answer: $(head -c 200 <<<"$said")"
+  [ -n "$(note capped)" ] && [ -n "${said//[[:space:]]/}" ] || { say "FAILED: capped: no note or no words"; FAILED+=("capped-note"); }
+  step uncap machine update "$NAME" --gpu-memory-limit off -y || say "uncap failed"
+fi
 # The executors' own lines on kernels and the engine (a bounded tail of TensorD's log).
 cozy machine logs "$NAME" tensord -n 4000 2> /dev/null | grep -aE '\[kernels\]|\[engine\]|\[lm\]' > "$OUT/kernel-lines.txt" || true
 say "kernel lines: $(wc -l < "$OUT/kernel-lines.txt")"
