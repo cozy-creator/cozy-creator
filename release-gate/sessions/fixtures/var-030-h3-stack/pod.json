@@ -22,7 +22,7 @@
       ],
       "update": {
         "runtime": "44629282533",
-        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
         "tensord": true,
         "gpu_memory_limit": "off"
       }
@@ -39,7 +39,7 @@
       ],
       "update": {
         "runtime": "44639451556",
-        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
         "gpu_memory_limit": "off"
       }
     },
@@ -56,7 +56,7 @@
       "tree": "se",
       "update": {
         "runtime": "44639451556",
-        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
         "gpu_memory_limit": "6GiB"
       },
       "keep_state": true
