@@ -13,7 +13,7 @@ export type Health =
 type Presence = { tab: string; project: string | null; revision: number; machines: boolean; gpus?: boolean }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
-type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
+type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply }
 
 type Shared =
   | { event: StreamEvent }
@@ -231,8 +231,8 @@ export class EventStream {
       const now = this.shown.get(presence.tab)
       if (!now || now.revision !== presence.revision || now.project !== presence.project) continue
       const project = presence.project
-      // A legacy204 confirms completion only; a current reply proves which IDs were held.
-      const refusal = project && confirmed.reply && !confirmed.reply.held.includes(project)
+      // The reply says which projects were held.
+      const refusal = project && !confirmed.reply.held.includes(project)
         ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Cozy couldn't keep this project open", next: [] } }
         : undefined
       const shown: Acknowledged = { ...presence, stream: confirmed.stream, refusal: refusal || undefined }

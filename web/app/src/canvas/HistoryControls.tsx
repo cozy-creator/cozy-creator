@@ -22,17 +22,15 @@ export function HistoryControls({ onAddFiles }: { onAddFiles: () => void }) {
   const { history } = store
   useSignal(history.moved)
   useSignal(history.entries)
-  const kept = useSignal(history.kept)
-  const undo = kept ? history.nextUndo() : undefined
-  const redo = kept ? history.nextRedo() : undefined
-  const none = "Undo needs a newer version of Cozy on this computer"
+  const undo = history.nextUndo()
+  const redo = history.nextRedo()
 
   return (
     <div className="history">
-      <button type="button" className="tb" aria-label="Undo" title={!kept ? none : undo ? `Undo: ${undo.words}, by ${said(undo.by)} (${UNDO_KEY})` : "Nothing to undo"} disabled={!undo} onClick={() => store.undo()}>
+      <button type="button" className="tb" aria-label="Undo" title={undo ? `Undo: ${undo.words}, by ${said(undo.by)} (${UNDO_KEY})` : "Nothing to undo"} disabled={!undo} onClick={() => store.undo()}>
         <Icon name="undo" />
       </button>
-      <button type="button" className="tb" aria-label="Redo" title={!kept ? none : redo ? `Redo: ${redo.words} (${REDO_KEY})` : "Nothing to redo"} disabled={!redo} onClick={() => store.redo()}>
+      <button type="button" className="tb" aria-label="Redo" title={redo ? `Redo: ${redo.words} (${REDO_KEY})` : "Nothing to redo"} disabled={!redo} onClick={() => store.redo()}>
         <Icon name="redo" />
       </button>
       <button type="button" className="tb" aria-label="Add files" title="Add files" onClick={onAddFiles}>

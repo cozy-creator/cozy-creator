@@ -293,11 +293,10 @@ export class Client {
 
   /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
    *  hears runs only of these. One that ended is told again on the next. */
-  async show(stream: string, projects: string[], machines: boolean, gpus: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
+  async show(stream: string, projects: string[], machines: boolean, gpus: boolean, signal: AbortSignal): Promise<ProjectShowReply> {
     const body = JSON.stringify({ projects, machines, gpus })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
-    // Older services confirm completion without saying which Readers they could install.
-    return response.status === 204 ? null : response.json()
+    return response.json()
   }
 
   // Files

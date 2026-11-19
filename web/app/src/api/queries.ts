@@ -4,7 +4,7 @@ import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 import type { EventStream } from "./events"
 import { nextProjectOrder } from "./projectOrder"
-import { migrateLegacyProjectView, rememberProjectView } from "../app/view"
+import { rememberProjectView } from "../app/view"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
@@ -76,7 +76,7 @@ export const projectViewQuery = (client: Client, stream: EventStream, id: string
     queryFn: async ({ signal }) => {
       await stream.whenShown(id, signal)
       signal.throwIfAborted()
-      const view = await migrateLegacyProjectView(client, id, await client.projectView(id, signal), signal)
+      const view = await client.projectView(id, signal)
       signal.throwIfAborted()
       rememberProjectView(id, view)
       return view
