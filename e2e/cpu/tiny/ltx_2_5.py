@@ -92,7 +92,9 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
              "vae": ["diffusers", "AutoencoderKLLTX2Video"], "audio_vae": ["diffusers", "AutoencoderKLLTX2Audio"],
              "vocoder": ["diffusers", "LTX2VocoderWithBWE"], "latent_upsampler": ["diffusers", "LTX2LatentUpsamplerModel"]}
     (out / "model_index.json").write_text(json.dumps({"_class_name": "LTX2Pipeline", "_diffusers_version": "0.43.0", **names}))
-    return {REF: out}
+    # The same checkpoint keyed by the `text_encoder` slot's name: bound under whichever encoder ltx-2.5 defaults to, whose
+    # class builds this checkpoint's encoder (se-160).
+    return {REF: out, "text_encoder": out}
 
 
 _SMALL: dict[str, Json] = {"prompt": "A red ball rolls across a wooden table. Quiet room tone.",
