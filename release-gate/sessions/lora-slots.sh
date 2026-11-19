@@ -12,18 +12,19 @@
 #    `slot_a`); each is swapped (to `swap_b`, `slot_b`) once its old LoRA's own bytes come: whether the old download stops. Both rendered
 #    (the new LoRA whole before Render, 0 B waited). Then a bare `--lora` on the CLI: krea-2/image (`bare_krea`) and Orbit (`bare`),
 #    which slots each adapted. Every run the pod saw, by id, so a run another session pinned is seen (cl-1316).
+# 5. bare (`phases=bare`, `new` only): step 4's bare runs alone, on Orbit (`bare`) and MOSS (`bare_moss`, moss-image/image).
 # params:
 #   old, new   the packages_refs checkouts (`-f packages_refs="old=rc/0.27.0 new=proof/cl-1281-lora-slots"`)
 #   runtime    a cozy-runtime dev-build run id for the pod's Runtime (empty: the open RC's)
 #   seed       every box's seed (default 20260926)
-#   phases     all (default); overrides: step 3 alone on `new`, after the defaults it compares with (turn, restyle, depth); swap: step 4
+#   phases     all (default); overrides: step 3 alone on `new`, after the defaults it compares with (turn, restyle, depth); swap: step 4; bare: step 5
 . "$(dirname "$0")/lib.sh"
 fail() {
   [ -z "${NAME:-}" ] || cozy machine logs "$NAME" --since 240m -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
   say "FAIL: $*"; RC=1; exit 1
 }
 OLD=$PACKAGES/$(param old old) NEW=$PACKAGES/$(param new new) SEED=$(param seed 20260926) RT=$(param runtime '') NEED=$(param need_s 5400) PHASES=$(param phases all)
-[[ $PHASES =~ ^(all|overrides|swap)$ ]] || fail "phases $PHASES: all, overrides or swap"
+[[ $PHASES =~ ^(all|overrides|swap|bare)$ ]] || fail "phases $PHASES: all, overrides, swap or bare"
 OTHER_H3=alissonerdx/minimax-h3-vfx-edit@0.1.0 OTHER_MOSS=thedeoxen/moss-image-canny-controlnet@0.1.0
 for t in "$OLD" "$NEW"; do
   [ "$PHASES" = all ] || [ "$t" = "$NEW" ] || continue
@@ -112,7 +113,6 @@ fi
 if [ "$PHASES" = swap ]; then
   SWAP_A=$(param swap_a conradlocke/general-edit@0.1.0) SWAP_B=$(param swap_b gokaygokay/krea-2-realism@0.1.1)
   SLOT_A=$(param slot_a alissonerdx/minimax-h3-vfx-edit@0.1.1) SLOT_B=$(param slot_b matlowai/orb360@0.1.1)
-  BARE=$(param bare jojocodex/minimax-h3-spatial-physics@0.1.1) BARE_KREA=$(param bare_krea krea/krea-2-darkbrush@0.1.1)
   krea() { jq -nc --arg l "$1" --argjson s "$SEED" '{instructions: "A red bicycle against a white wall.", megapixels: 1, seed: $s, lora: [{ref: $l}]}'; }
   slotted() { turn | jq -c --arg l "$1" '. + {models: {lora: {ref: $l}}}'; }
   add styled krea-2/image "$(krea "$SWAP_A")"
@@ -252,14 +252,28 @@ if [ "$PHASES" = swap ]; then
   say "$A (styled's old box lora): $(after_edit 2 "$EDIT_A"); before Render $(held "$OUT/before-render.json" "$A") B, whole $(whole "$OUT/before-render.json" "$A")"
   say "$SA (turn_swap's old models.lora): $(after_edit 6 "$EDIT_SA"); before Render $(held "$OUT/before-render.json" "$SA") B, whole $(whole "$OUT/before-render.json" "$SA")"
   for b in styled turn_swap; do rendered "$b"; done
-  # A bare --lora names no slot: krea-2/image's DiT (`full`, `model`), and Orbit's call's DiT beside its `lora` slot's default.
-  say "bare: cozy run krea-2/image --lora $BARE_KREA on $NAME"
-  step bare_krea run "$NEW/krea-2/image" "instructions=A red bicycle against a white wall." megapixels:=1 seed:="$SEED" --lora "$BARE_KREA" \
-    --on "$NAME" -o "$OUT/frames/bare_krea" || { say "bare_krea failed: $(tail -c 400 "$OUT/bare_krea.txt")"; RC=1; }
-  say "bare: cozy run orbit/orbit --lora $BARE on $NAME"
-  step bare_orbit run "$NEW/orbit/orbit" 'instructions=<pic>' "references:=$(jq -cn --arg f "$OUT/inputs/pic.jpg" '[{name: "pic", image: $f}]')" \
-    seed:="$SEED" --lora "$BARE" --on "$NAME" -o "$OUT/frames/bare_orbit" || { say "bare_orbit failed: $(tail -c 400 "$OUT/bare_orbit.txt")"; RC=1; }
-  for b in bare_krea bare_orbit; do
+fi
+
+if [ "$PHASES" = swap ] || [ "$PHASES" = bare ]; then
+  # A bare --lora names no slot: krea-2/image's DiT (`full`, `model`); Orbit's call's DiT beside its `lora` slot's default; MOSS's
+  # called DiT, not one of its six LoRA slots. Orbit and MOSS by name, from the dev home's checkout: `<dir>/orbit/orbit` is a folder.
+  BARE=$(param bare jojocodex/minimax-h3-spatial-physics@0.1.1) BARE_KREA=$(param bare_krea krea/krea-2-darkbrush@0.1.1)
+  BARE_MOSS=$(param bare_moss darask0/moss-image-color-depth-control@0.1.0)
+  bares=(bare_orbit); [ "$PHASES" = swap ] && bares=(bare_krea bare_orbit) || bares=(bare_orbit bare_moss)
+  for b in "${bares[@]}"; do
+    case $b in
+      bare_krea) say "bare: cozy run krea-2/image --lora $BARE_KREA on $NAME"
+        step bare_krea run "$NEW/krea-2/image" "instructions=A red bicycle against a white wall." megapixels:=1 seed:="$SEED" --lora "$BARE_KREA" \
+          --on "$NAME" -o "$OUT/frames/bare_krea" ;;
+      bare_orbit) say "bare: cozy run orbit/orbit --lora $BARE on $NAME"
+        step bare_orbit run orbit/orbit 'instructions=<pic>' "references:=$(jq -cn --arg f "$OUT/inputs/pic.jpg" '[{name: "pic", image: $f}]')" \
+          seed:="$SEED" --lora "$BARE" --on "$NAME" -o "$OUT/frames/bare_orbit" ;;
+      bare_moss) say "bare: cozy run moss-image/image --lora $BARE_MOSS on $NAME"
+        step bare_moss run moss-image/image "instructions=A stone tower on a hill at dusk." megapixels:=1 seed:="$SEED" --lora "$BARE_MOSS" \
+          --on "$NAME" -o "$OUT/frames/bare_moss" ;;
+    esac || { say "$b failed: $(tail -c 400 "$OUT/$b.txt")"; RC=1; }
+  done
+  for b in "${bares[@]}"; do
     n=$(runno "$b")
     [ -n "$n" ] || { say "$b: no run number"; RC=1; continue; }
     (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$b.json" 2>&1
@@ -276,7 +290,7 @@ if [ "$PHASES" = swap ]; then
   echo "$strays" > "$OUT/pod-runs-not-ours.txt"
 fi
 
-if [ "$PHASES" != swap ]; then
+if [ "$PHASES" = all ] || [ "$PHASES" = overrides ]; then
 say "overrides, the twin without a LoRA, nested calls, and a package with no LoRA slot"
 add turn_other orbit/orbit "$(turn | jq -c --arg l "$OTHER_H3" '. + {models: {lora: {ref: $l}}}')"
 add restyle_other minimax-h3/edit "$(restyle "" | jq -c --arg l "$OTHER_H3" '. + {models: {style_transfer: {ref: $l}}}')"
