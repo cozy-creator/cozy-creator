@@ -119,6 +119,7 @@ impl Stage {
                 capped.join(", ")
             ));
         }
+        uv_tables(&mut doc)?;
         let excluded = (doc["tool"]["uv"]["exclude-dependencies"].or_insert(toml_edit::value(toml_edit::Array::new())))
             .as_array_mut()
             .ok_or_else(|| refuse("project_invalid", "tool.uv.exclude-dependencies is not a list"))?;
@@ -289,6 +290,17 @@ impl Stage {
         };
         platform::tools::uv_listed(lock, |(_, said)| Some(said.as_str()), || false).map_err(|(error, _)| error)
     }
+}
+
+/// `[tool]` and `[tool.uv]` as tables, made if missing. toml_edit makes a missing one inline when indexed through, and never writes a
+/// table set inside an inline one: a script's copy (no `[tool.uv]`) lost the RC Runtime's URL source and locked PyPI's (cl-1281).
+fn uv_tables(doc: &mut toml_edit::DocumentMut) -> Result<(), Error> {
+    fn table<'a>(parent: &'a mut toml_edit::Table, key: &str) -> Result<&'a mut toml_edit::Table, Error> {
+        let item = parent.entry(key).or_insert(toml_edit::table());
+        *item = std::mem::take(item).into_table().map_or_else(|item| item, toml_edit::Item::Table);
+        item.as_table_mut().ok_or_else(|| refuse("project_invalid", format!("{key} in pyproject.toml is not a table")))
+    }
+    table(table(doc.as_table_mut(), "tool")?, "uv").map(drop)
 }
 
 /// A `tensorhub` source table's index renamed `to`: one of several the copy binds.

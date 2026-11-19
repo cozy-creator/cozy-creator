@@ -1,10 +1,10 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[adapters]>=0.45", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[adapters]>=0.49.0.dev2356", "msgspec>=0.19"]
 # ///
 """The cli suite's handed-LoRA script (cl-1281): Orbit's, MOSS's and H3 edit's shape. `handed` loads no model; its LoRA slot, a
-Weights with a default and a `needs` rule, goes to the call that applies it by its ref. `encoded` is lora_slots.py's. Its own script:
-a Runtime before cozy-runtime #2295 refuses the rule when it reads the file, which would stop lora_slots.py's cells too."""
+Weights with a default and a `needs` rule, goes to the call that applies it by its ref. `encoded` is lora_slots.py's. Its own script,
+floored on the first Runtime build with cozy-runtime #2295 (0.49.0.dev2356): an older one refuses the rule when it reads the file."""
 
 from typing import cast
 
