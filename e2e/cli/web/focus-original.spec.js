@@ -106,22 +106,48 @@ test('focus-original', async ({ page, project }) => {
   await test.step('a 16,384 px panorama: its 32 MP file drawn as the page draws on, zoomed to its own pixels', async () => {
     // Every frame from here to its file drawn: the longest gap between two.
     await page.evaluate(() => {
-      const seen = (window.__frames = { longest: 0, last: performance.now(), id: 0 });
+      const seen = (window.__frames = { longest: 0, at: 0, last: performance.now(), id: 0, loaf: [], tasks: [] });
       const tick = (now) => {
-        seen.longest = Math.max(seen.longest, now - seen.last);
+        if (now - seen.last > seen.longest) { seen.longest = now - seen.last; seen.at = seen.last; }
         seen.last = now;
         seen.id = requestAnimationFrame(tick);
       };
       seen.id = requestAnimationFrame(tick);
+      // Diagnostic (xs-225 follow-up): the main thread's own long frames and tasks over the same window.
+      try {
+        seen.lo = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) seen.loaf.push({ start: e.startTime, duration: e.duration, blocking: e.blockingDuration,
+            render: e.renderStart ? e.renderStart - e.startTime : null, style: e.styleAndLayoutStart ? e.styleAndLayoutStart - e.startTime : null,
+            scripts: (e.scripts || []).map((x) => ({ duration: x.duration, fn: x.sourceFunctionName, invoker: x.invoker,
+              url: String(x.sourceURL || '').split('/').pop(), forced: x.forcedStyleAndLayoutDuration })) });
+        });
+        seen.lo.observe({ type: 'long-animation-frame' });
+      } catch (e) { seen.loafError = String(e); }
+      try {
+        seen.lt = new PerformanceObserver((list) => { for (const e of list.getEntries()) seen.tasks.push({ start: e.startTime, duration: e.duration }); });
+        seen.lt.observe({ type: 'longtask' });
+      } catch (e) { seen.taskError = String(e); }
     });
     const region = await focusOn(page, PANORAMA.name);
     const file = await fileOf(PANORAMA.name);
     await soft.poll(() => drawn(page), { message: `its own file, from ${file}`, timeout: 60_000 })
       .toMatchObject({ resolution: 'original', width: PANORAMA.width, height: PANORAMA.height, src: file });
-    const longest = await page.evaluate(() => {
-      cancelAnimationFrame(window.__frames.id);
-      return Math.round(window.__frames.longest);
+    const frames = await page.evaluate(() => {
+      const f = window.__frames;
+      cancelAnimationFrame(f.id);
+      f.lo?.disconnect(); f.lt?.disconnect();
+      const r = (x) => Math.round(x);
+      const gap = [f.at, f.at + f.longest];
+      const over = (e) => e.start < gap[1] && e.start + e.duration > gap[0];
+      const top = (xs) => [...xs].sort((a, b) => b.duration - a.duration).slice(0, 3);
+      return { longest: r(f.longest), gap: gap.map(r), loafError: f.loafError, taskError: f.taskError,
+        loafs: f.loaf.length, loafTop: top(f.loaf).map((e) => ({ ...e, start: r(e.start), duration: r(e.duration), blocking: r(e.blocking), over: over(e) })),
+        loafInGap: f.loaf.filter(over).map((e) => ({ start: r(e.start), duration: r(e.duration), blocking: r(e.blocking), render: e.render && r(e.render), scripts: e.scripts })),
+        tasks: f.tasks.length, taskTop: top(f.tasks).map((e) => ({ start: r(e.start), duration: r(e.duration), over: over(e) })),
+        maxBlocking: r(Math.max(0, ...f.loaf.map((e) => e.blocking))), maxTask: r(Math.max(0, ...f.tasks.map((e) => e.duration))) };
     });
+    const longest = frames.longest;
+    test.info().annotations.push({ type: 'panorama-frames', description: JSON.stringify(frames) });
     // Judged on this runner (release e2e 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page): its file's
     // decode timed here (the middle of three), and a page that waited for it on its main thread holds a frame at least that long. The page
     // drawing on held 0.47, 0.49 and 0.69 of it (44444265058, 44445572294 in web-3, 44447062335); a stall as long as the decode held
