@@ -2,8 +2,8 @@
 // right?"): Focus draws a picture's own file at its own pixels, never the thumbnail Calcifer keeps for the canvas (a 512 px JPEG of an
 // opaque picture). A tall one, fitted narrower than 512 screen pixels, drew that thumbnail. Zoomed past one screen pixel to each of its
 // own, its pixels are drawn as they are, as an image editor draws them, not smoothed; fitted, smoothed. A 16,384 px panorama zooms to its
-// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on. Its looks, fitted and zoomed, at 1440×900 and
-// 1920×1080 on paper and dark, are kept for a person to look at.
+// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on: no frame as long as its decode takes on the
+// runner. Its looks, fitted and zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, focus, png, themed } = require('./fixtures');
@@ -14,6 +14,8 @@ const WIDE = { name: 'wide', width: 2304, height: 1728 };
 const TALL = { name: 'tall', width: 1512, height: 2688 };
 const PANORAMA = { name: 'panorama', width: 16384, height: 2048 };
 const LOOKS = [[1440, 900], [1920, 1080]];
+/** The longest frame while the panorama opens, as a share of its file's decode on the same runner: a main-thread decode holds all of it. */
+const DRAWS_ON = 0.85;
 const soft = expect.configure({ soft: true });
 
 /** A picture with detail at every scale: colour sweeps, a grid of single pixels every 32, fine diagonals. A copy, or its pixels smoothed,
@@ -120,10 +122,25 @@ test('focus-original', async ({ page, project }) => {
       cancelAnimationFrame(window.__frames.id);
       return Math.round(window.__frames.longest);
     });
-    expect.soft(longest, 'the longest frame while it opened and its file decoded, ms').toBeLessThan(1000);
+    // Judged on this runner (release e2e 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page): its file's
+    // decode timed here (the middle of three), and a page that waited for it on its main thread holds a frame at least that long. The page
+    // drawing on held 0.47, 0.49 and 0.69 of it (44444265058, 44445572294 in web-3, 44447062335); a stall as long as the decode held
+    // 1.10 (44447065164). Under 0.85 of it passes the first by a fifth and fails any main-thread decode.
+    const decoded = await page.evaluate(async (src) => {
+      const blob = await (await fetch(src)).blob();
+      const times = [];
+      for (let i = 0; i < 3; i++) {
+        const began = performance.now();
+        (await createImageBitmap(blob)).close();
+        times.push(performance.now() - began);
+      }
+      return Math.round(times.sort((x, y) => x - y)[1]);
+    }, file);
+    expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under ${DRAWS_ON} of the ${decoded} ms its file takes to decode here`)
+      .toBeLessThan(DRAWS_ON * decoded);
     const fitted = await drawn(page);
     const most = await zoomUntil(page, region, 'Zoom in image', () => false);
-    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, fitted, most }) });
+    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, decoded, fitted, most }) });
     expect.soft(most.across, `zoomed all the way in, screen pixels to each of its own (fitted ${fitted.across.toFixed(3)})`).toBeGreaterThanOrEqual(1);
     await soft.poll(async () => (await drawn(page)).rendering, { message: 'and its pixels as they are' }).toBe('pixelated');
   });
