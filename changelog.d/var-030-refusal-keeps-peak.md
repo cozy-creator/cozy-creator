@@ -1,0 +1,1 @@
+A split level that TensorFS refuses for want of room, and that the Runtime then runs another way, no longer discards the pass's learned working peak, so the next run of that model starts from it (H3's 1440p refine at 6 GiB was re-measured from nothing on every run). A pass that does not complete still publishes nothing (var-030).
