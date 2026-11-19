@@ -138,6 +138,8 @@ export function createInteraction(o: InteractionOptions): Interaction {
       capture(e)
     } else {
       press = { kind: "background", id: e.pointerId, at, writing: wasWriting }
+      // Keep a pan that began on the canvas held across native controls floating over it.
+      if (!locked() && !o.props().disabled) capture(e)
     }
     if (press?.kind !== "background") lastPaneTap = null
     sync()

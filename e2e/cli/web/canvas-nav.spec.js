@@ -203,6 +203,11 @@ test('empty canvas stays grabbable while panning', async ({ page }) => {
   expect(painted.y).toBeLessThanOrEqual(bounds.y);
   expect(painted.x + painted.width).toBeGreaterThanOrEqual(bounds.x + bounds.width);
   expect(painted.y + painted.height).toBeGreaterThanOrEqual(bounds.y + bounds.height);
+  // The vertical drags crossed this control. Starting a click on it still opens the picker.
+  await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: 'Drop a file here' }).click(),
+  ]);
   await expect.poll(() => canvasNames(page)).toEqual([]);
 });
 
