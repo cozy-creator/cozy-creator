@@ -88,6 +88,26 @@ def quality(ctx: Context, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
+@app.entrypoint(accelerator=True)
+def opening_kernel(ctx: Context, model: VisionLM) -> Agreement:
+    """A decode whose first steps meet a kernel still opening on its card completes: a probe that takes 20 s is primed
+    first (`kernel_ready.prime`), then `PROMPT` is decoded greedily for 32 tokens (xs-213: the first step's warm-up once
+    failed the call with `Building`). Told: its tokens, its wall time and whether the probe was still opening at the end."""
+    from cozy_runtime.internal import kernel_ready
+
+    name = f"xs213-slow-probe cuda:{torch.cuda.current_device()}"
+
+    def slow(wait: bool) -> object:
+        time.sleep(20)
+        return object()
+
+    kernel_ready.prime(name, slow)
+    net = model.pipe.components["model"]
+    ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
+    seconds, made = _timed(net, ids, 32)
+    return Agreement(json.dumps({"tokens": len(made), "s": round(seconds, 3), "still_opening": kernel_ready.opening(name)}))
+
+
 def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float, list[int]]:
     inputs = {"input_ids": ids.to(net.device), "attention_mask": torch.ones_like(ids).to(net.device)}
     torch.cuda.synchronize()
