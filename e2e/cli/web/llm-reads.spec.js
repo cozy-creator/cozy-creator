@@ -3,16 +3,16 @@
 // goes into the prompt that mentions it as words, in place, as a Text box's words do, never as a file. On project/llm.py (local, CPU, it
 // answers with what it was asked): `answer` is an LLM box and `reply`'s prompt says "<answer> …". Render on answer, then on reply (a
 // render makes only what it names, cl-1192); reply's run is sent the answer's words in place, with no reference; a new answer moves what
-// reply reads and nothing says reply is out of date, as with a new picture; `<answer.1>` reads version 1 whatever comes after. The page's `<` offers LLM boxes in any prompt, as
-// words (SDXL's, which takes no picture), and reply's prompt shows its mention as a chip with no picture under it. The `<` list and
-// reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark.
+// reply reads and nothing says reply is out of date, as with a new picture; `<answer.1>` reads version 1 whatever comes after. The page's
+// `<` offers LLM boxes in any prompt, as words (SDXL's, beside the picture it reads since sdxl 0.15, se-175), and reply's prompt shows its
+// mention as a chip with no picture under it. The `<` list and reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark.
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { test, expect, themed, canvasIdle, canvasVisible, fixtureTool, focus, png } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
 const LLM = fixtureTool('llm.py/ask');
-/** SDXL's Image, which the isolated Hub holds for every web job (setup.js SEED): its words take words, no file. */
+/** SDXL's Image, which the isolated Hub holds for every web job (setup.js SEED): its words take words and pictures. */
 const SDXL = 'sdxl/image';
 const RUN_MS = 240_000;
 
@@ -114,7 +114,7 @@ test('llm-reads', async ({ page, project, api }) => {
       if (!(await typed.evaluate((el) => el === document.activeElement))) await typed.click();
       await page.keyboard.press('ControlOrMeta+a');
       await page.keyboard.type('Like <');
-      await expect(offered.getByRole('option'), "SDXL's words: the LLM boxes, and not coast, a picture").toHaveText(['answer', 'fixed', 'reply']);
+      await expect(offered.getByRole('option'), "SDXL's words: the LLM boxes, and coast, a picture it reads").toHaveText(['answer', 'coast', 'fixed', 'reply']);
       await canvasIdle(page);
     };
     await ask();
