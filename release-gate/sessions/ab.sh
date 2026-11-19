@@ -105,11 +105,14 @@ oneway=$(jq -r --argjson a "$ARMS" '[.[] | [$a[.[0]], $a[.[1]]] | select(.[0].bu
   | . as $seen | map(select([.[1], .[0]] as $r | any($seen[]; . == $r) | not) | "\(.[0]) before \(.[1])") | join("; ")' <<<"$COMPARE")
 [ -z "$oneway" ] || [ "$ORDER" = one-way ] ||
   fail "builds compared in one order only (run them A B B A, or say order one-way): $oneway"
-# memokey <cell>: what TensorD's call memo keys the cell's request on, as far as a session can say: its Runtime and TensorFS
-# (not the cap, not TensorD), its packages tree, target and arguments.
+# memokey <cell> [arg...]: what TensorD's call memo keys the cell's request on, as far as a session can say: its Runtime and
+# TensorFS (not the cap, not TensorD), its packages tree, target and arguments (its own, or those given).
 memokey() {
-  jq -r --arg k "$1" --argjson a "$ARMS" 'map(select(.name == $k)) | first
-    | [($a[$k].build | fromjson | del(.tensord) | tojson), (.tree // ""), .target, (.args | join("\u0001"))] | join("\u0002")' <<<"$CELLS"
+  local k=$1; shift
+  jq -r --arg k "$k" --argjson a "$ARMS" 'map(select(.name == $k)) | first
+    | [($a[$k].build | fromjson | del(.tensord) | tojson), (.tree // ""), .target,
+       ((if ($ARGS.positional | length) > 0 then $ARGS.positional else .args end) | join("\u0001"))] | join("\u0002")' \
+    --args "$@" <<<"$CELLS"
 }
 same=$(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE" | while read -r a b; do [ "$(memokey "$a")" != "$(memokey "$b")" ] || echo "$a vs $b"; done | paste -sd';')
 [ -z "$same" ] || fail "compared pairs ask the same request of the same Runtime and TensorFS, which TensorD's call memo answers from the first (it keys no memory cap): $same"
@@ -312,12 +315,19 @@ for k in "${names[@]}"; do
   held "$k" before
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
-  # A request this session already asked of this Runtime and TensorFS takes the next seed: the call memo would answer it.
-  key=$(memokey "$k") n=${ASKED[$key]:-0}; ASKED[$key]=$((n + 1))
-  if [ "$n" -gt 0 ]; then
-    mapfile -t args < <(printf '%s\n' "${args[@]}" | awk -v n="$n" '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + n; next} {print}')
-    say "$k: asked $n time(s) before of this Runtime and TensorFS: $(printf '%s\n' "${args[@]}" | grep -m1 '^seed:=' || echo 'no seed to move, so the call memo may answer it')"
+  # A request this session already asked of this Runtime and TensorFS, as asked (a moved seed counts), takes the next seed none
+  # of them asked: the call memo would answer it.
+  key=$(memokey "$k" "${args[@]}")
+  if [ -n "${ASKED[$key]:-}" ] && ! printf '%s\n' "${args[@]}" | grep -q '^seed:=[0-9][0-9]*$'; then
+    say "$k: asked before of this Runtime and TensorFS, with no seed to move: the call memo may answer it"
+  elif [ -n "${ASKED[$key]:-}" ]; then
+    while [ -n "${ASKED[$key]:-}" ]; do
+      mapfile -t args < <(printf '%s\n' "${args[@]}" | awk '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + 1; next} {print}')
+      key=$(memokey "$k" "${args[@]}")
+    done
+    say "$k: asked before of this Runtime and TensorFS: $(printf '%s\n' "${args[@]}" | grep -m1 '^seed:=')"
   fi
+  ASKED[$key]=1
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
