@@ -1,6 +1,6 @@
 {
  "gpus": 2,
- "need_s": 7000,
+ "need_s": 7800,
  "order": "one-way",
  "compare": [
   [
@@ -260,7 +260,7 @@
     "--gpus=2"
    ],
    "update": {
-    "runtime": "44452415791",
+    "runtime": "44455277380",
     "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
     "tensord": true,
     "gpu_memory_limit": "off"
@@ -316,6 +316,22 @@
    ]
   },
   {
+   "name": "d1-5s-g2b",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35019",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
    "name": "d1-5s-g2c",
    "tree": "cr",
    "target": "ltx-2.5/generate",
@@ -363,7 +379,7 @@
     "--gpus=2"
    ],
    "update": {
-    "runtime": "44452415791",
+    "runtime": "44455277380",
     "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
     "tensord": true,
     "gpu_memory_limit": "off"
