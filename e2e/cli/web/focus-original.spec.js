@@ -25,12 +25,18 @@ function mainThreadWork(events) {
   const names = new Map(events.filter((e) => e.ph === 'M' && e.name === 'thread_name').map((e) => [`${e.pid}:${e.tid}`, e.args.name]));
   const main = events.filter((e) => e.ph === 'X' && names.get(`${e.pid}:${e.tid}`) === 'CrRendererMain');
   const waits = main.filter((e) => e.name === 'CommandBufferHelper::Finish');
-  let worst = { task: 0, waited: 0, work: 0 };
+  const inside = (t, e) => e.pid === t.pid && e.tid === t.tid && e !== t && e.ts >= t.ts && e.ts + (e.dur || 0) <= t.ts + t.dur;
+  let worst = { task: 0, waited: 0, work: 0 }, longest = null;
   for (const t of main.filter((e) => e.name === 'ThreadControllerImpl::RunTask')) {
-    const waited = waits.filter((w) => w.pid === t.pid && w.tid === t.tid && w.ts >= t.ts && w.ts + w.dur <= t.ts + t.dur).reduce((sum, w) => sum + w.dur, 0);
-    if (t.dur - waited > worst.work * 1000) worst = { task: Math.round(t.dur / 1000), waited: Math.round(waited / 1000), work: Math.round((t.dur - waited) / 1000) };
+    const waited = waits.filter((w) => inside(t, w)).reduce((sum, w) => sum + w.dur, 0);
+    if (t.dur - waited > worst.work * 1000) {
+      worst = { task: Math.round(t.dur / 1000), waited: Math.round(waited / 1000), work: Math.round((t.dur - waited) / 1000) };
+      longest = t;
+    }
   }
-  return { ...worst, tasks: main.filter((e) => e.name === 'ThreadControllerImpl::RunTask').length };
+  // What ran in it, by name, for a person reading a red.
+  const ran = longest ? main.filter((e) => inside(longest, e) && e.dur >= 5000).sort((a, b) => b.dur - a.dur).slice(0, 6).map((e) => `${e.name} ${Math.round(e.dur / 1000)}`) : [];
+  return { ...worst, ran, tasks: main.filter((e) => e.name === 'ThreadControllerImpl::RunTask').length };
 }
 const soft = expect.configure({ soft: true });
 
@@ -125,7 +131,7 @@ test('focus-original', async ({ page, project }) => {
     const traced = [];
     cdp.on('Tracing.dataCollected', ({ value }) => traced.push(...value));
     const traceDone = new Promise((done) => cdp.once('Tracing.tracingComplete', done));
-    await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: ['toplevel', 'gpu', '__metadata'] } });
+    await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: ['toplevel', 'gpu', 'disabled-by-default-devtools.timeline', '__metadata'] } });
     await page.evaluate(() => {
       const seen = (window.__frames = { longest: 0, last: performance.now(), id: 0 });
       const tick = (now) => {
