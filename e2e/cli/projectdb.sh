@@ -343,8 +343,8 @@ for _ in $(seq 240); do
   ! closes_open "$first" || h1=1
   ! closes_open "$second" || h2=1
   busy=$(closes_busy "$a" "$b")
-  # Probed before the list said busy, a project may have closed and opened again between (a render's end, then another walk of it),
-  # or the probe missed: one busy and not seen open is probed once more, after the list said so. A render going holds it then.
+  # Probed before the list said busy, a project may have closed and opened again between (a render's end, then another walk of it):
+  # one busy and not seen open is probed once more, after the list said so. A render going holds it then.
   [ "${busy% *}" != true ] || [ "$h1" = 1 ] || ! closes_open "$first" || { h1=1; again=$((again + 1)); }
   [ "${busy#* }" != true ] || [ "$h2" = 1 ] || ! closes_open "$second" || { h2=1; again=$((again + 1)); }
   echo "$SECONDS h1=$h1 h2=$h2 busy=$busy" >> "$CLOSES/samples.log"
@@ -370,9 +370,12 @@ drop_folder "$CLOSES"
 }
 # closes_heap: Calcifer's heap, MiB, as its status says.
 closes_heap() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/status" | jq '.heap_bytes / 1048576 * 10 | round / 10'; }
-# closes_open <project>: Calcifer has its project.db open. Calcifer stays dumpable since cl-984 (only a zero core limit), so its
-# descriptors read without root; the `sudo` is left from when it wasn't, and isn't needed.
-closes_open() { sudo -n find "/proc/$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")/fd" -lname "$(realpath "$1")/project.db" 2> /dev/null | grep -q .; }
+# closes_open <project>: Calcifer has its project.db open, by what find prints, never its status: find fails when any of Calcifer's
+# descriptors closes as it reads them, which pipefail made a miss of a project held open (e2e 44430404935). Calcifer stays dumpable
+# since cl-984, so its descriptors read without root.
+closes_open() {
+  [ -n "$(find "/proc/$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")/fd" -lname "$(realpath "$1")/project.db" -print -quit 2> /dev/null || true)" ]
+}
 # closes_shut <project>: it closes within 10 s.
 closes_shut() { local _; for _ in $(seq 50); do closes_open "$1" || return 0; sleep 0.2; done; return 1; }
 # closes_show <id, or nothing>: what the page on the stream shows now.
@@ -413,6 +416,8 @@ closes_pass() {
     closes_show "$id" > "$CLOSES/show-$i.json" || { check "closes: the stream couldn't show project $i: $(cat "$CLOSES/show-$i.json")"; return 1; }
     J --arg id "$id" '.held | index($id)' "$CLOSES/show-$i.json" || check "closes: the stream doesn't hold project $i: $(cat "$CLOSES/show-$i.json")"
     closes_open "$P" || CLOSES_HELD+=("$i")
+    # The probe is exact: the first project, held by the stream, is never read closed, in any of a wait's 50 samples.
+    [ "$i" != 1 ] || ! closes_shut "$P" || check "closes: the probe read project 1 closed while the stream held it"
     if [ -n "$CLOSES_PREV" ]; then
       closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV")
       t=$(closes_status "$CLOSES_PREV") && CLOSES_REOPENS+=("$t")
