@@ -47,7 +47,7 @@ echo "$1: $said"
 # for images (ideally streaming)": the page cell web/llm-stream.spec.js, on this shard's Qwen3.5 0.8B.
 llm_stream() {
 [ -n "$LOCAL" ] || return 0
-web_alone llm-stream "an LLM's words grow on its box while it writes them (xs-209)"
+web_spec llm-stream "an LLM's words grow on its box while it writes them (xs-209)"
 }
 
 # se-151 (Paul, 11-18): "add the caption tool to an image, (2) run it, it produces a caption, (3) then add the upscale tool, and use that
@@ -56,12 +56,12 @@ llm_caption() {
 [ -n "$LOCAL" ] || return 0
 local dog
 dog=$(picture dog1.jpg) || return 0
-PICTURE=$(web_path "$dog") web_alone caption "Caption on a picture, and its words Upscale's prompt (se-151)"
+PICTURE=$(web_path "$dog") web_spec caption "Caption on a picture, and its words Upscale's prompt (se-151)"
 }
 
-# web_alone <cell> <what>: the page cell web/<cell>.spec.js by its own config (web/<cell>.config.js): the web suite's fixtures and Chrome,
+# web_spec <cell> <what>: the page cell web/<cell>.spec.js by its own config (web/<cell>.config.js): the web suite's fixtures and Chrome,
 # without its setup, on this shard's Calcifer and models. $PICTURE goes to the cell as it is.
-web_alone() {
+web_spec() {
 local cell=$1 pw=$OUT/playwright-test web=$OUT/web chrome code=0 line
 step "web-$cell: $2"
 chrome=$(web_chrome)
