@@ -56,6 +56,10 @@ for r in "${REFS[@]}"; do
   memo=$(jq -r '(.memo.memoized // false) or ([.calls[]?.memoized] | any)' "$OUT/$label.json")
   say "$label: run $n, $ref, memoized $memo"
   [ "$memo" = false ] || { say "FAIL $label: run $n was answered from the call memo"; RC=1; continue; }
+  # The machine's TensorFS runs the fixture (its floor is a released Runtime, for the lock): it must be the one under test.
+  ran=$(jq -r .tensorfs "$OUT/$label.report.json") want=$(basename "$TF" | cut -d- -f2)
+  say "$label ran TensorFS $ran, Runtime $(jq -r .runtime "$OUT/$label.report.json")"
+  [ "$ran" = "$want" ] || { say "FAIL $label: run $n ran TensorFS $ran, not $want"; RC=1; }
   jq -r '.lines[]' "$OUT/$label.report.json" | while read -r line; do say "$label $line"; done
   say "$label speed: $(jq -c .speed "$OUT/$label.report.json")"
   say "$label block: $(jq -c .block "$OUT/$label.report.json")"

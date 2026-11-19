@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.48.0.dev0", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14"]
+# dependencies = ["cozy-runtime>=0.47.1", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14"]
 # ///
 """row-reads' check (tfs-303), on one checkpoint: for every tensor that cuts (`Checkpoint.rows`), a sample per scheme read by
 row ranges with `Checkpoint.read_rows` into host outs (plain buffers, DLPack arrays) and CUDA outs (on the caller's stream,
@@ -19,8 +19,10 @@ import statistics
 import time
 from collections.abc import Callable
 
+import cozy_runtime
 import msgspec
 import numpy as np
+import tensorfs
 import torch
 from cozy_runtime.author import App, Context, Weights
 from tensorfs import raw
@@ -100,7 +102,8 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
     ck = ctx.tensorfs_source(weights)
     rng = random.Random(payload.seed)
     stream = torch.cuda.current_stream().cuda_stream
-    report: dict = {"checkpoint": ck.id, "lane": ck.lane, "schemes": {}, "lines": [], "speed": {}}
+    report: dict = {"checkpoint": ck.id, "lane": ck.lane, "tensorfs": tensorfs.__version__,
+                    "runtime": getattr(cozy_runtime, "__version__", None), "schemes": {}, "lines": [], "speed": {}}
     lines: list[str] = report["lines"]
     failed = False
 
