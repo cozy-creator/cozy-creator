@@ -123,9 +123,9 @@ fi
 # cozy-runtime#2344's cell, before anything else decodes on the pod: a machine's first request on a ggml lane compiles
 # nothing. The escaped bug: ggml's token-table lookup JIT-compiled `_blocks_kernel` inside a fresh machine's first
 # request (44599741328). `first` (label=org/name@sha256:…) is pulled; `first_red` (the Runtime before the decode cores'
-# set) goes on and its first request must record a `triton compile:` row in request_path.blocking (it reproduces);
-# then the candidate's first request, and once the pod's log holds the set's verdict a second, which launches through
-# it: neither may record a compile, and each makes red's tokens.
+# sets) goes on and its first request must record a `triton compile:` row in request_path.blocking (it reproduces);
+# then the candidate's first request, and once the executors' logs hold its lane's decode set's verdict a second, whose
+# decodes (`kernel.decode_cores`) are all that set's: neither may record a compile, and each makes red's tokens.
 if [ -n "$FIRST" ]; then
   ref=${FIRST#*=}
   step pull-first model install "$ref" --on "$NAME" || fail "pull $ref"
@@ -139,7 +139,10 @@ if [ -n "$FIRST" ]; then
     jq -r '[.. | objects | select(.name? == "request_path.blocking") | "\(.value) \(.fields.ms // "")ms"] | join("; ")' \
       "$OUT/first-$1.json" > "$OUT/first-$1.blocking"
     jq -r '.result.detail // "{}"' "$OUT/first-$1.json" | jq -c '.tokens' > "$OUT/first-$1.tokens"
-    say "first request ($1): blocking [$(cut -c1-300 "$OUT/first-$1.blocking")] · tokens $(cut -c1-80 "$OUT/first-$1.tokens")"
+    # Its decode cores' calls by scheme and path (`kernel.decode_cores`: set, host or device; cozy-runtime#2344).
+    jq -r '[.. | objects | select(.name? == "kernel.decode_cores") | "\(.fields.scheme) \(.value) \(.fields.calls)"] | join("; ")' \
+      "$OUT/first-$1.json" > "$OUT/first-$1.decodes"
+    say "first request ($1): blocking [$(cut -c1-300 "$OUT/first-$1.blocking")] · decodes [$(cut -c1-200 "$OUT/first-$1.decodes")] · tokens $(cut -c1-80 "$OUT/first-$1.tokens")"
   }
   step first-runtime-red machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$FIRST_RED" -y || fail "the pod's Runtime (first_red)"
   if first red && ! grep -q 'triton compile:' "$OUT/first-red.blocking"; then
@@ -148,20 +151,24 @@ if [ -n "$FIRST" ]; then
   step first-candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate back on the pod"
   for arm in candidate served; do
     if [ "$arm" = served ]; then
-      # The set's verdict (`kernel_ready.verified`'s line), in the executors' stderr logs on the pod: an installed
-      # package's executor root is TensorD's root, not an `executors` folder (44619110063 looked only there).
-      verdict='' logs="\$(find / -xdev -name stderr.log 2> /dev/null)"
+      # The lane's decode set's verdict (`kernel_ready.verified`'s line: cozy-decode-ggml.q8_0), in the executors'
+      # stderr logs on the pod: an installed package's executor root is TensorD's, on any mount (44619110063 looked
+      # under `executors` only, 44623512956 on the root filesystem only).
+      verdict='' logs="\$(find / -name stderr.log -not -path '/proc/*' -not -path '/sys/*' 2> /dev/null)"
       for _ in $(seq 40); do
-        verdict=$(there "grep -h -m1 -E 'cozy-decode-cores (verified|refused)' $logs 2> /dev/null | head -1" 120 < /dev/null) &&
+        verdict=$(there "grep -h -m1 -E 'cozy-decode-[a-z0-9._-]+ (verified|refused)' $logs 2> /dev/null | head -1" 120 < /dev/null) &&
           [ -n "$verdict" ] && break
         sleep 30
       done
-      say "the decode cores' set: ${verdict:-no verdict in the executor logs in 20 min}"
-      [ -n "$verdict" ] || there "grep -h -E 'decode-cores|decode_kernels' $logs 2> /dev/null | tail -n 5" 120 < /dev/null | cut -c1-300 | tee -a "$R"
+      say "the lane's decode set: ${verdict:-no verdict in the executor logs in 20 min}"
+      [ -n "$verdict" ] || there "echo \"\$(echo $logs | wc -w) stderr logs\"; grep -h -E 'cozy-decode-' $logs 2> /dev/null | tail -n 5" 120 < /dev/null | cut -c1-300 | tee -a "$R"
       [[ $verdict == *verified* ]] || { FIRST_BAD=1; continue; }
     fi
     first "$arm" || continue
     ! grep -q 'triton compile:' "$OUT/first-$arm.blocking" || { FIRST_BAD=1; say "FAILED: first request ($arm) compiled in the request"; }
+    if [ "$arm" = served ] && { ! grep -qE '(^|; )[^ ]+ set [0-9]' "$OUT/first-$arm.decodes" || grep -qE ' (host|device) [0-9]' "$OUT/first-$arm.decodes"; }; then
+      FIRST_BAD=1; say "FAILED: first request (served): its decodes were not all its set's"
+    fi
     cmp -s "$OUT/first-$arm.tokens" "$OUT/first-red.tokens" || { FIRST_BAD=1; say "FAILED: first request ($arm): tokens unlike red's"; }
   done
   [ -n "${FIRST_BAD:-}" ] || say "PASS: cozy-runtime#2344's cell: red compiled in its first request, the candidate compiled nothing, same tokens"
