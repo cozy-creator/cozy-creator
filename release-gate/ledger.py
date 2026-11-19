@@ -7,6 +7,7 @@ tracker as `benchmarks/<sku>/<YYYY-MM>.jsonl`, so a new version is compared with
     ledger.py backfill <artifact id>         a run's ledger.jsonl that could not be pushed (no key, or the push kept racing)
     ledger.py query --sku SKU [--target PKG/FN]
     ledger.py compare <rows.jsonl> [--against runtime=0.46.0]   each row against the newest comparable recorded row
+    ledger.py seconds --sku SKU [--establish] <gate dir> <cell>...   a suite's time row: its cells against the SKU's fastest figure
     ledger.py throttled <record.json>...     a line for each run whose GPU was held back (its times aren't its card's)
     ledger.py ask [--stop N] [--harness DIGEST] <target> <args>   a gate cell's request, its files by content (gate.sh `cell`)
     ledger.py skip <gate dir> <rows.jsonl> <cell> <target> <ask> [--packages DIR]   SKIP and the row it stands on, or why it runs
@@ -422,8 +423,9 @@ def key(r: Row) -> tuple[str, ...]:
     st = obj(r.get('state'))
     src = obj(r.get('source'))
     cell = src.get('cell') if src.get('kind') == 'gate' else ''
-    return tuple(str(x) for x in (r.get('sku'), w.get('package'), w.get('function'), w.get('form'), w.get('gpus'), w.get('cap'),
-                                  st.get('temperature'), st.get('reset'), cell))
+    cap = w.get('cap')  # an uncapped cell's: `off` from gate.sh's --cap, null from a session's
+    return tuple(str(x) for x in (r.get('sku'), w.get('package'), w.get('function'), w.get('form'), w.get('gpus'),
+                                  'off' if cap in (None, 'off') else cap, st.get('temperature'), st.get('reset'), cell))
 
 
 def classify(cand: Row, base: Row) -> str:
@@ -490,6 +492,56 @@ def compare(path: str, repo: str, against: list[str]) -> None:
         mean: Row = dict(same[-1])
         mean['phases'] = {k: sum(num(obj(r.get('phases')).get(k)) or 0 for r in same) / len(same) for k in HOST_BOUND + ('execution_s',)}
         print(f'{name}: {classify(c, mean)} against {", ".join(str(r.get("id")) for r in same)}')
+
+
+def summed(rs: list[Row]) -> Row:
+    """One run's rows as one for `classify`: their host-bound phases and execution summed, the first's host."""
+    out: Row = dict(rs[0])
+    out['phases'] = {k: sum(num(obj(r.get('phases')).get(k)) or 0 for r in rs) for k in HOST_BOUND + ('execution_s',)}
+    return out
+
+
+def seconds(d: str, repo: str, sku: str, cells: list[str], establish: bool) -> str:
+    """A suite's time row (PASS, FAIL or SKIP and why): its warm cells in gate output `d` (a cold start is mostly the host's; its
+    cold ones only when none is warm) against the fastest gate run recorded on `sku` that timed the same cells under the same key
+    (`key`), completed, not memoized, no unfit flaw and no FAIL, judged by `classify`: noise, an improvement or the host's
+    doing PASS; a regression, or a gap it can't place, FAILs. So a slower card is judged by its own time (se-151), and a PASS
+    never raises the figure. A FAIL names every cell, so its run is never a figure. A card with none FAILs until a gate with
+    --establish records one."""
+    named = ' '.join(cells)
+    mine = {str(obj(r.get('source')).get('cell')): r for r in rows(d, 'gate', None, None, None, {}, sku)}
+    if lost := [c for c in cells if c not in mine]:
+        return f"FAIL {named}: no run record of {' '.join(lost)}"
+    if memo := [c for c in cells if obj(mine[c].get('state')).get('memoized')]:
+        return f"FAIL {named}: served from the memo, which times nothing ({' '.join(memo)})"
+    if held := '; '.join(f'{c}: {why}' for c in cells if (why := throttled(obj(load(os.path.join(d, c + '.json')))))):
+        return f'FAIL {named}: GPU held back, so its times are no measure; run it on another host ({held})'
+    warm = [c for c in cells if obj(mine[c].get('state')).get('temperature') == 'warm']
+    judged = warm or cells
+    try:
+        ledger = recorded(repo, sku)
+    except SystemExit as e:
+        return f"FAIL {named}: ledger unreachable ({' '.join(str(e).split())[:300]})"
+    runs: dict[str, dict[str, Row]] = {}
+    for r in ledger:
+        src = obj(r.get('source'))
+        c = str(src.get('cell'))
+        if (src.get('kind') == 'gate' and c in judged and key(r) == key(mine[c]) and obj(r.get('outcome')).get('status') == 'completed'
+                and obj(r.get('outcome')).get('verdict') != 'FAIL' and not obj(r.get('state')).get('memoized')
+                and not set(map(str, arr(r.get('flaws')))) & UNFIT):
+            runs.setdefault(str(src.get('run')), {})[c] = r
+    cand = summed([mine[c] for c in judged])
+    said = f"{len(judged)} {'warm' if warm else 'cold'} cells' exec {num(obj(cand.get('phases')).get('execution_s')) or 0:.1f} s on {sku}"
+    whole = [summed(list(got.values())) for got in runs.values() if set(got) == set(judged)]
+    if not whole:
+        if establish:
+            return f'SKIP {said}: no figure yet; this --establish run records it'
+        return f'FAIL {named}: {said}, no figure on {sku} for them; a gate with --establish records one'
+    base = min(whole, key=lambda r: num(obj(r.get('phases')).get('execution_s')) or 0)
+    how = classify(cand, base)
+    msg = (f"{said} against its fastest figure {num(obj(base.get('phases')).get('execution_s')) or 0:.1f} s "
+           f"(run {obj(base.get('source')).get('run')}): {how}")
+    return f'PASS {msg}' if how.startswith(('noise', 'improvement', 'host')) else f'FAIL {named}: {msg}'
 
 
 # Skipping (design §4): a gate cell whose request and versions match a row of its last PASS on the SKU.
@@ -632,6 +684,12 @@ def main() -> None:
     c.add_argument('rows')
     c.add_argument('--against', action='append', default=[], help='VERSION=VALUE the base rows must have (runtime=0.46.0)')
     c.add_argument('--repo')
+    sc = sub.add_parser('seconds')
+    sc.add_argument('dir')
+    sc.add_argument('cells', nargs='+')
+    sc.add_argument('--sku', required=True)
+    sc.add_argument('--repo')
+    sc.add_argument('--establish', action='store_true', help="gate.sh's --establish: a card with no figure records one")
     t = sub.add_parser('throttled')
     t.add_argument('records', nargs='+')
     a = sub.add_parser('ask')
@@ -668,6 +726,8 @@ def main() -> None:
                 print(json.dumps(row, sort_keys=True))
     elif args.cmd == 'compare':
         compare(args.rows, repo_url(args.repo), args.against)
+    elif args.cmd == 'seconds':
+        print(seconds(args.dir, repo_url(args.repo), args.sku, args.cells, args.establish))
     elif args.cmd == 'throttled':
         for path in args.records:
             if why := throttled(obj(load(path))):
