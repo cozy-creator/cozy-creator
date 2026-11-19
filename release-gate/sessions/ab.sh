@@ -84,8 +84,9 @@ fi
 # STALL: a cell past its run_s, as a root shell on the pod: each executor's threads (state, kernel wait) and its Python stack.
 STALL='for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== executor $p"; ps -o pid,stat,pcpu,rss,etime -p "$p";
   for t in /proc/$p/task/*; do echo "$(basename "$t") $(cut -d" " -f3 "$t/stat") $(cat "$t/wchan" 2> /dev/null)"; done | sort -k2 | uniq -c -f1 | head -40; done
-command -v py-spy > /dev/null || timeout 90 python3 -m pip install -q py-spy > /dev/null 2>&1 || timeout 90 pip install -q py-spy > /dev/null 2>&1
-for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== py-spy $p"; timeout 40 py-spy dump --pid "$p" 2>&1 | head -200; done
+spy=$(command -v py-spy); uv=$(command -v uv || find / -xdev -maxdepth 6 -name uv -type f -perm -u+x 2> /dev/null | head -1)
+[ -n "$spy" ] || [ -z "$uv" ] || spy="$uv tool run py-spy"; echo "py-spy: ${spy:-none}"
+for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== py-spy $p"; [ -z "$spy" ] || timeout 120 $spy dump --pid "$p" 2>&1 | head -200; done
 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv'
 # {pic1}..{pic16} and {digits}: cap-sweep's 2048x2048 pictures and its 65,000-character prompt, made the same way.
 PICS=$OUT/pics FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd)
