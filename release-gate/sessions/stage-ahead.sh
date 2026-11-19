@@ -236,10 +236,12 @@ while room() > (4 << 30):
 print(f"held {len(held) * piece / 2**30:.1f} GiB", flush=True)
 time.sleep(float(sys.argv[1]))'
 say "back: q holds $HELD bytes in RAM; $(meminfo)"
-T=600 py "$HOG" 20 > "$OUT/hog.txt" 2>&1 & HOG_PID=$!
-sleep 15
+# It takes memory until the host has 4 GiB left (minutes on a 1 TB pod: 333 GiB in 3.5 min, 44638451261), holds it 30 s, then ends.
+T=1800 py "$HOG" 30 > "$OUT/hog.txt" 2>&1 & HOG_PID=$!
+until grep -q held "$OUT/hog.txt" || ! kill -0 "$HOG_PID" 2> /dev/null; do sleep 5; done
+sleep 5
 DURING=$(item "$Q_ID" done) STAGE=$(item "$Q_ID" stage)
-say "back: while a program holds $(cat "$OUT/hog.txt") : q is $STAGE, $DURING bytes in RAM; $(meminfo)"
+say "back: while a program holds $(cat "$OUT/hog.txt"): q is $STAGE, $DURING bytes in RAM; $(meminfo)"
 wait "$HOG_PID"
 sleep 2
 say "back: the program ended ($(cat "$OUT/hog.txt")): q $(item "$Q_ID" stage), $(item "$Q_ID" done) bytes in RAM; p $(item "$P_ID" stage); $(meminfo)"
@@ -265,7 +267,7 @@ for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram")):
         continue
     first = next((i for i, s in enumerate(r["stages"]) if s["steps"]), len(r["stages"]))
     stepped = r["stages"][first]["name"] if first < len(r["stages"]) else None
-    before = r["stages"][:first] + [s for s in r["stages"] if stepped and s["name"].startswith(stepped + " / loading")]
+    before = [s for i, s in enumerate(r["stages"]) if i < first or (stepped and s["name"].startswith(stepped + " / loading"))]
     tui = sum(s["ms"] for s in before) / 1000
     b = bound.get(frm)
     rows[arm] = {"run": r["run"], "from": frm, "memoized": r.get("memoized"), "until_inference_s": round(tui, 2), "bound_s": b and round(b, 2),
