@@ -1,6 +1,6 @@
 {
   "order": "one-way",
-  "need_s": 2000,
+  "need_s": 1900,
   "compare": [["c-a6", "c-b6"], ["c-aoff", "c-boff"]],
   "cells": [
     {
