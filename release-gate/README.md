@@ -94,7 +94,8 @@ rental as it boots, in a dev home on the session's RC cozy (`cozy=<dev-build run
 which runs on the RC's Runtime; held by hand on the release pair, the code is refused `runtime_held` before any install. Both sends
 name the rental (the account's rentals are one pool, cl-1224).
 - **Memory work:** `ab` (cells from `packages_refs` checkouts or wheels on one pod, cold and warm, capped or with the card
-  held), `idle-held` (a second model beside an idle one, cl-1159), `vram-yield` (a game takes the card mid-call, xs-088).
+  held), `h3-layout-caps` (se-170: one H3 Upscale request uncapped and at 6 GiB gives one window layout and the same
+  bytes), `idle-held` (a second model beside an idle one, cl-1159), `vram-yield` (a game takes the card mid-call, xs-088).
 - **Models:** `model-ingest` puts a first-party model or an author's mirror on the Hub from a pod.
 - **One open issue each**, deleted when it closes: `at-rest`, `carry-ahead`, `edit-ahead`, `first-guess`, `load-ahead`,
   `needs-ahead`, `nofit-local`, `submit-at-once` (cl-1123, cl-1202), `control-plane`, `derived-disk`, `egress`, `far-reads`,
