@@ -154,15 +154,18 @@ if [ -n "$DECODE$MAKE" ]; then
     lane=${entry%%=*} from=$MODEL; [[ $entry != *=* ]] || from=${entry#*=}
     BF[${from%@*}]=$from
     [ -n "${pulled[$from]:-}" ] || { step "pull-from-$lane" model install "$from" --on "$NAME" || fail "pull $from"; pulled[$from]=1; }
-    step "make-$lane" model quantize "$from" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME" || fail "quantize $lane"
-    c=$(made "make-$lane"); [ -n "$c" ] || fail "quantize $lane made no checkpoint"
+    # A lane that can't be made is told and the others go on (44420479065: w4a8's upload met the Hub unreachable).
+    if ! step "make-$lane" model quantize "$from" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME"; then
+      say "FAILED: quantize $lane: $(grep -m1 '^error' "$OUT/make-$lane.txt" | cut -c1-300)"; continue
+    fi
+    c=$(made "make-$lane"); [ -n "$c" ] || { say "FAILED: quantize $lane made no checkpoint"; continue; }
     pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
-    step "pull-$label" model install "$ref" --on "$NAME" || fail "pull $label"
-    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || fail "speed $label"
+    step "pull-$label" model install "$ref" --on "$NAME" || { say "FAILED: pull $label"; continue; }
+    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || { say "FAILED: speed $label"; continue; }
     on_candidates "speed-$label"
     n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
     say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
