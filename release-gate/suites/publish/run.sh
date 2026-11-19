@@ -5,13 +5,15 @@
 # `task publish -- --hub`: finals, with the in-repo packages they take, relocked against this Hub's index, their Triton
 # sets prebuilt, described. Then each is installed on this computer's machine from the Hub's index (its lock rebound to
 # it, its `_triton` in the environment), and BiRefNet, published the same way with its weights mirrored from the Hugging
-# Face revision production's are, runs once on this CPU. Nothing reaches tensorhub.com.
+# Face revision production's are, runs once on this CPU. Each default those packages declare is published first, BiRefNet's
+# weights and a stand-in for every other (e2e/standins.sh), as the Hub refuses a package whose default it doesn't hold
+# public (th-412). Nothing reaches tensorhub.com.
 set -uo pipefail
 OUT=$1 COZY_BIN=$2 RT=$3 TF=$4 PKGS=$(cd "$5" && pwd) ONLY=${6:-}
 HERE=$(cd "$(dirname "$0")/../../.." && pwd)  # the checkout
-mkdir -p "$OUT" && cd "$OUT" || exit 2
+mkdir -p "$OUT" && cd "$OUT" && OUT=$PWD || exit 2
 : > expect.tsv
-log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
+log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a "$OUT/gate.log"; }
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 verdict() {
   local fails passes
@@ -57,6 +59,25 @@ fi
 [ -n "$cands" ] || { expect publish-candidates FAIL "no package in the checkout is a candidate (a prerelease version)"; verdict; }
 log "candidates: $cands, and birefnet to run"
 
+# Models first (th-412): this Hub, as production, refuses a package whose defaults aren't public model releases. BiRefNet's
+# default holds its weights, mirrored from the Hugging Face revision production's are, since its function runs; every other
+# default of the packages `task publish` ships (each candidate and birefnet, with the in-repo packages they take) a stand-in.
+seed=$OUT/seed && mkdir -p "$seed"
+. "$HERE/e2e/standins.sh"
+ships() { local p q; for p; do echo "$p"; for q in $(deps "$p"); do [ ! -d "$PKGS/$q" ] || ships "$q"; done; done; }
+birefnet=$(cd "$RUN_PROJECT" && cozy --json --full run "$PKGS/birefnet" --describe 2> /dev/null \
+  | jq -r '[.interface.entrypoints[].models[]?.default // empty] | unique | if length == 1 then .[0] else empty end')
+if [ -n "$birefnet" ] && (cd "$RUN_PROJECT" && mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 \
+    "${birefnet%@*}" fp16 "${birefnet#*@}" https://huggingface.co/ZhengPeng7/BiRefNet) 2> mirror-birefnet.err; then
+  expect publish-models PASS "BiRefNet's weights mirrored as $birefnet"
+else
+  expect publish-models FAIL "BiRefNet's weights did not mirror${birefnet:+ as $birefnet}: $(tail -c 300 mirror-birefnet.err 2> /dev/null)"
+fi
+for p in $(ships $cands birefnet | sort -u); do
+  (cd "$RUN_PROJECT" && standin_defaults "$PKGS/$p") 2> "standins-$p.err" \
+    || expect "publish-models-$p" FAIL "$p's defaults weren't all stood in for: $(tail -c 300 "standins-$p.err")"
+done
+
 # The promotion's own publish, aimed at this Hub, one candidate at a time so each is its own cell (in-repo packages it
 # takes come with it): its commits stay in this checkout, which it leaves as it was.
 git -C "$PKGS" config user.name "Paul Fidika"; git -C "$PKGS" config user.email paul@fidika.com
@@ -97,16 +118,8 @@ for p in $cands; do
   else expect "publish-install-$p" PASS "$p@$want installed from the Hub's index$bound; _triton:${triton:- none declared}"; fi
 done
 
-# One function run from the Hub: BiRefNet, its weights mirrored here first.
+# One function run from the Hub: BiRefNet, on the weights mirrored first.
 [[ " $published " == *" birefnet "* ]] || verdict
-if (cd "$RUN_PROJECT" && cozy --json model upload hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet --lane fp16 \
-    --mirror https://huggingface.co/ZhengPeng7/BiRefNet --on local -y) > upload-birefnet.json 2>&1 \
-  && commit=$(python3 "$HERE/e2e/model-details.py" zhengpeng7/birefnet | jq -r '.checkpoints[0].checkpoint // empty') && [ -n "$commit" ] \
-  && cozy --json model publish zhengpeng7/birefnet 0.1.0 "$commit" -y > publish-birefnet-model.json 2>&1; then
-  log "BiRefNet's weights mirrored: zhengpeng7/birefnet@0.1.0 ($commit)"
-else
-  expect publish-run FAIL "BiRefNet's weights did not mirror: $(tail -c 300 upload-birefnet.json) $(tail -c 200 publish-birefnet-model.json 2>/dev/null)"; verdict
-fi
 picture=$HERE/release-gate/ref/seed.jpg
 target=birefnet/remove_background@$(final birefnet)
 if run_cell "$OUT" publish-run "$target" --file "image=$picture" --on local; then
