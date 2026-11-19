@@ -1,6 +1,6 @@
 {
  "gpus": 2,
- "need_s": 7800,
+ "need_s": 7000,
  "order": "one-way",
  "compare": [
   [
@@ -21,11 +21,11 @@
   ],
   [
    "s1-5s-g2",
-   "d2-5s-g2"
+   "d1-5s-g2c"
   ],
   [
    "s1-20s-g2",
-   "d2-20s-g2"
+   "d1-20s-g2c"
   ]
  ],
  "max_failures": 2,
@@ -260,7 +260,7 @@
     "--gpus=2"
    ],
    "update": {
-    "runtime": "44448218079",
+    "runtime": "44451310979",
     "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
     "tensord": true,
     "gpu_memory_limit": "off"
@@ -316,31 +316,7 @@
    ]
   },
   {
-   "name": "d2-warm",
-   "tree": "cr",
-   "target": "ltx-2.5/generate",
-   "args": [
-    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
-    "duration_s:=5",
-    "resolution=1080p",
-    "aspect_ratio=16:9",
-    "audio:=true",
-    "seed:=35013",
-    "--lane",
-    "int8",
-    "--gpus=2"
-   ],
-   "update": {
-    "runtime": "44448218079",
-    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
-    "tensord": true,
-    "gpu_memory_limit": "off"
-   },
-   "keep_state": true,
-   "warmup": true
-  },
-  {
-   "name": "d2-5s-g2",
+   "name": "d1-5s-g2c",
    "tree": "cr",
    "target": "ltx-2.5/generate",
    "args": [
@@ -356,7 +332,7 @@
    ]
   },
   {
-   "name": "d2-20s-g2",
+   "name": "d1-20s-g2c",
    "tree": "cr",
    "target": "ltx-2.5/generate",
    "args": [
@@ -370,6 +346,30 @@
     "int8",
     "--gpus=2"
    ]
+  },
+  {
+   "name": "d2-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35013",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44451310979",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "keep_state": true,
+   "warmup": true
   },
   {
    "name": "s2-warm",
