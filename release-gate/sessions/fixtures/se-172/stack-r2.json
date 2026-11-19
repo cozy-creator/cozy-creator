@@ -1,0 +1,215 @@
+{
+ "gpus": 1,
+ "order": "abba",
+ "need_s": 3000,
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "fibo-a1-0",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65001",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44501390165",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "download": [
+    [
+     "briaai/fibo-2-edit-turbo@0.2.0",
+     "--lane",
+     "int8"
+    ],
+    [
+     "dreamfast/qwen3-vl-4b-heretic-fibo@0.1.0",
+     "--lane",
+     "int8"
+    ],
+    [
+     "llmfan46/qwen3.8-27b-uncensored-heretic-native-mtp-preserved@0.1.0",
+     "--lane",
+     "w4a8"
+    ]
+   ]
+  },
+  {
+   "name": "fibo-a1-1",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65002",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "q3-a1",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=51141",
+    "--lane",
+    "w4a8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "fibo-a2-0",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65003",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44501390165",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "keep_state": true
+  },
+  {
+   "name": "fibo-b1-0",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65001",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44539322259",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "fibo-b1-1",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65002",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "q3-b1",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=51141",
+    "--lane",
+    "w4a8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "fibo-b2-0",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=65003",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44539322259",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "keep_state": true
+  },
+  {
+   "name": "q3-b3",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=51142",
+    "--lane",
+    "w4a8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44539322259",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "q3-a3",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=51142",
+    "--lane",
+    "w4a8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44501390165",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  }
+ ],
+ "compare": [
+  [
+   "fibo-a1-0",
+   "fibo-b1-0"
+  ],
+  [
+   "fibo-a1-1",
+   "fibo-b1-1"
+  ],
+  [
+   "fibo-a2-0",
+   "fibo-b2-0"
+  ],
+  [
+   "q3-a1",
+   "q3-b1"
+  ],
+  [
+   "q3-b3",
+   "q3-a3"
+  ]
+ ]
+}
