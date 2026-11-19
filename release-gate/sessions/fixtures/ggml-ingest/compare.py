@@ -225,11 +225,19 @@ def main() -> int:
                         continue
                     got = ref(name, block, values(pieces, True))
                 if found := differs(t.name, name, got, want):
-                    # Which side left the source: ggml-ref/1 of the source as stored here, read now, against both. Ours
-                    # alone off it is our quantize's read or write; llama's alone off it is llama's or the encoder's.
-                    again = got if columns else ref(name, block, values(pieces, False))
-                    found |= {"ours_is_ref": got == again, "llama_is_ref": want == again}
+                    # Which side left the source, for the first few that differ (a re-encode of a 285 MB expert stack
+                    # takes minutes): ggml-ref/1 of the source as stored here, read now, against both. Ours alone off it
+                    # is our quantize's read or write; llama's alone off it is llama's or the encoder's.
+                    if len(bad) < 3:
+                        again = got if columns else ref(name, block, values(pieces, False))
+                        found |= {"ours_is_ref": got == again, "llama_is_ref": want == again}
+                        if not found["llama_is_ref"]:
+                            a, b = np.frombuffer(again, np.uint8), np.frombuffer(want, np.uint8)
+                            at = int(np.argmax(a != b))
+                            found |= {"ref_vs_llama_first": at, "ref_block": a[at - at % 34 : at - at % 34 + 34].tolist(),
+                                      "llama_block": b[at - at % 34 : at - at % 34 + 34].tolist()}  # fmt: skip
                     bad.append(found)
+                    print(json.dumps({"progress": t.name, "differs": found}), file=sys.stderr, flush=True)
         row: dict[str, object] = {"check": "pure" if pure else "lane", "lane": label, "gguf": os.path.basename(path),
                                   "quantized": sum(counts.values()), "types": counts,
                                   "identical": sum(counts.values()) - len(bad), "differ": bad[:20]}  # fmt: skip
