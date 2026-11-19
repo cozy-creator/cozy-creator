@@ -27,7 +27,8 @@
 #              source lacks (a DiT-only file's text encoder and VAE), in the upload's lane, or the release's `base_lane`
 #              checkpoint. `commit` names one already made: a rerun skips it.
 #   lanes      more lanes written from the bf16 commit by `recipes`' recipe (a Hub package, or ./<dir> of the checkout); an item
-#              {"lane", "from"} is written from that lane's upload instead
+#              {"lane", "from"} is written from that lane's upload instead, and with `components` (`text_encoder`) the lane is
+#              that commit cut to them, a header of those components alone on the same chunks (an encoder-only checkpoint)
 #   prepare    {function, lane, commit?}: a package function (./<dir>/<fn>) run on the bf16 commit, `cozy run <fn> <commit>
 #              <model>`, whose commit in `lane` (bf16) the lanes are then written from (pan2's curve form), and which is
 #              not itself released; `commit` names the one it made already: a rerun skips it
@@ -39,7 +40,8 @@
 # tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime installs a
 # Runtime no release has there too, for a package tree that needs it: a wheel source as lib.sh `wheel_from` takes (a
 # cozy-runtime dev-build run id: its wheel carries the kernels a machine requires), or true for this session's
-# RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref), a pure wheel an RC cozy refuses (`runtime_without_kernels`).
+# RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref), a pure wheel an RC cozy refuses (`runtime_without_kernels`);
+# tensorfs, a wheel source likewise, the TensorFS that Runtime requires (an RC Runtime takes the RC's), installed with it.
 # A mirror's `from` (bf16 by default) is the upload lane its `lanes` are written from: fp16 for a model published so. A Civitai source
 # that needs an account reads CIVITAI_TOKEN, the release-gate secret pod-session.yaml gives Calcifer. A failed item
 # stays private and the next goes on; the session fails if any did.
@@ -57,6 +59,11 @@ if [ "$SRC" = true ]; then
 elif [ "$SRC" != false ]; then
   RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$SRC") && [ -n "$RUNTIME" ] || fail "no Runtime wheel from $SRC"
   say "runtime: ${RUNTIME##*/}"
+fi
+TENSORFS='' SRC=$(param tensorfs '')
+if [ -n "$SRC" ]; then
+  TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$SRC") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel from $SRC"
+  say "tensorfs: ${TENSORFS##*/}"
 fi
 printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
 printf 'bf16                 commit _/x@sha256:%064d (bf16)\ncheckpoint           sha256:%064d\n' 8 9 > "$OUT/probe-run.txt"
@@ -128,6 +135,13 @@ mirror() {
     pulled+="$src "
     step "$lane-$slug" model quantize "$m@$src" --lane "$lane" --package "$v" --on "$NAME" &&
       c=$(made "$lane-$slug") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: lane $lane"; return 1; }
+    k=$(jq -r 'if type == "object" then .components // "" else "" end' <<<"$u")
+    if [ -n "$k" ]; then
+      say "WRITTEN $m $lane $c (from $src): cut to $k"
+      step "cut-$lane-$slug" "$verb" upload "$m@$c:$k" "$m" --lane "$lane" --mirror "$page" --on "$NAME" &&
+        v=$(made "cut-$lane-$slug") && [ "$(lane_of "$m" "$v")" = "$lane" ] || { say "MIRROR FAILED: $m: the $lane cut of $c to $k"; return 1; }
+      c=$v
+    fi
     commits+=("$c"); calls+=("$lane=$c"); say "COMMIT $m $lane $c (from $src)"
   done
   fn=$(jq -r '.call.function // ""' <<<"$it")
@@ -185,9 +199,10 @@ if [ -n "$MIRRORS" ]; then
     step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
     cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
   fi
-  if [ -n "$RUNTIME" ]; then
-    step runtime machine update "$NAME" --runtime "$RUNTIME" -y || fail "the pod's Runtime"
-    cozy machine show "$NAME" 2>&1 | grep -E '^runtime ' | tee -a "$R"
+  if [ -n "$RUNTIME$TENSORFS" ]; then
+    args=(); [ -z "$RUNTIME" ] || args+=(--runtime "$RUNTIME"); [ -z "$TENSORFS" ] || args+=(--tensorfs "$TENSORFS")
+    step runtime machine update "$NAME" "${args[@]}" -y || fail "the pod's Runtime and TensorFS"
+    cozy machine show "$NAME" 2>&1 | grep -E '^(runtime|tensorfs) ' | tee -a "$R"
   fi
   failed=()
   for ((i = 0; i < n; i++)); do mirror "$i" || failed+=("$(jq -r ".[$i].model" <<<"$MIRRORS")"); done
