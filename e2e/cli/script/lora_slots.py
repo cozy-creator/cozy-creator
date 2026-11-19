@@ -117,3 +117,4 @@ def pair(payload: Ask, model: Transformer, other: Transformer) -> Read:
 def plain(payload: Ask, text_encoder: Encoder) -> Read:
     """A model that takes no LoRA."""
     return Read(0.0, text_encoder.read())
+
