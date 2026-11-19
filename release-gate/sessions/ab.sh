@@ -52,6 +52,8 @@
 #              `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
+#              "max_s" (optional: its run is canceled this long in and said UNFINISHED, not failed; a compared pair
+#              with an UNFINISHED cell compares nothing);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -354,7 +356,14 @@ for k in "${names[@]}"; do
   fi
   ASKED[$key]=1
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
+  # max_s: the cell's run is canceled this long in, and said UNFINISHED with where it stood: slow is not failed.
+  ms=$(jq -r '.max_s // 0' <<<"$c"); [[ $ms =~ ^[0-9]+$ ]] || fail "cell $k: max_s $ms"; MS=''; rm -f "$OUT/$k.capped"
+  if [ "$ms" != 0 ]; then
+    ( sleep "$ms" || exit 0; clock=$(run_clock "$NAME") || exit 0; echo "$ms" > "$OUT/$k.capped"
+      for r in ${clock#* }; do cozy run cancel "$r" > /dev/null 2>&1; done ) 9>&- & MS=$!
+  fi
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  [ -z "$MS" ] || { pkill -P "$MS" 2> /dev/null; kill "$MS" 2> /dev/null; MS=''; }
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
@@ -401,6 +410,10 @@ for k in "${names[@]}"; do
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
     say "$k reason: $(printf '%s' "${why:-$(tr '\r' '\n' < "$OUT/$k.txt" | grep -m1 -E '^error:' || tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
     say "$k: the GPU now: $(gpu | paste -sd';')"
+  fi
+  if [ -s "$OUT/$k.capped" ] && [ "$st" != completed ]; then
+    say "$k UNFINISHED at its $(cat "$OUT/$k.capped") s cap: at $(jq -r '"\(.progress.stage // "-") \(.progress.completed // 0)/\(.progress.total // 0)"' "$OUT/$k.json" 2> /dev/null), execution $(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2> /dev/null) s"
+    continue
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
