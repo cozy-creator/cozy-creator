@@ -1,0 +1,100 @@
+{
+ "gpus": 1,
+ "order": "one-way",
+ "need_s": 2700,
+ "cells": [
+  {
+   "name": "t2v5-a-0",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
+    "seed:=64801",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44457061175",
+    "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "download": [
+    [
+     "lightricks/ltx-2.5@0.2.0",
+     "--lane",
+     "int8"
+    ]
+   ]
+  },
+  {
+   "name": "t2v5-a-1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow., at dawn",
+    "seed:=164801",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "t2v5-b-0",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
+    "seed:=64801",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44457978065",
+    "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "t2v5-b-1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow., at dawn",
+    "seed:=164801",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  }
+ ],
+ "compare": [
+  [
+   "t2v5-a-0",
+   "t2v5-b-0"
+  ],
+  [
+   "t2v5-a-1",
+   "t2v5-b-1"
+  ]
+ ]
+}
