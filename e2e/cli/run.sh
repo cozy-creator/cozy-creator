@@ -768,6 +768,7 @@ case $SHARD in
     run_overhead
     previews
     run_flags
+    describe_inputs
     run_playback
     hub_away
     lock_refresh
@@ -1174,6 +1175,8 @@ case $SHARD in
   typed-calls) parts="typed_calls logs" ;;
   # A run's own file at a box-shaped input, its first use and again (cl-1183).
   given-file) parts="given_file logs" ;;
+  # `cozy run <fn> --describe` with inputs runs nothing (cl-1317).
+  describe-inputs) parts="describe_inputs logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest
