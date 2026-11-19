@@ -116,6 +116,10 @@ def _fake_setitem(self: torch.Tensor, index: object, value: object) -> None:
         target.fill_(value)
 
 
+# In-place writes allocate nothing; torch's meta copy_ makes its source's copy on the destination's device, which a CPU-only
+# torch cannot make for CUDA. A fake holds no values, so a write is nothing to do here.
+FakeTensor.copy_ = lambda self, src, non_blocking=False: self  # type: ignore[method-assign]
+FakeTensor.fill_ = lambda self, value: self  # type: ignore[method-assign]
 FakeTensor.__getitem__ = _fake_getitem  # type: ignore[method-assign]
 FakeTensor.__setitem__ = _fake_setitem  # type: ignore[method-assign]
 
@@ -561,7 +565,9 @@ def main() -> None:
         except Exception as exc:
             fail("build", exc)
             return
-        with torch.inference_mode(), TRACK:
+        # The denoise runs under no_grad (minimax_h3/steps.py:70), not inference_mode: its tensors keep a version counter,
+        # which decides whether an int8 operand is shared across head windows (glue._Heads.__call__).
+        with torch.no_grad(), TRACK:
             RESULT["weights_gib"] = round(TRACK.exclude(model) / GiB, 3)
             hooks(model)
             run_passes(model, adaln_pruned)
@@ -603,6 +609,9 @@ def run_passes(model, adaln_pruned) -> None:  # type: ignore[no-untyped-def]
             r, _ = block_once(block, steady, (), "c8 steady (3,2,3), Kitchen as its register_fake (output only)")
             rows.append(r)
             KITCHEN_MODE[0] = "mirror"
+            with torch.inference_mode():
+                r, _ = block_once(block, steady, (), "c8 steady (3,2,3) under inference_mode instead of no_grad")
+            rows.append(r)
         except Exception as exc:
             fail("block", exc)
         RESULT["block_runs"] = rows
