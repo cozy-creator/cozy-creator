@@ -1404,12 +1404,15 @@ fn said_within(stderr: impl Read + Send + 'static, budget: Duration) -> Vec<u8> 
 /// securefs's stderr as a supervisor reads it: drained always, so securefs never blocks on it, and kept only until `forget`.
 struct Words {
     kept: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// Told once its reader has read to the stream's end.
+    ended: mpsc::Receiver<()>,
 }
 
 impl Words {
     fn listen(mut stream: std::process::ChildStderr) -> Self {
         let kept = std::sync::Arc::new(std::sync::Mutex::new(Some(Vec::new())));
         let into = kept.clone();
+        let (tell, ended) = mpsc::channel();
         thread::spawn(move || {
             let mut chunk = [0u8; 1024];
             while let Ok(read) = stream.read(&mut chunk) {
@@ -1419,13 +1422,15 @@ impl Words {
                     if kept.len() > TAIL { kept.drain(..kept.len() - TAIL); }
                 }
             }
+            let _ = tell.send(());
         });
-        Self { kept }
+        Self { kept, ended }
     }
 
-    /// What it said so far: given a moment for its last words to arrive.
+    /// What it said, once it exited: read to the stream's end, which its exit closes, or what came within `CONTROL_ACK`, as a
+    /// grandchild still holding the pipe never stalls a refusal (`said_within`).
     fn said(&self) -> Vec<u8> {
-        thread::sleep(Duration::from_millis(200));
+        let _ = self.ended.recv_timeout(CONTROL_ACK);
         self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
     }
 

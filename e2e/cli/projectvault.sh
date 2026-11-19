@@ -150,6 +150,18 @@ PY_BACKING_SCAN
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/wrong" > "$work/wrong.json" 2> "$work/wrong.err"; then fail "wrong passphrase unlocked the project"; fi
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
 
+  # xs-215 (calcifer-cli row 12): securefs exits before its view mounts, and its supervisor reads what it said to its stderr's end.
+  step "a damaged vault refuses its unlock in securefs's own words, and unlocks once repaired"
+  local config=$P/project.vault.data/.config.pb
+  [ -f "$config" ] || fail "damaged vault: no $config"
+  cp -p "$config" "$work/config.pb"
+  printf 'not a securefs config\n' > "$config"
+  if in_project "$P" --json vault unlock --passphrase-file "$secrets/initial" > "$work/damaged.json" 2> "$work/damaged.err"; then fail "a damaged vault unlocked"; fi
+  jq -e '.error.message | test("securefs mount failed \\((Some\\(-?[0-9]+\\)|None)\\): \\S")' "$work/damaged.json" > /dev/null \
+    || check "damaged vault: its refusal doesn't carry what securefs said: $(jq -c '.error | {code, message}' "$work/damaged.json" 2> /dev/null || head -c 400 "$work/damaged.json")"
+  jq -c '.error | {code, message}' "$work/damaged.json" 2> /dev/null || true
+  cp -p "$work/config.pb" "$config"
+
   step "saved recovery and passphrase replacement preserve the files"
   # The refused in-view replacement must leave the original recovery credential valid.
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
