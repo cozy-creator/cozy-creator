@@ -243,6 +243,9 @@ each part's bytes per tile, or None for a part every range reads whole (`nvfp4`'
 whose parts store columns first, is None.
 `read_rows(reads, *, stream=None)` fills each `(component, key, start, stop, {role: out})`
 with those rows' stored bytes in one read; each out holds exactly `nbytes(start, stop)[role]`.
+A CUDA out is written on `stream` after that stream's earlier work, or with none given after all
+earlier work on its device. TensorFS asks a CUDA array's producer to order nothing (DLPack's
+stream -1), so torch makes no stream or event for it: a package may read into CUDA arrays.
 Where the consuming op may be cut is its own to decide; this only says how finely the
 storage allows.
 
@@ -416,7 +419,7 @@ resident decoding does not invent another quantization convention.
 The call is synchronous: success means the output is ready. Do not mutate inputs or
 access the destination concurrently with the call. Nonempty input/output spans must not overlap;
 duplicate read-only input spans are allowed. The binding holds buffer leases and DLPack
-owners through completion and orders CUDA work against their producer streams.
+owners through completion and orders CUDA work after all earlier work on their device.
 
 Buffer/descriptor and overlap refusals occur before output writes. Unknown schemes raise
 `UnknownSchemeError`; invalid encoding/value cases can raise `DecodeError`. After a

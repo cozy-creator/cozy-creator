@@ -483,6 +483,16 @@ impl Stream {
             (driver.stream_synchronize)(self.raw)
         })
     }
+    /// Wait on the host for all earlier work in this stream's context, on any stream: what this
+    /// stream does next follows whatever made or last used memory there. For an array whose
+    /// producer was asked to order nothing (DLPack's stream -1).
+    pub fn after_device(&self) -> Result<()> {
+        let driver = driver()?;
+        let _context = CtxGuard::enter(self.ctx)?;
+        let _wait = tracing::trace_span!("tensorfs cuCtxSynchronize").entered();
+        // SAFETY: this stream's context is current.
+        check("cuCtxSynchronize", unsafe { (driver.ctx_synchronize)() })
+    }
     pub(crate) fn context(&self) -> CUcontext {
         self.ctx
     }

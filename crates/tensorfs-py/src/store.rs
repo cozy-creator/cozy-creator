@@ -1544,6 +1544,8 @@ pub(crate) struct Dlpack {
 }
 
 impl Dlpack {
+    /// A source or destination; a CUDA array is used on a stream of ours, after every earlier
+    /// work on its device (a host wait), whichever stream made or last used it.
     pub(crate) fn of(
         py: Python<'_>,
         data: &Bound<'_, PyAny>,
@@ -1554,8 +1556,8 @@ impl Dlpack {
     }
 
     /// A destination written on `stream`, the caller's CUstream (0: the legacy default stream),
-    /// for a CUDA array: the writes follow that stream's earlier work, and no stream of ours
-    /// is made or drained. A CPU array as `of`.
+    /// for a CUDA array: the writes follow that stream's earlier work, which must have made the
+    /// array ready, and no stream of ours is made or drained. A CPU array as `of`.
     pub(crate) fn on(py: Python<'_>, data: &Bound<'_, PyAny>, stream: usize) -> PyResult<Self> {
         // DLPack's and the driver's legacy default stream: 0 is no stream to either.
         Self::parse(py, data, None, None, Some(if stream == 0 { 1 } else { stream }))
@@ -1596,12 +1598,14 @@ impl Dlpack {
             engine_error: false,
             quiescent: false,
         }));
-        let ordered = (lifetime.0.as_ref().unwrap().stream.as_ref())
-            .map(|stream| stream.raw())
-            .or(consumer);
-        let exported = if let Some(stream) = ordered {
+        // A CUDA array is exported with stream -1: its producer orders nothing. Handed any other
+        // stream, a framework builds stream objects on the caller's behalf (torch wraps it in a
+        // `torch.cuda.ExternalStream` and records a `torch.cuda.Event`), which a package's process
+        // refuses (tfs-303). The order is ours: on the caller's stream, after that stream's earlier
+        // work; on a stream of ours, after all earlier work on the array's device.
+        let exported = if device.0 == KDL_CUDA {
             let kwargs = PyDict::new(py);
-            kwargs.set_item("stream", stream)?;
+            kwargs.set_item("stream", -1)?;
             data.call_method("__dlpack__", (), Some(&kwargs))
         } else {
             data.call_method0("__dlpack__")
@@ -1711,6 +1715,9 @@ impl Dlpack {
             return Err(PyErr::fetch(py));
         }
         release.managed = Some(managed);
+        if let Some(stream) = release.stream.as_ref() {
+            py.detach(|| stream.after_device()).or_raise(py)?;
+        }
         Ok(Self {
             lifetime,
             consumer,

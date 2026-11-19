@@ -359,7 +359,8 @@ class Checkpoint:
         """Only those rows' stored bytes, from the store (fetched where missing), in one read. Each
         out is a writable C-contiguous Buffer or CPU/CUDA DLPack array of `RowCut.nbytes`'s length
         for its role; a role left out is not read. CUDA outs are written on `stream` (a CUstream)
-        after its earlier work. Returns when every byte has landed."""
+        after its earlier work, which must have made them ready; with none given, after all earlier
+        work on their device. Returns when every byte has landed."""
 
 @final
 class _CheckpointFile:
