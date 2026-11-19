@@ -28,9 +28,6 @@ use crate::{
     runs::target::{Resolved, resolve},
 };
 
-/// Legacy spellings, besides TensorFS's canonical BF16/F16/F32 dtype names.
-const ORIGINAL: [&str; 3] = ["bf16", "fp16", "f32"];
-
 /// The checkpoint a quantize reads: spelled for the run, its model, and the components its
 /// header holds.
 struct Source {
@@ -103,9 +100,7 @@ fn published(named: &str) -> Result<String, Refusal> {
 /// integer and boolean buffers (position ids, masks) a model keeps as they are, which are no
 /// weights and never quantized.
 fn original(kinds: &[String]) -> bool {
-    let float = |kind: &String| {
-        matches!(Dtype::parse(kind), Dtype::BF16 | Dtype::F16 | Dtype::F32) || ORIGINAL.contains(&kind.as_str())
-    };
+    let float = |kind: &String| matches!(Dtype::parse(kind), Dtype::BF16 | Dtype::F16 | Dtype::F32);
     let index = |kind: &String| {
         use Dtype::*;
         matches!(Dtype::parse(kind), BOOL | I16 | U16 | I32 | U32 | I64 | U64)

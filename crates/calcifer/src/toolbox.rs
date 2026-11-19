@@ -119,11 +119,6 @@ fn mine(api: &Api) -> Result<ToolList, Refusal> {
     Ok(api.calcifer.store().tool_list()?)
 }
 
-/// Whether a package kept on your list is a path, as an earlier cozy kept local code there: it's no Hub's, and not listed.
-fn is_local(package: &str) -> bool {
-    Path::new(package).is_absolute()
-}
-
 /// A package as the Hub's paths name it.
 fn owned(package: &str) -> String {
     match package.contains('/') {
@@ -180,7 +175,7 @@ pub(crate) async fn browse(State(api): State<Arc<Api>>, query: Result<Query<Brow
 
 /// The tools of each package you added that `listed` lacks (`newest_tools`).
 fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool]) -> Vec<Tool> {
-    let lacking = mine.packages.iter().filter(|package| !is_local(package) && !listed.iter().any(|tool| tool.package == shown(package)));
+    let lacking = mine.packages.iter().filter(|package| !listed.iter().any(|tool| tool.package == shown(package)));
     newest_tools(api, hub, lacking.cloned())
 }
 
@@ -471,7 +466,7 @@ impl Listing {
                 crate::events::tools_changed();
             }
             if let Ok(mine) = api.calcifer.store().tool_list() {
-                for package in mine.packages.iter().filter(|package| !is_local(package) && !tools.iter().any(|tool| tool.package == shown(package))) {
+                for package in mine.packages.iter().filter(|package| !tools.iter().any(|tool| tool.package == shown(package))) {
                     read_newest(&api, &hub, package);
                 }
             }

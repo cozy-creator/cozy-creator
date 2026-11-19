@@ -85,12 +85,11 @@ pub(crate) fn forget(store: &crate::store::Store, id: &str) {
     }
 }
 
-/// Project `id` opened, its document read: looked at now if a box of it is set aside (one set aside before cl-919 counts from now), else
-/// not. An open of a project with nothing deleted asks for no purge (cl-1010: each open asked for one, and a project a run list opens
-/// closes again after it, so each ask loaded it again for a purge).
+/// Project `id` opened, its document read: looked at now if a box of it is set aside, else not. An open of a project with nothing
+/// deleted asks for no purge (cl-1010: each open asked for one, and a project a run list opens closes again after it, so each ask
+/// loaded it again for a purge).
 pub(crate) fn opened(id: &str, folder: &Folder) {
-    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
-    let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)) || lock.runs.iter().any(legacy));
+    let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)));
     // Its loose rows of a take's run not swept yet (cl-1093): one pass, once.
     if !matches!(set_aside, Ok(false)) || !folder.late_rows_swept().unwrap_or(true) {
         due(id, now_ms());
@@ -224,12 +223,11 @@ fn purged(api: &Api, path: &Path, _access: vault::Read) -> Option<i64> {
 /// `folder`'s deleted boxes whose undo window ended by `now`, gone for good: each file of theirs that no box still there, nothing on its
 /// way, no run's output and no box Undo can still bring back holds, from `files/`, its record and the `caches` named by its hash, and a
 /// cut's film at the root. A box keeps its name, its id and when, so an Undo of it says its files were removed, until the history no
-/// longer reaches it. One deleted before cl-919, which says no time, is dated now (`dated`): its window starts here. When the next is due, if any is.
+/// longer reaches it. When the next is due, if any is.
 pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Option<i64>, Error> {
     let window = window_ms();
     // Held throughout: a file kept meanwhile isn't deleted.
     let _collecting = folder.collecting();
-    dated(folder, now)?;
     let lock = folder.lock()?;
     let set_aside = |key: &str| key.contains(TOMBSTONE);
     let ended = |held: &super::folder::Asset| held.files().next().is_some() && held.lapsed(now);
@@ -307,30 +305,6 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
         }
     }
     Ok(after_renders(next_due(&folder.lock()?, window)))
-}
-
-/// A delete before cl-919 (0.24's) said no time: a row set aside with none, or an imported picture's file on record only as a run's
-/// `deleted` row. 0.24 kept a deleted box's files and its Undo (the last 200 edits) brought the box back with them, so each is dated `now`,
-/// the first time a 0.25 Calcifer looks: Undo brings it back for the window from then, as for a delete now, and its files go after that.
-fn dated(folder: &Folder, now: i64) -> Result<(), Error> {
-    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
-    let undated = |key: &str, held: &super::folder::Asset| key.contains(TOMBSTONE) && held.deleted_ms.is_none();
-    if !folder.reading_lock(|lock| lock.assets.iter().any(|(key, held)| undated(key, held)) || lock.runs.iter().any(legacy))? {
-        return Ok(());
-    }
-    folder.update_lock(|lock| {
-        for (_, held) in lock.assets.iter_mut().filter(|(key, held)| undated(key, held)) {
-            held.deleted_ms = Some(now);
-        }
-        // Its own row set aside, under a key no name makes (a name key holds no `#`), holding the file as a deleted box's own.
-        let rows: Vec<String> = lock.runs.iter().filter(|row| legacy(row)).map(|row| row.sha256.clone()).collect();
-        lock.runs.retain(|row| !legacy(row));
-        for sha256 in rows {
-            let hex: String = sha256.trim_start_matches("sha256:").chars().take(12).collect();
-            let key = (1..).map(|n| format!("{TOMBSTONE}deleted {hex}{TOMBSTONE}{n}")).find(|key| !lock.assets.contains_key(key)).expect("a free key");
-            lock.assets.insert(key, super::folder::Asset { held: Some(sha256), deleted_ms: Some(now), ..Default::default() });
-        }
-    })
 }
 
 /// Every file something still in the project holds: its boxes' versions, discarded too, their pins and a cut's clips, what's on its way,

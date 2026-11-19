@@ -458,77 +458,10 @@ db_crdt
 db_cancel_undo
 db_cancel_race
 db_first_open
-db_deleted_024
 db_crash
 db_latency
 }
 
-# Boxes deleted under 0.24 at the first 0.25 open (cl-919): 0.24 set a deleted box aside with no time and kept its files, and its Undo
-# (the last 200 edits) brought it back with them. 0.25 dates such a delete at its first open: the files stay, Undo brings the box back,
-# and once the window ends (config.toml's calcifer.undo_seconds, cut for the cell) the box left deleted loses its files. 0.24.0's own
-# cozy, in this one's place, imports two pictures and deletes them as its page does; then this cozy goes back in its place, its Calcifer
-# started with the short window, and opens the project for the first time (schema 4 with it).
-db_deleted_024() {
-step "project.db: boxes deleted under 0.24 keep their files for the undo window from the first 0.25 open; Undo brings one back"
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder undo=40 a b entry old made=0
-DB024=$OUT/db-deleted-024
-old=$(cozy_0240) || { check "0.24 deletes: 0.24.0's archive"; return; }
-cp "$COZY" "$OUT/cozy-now"
-in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "0.24 deletes: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$OUT/cozy-now"; return; }
-python3 - "$OUT/db-024-kept.png" "$OUT/db-024-gone.png" <<'PNG'
-import struct, sys, zlib
-def png(path, rgb):
-    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    rows = (b"\x00" + bytes(rgb) * 8) * 8
-    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
-png(sys.argv[1], (200, 40, 40)); png(sys.argv[2], (40, 40, 200))
-PNG
-a=$(sha "$OUT/db-024-kept.png") b=$(sha "$OUT/db-024-gone.png")
-db_024_made || made=$?
-undo_window "$lock" "$undo" db_024_back
-db_calcifer
-[ "$made" = 0 ] || { undo_window "$lock" ''; return; }
-[ "$(cozy --version)" = "$("$OUT/cozy-now" --version)" ] || { check "0.24 deletes: this cozy back in its place: $(cozy --version)"; undo_window "$lock" ''; return; }
-project_api "$DB024" '' > /dev/null || check "0.24 deletes: first open"
-sleep 5
-held_024 "$a" || check "0.24 deletes: the first 0.25 open deleted kept_024's file"
-held_024 "$b" || check "0.24 deletes: the first 0.25 open deleted gone_024's file"
-sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -se '[.[] | .[0] | fromjson] | length >= 2 and all(.deleted_ms != null)' > /dev/null \
-  || check "0.24 deletes: not both boxes set aside, each with a time, after the first open: $(sql "$DB024" "SELECT key, record FROM lock_assets WHERE key LIKE '%#%'" | head -c 400)"
-[ "$(sql1 "$DB024" "SELECT count(*) FROM run_files WHERE run = 0 AND output = 'deleted'")" = 0 ] || check "0.24 deletes: 0.24's deleted rows are still on record"
-project_api "$DB024" /history > "$OUT/db-024-history.json" || check "0.24 deletes: history"
-entry=$(jq -r '[.entries[] | select((.names // []) | index("kept_024"))][0].id // empty' "$OUT/db-024-history.json")
-if [ -z "$entry" ]; then
-  check "0.24 deletes: no history entry deletes kept_024: $(jq -c '[.entries[] | {id, words, names}]' "$OUT/db-024-history.json")"
-else
-  project_history_step "$DB024" undo "$entry" > "$OUT/db-024-undo.json" || check "0.24 deletes: Undo of kept_024: $(tail -c 300 "$OUT/db-024-undo.json")"
-  J '.assets | any(.name == "kept_024")' <<< "$(status "$DB024")" || check "0.24 deletes: Undo didn't bring kept_024 back: $(status "$DB024" | jq -c '[.assets[].name]')"
-  held_024 "$a" || check "0.24 deletes: kept_024 came back without its file"
-fi
-for _ in $(seq 1 $((undo + 60))); do held_024 "$b" || break; sleep 1; done
-! held_024 "$b" || check "0.24 deletes: gone_024's file is still in files/ $((undo + 60)) s after the first open"
-[ -z "$entry" ] || held_024 "$a" || check "0.24 deletes: the purge took kept_024's file, which a box holds again"
-undo_window "$lock" ''
-}
-# held_024 <hex>: a file of that sha256 is in the cell's project's files/.
-held_024() { find "$DB024/files" -type f -exec sha256sum {} + 2> /dev/null | grep -q "^$1 "; }
-# Under 0.24.0: the project, its two pictures imported and held, then each deleted as its page deletes a box.
-db_024_made() {
-  local name
-  run_project "$DB024" > "$OUT/db-024-new.log" 2>&1 || { check "0.24 deletes: 0.24.0 made no project: $(tail -c 300 "$OUT/db-024-new.log")"; return 1; }
-  for name in kept gone; do
-    project_import "$DB024" "$OUT/db-024-$name.png" "${name}_024" > "$OUT/db-024-$name-import.json" \
-      || { check "0.24 deletes: 0.24.0's import of $name: $(cat "$OUT/db-024-$name-import.json")"; return 1; }
-  done
-  held_024 "$a" && held_024 "$b" || { check "0.24 deletes: 0.24.0's imports aren't in files/"; return 1; }
-  for name in kept gone; do
-    project_api "$DB024" "/assets/${name}_024" -X DELETE > "$OUT/db-024-delete.txt" 2>&1 || { check "0.24 deletes: 0.24.0's delete of $name: $(tail -c 300 "$OUT/db-024-delete.txt")"; return 1; }
-  done
-  held_024 "$a" && held_024 "$b" || { check "0.24 deletes: 0.24.0 deleted a deleted box's file"; return 1; }
-  [ "$(sql1 "$DB024" 'PRAGMA user_version')" = 2 ] || { check "0.24 deletes: 0.24.0 made schema $(sql1 "$DB024" 'PRAGMA user_version'), not 2"; return 1; }
-}
-# This cozy back in its place, as an update puts it, while no Calcifer runs (undo_window's restart).
-db_024_back() { state_back && cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
 # cozy_0240: the path of 0.24.0's cozy, from its release archive, fetched once.
 cozy_0240() {
   local was=$OUT/cozy-0.24.0 arch old
@@ -1138,7 +1071,7 @@ done
 for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
   [ -f "$M/$f" ] || check "migrate: $f is gone"
 done
-# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted is cl-919's, dated at the first open.)
+# Undo reaches what 0.24.0 did: notes' words back, then changed again.
 local words='.asset.fields.text'
 project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
 [ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote." ] || check "migrate: notes undone say '$(held "$M" notes | jq -r "$words")'"
