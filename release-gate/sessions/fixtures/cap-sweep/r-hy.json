@@ -30,5 +30,6 @@
       "max_s": 3300,
       "unless": "hunyuan-turbo-hardest"
     }
-  ]
+  ],
+  "provider": "runpod"
 }

@@ -103,6 +103,12 @@ printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+# `--provider` is a dev flag: on a hosted runner its own cozy home says `dev = true` first.
+if [ -n "$PROVIDER" ]; then
+  [ -n "${GITHUB_ACTIONS:-}" ] || fail "provider: only on a hosted runner, whose cozy home is its own"
+  c=~/.cozy/config.toml; mkdir -p ~/.cozy; touch "$c"
+  grep -qx 'dev = true' "$c" || { { echo 'dev = true'; cat "$c"; } > "$c.new" && mv "$c.new" "$c"; }
+fi
 RENT_ARGS="--ssh${PROVIDER:+ --provider $PROVIDER}"
 quote "$NEED"
 rent

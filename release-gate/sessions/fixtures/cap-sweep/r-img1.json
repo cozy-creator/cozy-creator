@@ -57,5 +57,6 @@
       ],
       "max_s": 2400
     }
-  ]
+  ],
+  "provider": "runpod"
 }
