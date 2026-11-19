@@ -174,14 +174,15 @@ pub(crate) fn start(api: Arc<Api>) {
                     }
                     // Locked: nothing can read it, and nothing of it is held until its unlock's open looks again.
                     Ok(Some(project)) if vault::locked_now(&project.path) => None,
-                    // Held as any reader's: a lock or a move of the project waits for it.
+                    // Held as any reader's: a lock or a move of the project waits for it. Now or not at all: the one purge pass goes on
+                    // to other projects rather than wait behind one project's transition.
                     Ok(Some(project)) => match vault::try_admit_root(&project.path) {
-                        Ok(access) => {
+                        Ok(Some(access)) => {
                             let (held, path) = (api.clone(), project.path);
-                            tokio::task::spawn_blocking(move || purged(&held, &path, access)).await.unwrap_or(again)
+                            tokio::task::spawn_blocking(move || purged(&held, &path, access.here())).await.unwrap_or(again)
                         }
                         // Its storage changing now (an unlock's own open asks for this purge, cl-1010): looked at again once it's done.
-                        Err(error) if error.code == "project_busy" => {
+                        Ok(None) => {
                             let (path, id) = (project.path, id.clone());
                             tokio::spawn(async move {
                                 if vault::admit_root(&path).await.is_ok() {
@@ -206,7 +207,7 @@ pub(crate) fn start(api: Arc<Api>) {
 }
 
 /// The project at `path`, admitted (`_access`), purged: when its next deleted box is due, if any is; unreadable now, a try later.
-fn purged(api: &Api, path: &Path, _access: tokio::sync::OwnedRwLockReadGuard<()>) -> Option<i64> {
+fn purged(api: &Api, path: &Path, _access: vault::Read) -> Option<i64> {
     let again = || Some(now_ms() + AGAIN.as_millis() as i64);
     let Ok(dir) = vault::resolve_path(path) else { return again() };
     let home = api.machines.hubs.home();

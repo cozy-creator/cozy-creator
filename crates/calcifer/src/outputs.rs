@@ -477,8 +477,11 @@ impl Calcifer {
     /// The run and its first `LANES` outputs to export; none ends the exporter, under the lock
     /// `export` takes, so an event after this starts another.
     fn next_exports(&self, id: &RunId) -> Result<Option<(RunRow, Vec<OutputRow>)>, StoreError> {
+        // Its journal's read first, waited for in order, then the lock: none is held across a wait on the gate, which a transition
+        // that takes this lock (`retire_exports`) would wait on in a circle (xs-215).
+        let store = self.run_store(id.as_str());
         let mut runs = lock(&self.exports.runs);
-        let next = self.with_run_store(id.as_str(), |store| match store.run(id.as_str())? {
+        let next = store.and_then(|store| match store.run(id.as_str())? {
             Some(run) => {
                 let mut items = store.outputs_to_export(id.as_str())?;
                 items.truncate(LANES);
@@ -839,8 +842,10 @@ pub(crate) async fn serve(
     let readable = crate::project::vault::readable_token(&row.out_dir);
     let number = api.calcifer.run_name(&row);
     let (item, file, landed_folder) = {
+        // Its journal's read first, waited for in order: no lock is held across a wait on the gate (xs-215).
+        let store = api.calcifer.row_store(&row)?;
         let _placing = lock(&api.calcifer.exports.placing);
-        let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
+        let item = store.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("Run {number} has no result {name} at index {index}.");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
@@ -1009,7 +1014,7 @@ pub(crate) fn drop_partials(run: &RunRow, owed: &[OutputRow]) {
 
 /// A read of the project for one write batch into it (cl-1060): a lock waits for the batch, and no batch starts into a view a lock
 /// has. None for Calcifer's own runs, which write into no project.
-async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, String> {
+async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<crate::project::vault::Read>, String> {
     match gate {
         Some(owner) => owner.writing().await.map(Some).map_err(|e| e.message),
         None => Ok(None),

@@ -7,7 +7,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError, TryLockError, atomic::{AtomicUsize, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -956,18 +956,21 @@ struct Shared {
     key: (PathBuf, PathBuf, Option<super::vault::MountIdentity>),
     /// One writer at a time, with the connection that writes: an act, or a write of no act's, holds it from what it changes to its commit,
     /// SQLite's wait on another program's write lock too. Nothing that only reads waits on it (cl-837).
-    writing: Mutex<Option<rusqlite::Connection>>,
+    writing: Used<Option<rusqlite::Connection>>,
     /// Held while a file is kept and while files are deleted, so one isn't deleted between.
     collecting: Mutex<()>,
     /// What `project.db` holds, read once and kept as each commit leaves it. Held only to look at or swap, never through a wait on SQLite.
-    held: Mutex<Option<Held>>,
+    held: Used<Option<Held>>,
     /// A connection that only reads: what `held` doesn't keep, and whether another connection committed. In WAL a read waits on no writer.
-    reading: Mutex<Option<rusqlite::Connection>>,
+    reading: Used<Option<rusqlite::Connection>>,
     /// The connections a run journal's reads take, one each: a run list never waits on another read, nor on the document read again
     /// (cl-1010).
     journal: Mutex<JournalReaders>,
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
+    /// Rung as each use of the database ends (its writer's, what's held's, its reader's, a journal read's, a checkpoint's): what a
+    /// close waits on (`close_connections`).
+    ended: Arc<Ring>,
     /// Its history, read from project.db once.
     book: Mutex<Option<Arc<super::history::Book>>>,
     /// What ffprobe last said of each film at its root.
@@ -979,6 +982,126 @@ struct Shared {
 struct JournalReaders {
     idle: Vec<rusqlite::Connection>,
     reading: usize,
+}
+
+/// One of the database's locks: its writer, what's held of it, its reader. Each use rings `Shared::ended` as it lets go, so a close
+/// waits for the uses in flight to end rather than try and refuse (xs-215). Taken in the one order every path takes them: writing,
+/// held, reading.
+struct Used<T> { lock: Mutex<T>, ended: Arc<Ring> }
+
+impl<T> Used<T> {
+    fn new(value: T, ended: &Arc<Ring>) -> Self { Self { lock: Mutex::new(value), ended: ended.clone() } }
+    fn lock(&self) -> UsedGuard<'_, T> { UsedGuard { guard: Some(self.lock.lock().unwrap_or_else(PoisonError::into_inner)), ended: &self.ended } }
+    fn try_lock(&self) -> Option<UsedGuard<'_, T>> { now(&self.lock).map(|guard| UsedGuard { guard: Some(guard), ended: &self.ended }) }
+    fn get_mut(&mut self) -> &mut T { self.lock.get_mut().unwrap_or_else(PoisonError::into_inner) }
+}
+
+/// A use of one of the database's locks: rings as it ends.
+pub(crate) struct UsedGuard<'a, T> { guard: Option<MutexGuard<'a, T>>, ended: &'a Ring }
+
+impl<T> std::ops::Deref for UsedGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T { self.guard.as_ref().expect("held") }
+}
+
+impl<T> std::ops::DerefMut for UsedGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T { self.guard.as_mut().expect("held") }
+}
+
+impl<T> Drop for UsedGuard<'_, T> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.ended.ring();
+    }
+}
+
+thread_local! {
+    /// The projects whose database writer this thread holds now, by root: a read of one's gate asked here would make a transition's
+    /// write into it wait on this thread (`vault::ask` refuses it at once).
+    static WRITING: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether this thread holds the database writer of the project at `root`.
+pub(crate) fn writing_here(root: &Path) -> bool {
+    WRITING.with(|writing| writing.borrow().iter().any(|held| held == root))
+}
+
+/// The database writer's turn, under a read of its project's gate taken first: the gate before the writer, always (xs-215). A
+/// transition that has the project and writes into it (a lock's receipt) so never waits on a writer whose holder waits on that
+/// transition. The writer goes first as it ends, then the read.
+pub(crate) struct WriterTurn<'a> {
+    guard: UsedGuard<'a, Option<rusqlite::Connection>>,
+    root: PathBuf,
+    _read: Option<super::vault::Read>,
+}
+
+impl std::ops::Deref for WriterTurn<'_> {
+    type Target = Option<rusqlite::Connection>;
+    fn deref(&self) -> &Self::Target { &self.guard }
+}
+
+impl std::ops::DerefMut for WriterTurn<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
+}
+
+impl Drop for WriterTurn<'_> {
+    fn drop(&mut self) {
+        WRITING.with(|writing| {
+            let mut writing = writing.borrow_mut();
+            if let Some(at) = writing.iter().position(|held| *held == self.root) { writing.remove(at); }
+        });
+    }
+}
+
+/// A refusal of the writer's turn, as the run journal says it.
+fn journal_refusal(error: Error) -> crate::store::StoreError {
+    match error.code.as_str() {
+        "project_locked" | "project_view_changed" | "project_busy" => crate::store::StoreError::Locked(error.code.to_string()),
+        _ => crate::store::StoreError::Protected(error.code.to_string()),
+    }
+}
+
+/// `lock` now, or none while another holds it.
+fn now<T>(lock: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+/// What a close waits on: told as each use of the database ends, counted so a missed ring can't be.
+#[derive(Default)]
+struct Ring { told: Mutex<u64>, rung: Condvar, waiting: AtomicUsize }
+
+impl Ring {
+    fn ring(&self) {
+        // The use's unlock (or `checkpointing`'s store) before the look at `waiting`: without the fence that load may pass it, and a
+        // waiter that registered and tried in between sleeps to its bound.
+        std::sync::atomic::fence(Ordering::SeqCst);
+        if self.waiting.load(Ordering::SeqCst) == 0 { return; }
+        *self.told.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        self.rung.notify_all();
+    }
+
+    /// Until `free` (tried with nothing of this ring held), woken as each use ends, or until `until`: whether it was free.
+    fn until(&self, until: Instant, mut free: impl FnMut() -> bool) -> bool {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        // Registered before it tries: pairs with `ring`'s fence.
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let free = loop {
+            let seen = *self.told.lock().unwrap_or_else(PoisonError::into_inner);
+            if free() { break true; }
+            let mut told = self.told.lock().unwrap_or_else(PoisonError::into_inner);
+            while *told == seen {
+                let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else { break };
+                told = self.rung.wait_timeout(told, left).unwrap_or_else(PoisonError::into_inner).0;
+            }
+            if *told == seen { break false; }
+        };
+        self.waiting.fetch_sub(1, Ordering::AcqRel);
+        free
+    }
 }
 
 /// A journal read's turn: counted from its start until it's dropped, on unwind too (a read that panicked left `reading` up, so the
@@ -1004,6 +1127,8 @@ impl Drop for JournalReader<'_> {
         if let Some(conn) = self.conn.take().filter(|_| !std::thread::panicking() && journal.idle.len() < JOURNAL_READERS) {
             journal.idle.push(conn);
         }
+        drop(journal);
+        self.shared.ended.ring();
     }
 }
 
@@ -1012,6 +1137,15 @@ const JOURNAL_READERS: usize = 8;
 
 /// How many frames a film holds, as ffprobe said of it at its size and time.
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
+
+/// Connections of a project folder no `Folder` names any more, still closing on their own thread (`Shared::drop`), by the project's
+/// root: database uses in flight, which a transition waits for before it checkpoints or unmounts (`vault::forget_with`).
+static CLOSING: LazyLock<Mutex<HashMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// Whether the project at `root` has connections still closing.
+pub(crate) fn closing(root: &Path) -> bool {
+    CLOSING.lock().unwrap_or_else(PoisonError::into_inner).contains_key(root)
+}
 
 impl Drop for Shared {
     /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, its WAL checkpointed first. The last
@@ -1024,16 +1158,17 @@ impl Drop for Shared {
             shared.remove(&self.key);
         }
         drop(shared);
-        let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
-        let reading = self.reading.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let writing = self.writing.get_mut().take();
+        let reading = self.reading.get_mut().take();
         let journal = std::mem::take(&mut self.journal.get_mut().unwrap_or_else(|e| e.into_inner()).idle);
-        let held = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let held = self.held.get_mut().take();
         let book = self.book.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let films = std::mem::take(self.films.get_mut().unwrap_or_else(|e| e.into_inner()));
         if writing.is_none() && reading.is_none() && held.is_none() && journal.is_empty() {
             return;
         }
-        let dir = self.key.1.clone();
+        let (dir, owner) = (self.key.1.clone(), self.key.0.clone());
+        *CLOSING.lock().unwrap_or_else(PoisonError::into_inner).entry(owner.clone()).or_default() += 1;
         std::thread::spawn(move || {
             let resident = || platform::contain::host_memory::process(std::process::id()).map_or(0, |memory| memory.rss) >> 20;
             let before = (resident(), platform::heap::committed() >> 20);
@@ -1041,6 +1176,13 @@ impl Drop for Shared {
                 let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
             }
             drop((journal, writing, reading, held, book, films));
+            let mut closing = CLOSING.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = closing.get_mut(&owner) {
+                *count -= 1;
+                if *count == 0 { closing.remove(&owner); }
+            }
+            drop(closing);
+            super::vault::work_ended(&owner);
             platform::heap::give_back();
             tracing::info!(
                 "{} closed: resident {} → {} MiB, allocator committed {} → {} MiB, in use {} MiB",
@@ -1082,14 +1224,16 @@ fn shared(dir: &Path) -> Arc<Shared> {
     if let Some(held) = shared.get(&key).and_then(std::sync::Weak::upgrade) {
         return held;
     }
+    let ended = Arc::new(Ring::default());
     let held = Arc::new(Shared {
         key: key.clone(),
-        writing: Mutex::default(),
+        writing: Used::new(None, &ended),
         collecting: Mutex::default(),
-        held: Mutex::default(),
-        reading: Mutex::default(),
+        held: Used::new(None, &ended),
+        reading: Used::new(None, &ended),
         journal: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
+        ended,
         book: Mutex::default(),
         films: Mutex::default(),
     });
@@ -1189,19 +1333,28 @@ pub(crate) struct Folder {
 }
 
 impl Folder {
-    /// Release cached connections before unmounting or moving the storage. The caller has
-    /// stopped admissions and checked background work; an in-flight DB operation refuses it.
-    pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
+    /// Release cached connections before unmounting or moving the storage, once the database's uses in flight have ended: its writer's,
+    /// what's held's, its reader's, its journal reads', its checkpoint's. Each is held across one database operation, never a wait on a
+    /// network or a worker, and rings as it ends, so this waits for them (up to `until`) rather than tries and refuses; past `until`,
+    /// `project_busy`. A use that asks for the project's gate mid-operation is refused behind a closing transition, and ends at an
+    /// encrypt's or a rotate's bound, so this never waits in a circle (`vault::Gate`).
+    pub(crate) fn close_connections(&self, checkpoint: bool, until: Instant) -> Result<(), Error> {
         let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
-        if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         // In the one order every path takes them, writing, held, reading, journal (`held()` takes held then reading, a write writing
-        // then held), and none waited on: a read between its `held` and its `reading` met a blocking `held` here, taken while this
-        // held `reading`, and each waited on the other for good (e2e 44106684078: a stop hung closing a project it had used).
-        let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
-        let mut held = self.shared.held.try_lock().map_err(|_| busy())?;
-        let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
-        let mut journal = self.shared.journal.try_lock().map_err(|_| busy())?;
-        if journal.reading > 0 { return Err(busy()); }
+        // then held), each tried and all let go when one isn't free: none waited on with another held, as a read between its `held`
+        // and its `reading` waited for good on a close that held `reading` (e2e 44106684078).
+        let mut taken = None;
+        let free = self.shared.ended.until(until, || {
+            if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return false; }
+            let Some(writer) = now(&self.shared.writing.lock) else { return false };
+            let Some(held) = now(&self.shared.held.lock) else { return false };
+            let Some(reader) = now(&self.shared.reading.lock) else { return false };
+            let Some(journal) = now(&self.shared.journal) else { return false };
+            if journal.reading > 0 { return false; }
+            taken = Some((writer, held, reader, journal));
+            true
+        });
+        let Some((mut writer, mut held, mut reader, mut journal)) = taken.filter(|_| free) else { return Err(busy()) };
         journal.idle.clear();
         drop(journal);
         let reading = reader.take();
@@ -1301,9 +1454,9 @@ impl Folder {
 
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
     pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
-        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut turn = self.writer_turn()?;
         db::set_identity(self.writer(&mut turn)?, &self.db(), id, name, Some(code))?;
-        *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.shared.held.lock() = None;
         Ok(())
     }
 
@@ -1354,7 +1507,7 @@ impl Folder {
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
     /// turn, which finds out.
     pub(crate) fn held_elsewhere(&self) -> Option<bool> {
-        let mut turn = self.shared.writing.try_lock().ok()?;
+        let mut turn = self.shared.writing.try_lock()?;
         self.writer(&mut turn).ok().map(|conn| db::locked_elsewhere(conn))
     }
 
@@ -1382,10 +1535,10 @@ impl Folder {
 
     /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved. It
     /// waits on no writer: a commit holds this only to swap in what it wrote (cl-837).
-    fn held(&self) -> Result<MutexGuard<'_, Option<Held>>, Error> {
+    fn held(&self) -> Result<UsedGuard<'_, Option<Held>>, Error> {
         if !self.db().is_file() { return Err(Self::not_a_project(&self.dir)); }
-        let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
-        let mut reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.shared.held.lock();
+        let mut reading = self.shared.reading.lock();
         let conn = match &mut *reading {
             Some(conn) => conn,
             none => none.insert(db::open(&self.db())?),
@@ -1431,7 +1584,7 @@ impl Folder {
             return change();
         }
         let asked = Instant::now();
-        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut turn = self.writer_turn()?;
         let (began, wait_ms) = (Instant::now(), ms(asked));
         let (base, files, seen) = {
             let held = self.held()?;
@@ -1501,11 +1654,11 @@ impl Folder {
         // never see our committed data_version with the cache still on the old view.
         let mut publication = None;
         let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, joined, || current = self.version() == seen,
-            || publication = Some(self.shared.held.lock().unwrap_or_else(|e| e.into_inner())))?;
+            || publication = Some(self.shared.held.lock()))?;
         let (seq, shown) = {
             // A no-op rollback does not call before_commit; local-only file facts
             // still use the existing short publication path in that case.
-            let mut held = publication.unwrap_or_else(|| self.shared.held.lock().unwrap_or_else(|e| e.into_inner()));
+            let mut held = publication.unwrap_or_else(|| self.shared.held.lock());
             let held = held.as_mut().expect("held");
             after.seq = seq.unwrap_or(act.base.seq);
             let shown = seq.is_none() && changed[2] && after.lock.files != act.base.lock.files;
@@ -1524,6 +1677,7 @@ impl Folder {
                 std::thread::spawn(move || {
                     db::checkpoint(&path);
                     shared.checkpointing.store(false, std::sync::atomic::Ordering::Release);
+                    shared.ended.ring();
                 });
             }
             (seq, shown)
@@ -1585,6 +1739,15 @@ impl Folder {
     }
 
     /// The connection that writes, opened at the first write, once the project's first open has made `project.db`.
+    /// The writer's turn: its project's gate read first, waited for in order (none for the transition's own writes), then the writer.
+    fn writer_turn(&self) -> Result<WriterTurn<'_>, Error> {
+        let root = self.shared.key.0.clone();
+        let read = super::vault::read_for_writer(&root)?;
+        let guard = self.shared.writing.lock();
+        WRITING.with(|writing| writing.borrow_mut().push(root.clone()));
+        Ok(WriterTurn { guard, root, _read: read })
+    }
+
     fn writer<'t>(&self, turn: &'t mut Option<rusqlite::Connection>) -> Result<&'t mut rusqlite::Connection, Error> {
         if turn.is_none() {
             drop(self.held()?);
@@ -1595,24 +1758,24 @@ impl Folder {
 
     /// `data_version` of the connection that reads: any other connection's commit moves it, the one that writes too.
     fn version(&self) -> i64 {
-        self.shared.reading.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, db::data_version)
+        self.shared.reading.lock().as_ref().map_or(0, db::data_version)
     }
 
     /// `read` of what `held` doesn't keep, on the connection that only reads: past every writer.
     fn reading_db<R>(&self, read: impl FnOnce(&rusqlite::Connection) -> R) -> Result<R, Error> {
         drop(self.held()?);
-        let reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
+        let reading = self.shared.reading.lock();
         Ok(read(reading.as_ref().expect("opened")))
     }
 
     /// `write` in the writing turn, of what `held` doesn't keep: no part of the project moves, so what it holds stays current but for
     /// another connection's commit.
     fn write_past<R>(&self, write: impl FnOnce(&rusqlite::Connection) -> Result<R, Error>) -> Result<R, Error> {
-        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut turn = self.writer_turn()?;
         let conn = self.writer(&mut turn)?;
         let seen = self.held()?.as_ref().map(|held| held.seen);
         let done = write(conn);
-        let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.shared.held.lock();
         if let Some(held) = held.as_mut().filter(|held| Some(held.seen) == seen) {
             held.seen = self.version();
         }
@@ -1690,7 +1853,7 @@ impl Folder {
 
     /// What's held of the document at `heads`, if something here decoded it.
     fn decoded(&self, heads: &[String]) -> Option<Arc<super::crdt::Document>> {
-        let held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+        let held = self.shared.held.lock();
         held.as_ref()?.stored.crdt.clone().filter(|doc| same_heads(&doc.heads(), heads))
     }
 
@@ -1733,7 +1896,7 @@ impl Folder {
     /// commit, so the next read reads it again, as another connection's.
     pub(crate) fn journal_write_held<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
         if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
-        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let mut turn = self.writer_turn().map_err(journal_refusal)?;
         let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let value = write(&tx)?;
@@ -1744,12 +1907,12 @@ impl Folder {
     pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
         // The act holds the writer on this thread: taking it again would never return.
         if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
-        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let mut turn = self.writer_turn().map_err(journal_refusal)?;
         let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let value = write(&tx)?;
         tx.commit()?;
-        let mut held = self.shared.held.lock().unwrap_or_else(|error| error.into_inner());
+        let mut held = self.shared.held.lock();
         if let Some(held) = held.as_mut() { held.seen = self.version(); }
         Ok(value)
     }

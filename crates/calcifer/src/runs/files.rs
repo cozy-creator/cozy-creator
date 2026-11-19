@@ -128,6 +128,9 @@ struct Upload {
     settling: Mutex<()>,
     /// Named or dropped: later writes land nowhere, and a new upload starts afresh.
     ended: AtomicBool,
+    /// A project's upload keeps its file and its store open in the view past the read it lets go of while a lock waits: a transition
+    /// knows it's going until these close (`vault::uploading`). Last, so it goes after them.
+    _uploading: Option<crate::project::vault::Uploading>,
 }
 
 /// How an upload stands.
@@ -200,7 +203,7 @@ pub(crate) fn hold_in(api: &Arc<Api>, project: &str, bytes: &[u8]) -> Result<Dig
 }
 
 /// `digest`'s upload as `length` bytes: going, or begun from what the store kept of an earlier one.
-fn open(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
+fn open(storage: Arc<Store>, digest: Digest, length: u64, project: Option<PathBuf>) -> Result<Arc<Upload>, Refusal> {
     let mut uploads = UPLOADS.lock().expect("uploads lock");
     let key = (storage.root().to_owned(), digest);
     if let Some((was, upload)) = uploads.get(&key).and_then(|(was, upload)| Some((*was, upload.upgrade()?))) {
@@ -211,14 +214,15 @@ fn open(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<Upload>,
         return Ok(upload);
     }
     let partial = storage.partial(&object(&digest, length)).map_err(|e| refused(e.refusal()))?;
-    let upload = Arc::new(Upload { storage, digest, length, partial: Mutex::new(Some(partial)), settling: Mutex::default(), ended: AtomicBool::new(false) });
+    let _uploading = project.as_deref().map(crate::project::vault::uploading);
+    let upload = Arc::new(Upload { storage, digest, length, partial: Mutex::new(Some(partial)), settling: Mutex::default(), ended: AtomicBool::new(false), _uploading });
     uploads.insert(key, (length, Arc::downgrade(&upload)));
     Ok(upload)
 }
 
 /// `open` off the request's thread: the store may first make room.
-async fn opened(storage: Arc<Store>, digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
-    tokio::task::spawn_blocking(move || open(storage, digest, length)).await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))?
+async fn opened(storage: Arc<Store>, digest: Digest, length: u64, project: Option<PathBuf>) -> Result<Arc<Upload>, Refusal> {
+    tokio::task::spawn_blocking(move || open(storage, digest, length, project)).await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))?
 }
 
 /// A PUT's `[start, end)` of a file of `length` bytes: its `Content-Range`, else the whole file its `Content-Length` measures.
@@ -249,6 +253,8 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 pub(crate) async fn project_put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "A project upload needs to name its project."))); }
     let (root, held) = crate::project::vault::admit_project_root(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
+    // Going until its answer, beside its `Upload`'s own (which outlives a request that went before it).
+    let _uploading = crate::project::vault::uploading(&root);
     put_in(scoped(&api, &scope)?, name, headers, body, Some(Gate { root, held })).await
 }
 
@@ -260,7 +266,7 @@ pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body
 /// holds the lock up (cl-1025). The lock has the project first; locked, the upload ends, and resumes from what's held once it's unlocked.
 struct Gate {
     root: PathBuf,
-    held: tokio::sync::OwnedRwLockReadGuard<()>,
+    held: crate::project::vault::Read,
 }
 
 impl Gate {
@@ -307,10 +313,12 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
         }
         return answered;
     }
-    let upload = opened(storage.clone(), digest, length).await?;
+    let upload = opened(storage.clone(), digest, length, gate.as_ref().map(|gate| gate.root.clone())).await?;
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
     let writer = tokio::task::spawn_blocking(move || -> Result<(Settled, Option<Gate>), Refusal> {
+        // Its read, held by this blocking task now: what it asks of the project here is granted beside it.
+        let gate = gate.map(|Gate { root, held }| Gate { root, held: held.here() });
         let (mut at, mut wrote, mut gate) = (start, Ok(()), gate);
         let open = || landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused);
         let mut writer = open()?;
@@ -438,7 +446,8 @@ async fn held_of(storage: &Arc<Store>, digest: Digest) -> Result<(Option<PathBuf
     let begun = UPLOADS.lock().expect("uploads lock").get(&(storage.root().to_owned(), digest)).map(|(length, upload)| (*length, upload.upgrade()));
     let upload = match begun {
         Some((_, Some(upload))) => Some(upload),
-        Some((length, None)) if held_in(storage, &digest).is_none() => Some(opened(storage.clone(), digest, length).await?),
+        // Looked at under its caller's read of the project: it lets go of nothing while it's open.
+        Some((length, None)) if held_in(storage, &digest).is_none() => Some(opened(storage.clone(), digest, length, None).await?),
         _ => None,
     };
     let ranges = match upload {

@@ -272,7 +272,7 @@ async fn native_plain_recovery_fixture() {
     // capturing its old receipt. A second intent at the SAME path survives.
     let serial = staged(&root, "serialized", &created.keybag); save_conversion(&serial).unwrap();
     let op = operation(&serial.root); let operation_guard = op.lock().unwrap();
-    let writer = exclusive(&serial.root).unwrap();
+    let writer = try_transition(&serial.root).unwrap();
     let before = fs::read(receipt_path(&serial.root)).unwrap();
     let contender = std::thread::spawn({ let path = serial.root.clone(); move || recover_conversion(&path) });
     contender.join().unwrap().unwrap();
@@ -301,7 +301,7 @@ async fn native_plain_recovery_fixture() {
     read_held.plain.as_mut().unwrap().ready = true; save_conversion(&read_held).unwrap();
     fs::rename(&read_held.root, &read_held.saved).unwrap();
     fs::rename(&read_held.staged, &read_held.root).unwrap();
-    let reader = access(&read_held.root).read_owned().await;
+    let reader = read_gate(&read_held.root).await.unwrap();
     recover_conversion(&read_held.root).unwrap();
     assert!(receipt_path(&read_held.root).is_file());
     assert!(view(&read_held.root).is_err());
@@ -320,7 +320,7 @@ async fn native_plain_recovery_fixture() {
     let mut unfinished = staged(&root, "unfinished-encrypted", &created.keybag);
     unfinished.plain = None; save_conversion(&unfinished).unwrap();
     let op = operation(&unfinished.root); let operation_guard = op.lock().unwrap();
-    let custody = exclusive(&unfinished.root).unwrap();
+    let custody = try_transition(&unfinished.root).unwrap();
     recover_under_guards(&unfinished.root).unwrap();
     let before = fs::read(receipt_path(&unfinished.root)).unwrap();
     for action in ["encrypt", "rotate", "decrypt"] {
@@ -386,7 +386,7 @@ async fn native_plain_recovery_fixture() {
 
     // The original list predicate is demonstrably false between the renames.
     // The real indexed/named functions must retain the ID throughout that gap,
-    // and the actual GET handler must remain Pending while the writer owns ACCESS.
+    // and the actual GET handler must remain Pending while the writer owns the gate.
     let home = platform::paths::Home::under(&root.join("api-home")); home.open().unwrap();
     fs::create_dir_all(home.calcifer()).unwrap();
     let calcifer = crate::Calcifer::open(&home.calcifer()).unwrap();
@@ -394,7 +394,7 @@ async fn native_plain_recovery_fixture() {
     let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
     let api = crate::api::Api::new(calcifer, machines, "native-decrypt-fixture");
     api.calcifer.store().project_opened(&id, "Gap", &copying.root, None, None).unwrap();
-    let writer = exclusive(&copying.root).unwrap();
+    let writer = try_transition(&copying.root).unwrap();
     CONVERTING.lock().unwrap().insert(copying.root.clone());
     let converting = Converting(copying.root.clone());
     let gap = root.join("gap-encrypted-source"); fs::rename(&copying.root, &gap).unwrap();

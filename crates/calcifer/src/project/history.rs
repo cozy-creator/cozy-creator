@@ -627,7 +627,9 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     let mut done: Vec<HistoryEntry> = vec![];
     let mut lost: Vec<String> = vec![];
     let mut stopped = None;
-    // `walking` before any transaction, as every writer takes them: a rename put back follows a walk going.
+    // `walking` before any transaction, as every writer takes them: a rename put back follows a walk going. The gate, then `walking`,
+    // then the writer: its read first, so its writes are granted beside it and never queue holding `walking`.
+    let _read = super::vault::read_gate(&project.root).await.map_err(Refusal)?;
     let walking = project.walking.lock().expect("walking lock");
     let follows = *walking;
     for entry in chosen {

@@ -1731,7 +1731,8 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, ru
     };
     let (root, asked, wanted) = (project.root.clone(), python.request.clone(), locked.clone());
     let described = tokio::task::spawn_blocking(move || {
-        let _access = access;
+        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+        let _access = access.map(crate::project::vault::Read::here);
         describe_with(&uv, &root, &asked, wanted.as_deref())
     })
         .await
