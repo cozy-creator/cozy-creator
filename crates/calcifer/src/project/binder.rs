@@ -9,7 +9,7 @@ use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
     calcifer::project::{Pickup, Unused},
-    calcifer::tool::{MEDIA, PLATFORM},
+    calcifer::tool::{MEDIA, PLATFORM, snap},
 };
 use serde_json::{Map, Value, json};
 
@@ -189,7 +189,7 @@ impl Binder<'_> {
                     self.warn(format!("{}'s {at}: you can't type a pickup. Use Pick up from here instead.", call.name));
                 }
                 if let Some(pickup) = call.pickup {
-                    let value = self.pickup(field, members, pickup)?;
+                    let value = self.pickup(members, pickup)?;
                     self.bound.payload.insert(at.to_owned(), value);
                 }
                 continue;
@@ -651,7 +651,7 @@ impl Binder<'_> {
     }
 
     /// Pick up from here: the take, as the pickup's `take` takes it, and the frame it's picked up at, on the frames it may land on.
-    fn pickup(&mut self, field: &Field, members: &Struct, pickup: &Pickup) -> Result<Value, Error> {
+    fn pickup(&mut self, members: &Struct, pickup: &Pickup) -> Result<Value, Error> {
         let name = self.call.name;
         let take = match graph::mentions(&pickup.take).first().and_then(|inner| graph::mention(inner)) {
             Some(mention) => self.named(&mention),
@@ -661,8 +661,7 @@ impl Binder<'_> {
             let said = format!("{name}: {} isn't a take Cozy can pick up from.", pickup.take);
             return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>."));
         };
-        let snap: Snap = field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default();
-        let out_frame = snapped(pickup.out_frame, snap);
+        let out_frame = snapped(pickup.out_frame, snap(members));
         if out_frame != pickup.out_frame {
             self.warn(format!("{name}: a pickup can't land on frame {}, so it picks up at frame {out_frame}.", pickup.out_frame));
         }
