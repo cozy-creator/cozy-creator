@@ -125,6 +125,12 @@ class Device:
         """A Cache of `reserve` bytes of this GPU's address space, nothing mapped (`Cache`)."""
         return Cache(self, reserve, shrink)
 
+    def fits(self, regions: Sequence[Region], more: int = 0) -> None:
+        """Raises `Exhausted`, with nothing mapped, when `regions` and `more` bytes held beside them
+        not in a Region yet could never be held at once: more than the card or its cap less this
+        process's live working memory and other uses' pins. A binding asks before it fills."""
+        self._native.fits([region._native for region in regions], more)
+
     def stats(self) -> DeviceStats:
         return self._native.stats()
 
