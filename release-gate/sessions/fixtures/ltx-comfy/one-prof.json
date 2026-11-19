@@ -8,7 +8,7 @@
   "tensord": true,
   "gpu_memory_limit": "off"
  },
- "need_s": 7200,
+ "need_s": 5400,
  "gpus": 1,
  "cells": [
   {
@@ -18,14 +18,6 @@
    "gpus": 1,
    "prompt": "A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
    "seed": 64401
-  },
-  {
-   "name": "l-ltx-20s",
-   "key": "ltx25_nodyn",
-   "duration_s": 20,
-   "gpus": 1,
-   "prompt": "A street violinist plays under neon rain in a narrow alley; the camera circles slowly as people with umbrellas hurry past and puddles ripple with each step. Sound: a slow violin melody, steady rain, distant traffic.",
-   "seed": 64402
   },
   {
    "name": "l-ltx-i2v-5s",
