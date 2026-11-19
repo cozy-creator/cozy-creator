@@ -1,0 +1,222 @@
+# stage-ahead (cl-1318; Paul, 11-19: "warming page cache; get the model into RAM / page-cache so it can be read more quickly"; "begin
+# loading it into VRAM as soon as possible, when it's known to be needed"): one rental and boxes a page shows, each predicted onto it
+# by this runner's Calcifer. Each arm has a project of its own; TensorD is restarted first and the store's page cache dropped
+# (`evict`: the weights stay on disk, as on a machine whose RAM went to other work).
+#   free    this build: a Qwen box `q` alone, its GPU free: loaded ahead as before (`loaded`), its render's first step loads nothing.
+#   before  the RC's TensorD (`before`): an SDXL box `p` loaded ahead, then `q`, which the GPU can't take beside it (`ready`); q rendered.
+#   after   this build: the same; q's executor and models are built at level ram beside p, and its weights read into RAM (`built`,
+#           all its bytes in the page cache) before its render.
+#   back    this build, after `after`: p, which q's render took the GPU from, is in RAM (`built` or `staged`); a program then takes
+#           the host's free memory, and what p held in RAM is given back, nothing ended.
+# A render's time until inference starts is its stages before its first denoising step, against its bound: its bytes over PCIe from
+# RAM, or the larger of over the disk and over PCIe from disk, at the pod's own ceilings (`tensorfs.ceiling`). params:
+#   before   a dev-build run id whose cozy is the RC's (required)
+#   tool, other  the boxes' tools (default qwen-image-2/image, sdxl/generate)
+#   wait_s   how long a box may take to reach its stage (default 600)
+. "$(dirname "$0")/lib.sh"
+TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
+[ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
+PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
+Q_FIELDS() { jq -nc --arg p "$PROMPT" --argjson s "$1" '{instructions: $p, turbo: false, prompt_upsampling: false, megapixels: 1, aspect_ratio: "1:1", seed: $s}'; }
+P_FIELDS() { jq -nc --argjson s "$1" '{prompt: "a brass compass on a walnut desk", seed: $s}'; }
+mkdir -p "$OUT/before" && gh run download "$BEFORE" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/before" > /dev/null 2>&1 || fail "no cozy from run $BEFORE"
+RC_BIN=$(find "$OUT/before" -name cozy-linux-x86_64 | head -1) && chmod +x "$RC_BIN" || fail "run $BEFORE has no cozy-linux-x86_64"
+RC_V=$("$RC_BIN" --version | awk '{print $2}') WANT=$(cozy --version | awk '{print $2}')
+[ "$RC_V" != "$WANT" ] || fail "before ($RC_V) is this build"
+say "this build $WANT, before $RC_V"
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
+quote "$(param need_s 3600)"
+rent
+pod() { timeout "${T:-300}" cozy machine ssh "$NAME" -- "$1" < /dev/null 2>> "$OUT/ssh.err"; }
+# py <script> [args]: a Python script on the pod, sent whole.
+py() { local s; s=$(base64 -w0 <<<"$1"); shift; pod "echo $s | base64 -d > /tmp/stage-ahead.py && python3 /tmp/stage-ahead.py $*"; }
+meminfo() { pod "grep -E '^(MemTotal|MemFree|MemAvailable|Cached):' /proc/meminfo | awk '{printf \"%s %.1f GiB \", \$1, \$2 / 1048576}'"; }
+# The store's page cache dropped (as derived-state.sh does): its files stay on disk.
+EVICT='import os
+for top, _, names in os.walk("/var/lib/tensorfs"):
+    for name in names:
+        try:
+            fd = os.open(os.path.join(top, name), os.O_RDONLY)
+        except OSError:
+            continue
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        os.close(fd)'
+evict() { pod sync; py "$EVICT" || fail "the page cache wasn't dropped"; say "$1: store page cache dropped: $(meminfo)"; }
+# runs <version> <step>: the pod's TensorD is <version>, else updated to <bin> once more.
+runs() {
+  local v; v=$(cozy machine show "$NAME" --json 2> /dev/null | jq -r '.status.version // ""')
+  echo "$(date -u +%T) $2 $v" >> "$OUT/versions.txt"
+  [ "$v" = "$1" ] || fail "$2: the pod runs TensorD ${v:-?}, not $1"
+}
+# tensord <bin> <version> <arm>: the pod's TensorD is <bin>, restarted (every executor ends; the disk stays).
+tensord() {
+  close
+  step "tensord-$3" machine update "$NAME" --tensord "$1" -y || fail "$3: the pod refused TensorD $2"
+  step "restart-$3" machine update "$NAME" --mode dedicated -y || fail "$3: the restart"
+  [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$3: $NAME isn't ready after its restart"
+  runs "$2" "$3"
+}
+tensord "$(command -v cozy)" "$WANT" start
+
+# The pod's Status as Calcifer relays it, each second: each predicted request's readiness.
+( while :; do
+    printf '{"at_ms":%s,"status":%s}\n' "$(date +%s%3N)" \
+      "$(cozy machine show "$NAME" --json 2> /dev/null | jq -c '{ahead: (.status.ahead // []), running: .status.running, queued: .status.queued}' 2> /dev/null || echo null)" >> "$OUT/status.ndjson"
+    sleep 1
+  done ) & BG=$!
+# item <id|-not id> <field>: the newest Status row's predicted request `id` (or the one that isn't), its readiness field.
+item() {
+  local sel; case $1 in -*) sel="select(.id != \"${1#-}\")" ;; *) sel="select(.id == \"$1\")" ;; esac
+  tail -1 "$OUT/status.ndjson" | jq -r "[.status.ahead[]? | $sel | .readiness.$2 // empty] | first // \"\""
+}
+# until_item <id|-not id> <stage regex> <arm>: it reaches a stage <stage> matches, else fail. Its id is said.
+until_item() {
+  local t=0
+  until [[ $(item "$1" stage) =~ ^($2)$ ]]; do
+    sleep 1; t=$((t + 1))
+    [ "$t" -lt "$WAIT" ] || { collect; fail "$3: no predicted request ${1#-} was $2 within $WAIT s: $(tail -1 "$OUT/status.ndjson" | cut -c1-500)"; }
+  done
+  ID=$(tail -1 "$OUT/status.ndjson" | jq -r --arg s "^($2)$" "[.status.ahead[]? | $( case $1 in -*) echo "select(.id != \"${1#-}\")" ;; *) echo "select(.id == \"$1\")" ;; esac ) | select(.readiness.stage | test(\$s)) | .id] | first")
+  say "$3: $ID is $(item "$ID" stage) ($t s): $(item "$ID" done) of $(item "$ID" total) bytes; $(item "$ID" reason)"
+}
+# until_held <id> <arm>: what of its weights the page cache holds stops growing (or reaches 95% of them), 180 s at most.
+until_held() {
+  local t=0 was=-1 now
+  while now=$(item "$1" done); [ "${now:-0}" != "$was" ] || [ "$t" -lt 5 ]; do
+    [ "$(( ${now:-0} * 100 ))" -lt "$(( $(item "$1" total) * 95 ))" ] || break
+    [ "$t" -lt 180 ] || break
+    was=${now:-0}; sleep 3; t=$((t + 3))
+  done
+  say "$2: $1 holds $(item "$1" done) of $(item "$1" total) bytes in RAM ($t s), $(item "$1" stage)"
+}
+collect() {
+  cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
+  cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
+}
+SHOW=''
+# close: the shown project closes (its guesses end), before TensorD restarts: else it lists them to the new service.
+close() { [ -z "$SHOW" ] || { kill "$SHOW" 2> /dev/null; SHOW=''; sleep 3; }; }
+# project <arm>: a project of its own, shown as an open page shows it (Calcifer guesses only for one).
+project() {
+  run_project "$OUT/project-$1" || fail "$1: no project"
+  python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown-$1.txt" 2>&1 & SHOW=$!; BG="$BG $SHOW"
+  for _ in $(seq 1 30); do grep -q '"held": \["' "$OUT/shown-$1.txt" && break; sleep 1; done
+  grep -q '"held": \["' "$OUT/shown-$1.txt" || fail "$1: the project wasn't shown: $(tail -c 300 "$OUT/shown-$1.txt")"
+}
+# render <arm> <box>: the box rendered on the pod, its run's record and report kept.
+render() {
+  local asked; asked=$(date +%s%3N)
+  python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" "$2" > "$OUT/render-$1.txt" 2>&1 || fail "$1: the render: $(tail -c 400 "$OUT/render-$1.txt")"
+  (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 10) > "$OUT/runs-$1.json" 2>&1
+  local n; n=$(jq -r --argjson a "$asked" '[.runs[]? | select(.created_at_ms >= $a)] | max_by(.created_at_ms) | .number // empty' "$OUT/runs-$1.json")
+  [ -n "$n" ] || fail "$1: the render's run: $(head -c 300 "$OUT/runs-$1.json")"
+  (cd "$RUN_PROJECT" && cozy --json run watch "$n" --once --full) > "$OUT/run-$1.json" 2>&1 || fail "$1: run $n unread"
+  jq -c --arg arm "$1" '{arm: $arm, run: .number, status, accepted_to_started_ms: (.started_at_ms - .accepted_at_ms),
+    stages: [.report.measured[0].stages[]? | {name, ms: (.ms | floor), steps: (.steps != null)}]}' "$OUT/run-$1.json" | tee -a "$R" > "$OUT/report-$1.json"
+}
+
+# Both models' weights onto the pod by a call of each, then the pod's ceilings (a call has measured them this boot).
+step fetch-q run "$TOOL" --on "$NAME" instructions="$PROMPT" turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first $TOOL"
+step fetch-p run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=1 || fail "the first $OTHER"
+CEILING='import glob, json, subprocess
+for py in ["python3"] + glob.glob("/opt/*/bin/python3") + glob.glob("/var/lib/cozy/tensord/*/*/*/env/bin/python3") + glob.glob("/var/lib/cozy/*/*/*/*/env/bin/python3"):
+    out = subprocess.run([py, "-c", "import json, tensorfs; c = tensorfs.ceiling(device=0); print(json.dumps({\"disk_gbps\": c.disk_gbps, \"disk_direct\": c.disk_direct, \"h2d_gbps\": c.h2d_gbps}))"], capture_output=True, text=True)
+    if out.returncode == 0 and out.stdout.strip():
+        print(out.stdout.strip().splitlines()[-1]); break'
+T=900 py "$CEILING" > "$OUT/ceiling.json" || true
+jq -e '.h2d_gbps > 0 and .disk_gbps > 0' "$OUT/ceiling.json" > /dev/null || fail "no ceilings: $(cat "$OUT/ceiling.json") $(tail -c 300 "$OUT/ssh.err")"
+say "ceilings: $(cat "$OUT/ceiling.json"); $(meminfo)"
+
+# free: q alone on a free GPU loads ahead as before.
+tensord "$(command -v cozy)" "$WANT" free
+evict free
+project free
+run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 11)" > "$OUT/box-free.json" 2>&1 || fail "free: q: $(tail -c 300 "$OUT/box-free.json")"
+until_item -none loaded free
+Q_BYTES=$(item "$ID" total)
+render free q
+
+# staged <arm> <bin> <version>: p loaded ahead, then q, which can't go beside it; q rendered.
+staged() {
+  tensord "$2" "$3" "$1"
+  evict "$1"
+  project "$1"
+  run_page add p --tool "$OTHER" --fields "$(P_FIELDS 21)" > "$OUT/box-$1-p.json" 2>&1 || fail "$1: p: $(tail -c 300 "$OUT/box-$1-p.json")"
+  until_item -none loaded "$1"
+  P_ID=$ID
+  run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 22)" > "$OUT/box-$1-q.json" 2>&1 || fail "$1: q: $(tail -c 300 "$OUT/box-$1-q.json")"
+}
+staged before "$RC_BIN" "$RC_V"
+until_item "-$P_ID" ready before
+Q_ID=$ID; sleep 5
+say "before: q $(item "$Q_ID" stage) after 5 s more: $(meminfo)"
+render before q
+
+staged after "$(command -v cozy)" "$WANT"
+until_item "-$P_ID" built after
+Q_ID=$ID
+until_held "$Q_ID" after
+say "after: $(meminfo)"
+render after q
+
+# back: q's render took the GPU from p, which is staged now; a program takes the host's free memory a while.
+until_item "$P_ID" 'built|staged' back
+until_held "$P_ID" back
+HELD=$(item "$P_ID" done)
+HOG='import os, sys, time
+def room():
+    m = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in open("/proc/meminfo")}
+    a = m["MemAvailable"]
+    try:
+        top = open("/sys/fs/cgroup/memory.max").read().strip()
+        if top != "max":
+            st = dict(l.split() for l in open("/sys/fs/cgroup/memory.stat"))
+            a = min(a, int(top) - int(open("/sys/fs/cgroup/memory.current").read()) + int(st["inactive_file"]) + int(st["active_file"]))
+    except OSError:
+        pass
+    return a
+held, piece = [], 256 << 20
+while room() > (4 << 30):
+    b = bytearray(piece)
+    b[::4096] = b"\1" * len(b[::4096])
+    held.append(b)
+print(f"held {len(held) * piece / 2**30:.1f} GiB", flush=True)
+time.sleep(float(sys.argv[1]))'
+say "back: p holds $HELD bytes in RAM; $(meminfo)"
+T=600 py "$HOG" 20 > "$OUT/hog.txt" 2>&1 & HOG_PID=$!
+sleep 15
+DURING=$(item "$P_ID" done) STAGE=$(item "$P_ID" stage)
+say "back: while a program holds $(cat "$OUT/hog.txt") : p is $STAGE, $DURING bytes in RAM; $(meminfo)"
+wait "$HOG_PID"
+say "back: the program ended ($(cat "$OUT/hog.txt")): p $(item "$P_ID" stage), $(item "$P_ID" done) bytes in RAM; q $(item "$Q_ID" stage); $(meminfo)"
+[ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "back: $NAME isn't ready after the program"
+close; kill $BG 2> /dev/null; BG=''
+collect
+
+grep -aE "stage ahead|load ahead|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
+# Each render: its time until inference starts (its stages before the first with denoising steps) against its bound.
+python3 -I - "$OUT" "$Q_BYTES" "$HELD" "$DURING" <<'PY' | tee -a "$R" > "$OUT/summary.json"
+import json, sys
+out, q, held, during = sys.argv[1], int(sys.argv[2]), int(sys.argv[3] or 0), int(sys.argv[4] or 0)
+c = json.load(open(f"{out}/ceiling.json"))
+disk, h2d = c["disk_gbps"] * 1e9, c["h2d_gbps"] * 1e9
+bound = {"ram": q / h2d, "disk": max(q / disk, q / h2d)}
+rows = {}
+for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram")):
+    r = json.load(open(f"{out}/report-{arm}.json"))
+    first = next((i for i, s in enumerate(r["stages"]) if s["steps"]), len(r["stages"]))
+    tui = sum(s["ms"] for s in r["stages"][:first]) / 1000
+    b = bound.get(frm)
+    rows[arm] = {"run": r["run"], "from": frm, "until_inference_s": round(tui, 2), "bound_s": b and round(b, 2),
+                 "multiple": b and round(tui / b, 2), "stages": {s["name"]: s["ms"] for s in r["stages"][:first]}}
+print(json.dumps({"q_bytes": q, "ceiling": c, "bounds_s": {k: round(v, 2) for k, v in bound.items()}, "renders": rows,
+                  "back": {"held": held, "during": during}}, indent=1))
+PY
+fail_if() { say "FAIL: $*"; RC=1; }
+grep -q "stage ahead: .* in RAM in" "$OUT/ahead.log" || fail_if "no stage ahead in this build's TensorD log"
+grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level ram in this build's TensorD log"
+jq -e '.renders.free.until_inference_s < 1' "$OUT/summary.json" > /dev/null || fail_if "free: the loaded render's first step waited on a load"
+jq -e '.renders.after.until_inference_s < .renders.before.until_inference_s' "$OUT/summary.json" > /dev/null || fail_if "after: no sooner than before"
+[ "${DURING:-0}" -lt "$HELD" ] || fail_if "back: p's RAM wasn't given back ($DURING of $HELD)"
+[ "$RC" = 0 ] && say "PASS: a predicted box the GPU couldn't take was staged in RAM, its render's load read RAM; a free GPU loaded ahead; the RAM went back"
