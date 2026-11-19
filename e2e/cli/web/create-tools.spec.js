@@ -227,7 +227,10 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
     };
     await focused();
     await expect.soft(line().locator('.image-tool-name'), 'and in Focus').toHaveText('MiniMax H3 Edit');
-    expect.soft(await page.locator('body').innerText(), 'no tool named twice, or cased other than as its package writes it').not.toMatch(/Minimax H3|MiniMax H3 · MiniMax H3/);
+    // The tool line's first row, where cl-1084's prefix was: since cl-1281 the rows beneath it list the slots' default LoRAs,
+    // named as their authors name them ("alissonerdx / Minimax H3 VFX Edit"), which are not the tool's name.
+    const named = (await line().innerText()).split('\n')[0];
+    expect.soft(named, 'its tool line names no tool twice, nor cases it other than as its package writes it').not.toMatch(/Minimax H3|MiniMax H3 · MiniMax H3/);
     await look('tool-line', focused, line);
     await leave(page);
   });
