@@ -75,6 +75,10 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
 
 /// How long an end waits for its Hub to affirm the pod gone once it releases it (not while it waits for outputs to land).
 const RELEASE_WAIT: Duration = Duration::from_secs(300);
+/// The longest `torch` waits for `local` to be ready, as Calcifer waits on a start that moves (`local::START`).
+const TORCH_WAIT: Duration = Duration::from_secs(300);
+/// The pause before a stream that closed or fell behind is subscribed again, so one that keeps closing is no tight loop.
+const RESUBSCRIBE: Duration = Duration::from_millis(250);
 
 /// The machine an end was asked of, once its Hub affirms it gone: followed while it ends, and an error naming why for an end
 /// that failed, or one its Hub has not affirmed within `RELEASE_WAIT`. A change seen in passing is never the answer: what is
@@ -316,14 +320,34 @@ pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<bool, Error
 /// the command's: the first run installs it.
 pub(crate) async fn torch(ctx: &Context) -> String {
     let asked = async {
-        // `machine show local` starts it; the update goes once it serves, never waited on for long.
-        let began = std::time::Instant::now();
-        while machine(ctx, "local").await?.status.is_none_or(|status| status.phase != "ready") {
-            if began.elapsed() > Duration::from_secs(300) {
-                return Err(Error::new(Kind::Unavailable, "machine_unready", "local did not start within 5 minutes"));
+        // `machine show local` starts it, and answers once it serves or with Calcifer's own verdict (`machine_not_answering`). Its
+        // readiness then comes as `local`'s update on Calcifer's stream, subscribed before it's read; a stream that closed or fell
+        // behind is subscribed and read again, a moment later. Within `TORCH_WAIT`, as `local::START` waits on a start.
+        let calcifer = ctx.calcifer().await?;
+        let ready = async {
+            'ready: loop {
+                let mut changes = calcifer.changes().await?;
+                let mut local = machine(ctx, "local").await?;
+                loop {
+                    if local.status.as_ref().is_some_and(|status| status.phase == "ready") {
+                        break 'ready Ok(());
+                    }
+                    if local.state == MachineState::Stopped {
+                        return Err(Error::new(Kind::Unavailable, "machine_unready", "local stopped before it was ready"));
+                    }
+                    match changes.change().await {
+                        Some(calcifer::StreamEvent::MachineUpdated { machine }) if machine.name == "local" => local = *machine,
+                        Some(_) => {}
+                        None => {
+                            tokio::time::sleep(RESUBSCRIBE).await;
+                            continue 'ready;
+                        }
+                    }
+                }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
+        };
+        tokio::time::timeout(TORCH_WAIT, ready).await
+            .map_err(|_| Error::new(Kind::Unavailable, "machine_unready", "local did not start within 5 minutes"))??;
         let ask = MachineUpdate { torch: true, ..Default::default() };
         let path = format!("{}/update", route("local")?);
         let Updating { machine: m, run, .. } = ctx.calcifer().await?.post(&path, &ask, Some(&mint_key())).await?;

@@ -19,6 +19,9 @@ use platform::paths::Home;
 
 use crate::{Here, api::Api};
 
+/// The longest a restart onto an installed update waits for its run to read settled, as its followers read it.
+const SETTLE: Duration = Duration::from_secs(10);
+
 pub(crate) use api::update::{major, newer};
 
 /// What a run's package release asks of cozy: the release (the Hub's) whose line runs it, and the release it is (`qwen-image-2 0.12.0`).
@@ -127,16 +130,21 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
             () = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
     }
-    // Restarted once this run is settled, as its followers read it.
+    // Restarted once this run is settled, as its followers read it: woken by its own events, subscribed before it's read. A record
+    // that never reads settled doesn't keep the new version from starting: after `SETTLE` it restarts all the same, and says so.
     let (restarting, id) = (api.clone(), here.id.clone());
+    let mut tail = restarting.calcifer.subscribe();
     tokio::spawn(async move {
-        for _ in 0..100 {
-            // Gone is settled: a newer cozy update that completed took its record (cl-1028).
-            let settled = restarting.calcifer.store().run(id.as_str()).ok().flatten().is_none_or(|row| restarting.calcifer.record(&row).is_ok_and(|run| run.status == Status::Completed));
-            if settled {
-                break;
+        // Gone is settled: a newer cozy update that completed took its record (cl-1028).
+        let settled = || restarting.calcifer.store().run(id.as_str()).ok().flatten()
+            .is_none_or(|row| restarting.calcifer.record(&row).is_ok_and(|run| matches!(run.status, Status::Completed | Status::Failed | Status::Canceled)));
+        let waited = tokio::time::timeout(SETTLE, async {
+            while !settled() {
+                crate::Calcifer::moved(&mut tail, &id).await;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        if waited.await.is_err() {
+            tracing::warn!(run = %id, "cozy's update restarts Calcifer though its run hasn't read settled after {}s", SETTLE.as_secs());
         }
         restarting.restart_updated().await;
     });
