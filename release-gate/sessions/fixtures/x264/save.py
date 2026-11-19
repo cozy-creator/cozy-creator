@@ -3,17 +3,18 @@
 # dependencies = ["cozy-runtime>=0.47", "msgspec>=0.19", "numpy>=1.26"]
 # ///
 """x264-threads' clip (xs-220, hack audit runtime #8): `frames` frames of 1344x768 saved as one mp4, with the x264 thread count
-the Runtime chose on this host, the CPUs this process may use, and the save's seconds. `arm` only names the call, so the
-two arms of a session are two computations, never one memo."""
+the Runtime chose on this host, the CPUs this process may use, and the save's seconds. The thread count is read from the
+saved file itself: x264 writes its settings (`… threads=N lookahead_threads=M …`) into the stream. `arm` only names the call,
+so the two arms of a session are two computations, never one memo."""
 
 import os
+import re
 import time
 
 import msgspec
 import numpy as np
 
 from cozy_runtime.author import App, Outputs, VideoFile
-from cozy_runtime.author._codec import x264_threads
 
 app = App()
 
@@ -40,4 +41,8 @@ def save(payload: Clip, out: Outputs) -> Saved:
         frames[i, ..., 2] = (x ^ y) + i & 255
     start = time.perf_counter()
     video = out.save_video(frames, fps=24)
-    return Saved(video=video, threads=x264_threads(), cpus=len(os.sched_getaffinity(0)), save_s=time.perf_counter() - start)
+    save_s = time.perf_counter() - start
+    said = re.search(rb" threads=(\d+)", video.read_bytes())
+    if said is None:
+        raise RuntimeError("the saved mp4 carries no x264 settings")
+    return Saved(video=video, threads=int(said.group(1)), cpus=len(os.sched_getaffinity(0)), save_s=save_s)
