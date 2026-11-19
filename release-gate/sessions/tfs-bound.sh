@@ -20,7 +20,7 @@
 #   tree    the packages_refs checkout the packages run from (required)
 #   arms    [{"name": "rc", "tensorfs": "<artifact:<run>/<name> or https wheel>", "sweep": [{"TFS_X_…": "…"}], "runs": true}, …]
 #   runtime the pod's Runtime (a cozy-runtime run id or https wheel; default RUNTIME_WHEEL, from runtime_ref)
-#   h3      true: H3's rows too (a 48 GB download)
+#   h3      true: H3's rows too (a 48 GB download); h3_runs false: its fixture rows, no `cozy run` of it
 #   need_s  seconds the cap must buy (default 4800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -74,9 +74,10 @@ seed=$((RANDOM * 7))
 ask() {
   seed=$((seed + 1))
   case $1 in
-    qimg) jq -n --argjson s "$seed" '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: $s}' ;;
-    sdxl) jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' ;;
-    h3) jq -n --argjson s "$seed" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below."},
+    # The prompt too: a child call (a text encoder's) the memo answers by its prompt would load no weights.
+    qimg) jq -n --argjson s "$seed" '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor, study \($s)"}, megapixels: 1, prompt_upsampling: false, seed: $s}' ;;
+    sdxl) jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor, study \($s)", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' ;;
+    h3) jq -n --argjson s "$seed" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below, take \($s)."},
       beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' ;;
   esac > "$OUT/$2.req.json"
 }
@@ -150,7 +151,7 @@ for a in "${names[@]}"; do
     run_qimg "$a-qimg-cold"
     fresh; run_qimg "$a-qimg-warm"
     fresh; run_sdxl "$a-sdxl-new"; run_sdxl "$a-sdxl-warm"
-    if [ -n "$HCK" ]; then
+    if [ -n "$HCK" ] && [ "$(param h3_runs true)" = true ]; then
       fresh; load "$a-evict-h3" "$a" '' evict "${ALLCK//,/ }"
       run_h3 "$a-h3-cold"
       fresh; run_h3 "$a-h3-warm"

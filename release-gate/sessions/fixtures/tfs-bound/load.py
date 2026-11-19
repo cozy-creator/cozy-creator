@@ -163,6 +163,20 @@ def blocks_of(ck: object, comps: Sequence[str]) -> list[tuple[str, list[tuple[st
 
     blocks: list[tuple[str, list[tuple[str, int]]]] = []
     index: dict[str, int] = {}
+    # A run downloads only what it reads (Qwen-Image 2 skips its text encoder's vision tower): a block with a part
+    # in an absent chunk is left out, as a fill of it would fail.
+    chunks = ck.chunks  # type: ignore[attr-defined]
+    absent = {sha for sha, _ in ck.missing(list(comps))}  # type: ignore[attr-defined]
+    out_of_reach: set[str] = set()
+
+    def reaches(part: object) -> bool:
+        at, end, i = 0, part.offset + part.length, part.chunk  # type: ignore[attr-defined]
+        while i < len(chunks) and at < end:
+            if chunks[i][0] in absent:
+                return False
+            at, i = at + chunks[i][1], i + 1
+        return True
+
     for comp in comps:
         for key in ck.components[comp].tensors:  # type: ignore[attr-defined]
             words = key.split(".")
@@ -174,7 +188,10 @@ def blocks_of(ck: object, comps: Sequence[str]) -> list[tuple[str, list[tuple[st
             for role, part in raw.parts(ck, comp, key).items():  # type: ignore[arg-type]
                 if part.length:
                     blocks[index[name]][1].append((f"{comp}/{key}#{role or 'value'}", part.length))
-    return [b for b in blocks if b[1]]
+                    if not reaches(part):
+                        out_of_reach.add(name)
+    names = list(index)
+    return [b for n, b in zip(names, blocks) if b[1] and n not in out_of_reach]
 
 
 def placed(parts: Sequence[tuple[str, int]]) -> tuple[list[tuple[str, int, int]], int]:
@@ -336,11 +353,29 @@ def paged(ckids: str, comp: str, reserve: float) -> dict[str, object]:
     return report
 
 
+def memcpy(threads: int, each: int = 256 << 20, rounds: int = 8) -> float:
+    """GB/s of `threads` threads each copying its own `each` bytes, `rounds` times: the host's copy bandwidth (each byte
+    read and written once), what a read from the page cache into pinned staging spends."""
+    import numpy as np
+
+    pairs = [(np.ones(each, np.uint8), np.empty(each, np.uint8)) for _ in range(threads)]
+
+    def work(pair: tuple[object, object]) -> None:
+        for _ in range(rounds):
+            np.copyto(pair[1], pair[0])  # type: ignore[call-overload]
+
+    began = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(threads) as pool:
+        list(pool.map(work, pairs))
+    return round(threads * each * rounds / (time.perf_counter() - began) / GB, 2)
+
+
 def ceiling() -> dict[str, object]:
     import tensorfs
 
     c = tensorfs.ceiling(0, store())
-    return {"disk_gbps": c.disk_gbps, "disk_direct": c.disk_direct, "h2d_gbps": c.h2d_gbps, "streams": c.streams}
+    return {"disk_gbps": c.disk_gbps, "disk_direct": c.disk_direct, "h2d_gbps": c.h2d_gbps, "streams": c.streams,
+            "cpus": len(os.sched_getaffinity(0)), "memcpy_gbps": {n: memcpy(n) for n in (1, 4, 8)}}
 
 
 def main() -> None:

@@ -648,21 +648,14 @@ impl varena::Source for PageSource {
     }
 }
 
-/// Bytes the first batch admits before its read, so the reads start while the rest are admitted.
-/// Each later batch is twice the last, up to `MOST`: every batch's read ends in one completion
-/// before the next starts, so a large binding pays few of those.
+/// Bytes a batch admits before its first read, so the reads start while the rest are admitted.
 const TOGETHER: usize = 512 << 20;
-const MOST: usize = 4 << 30;
-
-fn batches() -> (usize, usize) {
-    (TOGETHER, MOST)
-}
 
 /// cr-318: a binding's absent Regions, each bound to its `Inner`, filled together for `consumer`.
 /// Each whose bytes all come from its store (no kept page, no derive, no item another Region
 /// holds) is one placement of a single store read per batch: every Region's pieces pipelined over
-/// the readers, one completion. Any other fills alone, through its Source. Batches (`batches`)
-/// are admitted on one thread while the one before is read on another. In order, each
+/// the readers, one completion. Any other fills alone, through its Source. Batches of `TOGETHER`
+/// bytes are admitted on one thread while the one before is read on another. In order, each
 /// Region's Pin, or why it has none (`Busy`: another fill of it runs, which its `use` waits for).
 pub(super) fn fill_together(batch: &[(Arc<varena::Region>, Arc<Inner>)], consumer: u64) -> Vec<varena::Result<varena::Pin>> {
     type Read = Vec<(usize, Arc<Inner>, varena::Fill)>;
@@ -677,7 +670,6 @@ pub(super) fn fill_together(batch: &[(Arc<varena::Region>, Arc<Inner>)], consume
             done
         });
         let mut groups: Vec<(Arc<Store>, Mode, Read, usize)> = Vec::new();
-        let (mut together, most) = batches();
         for (index, (region, inner)) in batch.iter().enumerate() {
             // SAFETY: the caller's live stream, which reads nothing before this returns.
             let fill = match unsafe { region.admit_on(consumer) } {
@@ -706,8 +698,7 @@ pub(super) fn fill_together(batch: &[(Arc<varena::Region>, Arc<Inner>)], consume
             let group = &mut groups[at];
             group.3 += fill.len();
             group.2.push((index, Arc::clone(inner), fill));
-            if group.3 >= together {
-                together = (together * 2).min(most);
+            if group.3 >= TOGETHER {
                 let (store, mode, fills, _) = groups.swap_remove(at);
                 if let Err(unsent) = send.send((store, mode, fills)) {
                     let (store, mode, fills) = unsent.0;

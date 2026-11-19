@@ -312,17 +312,39 @@ mod linux {
         if !overlay(file) {
             return ranges.iter().map(|&(off, len)| cached_pages(file, off, len)).collect();
         }
+        // mincore(2) looks up every page it is asked of in the page cache, ~1 ms a 64 MiB chunk: asked
+        // of every page, it cost a load 17-24 ms a GB on an RTX 4090 pod (cl-1318). A range's share
+        // held, from `SAMPLES` of its pages spread over it, is what its read needs.
         let page = page_size();
         let start = from - from % page;
-        let Some(core) = residency(file, start, (to - start) as usize, page) else {
+        let n = (to - start) as usize;
+        // SAFETY: a read-only shared mapping of our descriptor, unmapped below; nothing faults it in.
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), n, libc::PROT_READ, libc::MAP_SHARED, file.as_raw_fd(), start as libc::off_t) };
+        if p == libc::MAP_FAILED {
             return vec![None; ranges.len()];
+        }
+        let held = |at: u64, pages: u64| -> Option<u64> {
+            let mut core = vec![0u8; pages as usize];
+            // SAFETY: `[at, at + pages)` lies inside the mapping, and `core` holds a byte a page.
+            let ok = unsafe { libc::mincore(p.cast::<u8>().add((at * page) as usize).cast(), (pages * page) as usize, core.as_mut_ptr()) } == 0;
+            ok.then(|| core.iter().filter(|b| *b & 1 == 1).count() as u64)
         };
-        ranges.iter().map(|&(off, len)| {
-            let (first, end) = ((off / page - start / page) as usize, ((off + len).div_ceil(page) - start / page) as usize);
-            let held = core.get(first..end.min(core.len())).map_or(0, |pages| pages.iter().filter(|b| *b & 1 == 1).count());
-            Some((held as u64, (end - first) as u64))
-        }).collect()
+        let out = ranges.iter().map(|&(off, len)| {
+            let (first, end) = (off / page - start / page, (off + len).div_ceil(page) - start / page);
+            let of = end - first;
+            if of <= SAMPLES {
+                return held(first, of).map(|h| (h, of));
+            }
+            let hits = (0..SAMPLES).map(|i| held(first + i * of / SAMPLES, 1)).sum::<Option<u64>>()?;
+            Some((hits * of / SAMPLES, of))
+        }).collect();
+        // SAFETY: unmaps the mapping made above, which nothing else references.
+        unsafe { libc::munmap(p, n) };
+        out
     }
+
+    /// Pages of a range `cached_pages_each` asks of overlayfs, at most.
+    const SAMPLES: u64 = 8;
 
     /// The pages of `[off, off+len)` in core, by `mincore(2)` over a mapping (never faults).
     fn resident(file: &File, off: u64, len: u64, page: u64) -> Option<u64> {
