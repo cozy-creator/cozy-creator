@@ -1,11 +1,13 @@
 // create-tools (cl-973 core cell 2's tools half, split from create so each runs well inside its 180 s: release e2e 44431308176 timed out
 // at 191 s on Linux and 217 s on Windows, every step passing, on runners 1.5× slower than its 123 s / 146 s): any image tool goes on any
-// picture (Paul, 11-16): SDXL, which reads none, goes on a picture with no tool and offers no reference, and the picture its words start
-// from is struck through in red, its reason on hover and in one line under them; Qwen Image 2, which reads pictures, goes on in its place
-// and uses it. The X on the tool line takes the tool off, Undo puts it back. SDXL's struck picture is kept at 1440×900, on paper and dark.
+// picture (Paul, 11-16): a words-only tool, which reads none (the seed's E2E Words, web/words, as a third party's may: se-175), goes on a
+// picture with no tool and offers no reference, and the picture its words start from is struck through in red, its reason on hover and in
+// one line under them; SDXL (since sdxl 0.15) and Qwen Image 2, which read pictures, go on in its place and use it. The X on the tool line
+// takes the tool off, Undo puts it back. The words-only tool's struck picture is kept at 1440×900, on paper and dark.
 // cl-1084's Tools follow-ups (Paul, 11-16: "reference inputs are offered only by tools that can use them (a text-to-image-only tool like SDXL
-// shows none)"; "One name per model, cased right"): `<` offers only what the box's tool can use, so SDXL's list has no pictures and Qwen Image
-// 2's has; MiniMax H3 Edit is named once, as its package writes it, on a box's tool line, kept on paper and dark.
+// shows none)"; "One name per model, cased right"): `<` offers only what the box's tool can use, so the words-only tool's list has no
+// pictures and SDXL's and Qwen Image 2's have; MiniMax H3 Edit is named once, as its package writes it, on a box's tool line, kept on paper
+// and dark.
 // cl-1182 (Paul, 11-17, after taking qwen-image's tool for qwen-image-2's: "oh my bad, I used qwen image 1 instead of 2.1. We should
 // probably call it 'qwen image 1' to avoid confusion like I just did"): Tools lists Qwen Image 1 and Qwen Image 2.1, and so does a box's tool
 // line and `cozy explain`; Qwen Image 1's box offers 1, 1.7 or 2 MP, 1.7 by default. Kept on paper and dark.
@@ -90,7 +92,7 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
     return kinds;
   };
   let reader;
-  await test.step("any image tool goes on a picture: SDXL, which reads none, offers no reference and strikes the picture through in red, saying why; Qwen Image 2 uses it", async () => {
+  await test.step("any image tool goes on a picture: a words-only tool, which reads none, offers no reference and strikes the picture through in red, saying why; SDXL and Qwen Image 2 use it", async () => {
     // Paul, 11-16: "you can attach an image tool to any image. However, it won't be able to use references to images if it's not capable of
     // doing so, such as our SDXL tool"; "if you write <Self.3> or something it has a red line crossing it out".
     const held = Object.values(await rows(project)).filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y));
@@ -113,15 +115,16 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
       return region;
     };
 
-    // SDXL's Image reads its words only: no picture slot, no prompt that takes one.
+    // A tool of Image that reads its words only, by what it declares: no picture slot, no prompt that takes one.
     await openOperation('image');
-    const words = implementations('image').and(palette.locator('[data-tool^="sdxl/"]')).first();
+    const listed = await implementations('image').evaluateAll((all) => all.map((one) => one.dataset.tool));
+    const wordsTool = tools.find((tool) => listed.includes(tool.id) && !reads(tool.fields));
+    expect(wordsTool, `a tool that makes a picture and reads none, among ${listed.join(', ')}`).toBeTruthy();
+    const wordsId = wordsTool.id;
+    const words = implementations('image').and(palette.locator(`[data-tool="${wordsId}"]`));
     await words.scrollIntoViewIfNeeded();
-    const wordsId = await words.getAttribute('data-tool');
-    const wordsTool = tools.find((tool) => tool.id === wordsId);
-    expect(wordsTool && !reads(wordsTool.fields), `${wordsTool?.id}: a tool that makes a picture and reads none`).toBe(true);
     await carry(page, words, await onIt());
-    await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'SDXL goes on the picture' }).toBe(wordsId);
+    await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: `${wordsId} goes on the picture` }).toBe(wordsId);
     expect.soft((await project.asset(PHOTO)).versions, 'its picture stays').toBe(before.versions);
     expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
     // Its words, as Edit opens them, start from the picture (`<self.N>`); a few more typed, then saved as Focus is left.
@@ -134,13 +137,13 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
     await leave(page);
     let photo;
     await expect.poll(async () => JSON.stringify({ fields: (photo = await project.asset(PHOTO)).fields, unused: photo.unused ?? [] }),
-      { message: "Cozy says SDXL doesn't support the image its words start from" }).toMatch(/"mention":"self\.\d+"/);
+      { message: `Cozy says ${wordsId} doesn't support the image its words start from` }).toMatch(/"mention":"self\.\d+"/);
     const self = photo.unused.find((one) => /^self\.\d+$/.test(one.mention));
     // Paul, 11-16 (cl-1084): "does not support this reference".
-    expect.soft(self.why, 'said in plain words').toBe("SDXL doesn't support reference images");
+    expect.soft(self.why, 'said in plain words').toBe(`${wordsTool.package_title} doesn't support reference images`);
     region = await writing();
     const chip = region.locator(`.in-frame .chip[data-mention=${JSON.stringify(self.mention)}]`).first();
-    await expect(chip, 'the image SDXL doesn\'t support, marked').toHaveClass(/\bunsupported\b/);
+    await expect(chip, 'the image it doesn\'t support, marked').toHaveClass(/\bunsupported\b/);
     const style = await chip.evaluate((el) => {
       const probe = document.body.appendChild(document.createElement('i'));
       probe.style.color = 'var(--bad)';
@@ -153,34 +156,40 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
     expect.soft({ color: style.color, stroke: style.stroke }, 'in red').toEqual({ color: style.red, stroke: style.red });
     await expect.soft(chip, 'why, on hover').toHaveAttribute('title', self.why);
     await expect.soft(region.locator('.in-frame .unsupported-note'), 'and in one line under the words').toHaveText(self.why);
-    await expect.soft(region.locator('.slot-control[data-accept="image"]'), 'SDXL offers no reference').toHaveCount(0);
+    await expect.soft(region.locator('.slot-control[data-accept="image"]'), 'it offers no reference').toHaveCount(0);
     await expect.soft(region.locator('.in-frame .backdrop'), 'and the picture it can\'t use is no reference behind its words').toHaveCount(0);
-    // Nor does `<` offer one: SDXL's words take a Text box's words, and no picture, video or sound (cl-1084).
-    const sdxlOffers = await offered(region);
-    expect.soft(Object.entries(sdxlOffers).filter(([, kind]) => kind !== 'text'), `SDXL's \`<\` offers no picture: ${JSON.stringify(sdxlOffers)}`).toEqual([]);
-    expect.soft(Object.keys(sdxlOffers), 'and does offer the Text box').toContain(names.text);
-    await look('sdxl-unsupported', writing, () => page.getByRole('region', { name: 'Focused asset' }).locator('.in-frame'));
+    // Nor does `<` offer one: its words take a Text box's words, and no picture, video or sound (cl-1084).
+    const wordsOffers = await offered(region);
+    expect.soft(Object.entries(wordsOffers).filter(([, kind]) => kind !== 'text'), `${wordsId}'s \`<\` offers no picture: ${JSON.stringify(wordsOffers)}`).toEqual([]);
+    expect.soft(Object.keys(wordsOffers), 'and does offer the Text box').toContain(names.text);
+    await look('words-unsupported', writing, () => page.getByRole('region', { name: 'Focused asset' }).locator('.in-frame'));
     await leave(page);
 
-    // Qwen Image 2's reads pictures in its prompt: it goes on in SDXL's place, and the picture its words start from is its reference.
-    await openOperation('image');
-    const reading = implementations('image').and(palette.locator('[data-tool^="qwen-image-2/"]')).first();
-    await reading.scrollIntoViewIfNeeded();
-    const readerId = await reading.getAttribute('data-tool');
-    reader = tools.find((tool) => tool.id === readerId);
-    expect(reader && reads(reader.fields), `${reader?.id}: a tool that reads a picture`).toBe(true);
-    await carry(page, reading, await onIt());
-    await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'a tool that reads a picture goes on it' }).toBe(reader.id);
-    await expect.configure({ soft: true }).poll(async () => JSON.stringify((await project.asset(PHOTO)).fields?.instructions ?? null), { message: 'its prompt starts from the picture' }).toMatch(/<self\.\d+>/);
-    await expect.configure({ soft: true }).poll(async () => (await project.asset(PHOTO)).unused ?? [], { message: 'nothing it can\'t use' }).toEqual([]);
-    expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
-    region = await writing();
-    await expect.soft(region.locator('.in-frame .chip[data-mention^="self."]').first(), 'the picture, used').not.toHaveClass(/\bunsupported\b/);
-    await expect.soft(region.locator('.in-frame .unsupported-note'), 'with nothing to say').toHaveCount(0);
-    await expect.soft(region.locator('.in-frame .backdrop'), 'the picture its reference, behind its words').toHaveCount(1);
-    const qwenOffers = await offered(region);
-    expect.soft(Object.values(qwenOffers), `Qwen Image 2's \`<\` offers pictures: ${JSON.stringify(qwenOffers)}`).toContain('image');
-    await leave(page);
+    /** `prefix`'s Image, which reads pictures in its prompt, in the last one's place: the picture its words start from is its reference. */
+    const uses = async (prefix) => {
+      await openOperation('image');
+      const reading = implementations('image').and(palette.locator(`[data-tool^="${prefix}/"]`)).first();
+      await reading.scrollIntoViewIfNeeded();
+      const readerId = await reading.getAttribute('data-tool');
+      const tool = tools.find((one) => one.id === readerId);
+      expect(tool && reads(tool.fields), `${tool?.id}: a tool that reads a picture`).toBe(true);
+      await carry(page, reading, await onIt());
+      await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: `${tool.id}, a tool that reads a picture, goes on it` }).toBe(tool.id);
+      await expect.configure({ soft: true }).poll(async () => JSON.stringify((await project.asset(PHOTO)).fields?.instructions ?? null), { message: `${tool.id}: its prompt starts from the picture` }).toMatch(/<self\.\d+>/);
+      await expect.configure({ soft: true }).poll(async () => (await project.asset(PHOTO)).unused ?? [], { message: `${tool.id}: nothing it can't use` }).toEqual([]);
+      expect.soft((await project.assets()).length, `${tool.id}: and makes no box`).toBe(count);
+      region = await writing();
+      await expect.soft(region.locator('.in-frame .chip[data-mention^="self."]').first(), `${tool.id}: the picture, used`).not.toHaveClass(/\bunsupported\b/);
+      await expect.soft(region.locator('.in-frame .unsupported-note'), `${tool.id}: with nothing to say`).toHaveCount(0);
+      await expect.soft(region.locator('.in-frame .backdrop'), `${tool.id}: the picture its reference, behind its words`).toHaveCount(1);
+      const offers = await offered(region);
+      expect.soft(Object.values(offers), `${tool.id}'s \`<\` offers pictures: ${JSON.stringify(offers)}`).toContain('image');
+      await leave(page);
+      return tool;
+    };
+    // SDXL's, since sdxl 0.15 (se-175: IP-Adapter references), and then Qwen Image 2's.
+    await uses('sdxl');
+    reader = await uses('qwen-image-2');
   });
 
   await test.step("the tool line's X takes the tool off, and Undo puts it back", async () => {

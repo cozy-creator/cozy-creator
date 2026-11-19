@@ -4,14 +4,15 @@
 // a rename is the chip's and the stored field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and
 // only Walk's name, and `cozy run watch` says so once. `<` offers only what the box's tool can use (cl-1084; Paul, 11-16: "reference inputs
 // are offered only by tools that can use them (a text-to-image-only tool like SDXL shows none)"): still's lists Amy and Bea, never Walk, and
-// SDXL's, words only, lists a Text box and no picture or video.
+// a words-only tool's (the seed's E2E Words, web/words, as a third party's may: se-175; SDXL reads pictures since sdxl 0.15) lists a Text
+// box and no picture or video.
 const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, renameField, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
 const STILL = fixtureTool('tool.py/still');
-/** SDXL's Image, which the isolated Hub holds for every web job (setup.js SEED): its words take a Text box's words, no file. */
-const SDXL = 'sdxl/image';
+/** E2E Words' Image, which the isolated Hub holds for every web job (setup.js SEED, web/words): its words take a Text box's words, no file. */
+const WORDS = 'e2e-words/image';
 const RUN_MS = 120_000;
 
 /** A paste as a browser hands it over: plain text, and with `html` as a rich-text program copies it. */
@@ -193,11 +194,15 @@ test('mention', async ({ page, project, api, cli }) => {
   });
 });
 
-test("mention: SDXL's `<` offers no picture or video", async ({ page, project }) => {
+test("mention: a words-only tool's `<` offers no picture or video", async ({ page, project, api }) => {
   await project.import(png(160), { name: 'amy', at: { x: 0, y: 0 } });
   await project.import(MP4, { name: 'walk', at: { x: 360, y: 0 } });
   await project.add({ name: 'caption', kind: 'text', fields: { text: 'A lighthouse at dusk.' }, at: { x: 720, y: 0 } });
-  await project.add({ name: 'words', tool: SDXL, kind: 'image', at: { x: 360, y: 460 } });
+  const { tools } = await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`);
+  const fields = tools.find((tool) => tool.id === WORDS)?.fields ?? [];
+  expect(fields.map((field) => field.type), `${WORDS}: words, and no slot or prompt, so it reads no picture`).toContain('words');
+  expect(fields.filter((field) => ['slot', 'prompt', 'group'].includes(field.type)), `${WORDS} reads no file`).toEqual([]);
+  await project.add({ name: 'words', tool: WORDS, kind: 'image', at: { x: 360, y: 460 } });
   for (const name of ['amy', 'walk', 'caption', 'words']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const typed = page.getByRole('region', { name: 'Focused asset' }).locator('.mention-text[data-field="instructions"]').first();
@@ -208,6 +213,6 @@ test("mention: SDXL's `<` offers no picture or video", async ({ page, project })
   const offered = page.locator('.name-menu[role="listbox"]');
   await expect(offered.getByRole('option'), 'the Text box, and neither Amy, a picture, nor Walk, a video').toHaveText(['caption']);
   await page.keyboard.type('a');
-  await expect.soft(offered, '`<a` matches only Amy, which SDXL can\'t use: nothing is offered').toHaveCount(0);
+  await expect.soft(offered, '`<a` matches only Amy, which it can\'t use: nothing is offered').toHaveCount(0);
   await leave(page);
 });
