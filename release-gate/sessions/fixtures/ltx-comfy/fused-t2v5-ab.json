@@ -49,6 +49,24 @@
    ]
   },
   {
+   "name": "i2v5-a",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
+    "seed:=64803",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1",
+    "--file",
+    "first_frame={ref}/seed.jpg"
+   ]
+  },
+  {
    "name": "t2v5-b-0",
    "tree": "pk",
    "target": "ltx-2.5/generate",
@@ -85,6 +103,24 @@
     "int8",
     "--gpus=1"
    ]
+  },
+  {
+   "name": "i2v5-b",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
+    "seed:=64803",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1",
+    "--file",
+    "first_frame={ref}/seed.jpg"
+   ]
   }
  ],
  "compare": [
@@ -95,6 +131,10 @@
   [
    "t2v5-a-1",
    "t2v5-b-1"
+  ],
+  [
+   "i2v5-a",
+   "i2v5-b"
   ]
  ]
 }
