@@ -50,7 +50,8 @@
 #              "pod_sh" (optional: {"during", "after", "after_s"}, each a root shell on the pod over `cozy machine ssh`: `during` each 5 s
 #              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to `after_s` seconds, 900
 #              by default), into <cell>-pod-after.log); "run_s" (optional: the cell's run is cancelled once it has run this
-#              many seconds, a stalled cell leaving the pod to the next ones);
+#              many seconds, a stalled cell leaving the pod to the next ones, after the executors' stacks into
+#              <cell>-pod-stall.log);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -80,6 +81,12 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
 fi
+# STALL: a cell past its run_s, as a root shell on the pod: each executor's threads (state, kernel wait) and its Python stack.
+STALL='for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== executor $p"; ps -o pid,stat,pcpu,rss,etime -p "$p";
+  for t in /proc/$p/task/*; do echo "$(basename "$t") $(cut -d" " -f3 "$t/stat") $(cat "$t/wchan" 2> /dev/null)"; done | sort -k2 | uniq -c -f1 | head -40; done
+command -v py-spy > /dev/null || timeout 90 python3 -m pip install -q py-spy > /dev/null 2>&1 || timeout 90 pip install -q py-spy > /dev/null 2>&1
+for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== py-spy $p"; timeout 40 py-spy dump --pid "$p" 2>&1 | head -200; done
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv'
 # {pic1}..{pic16} and {digits}: cap-sweep's 2048x2048 pictures and its 65,000-character prompt, made the same way.
 PICS=$OUT/pics FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd)
 if jq -e 'any(.[].args[]?; contains("{pic"))' <<<"$CELLS" > /dev/null; then
@@ -323,7 +330,11 @@ for k in "${names[@]}"; do
   [ -z "$during" ] || { ( while :; do echo "== $(date -u +%T.%3N)"; pod_sh "$during"; sleep 5; done ) >> "$OUT/$k-pod-during.log" 2>&1 & PW=$!; }
   # run_s: the cell's run is cancelled once it has run this long, so a stalled cell leaves the pod to the next ones
   bound=$(jq -r '.run_s // empty' <<<"$c") CW=''
-  [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || { say "$k: past run_s ${bound}s: cancelling $n"; cd "$RUN_PROJECT" && cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
+  # Before it, what each executor is doing: its threads' states and kernel waits, and a Python stack where py-spy can attach
+  [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || {
+    say "$k: past run_s ${bound}s: the executors' stacks, then cancelling $n"
+    pod_sh "$STALL" 240 > "$OUT/$k-pod-stall.log" 2>&1
+    cd "$RUN_PROJECT" && cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
   [ ! -e "$OUT/ending" ] || fail "$k: the pod is ending (lib.sh unpin): no run starts on it"
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$CW" ] || kill "$CW" 2> /dev/null
