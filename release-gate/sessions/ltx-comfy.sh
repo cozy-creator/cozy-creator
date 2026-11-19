@@ -10,16 +10,24 @@
 #   gpus       the pod's GPU count (1)
 #   record     a Cozy run record ComfyUI is matched to, in this checkout (fixtures/ltx-comfy/rc-ltx-4090.json)
 #   update     the candidate: ab's `update` ({"runtime", "tensorfs", "tensord", "gpu_memory_limit"})
+#   arms       optional, in place of `update`: [{"name", "update"}], Cozy's cells on each build in turn (ab's arms); each
+#              cell both arms run is compared, request by request, first arm against each later one (ab's `compare`:
+#              the same bytes or the video's PSNR, and the seconds), in `order` (ab's; one-way by default)
 #   cells      [{"name", "key" (ltx25, ltx25_i2v, ltx25_ms), "duration_s", "gpus", "picture" (true: first frame
 #              release-gate/ref/seed.jpg), "prompt", "seed"}]: each a cold request and a warm one (its prompt with
 #              ", at dawn" and seed + 100000), ComfyUI's and Cozy's the same; "comfy": false runs Cozy's alone (ComfyUI's
 #              4-GPU run would repeat its 2-GPU one: it splits nothing more); "cozy": false ComfyUI's alone; "lane" Cozy's lane
-#              (int8; bf16 beside ltx25_bf16); "tree" its packages_refs checkout (the session's `tree`). A prompt with [profile]
+#              (int8; bf16 beside ltx25_bf16); "tree" its packages_refs checkout (the session's `tree`); "arms" the arm names
+#              Cozy runs it in (all by default). A prompt with [profile]
 #              records denoise steps on both engines (ComfyUI: fixtures/ltx-comfy/ltxprof; Cozy: a tree with ltx-2.5's proof hook)
 #   stall_s    no ComfyUI progress for this long ends the session (1800)
 #   need_s     seconds the cap must buy (7200)
 . "$(dirname "$0")/lib.sh"
-TREE=$(param tree pk) GPUS=$(param gpus 1) CELLS=$(param cells '[]') UPDATE=$(param update '{}')
+TREE=$(param tree pk) GPUS=$(param gpus 1) CELLS=$(param cells '[]') UPDATE=$(param update '{}') ORDER=$(param order one-way)
+ARMS=$(param arms null)
+[ "$ARMS" != null ] || ARMS=$(jq -cn --argjson u "$UPDATE" '[{name: "", update: $u}]')
+jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9]*$")) and (.update | type == "object"))
+  and ((map(.name) | unique | length) == length) and (length == 1 or all(.[]; .name != ""))' <<<"$ARMS" > /dev/null || fail "arms"
 REC=$(param record release-gate/sessions/fixtures/ltx-comfy/rc-ltx-4090.json) STALL=$(param stall_s 1800)
 RG=$(cd "$(dirname "$0")/.." && pwd)  # release-gate
 PUB=$RG/suites/bench/comfyui-seal.pub
@@ -38,25 +46,36 @@ jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")
 while read -r k; do grep -q "^\[models\.$k\]" "$BENCH/cells.toml" || fail "cells.toml has no model $k"; done < <(jq -r '.[].key' <<<"$CELLS")
 # The requests: cold, then warm, each cell's own.
 REQS=$(jq -c --arg tree "$TREE" 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy != false), cozy: (.cozy != false),
-  lane: (.lane // "int8"), tree: (.tree // $tree),
+  lane: (.lane // "int8"), tree: (.tree // $tree), arms: (.arms // null),
   requests: [{prompt, seed}, {prompt: (.prompt + ", at dawn"), seed: (.seed + 100000)}]})' <<<"$CELLS")
 PLAIN=${RUNNER_TEMP:-$OUT/..}/ltx-comfy-plain; rm -rf "$PLAIN"; mkdir -p "$PLAIN"
 jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | select(.comfy) | {cell: .name, key, tiers: ["cold", "w1"], requests,
   length: .duration_s, cap_gib: null, scout_s: null, gpus, exchange: "host", record: $rec[0]}]' > "$PLAIN/jobs.json" || fail "jobs"
-# Cozy's cells for ab: the same requests; the first updates the pod and installs the model, so no run fetches weights.
-AB=$(jq -c --argjson update "$UPDATE" --argjson gpus "$GPUS" '{gpus: $gpus, cells: ([.[] | select(.cozy) | . as $c | range(0; 2) as $i
-  | {name: "\($c.name)-\($i)", tree: $c.tree, target: "ltx-2.5/generate",
-     args: (["prompt=\($c.requests[$i].prompt)", "seed:=\($c.requests[$i].seed)", "duration_s:=\($c.duration_s)", "resolution=1080p",
-             "aspect_ratio=16:9", "audio:=true", "--lane", $c.lane, "--gpus=\($c.gpus)"]
-            + (if $c.picture then ["--file", "first_frame={ref}/seed.jpg"] else [] end))}]
-  | .[0] += {update: $update, download: ([$cells[].lane] | unique | map(["lightricks/ltx-2.5@0.2.0", "--lane", .]))})}' --argjson cells "$REQS" <<<"$REQS") || fail "ab cells"
+# Cozy's cells for ab, the same requests: each arm's first updates the pod to its build, and the session's first installs the
+# model, so no run fetches weights.
+AB=$(jq -c --argjson arms "$ARMS" --argjson gpus "$GPUS" --arg order "$ORDER" '. as $cells
+  | def named($c; $a; $i): [$c.name, ($a.name | select(. != "")), "\($i)"] | join("-");
+    def runs($a): [$cells[] | select(.cozy and (.arms == null or any(.arms[]; . == $a.name))) | . as $c | range(0; 2) as $i
+      | {name: named($c; $a; $i), tree: $c.tree, target: "ltx-2.5/generate",
+         args: (["prompt=\($c.requests[$i].prompt)", "seed:=\($c.requests[$i].seed)", "duration_s:=\($c.duration_s)", "resolution=1080p",
+                 "aspect_ratio=16:9", "audio:=true", "--lane", $c.lane, "--gpus=\($c.gpus)"]
+                + (if $c.picture then ["--file", "first_frame={ref}/seed.jpg"] else [] end))}]
+      | if length > 0 then .[0] += {update: $a.update} else . end;
+    def both($c; $a): $c.cozy and ([$arms[0], $a] | all(.name as $n | $c.arms == null or any($c.arms[]; . == $n)));
+  {gpus: $gpus, order: $order,
+   cells: ([$arms[] | runs(.)] | add | .[0] += {download: ([$cells[] | select(.cozy) | .lane] | unique | map(["lightricks/ltx-2.5@0.2.0", "--lane", .]))}),
+   compare: [$arms[1:][] as $a | $cells[] | select(both(.; $a)) as $c | range(0; 2) as $i | [named($c; $arms[0]; $i), named($c; $a; $i)]]}
+  | if (.compare | length) == 0 then del(.compare) else . end' <<<"$REQS") || fail "ab cells"
+[ "$(jq '.cells | length' <<<"$AB")" -gt 0 ] || fail "no Cozy cells"
 echo "$AB" > "$OUT/ab-params.json"
 # ab fetches its update's wheels itself, after ComfyUI's pass on a billing pod: each is fetched here first, at $0.
-for kind in runtime tensorfs; do
-  src=$(jq -r --arg k "$kind" '.[$k] // empty' <<<"$UPDATE"); [ -n "$src" ] || continue
-  f=$(wheel_from "$OUT/wheels-check/$kind" "$src") && [ -n "$f" ] || fail "update $kind: no wheel from $src"
-  say "update $kind: ${f##*/}"
-done
+while IFS='|' read -r arm update; do
+  for kind in runtime tensorfs; do
+    src=$(jq -r --arg k "$kind" '.[$k] // empty' <<<"$update"); [ -n "$src" ] || continue
+    f=$(wheel_from "$OUT/wheels-check/${arm:-main}/$kind" "$src") && [ -n "$f" ] || fail "update ${arm:+$arm }$kind: no wheel from $src"
+    say "update ${arm:+$arm }$kind: ${f##*/}"
+  done
+done < <(jq -r '.[] | "\(.name)|\(.update | tojson)"' <<<"$ARMS")
 say "benchmarks $(git -C "$BENCH" rev-parse --short HEAD), packages $TREE $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD): $(jq -r 'map(.name) | join(", ")' <<<"$CELLS")"
 seal() {
   local key; key=$(openssl rand -hex 32)

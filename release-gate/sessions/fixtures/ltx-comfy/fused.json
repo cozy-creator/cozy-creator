@@ -1,0 +1,66 @@
+{
+ "bench_ref": "5be107a84d83172fca9d24cb21925ed195493999",
+ "tree": "pk",
+ "record": "release-gate/sessions/fixtures/ltx-comfy/rc-ltx-4090.json",
+ "arms": [
+  {
+   "name": "a",
+   "update": {
+    "runtime": "44457061175",
+    "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "b",
+   "update": {
+    "runtime": "44456984840",
+    "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  }
+ ],
+ "order": "one-way",
+ "need_s": 6000,
+ "gpus": 1,
+ "cells": [
+  {
+   "name": "l-ltx-5s",
+   "key": "ltx25",
+   "duration_s": 5,
+   "gpus": 1,
+   "prompt": "A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
+   "seed": 64701
+  },
+  {
+   "name": "l-ltx-i2v-5s",
+   "key": "ltx25_i2v",
+   "duration_s": 5,
+   "gpus": 1,
+   "picture": true,
+   "prompt": "The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
+   "seed": 64703
+  },
+  {
+   "name": "l-ltx-20s",
+   "key": "ltx25",
+   "duration_s": 20,
+   "gpus": 1,
+   "prompt": "A street violinist plays under neon rain in a narrow alley; the camera circles slowly as people with umbrellas hurry past and puddles ripple with each step. Sound: a slow violin melody, steady rain, distant traffic.",
+   "seed": 64702
+  },
+  {
+   "name": "p-ltx-5s",
+   "key": "ltx25",
+   "duration_s": 5,
+   "gpus": 1,
+   "tree": "prof",
+   "comfy": false,
+   "arms": ["b"],
+   "prompt": "[profile] A koi pond beneath cherry blossoms; petals drift onto the water as the camera glides low over it. Sound: trickling water, soft birdsong.",
+   "seed": 64705
+  }
+ ]
+}
