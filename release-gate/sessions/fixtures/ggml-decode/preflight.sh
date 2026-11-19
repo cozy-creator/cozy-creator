@@ -121,7 +121,8 @@ pick_offer() {
       [[ $price =~ ^[0-9]+$ ]] || continue
       [ -n "$best" ] && [ "$price" -ge "$low" ] || { best=$s low=$price; }
     done
-    [ -z "$best" ] && [ "$try" -lt 6 ] || break
+    # A $0 pre-flight asks once: its checks are what it is for, and a retry there only spends runner minutes.
+    [ -z "$best" ] && [ "$try" -lt 6 ] && [ "$RENT" = true ] || break
     say "offers: none for$said (attempt $try/6): asking again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
