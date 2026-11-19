@@ -138,6 +138,20 @@ def decode(ctx: Context, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
+def _forced(net: torch.nn.Module, prompt: list[int], made: list[int]) -> dict[str, object]:
+    """`made` held against Transformers' own forward over the prompt and `made` in one pass (teacher-forced): at
+    each position whose top logit leads the next by at least 0.5, whether `made` took it; the lead where it didn't."""
+    ids = torch.tensor([prompt + made[:-1]], device=net.device)
+    with torch.inference_mode():
+        logits = net(input_ids=ids).logits[0, len(prompt) - 1 :].float()
+    top = logits.topk(2, dim=-1)
+    choice, lead = top.indices[:, 0].tolist(), (top.values[:, 0] - top.values[:, 1]).tolist()
+    clear = [t for t in range(len(made)) if lead[t] >= 0.5]
+    wrong = [t for t in clear if choice[t] != made[t]]
+    return {"clear": len(clear), "agreed": len(clear) - len(wrong), "first_wrong": wrong[0] if wrong else None,
+            "lead": [round(x, 3) for x in lead[:12]]}
+
+
 @app.entrypoint(accelerator=True)
 def engine(ctx: Context, model: VisionLM) -> Agreement:
     """The engine's decoder (xs-213 phase 2, `cozy_runtime.engine.decoder`) on `PROMPT`: 512 greedy tokens, never
@@ -154,6 +168,7 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1)}
     head = getattr(net, "mtp", None)
     sampled: dict[str, list[int]] = {}
+    made_by: dict[str, list[int]] = {}
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del net.mtp
@@ -170,6 +185,7 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             if head is not None:
                 net.mtp = head
         tokens = made.tokens[0]
+        made_by[mode] = tokens
         kept = made.kept[0] if made.kept else []
         drawn = decoder(Request(prompts=[ids], max_new=512, stops=[], temperature=1.0, top_k=20, top_p=0.95, seed=213))
         drawn_kept = drawn.kept[0] if drawn.kept else []
@@ -183,6 +199,9 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             "kept_a_step": round(sum(kept) / max(len(kept), 1), 3),
             "same_as_today": next((i for i, (x, y) in enumerate(zip(tokens, today)) if x != y), min(len(tokens), len(today))),
         }
+    rows["forced"] = {"today": _forced(net, ids, today)}
+    for mode in made_by:
+        rows["forced"][mode] = _forced(net, ids, made_by[mode])
     if len(sampled) == 2:  # a draw is hashed from the seed and the token's index: drafting keeps the same tokens
         a, b = sampled["drafted"], sampled["plain"]
         rows["sampled_same"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
