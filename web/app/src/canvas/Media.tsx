@@ -407,25 +407,25 @@ export function Player({ field, path, machine, sound, seek, auto, from, onTime, 
     if (!el) return stop()
     // Every video in every tab plays at once: a file's bytes are in this page's memory, holding no connection to Calcifer (cl-1215; Paul,
     // 11-18: "why can't I have all 3 videos playing at the same time?").
+    // A sound this browser can't decode plays Calcifer's FLAC copy of it (its `preview`), asked for as every preview is: one still being
+    // made waits for its `thumb` event, and one that can't be made can't be played.
+    const copy = (project: string, sha256: string) => new Promise<Playback>((resolve, reject) => {
+      let asked: HeldPreview | undefined, done = false
+      const end = (then: () => void) => { if (done) return; done = true; asked?.stop(); then() }
+      asked = heldPreview(client.transport, project, sha256, client.preview(project, sha256), (held) => {
+        if (done) return held.release()
+        end(() => {
+          held.show(el)
+          resolve({ stop: () => held.release() })
+        })
+      }, () => end(() => reject(new Error("This browser can't play it"))))
+      // Unavailable already, it was told so before it was held.
+      if (done) asked.stop()
+      waiting.signal.addEventListener("abort", () => end(() => reject(waiting.signal.reason)), { once: true })
+    })
     const open = async () => {
       if (path === undefined) return fromMachine(client, machine!, el, waiting.signal, failed)
-      if (!converted || !soundProject || !soundSha) return client.transport.play(path, el)
-      const alternate = client.preview(soundProject, soundSha)
-      while (await thumbPending(client.transport, alternate, waiting.signal)) {
-        await new Promise<void>((resolve) => {
-          const finish = () => {
-            stopWaiting()
-            waiting.signal.removeEventListener("abort", finish)
-            resolve()
-          }
-          const stopWaiting = whenThumb(soundProject, soundSha, 2000, finish)
-          if (waiting.signal.aborted) finish()
-          else waiting.signal.addEventListener("abort", finish, { once: true })
-        })
-        waiting.signal.throwIfAborted()
-      }
-      waiting.signal.throwIfAborted()
-      return client.transport.play(alternate, el)
+      return converted && soundProject && soundSha ? copy(soundProject, soundSha) : client.transport.play(path, el)
     }
     void open()
       .then((opened) => {
