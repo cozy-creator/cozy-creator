@@ -25,7 +25,11 @@
 #   uploads    [{source, lane, base?, base_lane?, format?, trained_on?, trigger?, strength?, commit?}]: each source a
 #              commit in its lane, converted on the pod. `base` (a Hub model, release or checkpoint) supplies what the
 #              source lacks (a DiT-only file's text encoder and VAE), in the upload's lane, or the release's `base_lane`
-#              checkpoint. `commit` names one already made: a rerun skips it.
+#              checkpoint. `commit` names one already made: a rerun skips it. In place of `source`, `run` {function, models?,
+#              request?}: a function of the checkout (./scripts/<file>.py/<fn>) run on the pod with `model.<slot>=<ref>` for
+#              each of `models` and `--lane <lane>`, whose weights output is the upload (`run:N`, as it is: no `base`).
+#   installs   [[source, name, flags…], …]: `cozy model install` on the pod before the uploads, under a local name a
+#              `run`'s models name (an edit's two ends, read and never uploaded)
 #   lanes      more lanes written from the bf16 commit by `recipes`' recipe (a Hub package, or ./<dir> of the checkout); an item
 #              {"lane", "from"} is written from that lane's upload instead
 #   prepare    {function, lane, commit?}: a package function (./<dir>/<fn>) run on the bf16 commit, `cozy run <fn> <commit>
@@ -77,10 +81,26 @@ mirror() {
   it=$(jq -c ".[$1]" <<<"$MIRRORS"); m=$(jq -r .model <<<"$it"); kind=$(jq -r '.kind // "model"' <<<"$it")
   page=$(jq -r .page <<<"$it"); version=$(jq -r '.version // ""' <<<"$it"); slug=${m//\//-} from=$(jq -r '.from // "bf16"' <<<"$it")
   verb=model; [ "$kind" = model ] || verb=lora
+  for ((j = 0; j < $(jq '.installs // [] | length' <<<"$it"); j++)); do
+    mapfile -t args < <(jq -r ".installs[$j][]" <<<"$it")
+    step "install-$slug-$j" model install "${args[@]}" --on "$NAME" || { say "MIRROR FAILED: $m: install ${args[*]}"; return 1; }
+  done
   for ((j = 0; j < $(jq '.uploads | length' <<<"$it"); j++)); do
     u=$(jq -c ".uploads[$j]" <<<"$it"); lane=$(jq -r .lane <<<"$u"); c=$(jq -r '.commit // ""' <<<"$u")
     if [ -z "$c" ]; then
-      args=("$(jq -r .source <<<"$u")" "$m" --lane "$lane" --mirror "$page")
+      src=$(jq -r '.source // ""' <<<"$u")
+      fn=$(jq -r '.run.function // ""' <<<"$u")
+      if [ -n "$fn" ]; then
+        n=made-$slug-$j; req=$OUT/$n.json
+        jq '.run.request // {}' <<<"$u" > "$req" || return 1
+        args=(run "$fn" --input "$req" --lane "$lane" --on "$NAME")
+        while IFS= read -r v; do args+=("model.$v"); done < <(jq -r '.run.models // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$u")
+        step "$n" "${args[@]}" || { say "MIRROR FAILED: $m: run $fn: $(tail -2 "$OUT/$n.txt" | paste -sd' ')"; return 1; }
+        N=$(runno "$n"); [ -n "$N" ] || { say "MIRROR FAILED: $m: run $fn named no run"; return 1; }
+        cozy run watch "$N" --json --full > "$OUT/$n-run.json" 2>/dev/null
+        src=run:$N; say "$m: upload $j is run $N's weights output ($fn)"
+      fi
+      args=("$src" "$m" --lane "$lane" --mirror "$page")
       v=$(jq -r '.base // ""' <<<"$u")
       if [ -n "$v" ] && [ "$(jq -r '.base_lane // ""' <<<"$u")" != "" ]; then
         k=$(released "${v%@*}" "${v#*@}" "$(jq -r .base_lane <<<"$u")")
@@ -172,12 +192,16 @@ if [ -n "$MIRRORS" ]; then
   for ((i = 0; i < n; i++)); do
     jq -e --argjson i "$i" '.[$i] | (.model | type == "string" and test("^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*$"))
       and (.page | type == "string" and length > 0) and ((.kind // "model") | IN("model", "lora"))
-      and (.uploads | type == "array" and length > 0) and all(.uploads[]; (.source // .commit | type == "string") and (.lane | type == "string"))
+      and (.uploads | type == "array" and length > 0) and all(.uploads[]; (.source // .commit // .run.function | type == "string") and (.lane | type == "string"))
       and (.hold == true or (.version | type == "string"))' <<<"$MIRRORS" >/dev/null ||
       fail "mirrors[$i] needs model (org/name), page, kind (model or lora), uploads [{source, lane}] and a version unless held"
     m=$(jq -r ".[$i].model" <<<"$MIRRORS"); [[ $m != fidika/* ]] || fail "$m: a mirror lives under its author's org, never fidika"
     model_details "$m" > "$OUT/before-${m//\//-}.txt" 2>&1
     grep -q model.not_found "$OUT/before-${m//\//-}.txt" || say "$m exists on prod: $(head -c 200 "$OUT/before-${m//\//-}.txt")"
+    # A run an upload is made by is read before renting: one its checkout can't describe costs nothing.
+    for fn in $(jq -r ".[$i].uploads[].run.function // empty" <<<"$MIRRORS"); do
+      step "describe-$i-${fn##*/}" run "$fn" --describe || fail "mirrors[$i]: $fn: $(tail -2 "$OUT/describe-$i-${fn##*/}.txt" | paste -sd' ')"
+    done
   done
   quote "$(param seconds 7200)"
   rent

@@ -225,6 +225,8 @@ step() {
       [ "${words[$i]}" = --package ] && [[ ${words[$((i + 1))]:-} == .* ]] && words[$((i + 1))]="$PWD/${words[$((i + 1))]}"
     done
     directory=$RUN_PROJECT
+  elif [ "$1" = model ] && [ "${2:-}" = upload ] && [[ ${3:-} == run:* ]]; then
+    directory=$RUN_PROJECT  # the run is the session project's
   fi
   # A package run or installed from a packages checkout: its kernels first.
   if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
