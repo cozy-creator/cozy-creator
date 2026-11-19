@@ -172,7 +172,12 @@ if [ -n "$DECODE$MAKE" ]; then
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
     step "pull-$label" model install "$ref" --on "$NAME" || { RIDE_BAD=1; say "FAILED: pull $label"; continue; }
-    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || { RIDE_BAD=1; say "FAILED: speed $label"; continue; }
+    if ! step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME"; then
+      # The failed run's whole record (its traceback) into the report's folder, a bounded tail into the report.
+      n=$(runno "speed-$label"); [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --full run watch "$n" --once) > "$OUT/speed-$label.full.txt" 2>&1
+      tail -n 40 "$OUT/speed-$label.full.txt" 2> /dev/null | cut -c1-300 | tee -a "$R" > /dev/null
+      RIDE_BAD=1; say "FAILED: speed $label"; continue
+    fi
     on_candidates "speed-$label"
     n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
     say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
