@@ -4,7 +4,8 @@
 # (e2e/releases.py: 0.25.99 with TensorFS 0.25.99 while 0.26.0 is Latest), which runs none of the Latest's Runtime minor: the cozy
 # that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel
 # (the RC's <x.y.z>.dev<n>+g<sha8>, crates/tensorfs-py/scripts/dev-version.sh) come from the cozy-creator
-# checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
+# checkout <src>, the Runtime wheel (the RC's <x.y.z>.dev<n>+g<sha8>, as cozy-runtime's rc-dev; a release's <version>+dev.g<sha8>) from the
+# cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
 # With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>-<inputs> on Linux x64, <what>-<os>-<arch>-<inputs>
@@ -120,12 +121,23 @@ elif [ "$what" = tensorfs ]; then
     uvx -q maturin@1.15.0 build --release --locked --out "$out"
     git checkout -- pyproject.toml Cargo.toml ../tensorfs/Cargo.toml ../../Cargo.lock)
 else
-  # Its own version, <version>+dev.g<sha8> as the dev cozy's, so the imports suite tells it from PyPI's.
+  # Its own version, a local one, so the imports suite tells it from PyPI's. The RC's dev line (pyproject X.Y.Z.dev0) says
+  # X.Y.Z.dev<n>+g<sha8>, n the commit's first-parent count, as cozy-runtime's rc-dev builds it, so a package's floor on a
+  # build (`cozy-runtime>=0.49.0.dev2356`) admits or refuses it as it would the RC's own (xs-216). A release's line says
+  # <version>+dev.g<sha8>, as the dev cozy's.
   (cd "$src"
     # Artifact construction needs only its build backend. Do not resolve a serving
     # find-links/source override when the matched TensorFS candidate is built beside it.
     uv --no-config run -q --no-project python scripts/stamp-build-provenance.py "$sha"
-    uv --no-config version -q --frozen "$(uv --no-config version --short)+dev.g${sha:0:8}"
+    version=$(uv --no-config version --short)
+    case $version in
+      *.dev0)
+        # The count needs the history: CI checks it out whole and treeless; a shallow clone fetches it here (dev-version.sh's way).
+        [ "$(git rev-parse --is-shallow-repository)" = false ] || git fetch -q --unshallow origin
+        version="${version%.dev0}.dev$(git rev-list --count --first-parent HEAD)+g${sha:0:8}" ;;
+      *) version="$version+dev.g${sha:0:8}" ;;
+    esac
+    uv --no-config version -q --frozen "$version"
     uv --no-config build -q --wheel --out-dir "$out"
     git checkout -- pyproject.toml)
 fi

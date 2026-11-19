@@ -157,6 +157,9 @@ jobs:
           repository: cozy-creator/cozy-runtime
           ref: ${{ steps.runtime.outputs.ref }}
           path: runtime.src
+          # Its version counts its first-parent history (e2e/candidates/build.sh): all of it, no trees.
+          fetch-depth: 0
+          filter: tree:0
       # uv: a Runtime wheel built here, and the Triton sets a package from a packages_refs checkout carries (sessions/lib.sh `kernels`).
       - uses: astral-sh/setup-uv@v7
       - if: steps.runtime.outputs.ref != ''

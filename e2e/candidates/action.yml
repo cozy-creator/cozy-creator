@@ -99,6 +99,9 @@ runs:
         repository: cozy-creator/cozy-runtime
         ref: ${{ inputs.runtime_ref }}
         path: .rt
+        # The Runtime's version counts its first-parent history (build.sh): all of it, no trees.
+        fetch-depth: 0
+        filter: tree:0
     # Native-only CLI jobs still publish source packages into their isolated Hub.
     # Their reader uses the same Runtime source even though they run no models.
     - if: inputs.from == 'native-artifact' && inputs.runtime == ''
@@ -107,6 +110,9 @@ runs:
         repository: cozy-creator/cozy-runtime
         ref: ${{ inputs.repo == 'cozy-runtime' && inputs.ref || inputs.runtime_ref }}
         path: .seed-rt
+        # The Runtime's version counts its first-parent history (build.sh): all of it, no trees.
+        fetch-depth: 0
+        filter: tree:0
     # cozy as an earlier merge-group or dispatched run built it for this OS from the same build inputs (a PR's own
     # dispatch, for its queue entry), else built here and kept for the next (build.sh).
     - id: reuse
