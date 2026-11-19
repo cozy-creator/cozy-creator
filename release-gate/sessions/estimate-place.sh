@@ -10,8 +10,11 @@
 #   tree    the packages_refs checkout (default pk)
 #   shot    the H3 shot box's fields (default one 15 s beat, Turbo)
 #   need_s  the pod's time the quote asks for (default 1500)
+#   qwen    a Qwen Image 2 box's fields (proof branch, packages #1019): on the pod, two such boxes (seeds 1 and 2) rendered to their
+#           end after the shot, each run's quote said: the first is quoted by its `estimate=` formula over its rows, the second by the
+#           first's own run; empty: none
 . "$(dirname "$0")/lib.sh"
-TREE=$(param tree pk) NEED=$(param need_s 1500)
+TREE=$(param tree pk) NEED=$(param need_s 1500) QWEN=$(param qwen '')
 SHOT=$(param shot '{"summary": "A lighthouse on a cliff at dusk.", "beats": [{"duration": 15, "description": "Waves break below the lighthouse as its lamp turns."}]}')
 logs() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
@@ -26,7 +29,7 @@ CHECKOUT=$(cd "$PACKAGES/$TREE" 2> /dev/null && pwd) || fail "no packages_refs c
 # A dev home: birefnet and minimax-h3 from the checkout, every other package the Hub's.
 SOURCE=$OUT/packages
 mkdir -p "$SOURCE" || fail "no packages folder"
-for pkg in birefnet minimax-h3; do ln -sfn "$CHECKOUT/$pkg" "$SOURCE/$pkg" || fail "no $pkg in the checkout"; done
+for pkg in birefnet minimax-h3 ${QWEN:+qwen-image-2}; do ln -sfn "$CHECKOUT/$pkg" "$SOURCE/$pkg" || fail "no $pkg in the checkout"; done
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
 { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
@@ -37,11 +40,12 @@ awk -v source="$SOURCE" '
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 say "cozy $(cozy --version | awk '{print $2}'), birefnet and minimax-h3 from $TREE ($(git -C "$CHECKOUT" rev-parse --short HEAD 2> /dev/null))"
 # Each function as cozy reads it, before any box of it: what `needs-plan` plans from.
-for f in cut:birefnet/remove_background shot:minimax-h3/generate; do
+for f in cut:birefnet/remove_background shot:minimax-h3/generate ${QWEN:+qwen:qwen-image-2/image}; do
   cozy --json --full run "$SOURCE/${f#*:}" --describe > "$OUT/${f%%:*}.describe.json" 2> "$OUT/${f%%:*}.describe.err" \
     || fail "cozy can't read the checkout's ${f#*:}: $(jq -c .error "$OUT/${f%%:*}.describe.json" 2> /dev/null) $(tail -c 300 "$OUT/${f%%:*}.describe.err")"
 done
 say "the shot's estimate: $(jq -c '[.interface.entrypoints[]? | select(.name == "generate") | .estimate.size][0]' "$OUT/shot.describe.json")"
+[ -z "$QWEN" ] || say "Qwen Image 2's estimate: $(jq -c '[.interface.entrypoints[]? | select(.name == "image") | .estimate][0]' "$OUT/qwen.describe.json" | cut -c1-600)"
 
 in_project() { (cd "$RUN_PROJECT" && cozy "$@"); }
 # placed <run> <box>: that run's record (runs-<box>.json), and its quote said.
@@ -53,7 +57,7 @@ placed() {
 }
 # rendered <box>: `cozy render <box>` to its end, and its run's quote said.
 rendered() {
-  (cd "$RUN_PROJECT" && exec timeout 1200 cozy render "$1") > "$OUT/render-$1.txt" 2>&1
+  (cd "$RUN_PROJECT" && exec timeout 2400 cozy render "$1") > "$OUT/render-$1.txt" 2>&1
   say "$1: cozy render exited $? and said: $(tr '\n' '|' < "$OUT/render-$1.txt" | cut -c1-600)"
   local run; run=$(job_run "$1")
   [ -n "$run" ] && placed "$run" "$1"
@@ -111,6 +115,16 @@ for _ in $(seq 180); do RUN=$(job_run shot); [ -n "$RUN" ] && break; sleep 5; do
 judge 'jq -e --arg m "$NAME" ".placed.machine == \$m and .placed.basis == \"reference\" and (.placed.formula_ms // 0) > 0" "$OUT/runs-shot.json" > /dev/null 2>&1' \
   "the H3 shot is placed on $NAME by its own formula over its row of the card (basis reference, formula_ms)"
 run_page cancel shot > "$OUT/cancel-shot.txt" 2>&1; kill "$SP" 2> /dev/null; wait "$SP" 2> /dev/null
+if [ -n "$QWEN" ]; then
+  for i in 1 2; do
+    run_page add "qwen$i" --tool qwen-image-2/image --fields "$(jq -c --argjson s "$i" '. + {seed: $s}' <<< "$QWEN")" > "$OUT/add-qwen$i.json" 2>&1 \
+      || fail "the qwen$i box: $(tail -c 300 "$OUT/add-qwen$i.json")"
+    rendered "qwen$i"
+    say "qwen$i: quoted $(jq -c '.placed | {basis, formula_ms, size}' "$OUT/runs-qwen$i.json" 2> /dev/null), ran $(jq -r '.execution_ms' "$OUT/runs-qwen$i.json" 2> /dev/null) ms"
+  done
+  judge 'jq -e --arg m "$NAME" ".status == \"completed\" and .placed.machine == \$m and (.placed.formula_ms // 0) > 0" "$OUT/runs-qwen1.json" > /dev/null 2>&1' \
+    "the first Qwen Image 2 box is placed on $NAME by its own formula (formula_ms) and completes"
+fi
 logs
 say "what Calcifer said of placement: $(grep -E "goes to|guessed on|isn't guessed" "$OUT/calcifer.log" | grep -vE 'GET|PUT /v1/events' | tail -12 | cut -c1-300 | paste -sd '|')"
 [ "$FAILS" = 0 ] || fail "$FAILS of the judged facts did not hold"
