@@ -128,7 +128,7 @@ if back "page leg"; then
   FLOW_SPEC=cut-1254.spec.js CUT_OUT=$OUT/page DRAW=$DRAW/draw HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) \
     CHROME=$(command -v google-chrome) OUT=$OUT ARGV_LOG=$OUT/argv.log NODE_PATH=$PW/node_modules \
     timeout 1500 node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/flow.config.js" > "$OUT/page.log" 2>&1; code=$?
-  say "page leg: playwright exit $code; saw: $(jq -c '{said, at_ms, failure, take: (.take | if . then {width: .main.width, height: .main.height} else null end)}' "$OUT/page/page.json" 2> /dev/null || echo 'no page.json')"
+  say "page leg: playwright exit $code; saw: $(jq -c '{said, at_ms, failure, take: (.take | if . then {width: .main.width, height: .main.height} else null end), faces: .faces[0:12]}' "$OUT/page/page.json" 2> /dev/null || echo 'no page.json')"
   [ "$code" = 0 ] || red "page leg: the spec failed: $(grep -E '✘|Error:|expect' "$OUT/page.log" | head -4 | tr '\n' ' ' | cut -c1-400)"
   moved "page leg"
 fi

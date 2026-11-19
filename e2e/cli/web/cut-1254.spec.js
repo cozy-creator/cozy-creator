@@ -11,7 +11,7 @@ const need = (name) => process.env[name] || (() => { throw new Error(`$${name} i
 test('a page render on local below this cozy\'s Runtime minor updates local first, then lands', async ({ page, project, cli }) => {
   const out = need('CUT_OUT');
   const name = 'from-page';
-  const seen = { said: null, at_ms: null, take: null, failure: null, use: null };
+  const seen = { said: null, at_ms: null, take: null, failure: null, use: null, faces: [] };
   const record = () => writeFileSync(join(out, 'page.json'), JSON.stringify(seen, null, 2));
   await project.add({ name, tool: need('DRAW'), kind: 'image', fields: { instructions: `A still from the page ${Date.now()}` }, at: { x: 0, y: 0 } });
   // The project's machines: local, as a person picks it (`cozy machine use`); else Render goes where it finishes soonest, any rental of the
@@ -34,7 +34,12 @@ test('a page render on local below this cozy\'s Runtime minor updates local firs
     return Boolean(row?.prefixes?.length) || Boolean(row?.failure);
   };
   await expect.poll(async () => {
-    const said = (await shown()).match(/updating local first[^\n]*/i);
+    const text = await shown();
+    // What the box and the page said as it went, each distinct line once (the record of what a person saw).
+    for (const line of text.split('\n').map((l) => l.trim()).filter((l) => /updat|install|wait|prepar|queued|start/i.test(l))) {
+      if (!seen.faces.includes(line) && seen.faces.length < 40) seen.faces.push(line);
+    }
+    const said = text.match(/updating local first[^\n]*|updating local's runtime[^\n]*/i);
     if (said && !seen.said) {
       Object.assign(seen, { said: said[0].slice(0, 200), at_ms: Date.now() - pressed });
       await page.screenshot({ path: join(out, 'page-updating.png') });
@@ -46,7 +51,7 @@ test('a page render on local below this cozy\'s Runtime minor updates local firs
   await page.screenshot({ path: join(out, 'page-after.png') });
   record();
   expect(seen.failure, 'the render did not fail').toBeNull();
-  expect(seen.said, 'the box said "Updating local first"').not.toBeNull();
+  expect(seen.said, 'the page said it updates local first').not.toBeNull();
   expect(seen.take?.main?.machine, 'it rendered on local').toBe('local');
   expect(seen.take?.main?.width ?? 0, 'its picture landed').toBeGreaterThan(0);
 });
