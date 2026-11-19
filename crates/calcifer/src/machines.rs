@@ -1836,7 +1836,7 @@ impl Machines {
             let set = Box::pin(crate::project::queue_set(&api, &run)).await;
             let placed = match run.kind {
                 wire::Kind::Call => Box::pin(crate::project::queued_on(&api, &set, &run)).await.map(|offer| (offer.machine.clone(), Some(offer), None)),
-                _ => match Box::pin(crate::placement::takes(&api, &set, &[])).await {
+                _ => match Box::pin(crate::placement::takes(&api, &set, &[], None)).await {
                     Ok((on, said)) => Ok((on, None, said)),
                     Err(e) => Err(Unplaced::Waits(format!("waiting for a machine that can take it: {}", e.message))),
                 },

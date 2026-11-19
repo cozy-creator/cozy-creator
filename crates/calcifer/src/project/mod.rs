@@ -74,7 +74,7 @@ use api::{
     machine as v1,
     calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, AppearanceKept as ProjectAppearance, Moved as ProjectMoved, Name as ProjectName, MainFile, Open, Opened,
-        NoRoom, Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
+        NoGpu, NoRoom, Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         TakeNow, Unused, VersionPrefix, Warning as ProjectWarning,
     },
 };
@@ -1501,8 +1501,9 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             let placed = walker.placed.get(&job.key);
             // Its turn come, held for a machine on its way that finishes it sooner (cl-915): `waits for pluto, ready in about 2 min`.
             let held = placed.filter(|_| waits.is_empty()).and_then(|placed| Some((placed.soonest.waits_for(now)?, placed.soonest.machine.to_string())));
-            // Held for room on its machines' disks (cl-1175): what it lacks, said as its box says it.
-            let held = held.or_else(|| walker.no_room.get(&job.key).map(|short| (placement::no_room_line(short, "render"), short.machine.to_string())));
+            // Held for a machine that can run it (cl-1175, cl-1279): what its machines lack, said as its box says it.
+            let unable = walker.unable.get(&job.key).filter(|_| waits.is_empty());
+            let held = held.or_else(|| unable.map(|offer| (placement::unable_line(offer, "render"), offer.machine.to_string())));
             let row = Job {
                 id: job.key.clone(),
                 asset: job.asset.clone(),
@@ -1577,9 +1578,9 @@ struct Walker {
     unquoted: HashMap<String, Unquoted>,
     /// Ready jobs every machine of which doesn't answer its frame while each is asked again, by key: they wait for one to.
     waiting: HashSet<String>,
-    /// Ready jobs none of whose machines has room on its disk for their weights, by key, with the offer that lacks least (cl-1175):
-    /// they wait for room or a rental, nothing of them downloaded.
-    no_room: HashMap<String, Offer>,
+    /// Jobs none of whose machines can run them, by key, with the offer that says why (`placement::unable`): no room on its disk for
+    /// their weights (cl-1175), or no GPU (cl-1279). They wait for one that can or a rental, nothing of them sent or downloaded.
+    unable: HashMap<String, Offer>,
     /// What the walk log last said of each machine not answering, by name: said again only when it changes.
     silent: HashMap<String, String>,
     /// The runs whose version's files were on their way that have arrived, by number: each arrives once, by whichever looks first.
@@ -3254,8 +3255,10 @@ fn queue(project: &Project, walk: &folder::WalkFile) -> Vec<Queued> {
     let row = |id: usize| {
         let job = &graph.jobs[id];
         let run = runs.get(job.key.as_str()).copied();
-        let no_room = walker.no_room.get(&job.key).map(|short| NoRoom { line: placement::no_room_line(short, "render"), short: crate::bytes(short.short_bytes as f64) });
-        Queued { name: job.asset.clone(), running: run.is_some(), run: run.filter(|run| *run > 0), no_room }
+        let held = walker.unable.get(&job.key);
+        let no_room = held.filter(|offer| !offer.no_gpu()).map(|short| NoRoom { line: placement::no_room_line(short, "render"), short: crate::bytes(short.short_bytes as f64) });
+        let no_gpu = held.filter(|offer| offer.no_gpu()).map(|offer| NoGpu { line: placement::no_gpu_line(offer, "render") });
+        Queued { name: job.asset.clone(), running: run.is_some(), run: run.filter(|run| *run > 0), no_room, no_gpu }
     };
     graph.open_jobs().into_iter().map(row).collect()
 }
@@ -4573,12 +4576,12 @@ impl Walk {
     fn ahead_jobs(&self) -> Vec<(String, String, Wanted)> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
         let walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, placed, foreseen, no_room, .. } = &*walker;
+        let Walker { graph, readings, placed, foreseen, unable, .. } = &*walker;
         let mut jobs = vec![];
         for id in graph.open_jobs() {
             let job = &graph.jobs[id];
-            // One waiting for disk room fetches nothing ahead anywhere (cl-1175): none of its machines has room for it.
-            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free) || no_room.contains_key(&job.key) {
+            // One none of whose machines can run it fetches nothing ahead anywhere (cl-1175, cl-1279).
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free) || unable.contains_key(&job.key) {
                 continue;
             }
             let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
@@ -4949,7 +4952,7 @@ impl Walk {
         }
         let placed = plan::plan(&pictures, &planned, now);
         let said = |offers: &[Offer]| offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
-        // What a job's lack of room says, once each time it changes (cl-1175).
+        // What a job none of whose machines can run it says, once each time it changes (cl-1175, cl-1279).
         let (mut roomless, mut rooms) = (vec![], false);
         let mut walker = self.project.walker.lock().expect("walker lock");
         for ((at, job), placement) in jobs.iter().zip(placed) {
@@ -4964,25 +4967,31 @@ impl Walk {
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
-                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them with room
-                // for its weights, which fetches ahead for it.
-                let room = |on: &&On| !placement.offers.iter().any(|offer| offer.short_bytes > 0 && offer.machine == **on);
-                match job.on.iter().find(room).filter(|_| !unsent.ready) {
+                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them that can
+                // run it, which fetches ahead for it.
+                let able = |on: &&On| !placement.offers.iter().any(|offer| offer.unable() && offer.machine == **on);
+                match job.on.iter().find(able).filter(|_| !unsent.ready) {
                     Some(first) => ahead(&mut walker, first, false),
                     None => drop(walker.foreseen.remove(&unsent.key)),
                 }
-                // None of its machines has room for its weights (cl-1175, Paul 11-17: "stop them from trying to download models they
-                // cannot fit"): it waits here, nothing of it sent, until one has, or a rental comes; said once.
-                if let (true, Some(short)) = (unsent.ready, placement::roomless(&placement.offers)) {
+                // One waiting for its inputs that none of its machines can run says so on its box, and nothing of it goes ahead.
+                if let (false, None, Some(held)) = (unsent.ready, job.on.iter().find(able), placement::unable(&placement.offers)) {
+                    rooms |= walker.unable.insert(unsent.key.clone(), held.clone()).is_none_or(|was| placement::unable_line(&was, "render") != placement::unable_line(held, "render"));
+                    continue;
+                }
+                // None of its machines can run it: no room for its weights (cl-1175, Paul 11-17: "stop them from trying to download
+                // models they cannot fit"), or no GPU where nothing measured says it runs without one (cl-1279). It waits here, nothing
+                // of it sent, until one can, or a rental comes; said once.
+                if let (true, Some(held)) = (unsent.ready, placement::unable(&placement.offers)) {
                     walker.waiting.remove(&unsent.key);
-                    let line = placement::no_room_line(short, "render");
-                    match walker.no_room.insert(unsent.key.clone(), short.clone()) {
+                    let line = placement::unable_line(held, "render");
+                    match walker.unable.insert(unsent.key.clone(), held.clone()) {
                         None => {
-                            info!("{dir}: {} waits for room: {}", unsent.key, said(&placement.offers));
+                            info!("{dir}: {} waits for a machine that can run it: {}", unsent.key, said(&placement.offers));
                             roomless.push(Told::Warning { message: format!("{}: {line}", unsent.asset), name: Some(unsent.asset.clone()) });
                             rooms = true;
                         }
-                        Some(was) => rooms |= placement::no_room_line(&was, "render") != line,
+                        Some(was) => rooms |= placement::unable_line(&was, "render") != line,
                     }
                     continue;
                 }
@@ -5018,7 +5027,7 @@ impl Walk {
                 continue;
             };
             walker.waiting.remove(&unsent.key);
-            let was_held = walker.no_room.remove(&unsent.key);
+            let was_held = walker.unable.remove(&unsent.key);
             rooms |= was_held.is_some();
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
@@ -5033,7 +5042,7 @@ impl Walk {
                 crate::private_io::diagnose(&self.folder().dir, || format!("{} goes to {}: {quoted}", unsent.key, chosen.machine));
             }
             // Elsewhere for a disk without room for it, as its machines quote it now or as it waited for room: said in a line, once.
-            let short = placement::roomless(&placement.offers).or(was_held.as_ref()).filter(|short| short.machine != chosen.machine);
+            let short = placement::roomless(&placement.offers).or(was_held.as_ref().filter(|held| held.short_bytes > 0)).filter(|short| short.machine != chosen.machine);
             if let Some(short) = short.filter(|_| was_held.is_some() || walker.placed.get(&unsent.key).is_none_or(|was| was.soonest.machine != chosen.machine)) {
                 let message = format!("{}: {}", unsent.asset, placement::elsewhere_line(short, &chosen.machine, "render"));
                 roomless.push(Told::Said { message, name: Some(unsent.asset.clone()) });
@@ -5055,12 +5064,12 @@ impl Walk {
         walker.foreseeing.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         walker.unquoted.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.waiting.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
-        let before = walker.no_room.len();
-        walker.no_room.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
-        rooms |= walker.no_room.len() != before;
+        let before = walker.unable.len();
+        walker.unable.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        rooms |= walker.unable.len() != before;
         drop(walker);
         roomless.into_iter().for_each(|told| self.say(told));
-        // The page shows a job waiting for room on its box, from the project's queue.
+        // The page shows a job waiting for a machine that can run it on its box, from the project's queue.
         if rooms {
             crate::events::project_settled(&self.folder().dir);
         }
@@ -5096,10 +5105,13 @@ impl Walk {
 
     /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).
     async fn chosen(&self, job: &str, on: &[On], hub: &str, package: &Package, renderer: &Renderer, asset: &format::Asset) -> Result<(On, Option<Offer>), Error> {
-        let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
+        let (placed, quotable) = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            (walker.placed.get(job).cloned(), walker.quotables.get(job).cloned())
+        };
         let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        let (chosen, offer, said) = pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await?;
+        let (chosen, offer, said) = pick(&self.host.api(), on, &offers, planned.as_ref(), quotable.as_ref(), hub, Some(package), &renderer.function, &asset.made).await?;
         if let Some(message) = said {
             self.say(Told::Warning { message, name: Some(asset.name.clone()) });
         }
@@ -5315,7 +5327,7 @@ impl Walk {
                     let id = *id;
                     *act = Act::Quoting { id };
                 } else if let Act::Send { id, key, .. } = act
-                    && (walker.waiting.contains(key.as_str()) || walker.no_room.contains_key(key.as_str()))
+                    && (walker.waiting.contains(key.as_str()) || walker.unable.contains_key(key.as_str()))
                 {
                     let id = *id;
                     *act = Act::Held { id };
@@ -6853,12 +6865,12 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
 /// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
-/// that can take it, else where a job naming none goes, said (`placement::takes`).
+/// that can take it, else where a job naming none goes, as that quotes `job`, said (`placement::takes`).
 #[allow(clippy::too_many_arguments)]
-async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>, Option<String>), Error> {
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, job: Option<&placement::Job>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>, Option<String>), Error> {
     let now = now_ms();
     let Some(soonest) = planned.filter(|offer| offer.fits).or_else(|| placement::soonest(offers, now)) else {
-        let (taken, said) = placement::takes(api, on, offers).await?;
+        let (taken, said) = placement::takes(api, on, offers, job).await?;
         return Ok((taken, None, said));
     };
     let chosen = well_placed(api, offers, soonest, hub, package, function, made, now);
@@ -6878,14 +6890,12 @@ fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, pac
     }
 }
 
-/// Why a render placed on `offer` (`well_placed`) wouldn't simply run there (cl-1123), so nothing goes there ahead of it: its machine
-/// has no GPU and the function builds a model on one (`gpu`), so it would run on its CPU, slowly or not at all (`runs::gpuless`). A
-/// GPU that runs it slowly is no reason: a render sent there runs on it, asking nothing (cl-1066). None: it runs there.
-fn not_simply(api: &Api, offer: &Offer, gpu: bool) -> Option<String> {
-    let On::Machine(name) = &offer.machine else { return None };
-    let here = if offer.machine.is_local() { "this computer" } else { name.as_str() };
-    (gpu && api.machines.frame(name).is_some_and(|frame| frame.gpus.is_empty()))
-        .then(|| format!("{here} has no GPU, so its render would run on its CPU: slowly, or not at all"))
+/// A run's models as it chose them (`--model`), as a box names them: what it fetches and is timed by (cl-1279: a row is of a model).
+fn chosen_models(chosen: &[v1::ModelChoice]) -> Map<String, Value> {
+    let slot = |choice: &v1::ModelChoice| choice.parameter.rsplit(".models.").next().unwrap_or(&choice.parameter).to_owned();
+    let written = |choice: &v1::ModelChoice| if choice.release.is_empty() { choice.model.clone() } else { format!("{}@{}", choice.model, choice.release) };
+    let models: Map<String, Value> = chosen.iter().filter(|choice| !choice.model.is_empty()).map(|choice| (slot(choice), serde_json::json!({ "ref": written(choice) }))).collect();
+    Map::from_iter([("models".to_owned(), Value::Object(models))])
 }
 
 /// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.
@@ -6920,7 +6930,7 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
             let read = Host::new(api).read_published(&hub, &format!("{}@{}", release.package, release.release), &first).await.ok();
             // What its request waits for, by its function's needs rules on its payload (cl-1103).
             let models = match &read {
-                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new(), Some(&payload)).await,
+                Some(read) => fit::checkpoints(api, &hub, read, function, &chosen_models(&row.spec.models), Some(&payload)).await,
                 None => vec![],
             };
             let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
@@ -6949,6 +6959,8 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
     let now = now_ms();
     match placement::soonest(&offers, now) {
         Some(soonest) => Ok(well_placed(api, &offers, soonest, &hub, read.as_ref(), function, &Map::new(), now)),
+        // None of its machines can run it (cl-1175, cl-1279): why, with the rental.
+        None if !offers.is_empty() && offers.iter().all(Offer::unable) => Err(Unplaced::Waits(placement::unable(&offers).map(|held| placement::unable_line(held, "run")).unwrap_or_default())),
         None => {
             // Every machine that answered refuses the request itself (`origin: request`): the same answer for good, so it fails with it.
             let request: Vec<&v1::Reason> = offers.iter().filter_map(|offer| offer.refusal.as_ref().filter(|reason| reason.origin == "request")).collect();
@@ -6968,14 +6980,14 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
 /// copies of it as if sent at once, each quoted what its needs rules say `request` (its bound payload) needs (cl-1103). Also each copy's
 /// offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, request: Option<&Value>, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, request: Option<&Value>, chosen: &[v1::ModelChoice], size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     // Its models, for placement, read as a quote reads them: nothing started, moved or updated on the first of `set` (cl-1115), which
     // may not be where it goes; what its needs rules say `request` needs (cl-1103).
     let first = set.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
     let read = host.read_published(hub, &format!("{package}@{release}"), &first).await.ok();
     let models = match &read {
-        Some(read) => fit::checkpoints(api, hub, read, function, &Map::new(), request).await,
+        Some(read) => fit::checkpoints(api, hub, read, function, &chosen_models(chosen), request).await,
         None => vec![],
     };
     let named = format!("{package}/{function}@{release}");
@@ -6983,7 +6995,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
-    let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
+    let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, jobs.first(), hub, read.as_ref(), function, &Map::new()).await;
     (chosen.map(|(chosen, _, fell_back)| (chosen, fell_back)), offers, said)
 }
 

@@ -54,6 +54,9 @@ static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<Lane>)>>> = LazyLo
 /// A checkpoint as a Hub card lists it in one lane.
 #[derive(Clone, Debug)]
 struct Lane {
+    /// Its lane's name where it is the one asked or pinned (cl-1279: what its function's benchmark rows are read at); empty for the
+    /// smallest, taken for its size alone.
+    name: String,
     /// `sha256:<hex>` of its tree.
     checkpoint: String,
     /// Its whole closure.
@@ -212,7 +215,7 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     let placed = placed(api, hub, package, release, function).await?;
     let here = run_ms as f64;
     let references = crate::placement::references_for(api, [job], vec![]);
-    let (rent, away) = recommended(&references, &job.function, &job.size, &placed.offers, (!cpu).then_some(here))?;
+    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::runs_of(&job.models), &placed.offers, (!cpu).then_some(here))?;
     let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
@@ -284,7 +287,7 @@ fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Plac
         return ran.min_by(|a, b| a.1.total_cmp(&b.1));
     };
     let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
-    let (rent, ms) = recommended(&references, target, &size_of(made), &placed.offers, took_s.map(|s| s * 1e3))?;
+    let (rent, ms) = recommended(&references, target, &size_of(made), Default::default(), &placed.offers, took_s.map(|s| s * 1e3))?;
     Some((rent.card, ms / 1e3))
 }
 
@@ -544,10 +547,10 @@ fn rent_for(machine: &::api::hub::types::RentalPlacementMachine) -> RentFor {
 /// source's) measured (`References::measured`, never a speed-scaled guess) that run it in under a third of `here_ms` and a minute sooner
 /// (with no GPU here, `None`: any), the cheapest a render (its price times its time there); of those as cheap, the faster. And its time
 /// there, ms.
-fn recommended(references: &References, function: &str, size: &JobSize, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
+fn recommended(references: &References, function: &str, size: &JobSize, runs: api::estimate::Runs, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
     let cost = |(offer, ms): &(&RentFor, f64)| offer.usd_micros_per_hour as f64 * ms;
     (offers.iter())
-        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size)?.0)))
+        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size, runs)?.0)))
         .filter(|(_, ms)| here_ms.is_none_or(|here| here > SLOWER * ms && here - ms > LONGER_S * 1e3))
         .min_by(|a, b| cost(a).total_cmp(&cost(b)).then(a.1.total_cmp(&b.1)))
         .map(|(offer, ms)| (offer.clone(), ms))
@@ -588,22 +591,25 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     let reader = api.machines.hubs.reader(hub).ok()?;
     let card = tokio::time::timeout(HUB_LATE, reader.get_model(&model_id.org, &model_id.name)).await.ok()?.ok()?;
     let found = match (&checkpoint, &release) {
-        (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
-            .find(|held| &held.checkpoint == checkpoint)
-            .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
-            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (held.id.clone(), held.bytes, held.header.clone()))),
+        (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.iter()))
+            .find(|(_, held)| &held.checkpoint == checkpoint)
+            .map(|(name, held)| (name.clone(), held.checkpoint.clone(), held.bytes, held.header.clone()))
+            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (String::new(), held.id.clone(), held.bytes, held.header.clone()))),
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
                 None => api::release::newest_listed(&card.releases, |held| &held.version),
             };
             release
-                .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))
-                .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
+                .and_then(|release| {
+                    let asked = lane.and_then(|lane| Some((lane.to_owned(), release.lanes.get(lane)?)));
+                    asked.or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes).map(|held| (String::new(), held)))
+                })
+                .map(|(name, held)| (name, held.checkpoint.clone(), held.bytes, held.header.clone()))
         }
     };
-    let found = (found.filter(|(_, bytes, _)| *bytes > 0))
-        .map(|(checkpoint, bytes, header)| Lane { checkpoint, bytes: bytes as u64, header: Some(header).filter(|header| !header.sha256.is_empty()) });
+    let found = (found.filter(|(_, _, bytes, _)| *bytes > 0))
+        .map(|(name, checkpoint, bytes, header)| Lane { name, checkpoint, bytes: bytes as u64, header: Some(header).filter(|header| !header.sha256.is_empty()) });
     SIZED.lock().expect("sized lock").insert(key, (Instant::now(), found.clone()));
     found
 }
@@ -643,25 +649,26 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
         .collect();
     // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components: the cards read together, as are the
     // headers below (cl-1123: read one after another, a package's first guess in a fresh project took up to 2.75 s, 44199938129).
-    let mut asked: Vec<(&str, &Slot, &String, Option<String>)> = vec![];
+    let mut asked: Vec<(&str, &Slot, &String, Option<String>, bool)> = vec![];
     for path in wanted.needed.iter().chain(wanted.either.iter().flatten()) {
         let Some(slot) = slots.get(path.as_str()).filter(|_| !asked.iter().any(|(held, ..)| *held == path.as_str())) else { continue };
         let param = Weights::param(slot);
         let Some(written) = on_box.get(param).or(slot.default.as_ref()) else { continue };
+        let picked = slot.default.as_deref().map(repository) != Some(repository(written));
         let lane = (placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)))
             .map(|(_, lane, _)| lane.clone())
             .or_else(|| slot.lane.clone());
-        asked.push((path.as_str(), *slot, written, lane));
+        asked.push((path.as_str(), *slot, written, lane, picked));
     }
-    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane)| checkpoint(api, hub, written, lane.as_deref())))).await;
-    let held: HashMap<&str, (Lane, String, Vec<String>)> = (asked.into_iter().zip(cards))
-        .filter_map(|((path, slot, written, _), card)| Some((path, (card?, written.clone(), slot.fetched_components()))))
+    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane, _)| checkpoint(api, hub, written, lane.as_deref())))).await;
+    let held: HashMap<&str, (Lane, String, Vec<String>, bool)> = (asked.into_iter().zip(cards))
+        .filter_map(|((path, slot, written, _, picked), card)| Some((path, (card?, written.clone(), slot.fetched_components(), picked))))
         .collect();
-    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components)| (lane.checkpoint.clone(), components.clone())));
-    let lanes: Vec<(&Lane, &String, Vec<String>)> = (resolved.needed.into_iter())
-        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _)| (lane, written, components)))
+    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components, _)| (lane.checkpoint.clone(), components.clone())));
+    let lanes: Vec<(&Lane, &String, Vec<String>, bool)> = (resolved.needed.into_iter())
+        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _, picked)| (lane, written, components, *picked)))
         .collect();
-    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components)| async move {
+    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components, _)| async move {
         match &lane.header {
             Some(header) => crate::hub::headers::wanted(api, hub, header, components).await,
             None => None,
@@ -670,13 +677,13 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
     .await;
     let mut counted: HashSet<String> = HashSet::new();
     let mut models = vec![];
-    for ((lane, written, components), chunks) in lanes.into_iter().zip(headers) {
+    for ((lane, written, components, picked), chunks) in lanes.into_iter().zip(headers) {
         let checkpoint = lane.checkpoint.clone();
         let bytes = match chunks {
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => lane.bytes,
         };
-        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components });
+        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components, lane: lane.name.clone(), picked });
     }
     models
 }

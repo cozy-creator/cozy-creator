@@ -591,9 +591,14 @@ pub struct PackageRelease {
     /// What its wheel requires (`Requires-Dist`): the Runtime it runs on among them.
     #[serde(default)]
     pub requirements: Vec<String>,
-    /// Its publisher's benchmarks (cl-1024); absent from a Hub before them.
+    /// Its publisher's benchmarks (cl-1024) that a cozy before cl-1279 reads right: unbudgeted GPU rows, one lane a card and request;
+    /// absent from a Hub before them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmarks: Option<Vec<PackageBenchmark>>,
+    /// Every one of them, each field whole: budgeted, every lane, CPU rows, memory (th-421). Absent from a Hub before them, where
+    /// `benchmarks` is all there is. The Hub derives both from the one list a publication declares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmark_rows: Option<Vec<PackageBenchmark>>,
 }
 
 /// One of a release's benchmarks (cl-1024), as the Hub serves it and a publication declares it.

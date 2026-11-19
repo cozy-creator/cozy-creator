@@ -14,6 +14,10 @@ use serde_json::Value;
 
 use crate::hub::Client;
 
+/// What a card kept now holds that one kept before may not (`Card::current`): 2, every field of its benchmarks (cl-1279: a card kept by
+/// 0.26 lost `lane`, `budget_bytes`, the CPU and memory fields as its cozy read them). Raised whenever a kept card would lose more.
+const KEPT: u64 = 2;
+
 /// A release's card: its release and package interface, read from the Hub's answer.
 #[derive(Debug)]
 pub struct Card {
@@ -28,6 +32,11 @@ impl Card {
     /// release's wheel ("" for a release committed before the Hub kept it).
     pub fn summary(&self) -> &str {
         self.document["summary"].as_str().unwrap_or_default()
+    }
+
+    /// It was kept by a cozy that keeps all this one reads of it (`KEPT`).
+    fn current(&self) -> bool {
+        self.document["kept"].as_u64().is_some_and(|kept| kept >= KEPT)
     }
 
     /// The release's digest (`types::release_digest`), as its Hub served it: none from a Hub before it, or a card kept before.
@@ -45,10 +54,15 @@ impl Card {
         Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
     }
 
-    /// Its publisher's benchmarks (cl-1024). None for a release published before the Hub kept them: a card read from a Hub without
-    /// them is of such a release, so it is never read again for them.
+    /// Its publisher's benchmarks (cl-1024): every row where its Hub serves them all (`benchmark_rows`, th-421), else those a cozy
+    /// before them reads. None for a release published before the Hub kept them: a card read from a Hub without them is of such a
+    /// release, so it is never read again for them.
     pub fn benchmarks(&self) -> Vec<crate::estimate::Benchmark> {
-        serde_json::from_value(self.document["benchmarks"].clone()).unwrap_or_default()
+        let rows = match self.document.get("benchmark_rows") {
+            Some(every) if every.is_array() => every,
+            _ => &self.document["benchmarks"],
+        };
+        serde_json::from_value(rows.clone()).unwrap_or_default()
     }
 
 }
@@ -125,8 +139,8 @@ pub async fn card(
     release: &str,
 ) -> Result<Card, Error> {
     match kept(root, hub, package, release) {
-        Some(card) if card.digest().is_some() => Ok(card),
-        // Kept before its Hub served digests (xs-196): read once more for it, else as it stands.
+        Some(card) if card.digest().is_some() && card.current() => Ok(card),
+        // Kept before its Hub served digests (xs-196), or by a cozy that kept less of it: read once more, else as it stands.
         Some(card) => Ok(from_hub(client, root, hub, package, release).await.ok().filter(|read| read.digest().is_some()).unwrap_or(card)),
         None => from_hub(client, root, hub, package, release).await,
     }
@@ -141,7 +155,7 @@ pub async fn card_requiring(
     release: &str,
 ) -> Result<Card, Error> {
     match kept(root, hub, package, release) {
-        Some(card) if card.requirements().is_some() && card.digest().is_some() => Ok(card),
+        Some(card) if card.requirements().is_some() && card.digest().is_some() && card.current() => Ok(card),
         Some(card) => Ok(from_hub(client, root, hub, package, release).await.unwrap_or(card)),
         None => from_hub(client, root, hub, package, release).await,
     }
@@ -233,9 +247,11 @@ pub fn kept_releases(root: &Path, hub: &str, package: &str) -> Vec<String> {
     cards.filter_map(|card| Some(Path::new(&card.file_name()).file_stem()?.to_str()?.to_owned())).collect()
 }
 
-/// Keeps a release card as the Hub answered it.
+/// Keeps a release card as the Hub answered it, marked as kept by this cozy (`KEPT`).
 pub(crate) fn keep(root: &Path, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
-    let card = read(document)?;
+    let mut document = document.clone();
+    document["kept"] = KEPT.into();
+    let card = read(&document)?;
     let dir = dir(root, hub, package);
     let kept = durable::private_dir(&dir).and_then(|()| {
         durable::replace(
