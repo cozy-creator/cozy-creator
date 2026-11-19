@@ -207,7 +207,7 @@ class Item(TypedDict):
     """A weights output's local commit, as the executor names it to TensorD (`checkpoint_item`)."""
 
     output: str
-    repo_id: str
+    model_id: str
     revision: str
 
 
@@ -258,7 +258,7 @@ class Reply(TypedDict, total=False):
     digest: str
     size_bytes: int
     output: str
-    repo_id: str
+    model_id: str
     revision: str
     ok: bool
     code: str
@@ -364,7 +364,7 @@ class Executor:
             elif got.get("event") == "request" and got.get("kind") == "checkpoint_item":
                 # A weights output committed in the local store: TensorD records it (and uploads it only for a remote
                 # destination, which no cell names).
-                self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
+                self.items.append({"output": got.get("output", ""), "model_id": got.get("model_id", ""),
                                    "revision": got.get("revision", "")})
                 self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
             elif got.get("event") == "request" and got.get("kind") == "model_need":

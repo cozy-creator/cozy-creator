@@ -363,7 +363,7 @@ with tensorfs.Writer("./model.cozytensors") as writer:
 checkpoint = writer.commit()
 tensorfs.materialize(checkpoint, local_dir="./portable", format="cozytensors")
 
-tensorfs.upload_folder(repo_id="local/example", folder_path="./portable", lane="f32")
+tensorfs.upload_folder(model_id="local/example", folder_path="./portable", lane="f32")
 tensorfs.upload_folder(
     model_id="acme/example", folder_path="./portable", lane="f32", endpoint=Path("./origin").resolve().as_uri(),
 )

@@ -131,11 +131,6 @@ def render(source: str) -> str:
     ]
     for name, _, fields in structs:
         inputs = [(wire, rust, optional) for _, wire, rust, optional in fields]
-        if name == "CheckpointItem":
-            # Finite TensorFS 0.24 bridge: the constructor validates exactly one identity
-            # spelling; the getter is canonical and the executor frame remains unchanged.
-            inputs = [(wire, rust, optional) for wire, rust, optional in inputs if wire != "repo_id"]
-            inputs += [("model_id", "String", True), ("repo_id", "String", True)]
         given = ", ".join(
             f"{wire!r}: " + (f"NotRequired[{types.py(rust, given=True)}]" if optional else types.py(rust, given=True))
             for wire, rust, optional in inputs
