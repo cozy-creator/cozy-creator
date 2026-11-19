@@ -2,10 +2,11 @@
 # pod with its datacenter's NFS drive is quoted for a model's download, against what it took, by tier. One rental asked of RunPod
 # (its Hub then ranks a datacenter with a drive first), from a dev home, every step through this runner's cozy; the pod runs the
 # session's TensorD. A box of `tool`, whose model is `model`, rendered on the pod alone:
-#   1. cold:  on the fresh pod, no page showing the project. What came from the Hub is written to the drive behind the run, and the
-#             session waits for that.
-#   2. drive: the pod's service restarted and `model` uninstalled, so its store holds none of it and its drive all of it; rendered
-#             again on another seed.
+#   1. cold:  on the fresh pod, no page showing the project; then `measure` installed. What came from the Hub is written to the drive
+#             behind them, and the session waits for that.
+#   2. drive: the pod's service restarted and `model` and `measure` uninstalled, so its store holds neither and its drive both.
+#             `measure` is installed again, off the drive: a restart forgets the drive's rate, and 1 GiB read measures it again.
+#             Then rendered on another seed, so its quote times the drive's bytes at the rate measured.
 #   3. ahead: uninstalled again, then a page shows the project: the box's guess is made ready on the pod, its row's bytes sampled;
 #             then rendered.
 # Each render says its quote (`placed`), what its run waited for (`measurements.weights`), what the pod says of itself
@@ -13,12 +14,13 @@
 # numbers: it fails when the pod mounted no drive, or a step does.
 # The $0 pre-flight also says what each of `candidates` costs on RunPod. params:
 #   tool, fields   the box (default sdxl/generate, a prompt); model, its repository (default stabilityai/sdxl)
+#   measure        a model of at least 1 GiB the box doesn't read (default xinsir/controlnet-union-sdxl-promax, SDXL's ControlNet)
 #   candidates     SKUs priced in the pre-flight, space-separated
 #   datacenters    those the quote may name, space-separated, or nothing is ordered (default: the six with a standard drive on 11-09,
 #                  xs-041; empty: any)
 #   need_s         the seconds the cap must buy (default 1800)
 . "$(dirname "$0")/lib.sh"
-TOOL=$(param tool sdxl/generate) MODEL=$(param model stabilityai/sdxl)
+TOOL=$(param tool sdxl/generate) MODEL=$(param model stabilityai/sdxl) MEASURE=$(param measure xinsir/controlnet-union-sdxl-promax)
 FIELDS=$(param fields '{"prompt": "a brass compass on a walnut desk", "seed": 1282}')
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run id>"
@@ -123,16 +125,29 @@ absent() {
   run_page set draw --fields "{\"seed\": $2}" > "$OUT/$1-seed.txt" 2>&1 || fail "$1: seed: $(tail -c 300 "$OUT/$1-seed.txt")"
 }
 
-say "step 1: cold, no page showing the project"
+say "step 1: cold, no page showing the project; then $MEASURE installed"
 render cold
-# What the Hub sent is written to the drive behind the run, two objects at a time (about 65 MB/s, xs-041).
-hub=$(awk '/^cold: tier Origin:/ {print $6}' "$R" | tail -1)
-wait_s=$(( ${hub:-0} / 40000000 + 30 )); [ "$wait_s" -le 600 ] || wait_s=600
-say "the Hub sent ${hub:-0} bytes: ${wait_s} s for them to reach the drive"
+from=$(date +%s)
+step cold-measure model install "$MEASURE" --on "$NAME" || fail "cold: $MEASURE not installed: $(tail -c 300 "$OUT/cold-measure.txt")"
+landed cold-measure "$from"
+# What the Hub sent is written to the drive behind them, two objects at a time (about 65 MB/s, xs-041).
+hub=$(awk '/^cold(-measure)?: tier Origin:/ {n += $6} END {print n + 0}' "$R")
+wait_s=$(( hub / 40000000 + 30 )); [ "$wait_s" -le 600 ] || wait_s=600
+say "the Hub sent $hub bytes: ${wait_s} s for them to reach the drive"
 sleep "$wait_s"
 
-say "step 2: drive, the model on the pod's drive and none of it in its store"
+say "step 2: drive, the model and $MEASURE on the pod's drive and neither in its store"
 absent drive 1283
+step drive-unmeasure model uninstall "$MEASURE" --on "$NAME" || fail "drive: uninstall $MEASURE"
+from=$(date +%s)
+step drive-measure model install "$MEASURE" --on "$NAME" || fail "drive: $MEASURE not installed again: $(tail -c 300 "$OUT/drive-measure.txt")"
+landed drive-measure "$from"
+# What the drive holds of the model, as the pod says it, before draw is quoted: the pod looks behind its Status.
+for _ in $(seq 30); do
+  pod "$OUT/drive-look.json" > /dev/null
+  jq -e --arg m "$MODEL" '[.status.times[]?.reads[]? | select(.model == $m) | .drive // 0] | add // 0 | . > 0' "$OUT/drive-look.json" > /dev/null && break
+  sleep 2
+done
 render drive
 
 say "step 3: ahead, a page shows the project"
