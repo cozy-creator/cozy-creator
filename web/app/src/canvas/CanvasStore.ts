@@ -45,6 +45,7 @@ import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, readsBox, readsFrom, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { endTrimmed, mergeValue, same, spliceOf, wordsChanged } from "./words"
+import { chose } from "./triggers"
 import { plainProject } from "../app/view"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -1014,6 +1015,9 @@ export class CanvasStore {
         if (view.over && over?.length !== view.over.length) change.over = over?.length ? over : undefined
         let landing: VersionPrefix | undefined
         if (view.asset !== asset || view.landed) {
+          // What its tool's rules chose moved by a write of this page's (cl-1281): the triggers go with it.
+          const mine = Boolean(view.writing) || view.pending === NOT_YET || (asset.etag != null && (asset.etag === view.known || Boolean(this.own.get(asset.name)?.has(asset.etag))))
+          chose(this, asset.name, view.asset?.chosen, asset.chosen, mine)
           Object.assign(change, { asset: asked(asset, over), landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
@@ -1981,7 +1985,8 @@ export class CanvasStore {
     const starting = { ...startingFields(tool), node_kind: tool.makes }
     // Its mention as Calcifer writes it (`reads`), sent too: it writes none twice.
     const fields = { ...starting, ...startsFrom(tool, asset.kind, starting, `<${from}>`, true) }
-    const row: Asset = { name: "", standing: "missing", kind: tool.makes, noun: tool.makes === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields }
+    // Made here, it holds none of what its tool's rules choose yet: they're brought in (cl-1281).
+    const row: Asset = { name: "", standing: "missing", kind: tool.makes, noun: tool.makes === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields, chosen: [] }
     const at = { x: Math.round(pose.x + pose.w + GAP_BESIDE), y: Math.round(pose.y) }
     const once = `asset-${crypto.randomUUID()}`
     const name = this.place(asName(tool.name || tool.label), { asset: row }, at, (clear, write, pushes) =>

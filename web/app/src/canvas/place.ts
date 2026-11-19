@@ -110,7 +110,8 @@ export class Placer {
     const key = `asset-${crypto.randomUUID()}`
     const text = kind === "text"
     const body = { tool: tool ?? "", name: wanted, fields, kind }
-    const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline }
+    // Made here, it holds none of what its tool's rules choose yet: they're brought in (cl-1281).
+    const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline, chosen: [] }
     return this.store.place(wanted, { asset: row }, at, async (clear, write, pushes) => this.client.newAsset(await this.project(), key, { ...body, at: clear, moves: pushes.moves, placed: pushes.placed }, write), (error) => say(failed, error), undefined, edit)
   }
 

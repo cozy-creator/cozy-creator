@@ -274,6 +274,11 @@ missing?: Array<string>,
  */
 unused?: Array<Unused>,
 /**
+ * The models its tool's rules chose for it (cl-1281): the page draws a LoRA's triggers among them as it draws those of a LoRA put
+ * on it. None until its package is known.
+ */
+chosen?: Array<Chosen> | null,
+/**
  * An Edit's: its clips as they read now.
  */
 timeline?: TimelineNow | null,
@@ -544,6 +549,19 @@ complete?: boolean | null, };
  * A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
  */
 export type CheckpointRef = { repo_id: string, revision: string, lane: string, };
+
+/**
+ * A model a box's tool chose for it by its own rule (cl-1281): a slot of its function whose `needs` rule holds for the box's request.
+ */
+export type Chosen = {
+/**
+ * Its key in the box's `models`.
+ */
+slot: string,
+/**
+ * What it holds: the box's `models.<slot>.ref`, else the slot's default.
+ */
+model: string, };
 
 /**
  * A run another client sent a machine, as the machine says it (cl-1193): what it runs, for which computer, and how far it is. Nothing of

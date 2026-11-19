@@ -2210,6 +2210,8 @@ struct HeardPackage {
     callable: Option<api::interface::Callable>,
     /// Local code, read only for `callable`: its tags and function are said once a render reads it.
     local: bool,
+    /// Its interface, whose needs rules choose a box's models (`chosen_of`).
+    package: Arc<Package>,
 }
 
 /// Each package a read's assets name that's been heard of, by what they call it: published, or local code as it was last described.
@@ -2223,7 +2225,7 @@ fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
             let callable = package.named.as_deref().and_then(|function| package.callable(function));
             // A checkout's first-party package is said as its release would be (xs-195).
             let local = is_local(&with) && crate::checkout::named(&with).is_none();
-            let heard = HeardPackage { name: package.name.clone(), title: package.title(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
+            let heard = HeardPackage { name: package.name.clone(), title: package.title(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local, package };
             Some((with, heard))
         })
         .collect()
@@ -2240,6 +2242,33 @@ fn unused_of(reading: &Reading, i: usize) -> Vec<Unused> {
     let reserved = tags_now(doc, known, i).unwrap_or(heard.tags.as_slice());
     let call = binder::Call { name: &doc.assets[i].name, tool: &target, package: &heard.name, title: &heard.title, callable, fields: &fields, reserved, doc, own: Some(i), lock, stand, gone: &BTreeSet::new(), pickup: None, inline: &[] };
     binder::unused(&call)
+}
+
+/// The models asset `i`'s tool chose for it by its own rules (cl-1281): each slot of its function whose needs rule holds for the request a
+/// render of it would send (`binder::foreseen`, as a guess reads it), by what the box holds there, else the slot's default. None until its
+/// package is heard of.
+fn chosen_of(reading: &Reading, i: usize) -> Option<Vec<api::calcifer::project::Chosen>> {
+    let Reading { doc, lock, stand, known, .. } = *reading;
+    let target = doc.target(i);
+    let heard = known.get(&target).filter(|_| doc.makes(i) && doc.tool(i).is_none())?;
+    let callable = heard.callable.as_ref()?;
+    let entry = api::interface::entrypoint(heard.package.document(), &callable.name)?;
+    let slots = api::interface::models(entry);
+    let ruled = |slot: &Value| slot["needs"].is_string();
+    if !slots.iter().any(ruled) {
+        return Some(vec![]);
+    }
+    let fields = doc.inputs_of(i);
+    let reserved = tags_now(doc, known, i).unwrap_or(heard.tags.as_slice());
+    let call = binder::Call { name: &doc.assets[i].name, tool: &target, package: &heard.name, title: &heard.title, callable, fields: &fields, reserved, doc, own: Some(i), lock, stand, gone: &BTreeSet::new(), pickup: None, inline: &[] };
+    let answers = ::needs::answers(entry, &Value::Object(binder::foreseen(&call)));
+    let held = doc.assets[i].made.get("models").unwrap_or(&Value::Null);
+    let chosen = slots.iter().filter(|slot| ruled(slot)).filter_map(|slot| {
+        let slot_name = api::interface::slot_path(slot)?.rsplit_once(".models.")?.1;
+        let model = held[slot_name]["ref"].as_str().or(slot["default"].as_str()).filter(|_| answers.needed.contains(slot_name))?;
+        Some(api::calcifer::project::Chosen { slot: slot_name.to_owned(), model: model.to_owned() })
+    });
+    Some(chosen.collect())
 }
 
 /// The tags of what makes asset `i`, this moment: none of what Calcifer makes itself. None: they aren't known yet, and its names held back.
@@ -2595,6 +2624,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         status,
         reads: doc.reads_of(i, &standing.reads),
         unused: unused_of(reading, i),
+        chosen: chosen_of(reading, i),
         fields: doc.flat_fields(i),
         etag: None,
         failure,
