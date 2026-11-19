@@ -15,7 +15,7 @@ from diffusers import AutoencoderKLFlux2, Flux3Transformer2DModel
 from transformers import Qwen3_5ForConditionalGeneration, Qwen3VLForConditionalGeneration
 from transformers.models.qwen3_5 import modeling_qwen3_5
 
-from cell import NARROW, Cell, Json, module, save, size
+from cell import NARROW, Cell, Check, Json, module, save, size
 from tiny import _shared
 
 DISTILLED, BASE = "black-forest-labs/flux-3-klein@0.1.0", "black-forest-labs/flux-3-klein-base@0.1.0"
@@ -72,6 +72,18 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 
 _FOX = _shared.picture("fox", 200, 136)
 _SNOW = _shared.picture("snow", 128, 128)
+#: Past BFL's upsampler's 200:1 (`pup.py` MAX_ASPECT_RATIO).
+_NARROW = _shared.picture("narrow", 1616, 8)
+
+
+def _as_typed(text: str) -> Check:
+    """The result's prompt is `text`, as Klein reads a prompt directly: the upsampler never wrote it."""
+
+    def check(result: Json, files: list[Path]) -> str | None:
+        prompt = result.get("prompt") if isinstance(result, dict) else None
+        return None if prompt == text else f"the prompt went as {prompt!r}, not as typed ({text!r})"
+
+    return check
 #: 128², 2 steps, the prompt as written.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 128 * 128 / (1 << 20), "steps": 2, "prompt_upsampling": False}
 _SIGN: list[Json] = [{"box": [0.55, 0.6, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]
@@ -89,6 +101,10 @@ CELLS: list[Cell] = [
     {"entry": "generate_turbo", "name": "reference", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"),
                                                                  "seed": 7, "steps": 2, "prompt_upsampling": False},
      "files": {"prompt.references.0.file": _FOX}, "check": size(200, 136)},
+    # A reference past 200:1 skips the upsampler, as BFL's `generate` does (xs-222).
+    {"entry": "generate_turbo", "name": "past-ratio-upsampled",
+     "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL, "prompt_upsampling": True},
+     "files": {"prompt.references.0.file": _NARROW}, "check": _as_typed("the fox in <ref_image_0> wears a hat")},
     {"entry": "generate_turbo", "name": "placed-upsampled",
      "payload": {"prompt": _prompt("<fox> on <snow>", "fox", "snow"), **_SMALL, "prompt_upsampling": True,
                  "boxes": {"fox": [0.1, 0.2, 0.5, 0.8]}},

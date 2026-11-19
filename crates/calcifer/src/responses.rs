@@ -6,7 +6,7 @@
 //! cancels its run. It is one more route under Calcifer's one access rule: a program brings the CLI's bearer as its API key.
 //!
 //! `model` is the function as `cozy run` names it, `[org/]pkg/fn[@release]`, and `:<checkpoint>` after it sets its model slot
-//! (`qwen3/write`, `qwen3/caption:huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0`). `input` is a string or one user message of
+//! (`qwen3/write`, `qwen3/ask:huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0`). `input` is a string or one user message of
 //! `input_text`, `input_image` and `input_video` parts (Cozy's, shaped as `input_image`, with `video_url`); a picture or video comes as a
 //! `data:` URL or as `file_id`, a file Calcifer holds by its `sha256:<hex>`. No URL is fetched. A function with a prompt (`write`) reads
 //! them as its words with each file mentioned where it stands (`<image_1>`); one with `prompt`, `images` and `videos` (`ask`) reads the
