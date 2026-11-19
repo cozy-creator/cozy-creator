@@ -4,10 +4,10 @@
 // each is first drawn where and as it stays, its picture decoded, and nothing moves, resizes or swaps, for 5 s or after a reload, a JPEG
 // standing upright. Esc while a dropped file is being named leaves nothing. No hash shows on the page.
 const { createHash } = require('crypto');
-const { readdirSync } = require('fs');
+const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, MP4, photo, png, wav, canvasCard, canvasNames, canvasVisible, screenshotPixels } = require('./fixtures');
-const { dropFiles } = require('./hands');
+const { dropFiles, ffmpeg } = require('./hands');
 
 const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const plain = (sha256) => (sha256 ?? '').replace(/^sha256:/, '');
@@ -103,6 +103,46 @@ const watch = (page, names) => page.evaluate((names) => {
 }, names);
 
 test.use({ viewport: { width: 1920, height: 1200 } });
+
+test('media uses the display shape and playable sound timing', async ({ project, page }) => {
+  const video = join(project.path, 'probe-anamorphic.mp4');
+  const mp3 = join(project.path, 'probe-gapless.mp3');
+  const aiff = join(project.path, 'probe-source.aiff');
+  const source = 'sine=frequency=440:sample_rate=44100:duration=1.25';
+  ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=704x480:rate=24:duration=0.5',
+    '-vf', 'setsar=sar=853/704:max=10000', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', video);
+  ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', source, '-c:a', 'libmp3lame', '-q:a', '2', mp3);
+  ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', source, '-ac', '2', '-c:a', 'pcm_s24be', aiff);
+  await project.import(readFileSync(video), { name: 'anamorphic', at: { x: 360, y: 180, w: 300 } });
+  await project.import(readFileSync(mp3), { name: 'gapless' });
+  const sound = await project.import(readFileSync(aiff), { name: 'source_sound' });
+  await expect.poll(async () => (await project.asset('anamorphic'))?.display_aspect).toBeCloseTo(853 / 480, 6);
+  await expect.poll(async () => (await project.asset('gapless'))?.duration_ms).toBe(1250);
+  await expect.poll(async () => {
+    const body = (await canvasCard(page, 'anamorphic'))?.rendered?.body;
+    return body && body.width / body.height;
+  }).toBeCloseTo(853 / 480, 2);
+  const path = project.at(`/thumbs/${encodeURIComponent(sound.sha256)}?preview=true`);
+  await expect.poll(async () => (await project.api.raw('HEAD', path)).status).toBe(200);
+  const read = await page.evaluate(async (path) => {
+    const response = await fetch(path);
+    const bytes = await response.blob();
+    const url = URL.createObjectURL(bytes);
+    try {
+      const audio = new Audio();
+      await new Promise((done, failed) => {
+        audio.onloadedmetadata = done;
+        audio.onerror = () => failed(new Error('The FLAC playback copy could not be decoded'));
+        audio.src = url;
+      });
+      return { mime: bytes.type, duration: audio.duration };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }, path);
+  expect(read.mime).toBe('audio/flac');
+  expect(read.duration).toBeCloseTo(1.25, 3);
+});
 
 test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
   // The .txt's import, refused on purpose.

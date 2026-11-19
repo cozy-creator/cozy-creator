@@ -320,10 +320,13 @@ export function viewable(view: ElementView | undefined): boolean {
 /** Played on click, or at once with `auto`: a file Calcifer serves, by its API path, played from this page's memory (cl-1215), or one straight from a machine. */
 /** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own, and a file opens at once to show
  *  its own frame at its own size, not the poster's small one stretched over it (cl-1080; Paul, 11-16). */
-export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
+export function Player({ field, path, machine, sound, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; sound?: { project: string; sha256: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
+  const [converted, setConverted] = useState(false)
+  const soundProject = sound?.project
+  const soundSha = sound?.sha256
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(from ?? null)
@@ -404,7 +407,27 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     if (!el) return stop()
     // Every video in every tab plays at once: a file's bytes are in this page's memory, holding no connection to Calcifer (cl-1215; Paul,
     // 11-18: "why can't I have all 3 videos playing at the same time?").
-    void (path !== undefined ? client.transport.play(path, el) : fromMachine(client, machine!, el, waiting.signal, failed))
+    const open = async () => {
+      if (path === undefined) return fromMachine(client, machine!, el, waiting.signal, failed)
+      if (!converted || !soundProject || !soundSha) return client.transport.play(path, el)
+      const alternate = client.preview(soundProject, soundSha)
+      while (await thumbPending(client.transport, alternate, waiting.signal)) {
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            stopWaiting()
+            waiting.signal.removeEventListener("abort", finish)
+            resolve()
+          }
+          const stopWaiting = whenThumb(soundProject, soundSha, 2000, finish)
+          if (waiting.signal.aborted) finish()
+          else waiting.signal.addEventListener("abort", finish, { once: true })
+        })
+        waiting.signal.throwIfAborted()
+      }
+      waiting.signal.throwIfAborted()
+      return client.transport.play(alternate, el)
+    }
+    void open()
       .then((opened) => {
         if (waiting.signal.aborted) return opened.stop()
         playback = opened
@@ -418,7 +441,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
       })
-  }, [state, client, path, machine?.project, machine?.run, machine?.output])
+  }, [state, client, path, machine?.project, machine?.run, machine?.output, converted, soundProject, soundSha])
 
   if (state === "unplayable") return <span className="media-note over">{why}</span>
   if (state === "idle") {
@@ -450,8 +473,14 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         onEnded={field === "video" ? undefined : () => stopRef.current()}
         onError={() => {
           const el = element.current
-          // Bytes that didn't come are Calcifer's to fix by coming back. Bytes this browser can't decode, it can't.
-          if (path !== undefined && el?.getAttribute("src") && el.error?.code !== MediaError.MEDIA_ERR_NETWORK && stream.health.get().state === "live") setState("unplayable")
+          // A browser without this file's audio codec can use a playable project-local copy.
+          if (path !== undefined && el?.getAttribute("src") && el.error?.code !== MediaError.MEDIA_ERR_NETWORK && stream.health.get().state === "live") {
+            if (soundProject && soundSha && !converted && (el.error?.code === MediaError.MEDIA_ERR_DECODE || el.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED)) {
+              stopRef.current()
+              setConverted(true)
+              setState("waiting")
+            } else setState("unplayable")
+          }
         }}
       />
       {field === "audio" && <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
@@ -890,6 +919,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
           field={field}
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
           machine={"run" in source ? { ...source, project: store.projectId } : undefined}
+          sound={field === "audio" && here ? { project: store.projectId, sha256: here.sha256 } : undefined}
           seek={view.seek}
           onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
           auto={playsOn !== undefined}

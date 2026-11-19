@@ -641,7 +641,7 @@ export class Client {
     return `${project(id)}/thumbs/${fileOf(sha256)}?${asked}`
   }
 
-  /** A video's preview: a few seconds of it, small and silent. */
+  /** A short, silent video preview or a playable copy of an audio file. */
   preview(id: string, sha256: string): string {
     return `${project(id)}/thumbs/${fileOf(sha256)}?preview=true`
   }

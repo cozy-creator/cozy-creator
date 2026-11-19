@@ -736,6 +736,7 @@ fn spans(start: u64, end: u64, frames: u64, keys: &[u64]) -> Vec<(u64, u64, bool
 struct Probe {
     video: String,
     size: (u64, u64),
+    display_aspect: Option<f64>,
     pix_fmt: String,
     rate: f64,
     rate_text: String,
@@ -767,13 +768,13 @@ fn bit_rate(bit_rate: Option<u64>) -> Vec<String> {
 /// What is measured of a file of `field`, when ffprobe reads it: a video's shape, a picture's size and its share fully transparent, a sound's length.
 pub(crate) fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Option<folder::File> {
     if field == "audio" {
-        let duration_ms = (seconds_of(ffprobe, path)? * 1000.0).round() as u64;
-        return (duration_ms > 0).then(|| folder::File { duration_ms, ..Default::default() });
+        let duration_ms = (audio_seconds(ffprobe, path)? * 1000.0).round() as u64;
+        return (duration_ms > 0).then(|| folder::File { duration_ms, audio_measured: true, ..Default::default() });
     }
     let probe = probe(ffprobe, path, false).ok()?;
     let (width, height) = probe.size;
     Some(match field {
-        "video" => folder::File { width, height, fps: probe.rate, frames: probe.frames, ..Default::default() },
+        "video" => folder::File { width, height, display_aspect: probe.display_aspect, fps: probe.rate, frames: probe.frames, ..Default::default() },
         // As it's drawn: a camera's JPEG turned a quarter by its EXIF is as tall as it's wide (cl-918).
         _ => {
             let (width, height) = if orientation(path) >= 5 { (height, width) } else { (width, height) };
@@ -910,6 +911,69 @@ pub(crate) fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
     String::from_utf8_lossy(&done.stdout).trim().parse().ok()
 }
 
+fn audio_seconds(ffprobe: &Path, path: &Path) -> Option<f64> {
+    let result = Media::new(ffprobe)
+        .args(["-v", "error", "-select_streams", "a:0", "-show_entries",
+            "stream=codec_name,duration,sample_rate:format=duration,format_name", "-of", "json"])
+        .input(path).output().ok()?;
+    if !result.status.success() { return None; }
+    let data: Value = serde_json::from_slice(&result.stdout).ok()?;
+    let stream = data["streams"].get(0)?;
+    let seconds = |value: &Value| {
+        let time: f64 = value.as_str()?.parse().ok()?;
+        (time.is_finite() && time > 0.0).then_some(time)
+    };
+    let duration = seconds(&data["format"]["duration"]).or_else(|| seconds(&stream["duration"]))?;
+    // MP3's container duration includes encoder delay and end padding. Read the edge packets that declare those gaps.
+    if data["format"]["format_name"] == "mp3" && let Some(sample_rate) = number(&stream["sample_rate"]).filter(|&rate| rate > 0) {
+        return Some(mp3_samples_to_skip(ffprobe, path, duration)
+            .map(|samples| duration - samples as f64 / sample_rate as f64).filter(|&time| time > 0.0).unwrap_or(duration));
+    }
+    Some(duration)
+}
+
+fn mp3_samples_to_skip(ffprobe: &Path, path: &Path, duration: f64) -> Option<u64> {
+    let intervals = if duration <= 1.0 { "%".to_owned() } else { format!("%+#1,{:.6}%", duration - 1.0) };
+    let result = Media::new(ffprobe)
+        .args(["-v", "error", "-select_streams", "a:0", "-read_intervals", &intervals, "-show_packets",
+            "-show_entries", "packet_side_data=side_data_type,skip_samples,discard_padding", "-of", "json"])
+        .input(path).output().ok()?;
+    if !result.status.success() { return None; }
+    let data: Value = serde_json::from_slice(&result.stdout).ok()?;
+    let padding = data["packets"].as_array()?.iter()
+        .flat_map(|packet| packet["side_data_list"].as_array().into_iter().flatten())
+        .filter(|side| side["side_data_type"] == "Skip Samples");
+    let head = padding.clone().filter_map(|side| number(&side["skip_samples"])).max().unwrap_or(0);
+    let tail = padding.filter_map(|side| number(&side["discard_padding"])).max().unwrap_or(0);
+    head.checked_add(tail)
+}
+
+/// Display geometry from just the video header, for a file whose other measurements are already known.
+pub(crate) fn display_aspect(ffprobe: &Path, path: &Path) -> Option<f64> {
+    let done = Media::new(ffprobe)
+        .args(["-v", "error", "-select_streams", "V:0", "-show_entries",
+            "stream=width,height,display_aspect_ratio,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation", "-of", "json"])
+        .input(path).output().ok()?;
+    let data: Value = serde_json::from_slice(&done.stdout).ok()?;
+    video_aspect(data["streams"].get(0)?)
+}
+
+fn video_aspect(stream: &Value) -> Option<f64> {
+    let ratio = |value: &Value| {
+        let (width, height) = value.as_str()?.split_once(':')?;
+        let (width, height) = (width.parse::<u64>().ok()?, height.parse::<u64>().ok()?);
+        (width > 0 && height > 0).then(|| width as f64 / height as f64)
+    };
+    let display = ratio(&stream["display_aspect_ratio"]).or_else(|| {
+        let (width, height) = (number(&stream["width"])?, number(&stream["height"])?);
+        (width > 0 && height > 0).then(|| width as f64 / height as f64 * ratio(&stream["sample_aspect_ratio"]).unwrap_or(1.0))
+    })?;
+    let rotation = stream["side_data_list"].as_array().and_then(|items| items.iter().find_map(|item| item["rotation"].as_i64()))
+        .or_else(|| stream["tags"]["rotate"].as_str()?.parse().ok())
+        .unwrap_or(0);
+    Some(if rotation.rem_euclid(180) == 90 { display.recip() } else { display })
+}
+
 /// Whether the picture at `path` has an alpha channel, or a palette that may.
 pub(crate) fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
@@ -932,13 +996,13 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read_json: Value = serde_json::from_slice(&read(&[
         "-count_packets",
         "-show_entries",
-        "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,nb_frames,nb_read_packets,bit_rate,sample_rate,channels:format=duration,bit_rate,start_time",
+        "stream=codec_type,codec_name,width,height,display_aspect_ratio,sample_aspect_ratio,pix_fmt,r_frame_rate,nb_frames,nb_read_packets,bit_rate,sample_rate,channels:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=duration,bit_rate,start_time",
         "-of",
         "json",
     ])?)
     .unwrap_or_default();
     let streams = read_json["streams"].as_array().cloned().unwrap_or_default();
-    let video = streams.iter().find(|s| s["codec_type"] == "video").cloned().unwrap_or_default();
+    let video = streams.iter().find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"].as_u64() != Some(1)).cloned().unwrap_or_default();
     let (Some(width), Some(height)) = (video["width"].as_u64(), video["height"].as_u64()) else {
         return Err(failed(format!("ffprobe can't find a video in {}.", path.display())));
     };
@@ -952,7 +1016,7 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let seconds = read_json["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0);
     let start = read_json["format"]["start_time"].as_str().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
     let keys = match keys {
-        true => read(&["-select_streams", "v:0", "-skip_frame", "nokey", "-show_entries", "frame=pts_time", "-of", "csv=p=0"])?,
+        true => read(&["-select_streams", "V:0", "-skip_frame", "nokey", "-show_entries", "frame=pts_time", "-of", "csv=p=0"])?,
         false => vec![],
     };
     let keys = (String::from_utf8_lossy(&keys).lines())
@@ -962,6 +1026,7 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     Ok(Probe {
         video: format!("{codec} {width}x{height} {pix_fmt} {rate_text}"),
         size: (width, height),
+        display_aspect: video_aspect(&video),
         pix_fmt,
         rate,
         rate_text,

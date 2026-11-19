@@ -132,6 +132,8 @@ pub(crate) struct File {
     #[serde(skip)]
     pub height: u64,
     #[serde(skip)]
+    pub display_aspect: Option<f64>,
+    #[serde(skip)]
     pub fps: f64,
     #[serde(skip)]
     pub frames: u64,
@@ -155,6 +157,8 @@ pub(crate) struct File {
     /// A sound's length; a video's comes of its rate and frames.
     #[serde(skip)]
     pub duration_ms: u64,
+    #[serde(skip)]
+    pub audio_measured: bool,
 }
 
 /// What is measured of a file, kept apart from its row, as ffprobe can always say it again.
@@ -164,6 +168,8 @@ pub(crate) struct Measured {
     width: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     height: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_aspect: Option<f64>,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     fps: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -173,12 +179,14 @@ pub(crate) struct Measured {
     #[serde(default, skip_serializing_if = "is_zero")]
     duration_ms: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    audio_measured: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     shape_only: bool,
 }
 
 impl Measured {
     fn of(file: &File) -> Self {
-        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms, shape_only: file.shape_only }
+        Self { width: file.width, height: file.height, display_aspect: file.display_aspect, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms, audio_measured: file.audio_measured, shape_only: file.shape_only }
     }
 }
 
@@ -187,6 +195,8 @@ impl File {
     fn measured_as(&mut self, measured: &File) {
         (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms, self.shape_only) =
             (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms, measured.shape_only);
+        self.display_aspect = measured.display_aspect;
+        self.audio_measured = measured.audio_measured;
     }
 
     fn extension(&self) -> String {
@@ -224,7 +234,8 @@ impl File {
     /// Not measured yet, and one that can be.
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
-            Some((_, "audio")) => self.duration_ms == 0,
+            Some((_, "audio")) => !self.audio_measured,
+            Some((_, "video")) => self.width == 0 || self.shape_only || self.display_aspect.is_none(),
             Some((_, "text")) => false,
             Some(_) => self.width == 0 || self.shape_only,
             None => false,
@@ -2151,6 +2162,8 @@ impl Folder {
         for (sha256, held) in measured {
             if let Some(file) = lock.files.get_mut(sha256) {
                 (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (held.width, held.height, held.fps, held.frames, held.alpha, held.duration_ms);
+                file.display_aspect = held.display_aspect;
+                file.audio_measured = held.audio_measured;
             }
         }
     }
@@ -2409,7 +2422,17 @@ impl Folder {
         let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
         let measured: BTreeMap<String, File> = (lock.files.values().filter(|file| file.unmeasured()))
             .filter(|file| self.dir.join(&file.path).is_file())
-            .filter_map(|file| Some((file.sha256.clone(), super::tools::measured(&found.path, &ffprobe, &self.dir.join(&file.path), file.field())?)))
+            .filter_map(|file| {
+                let path = self.dir.join(&file.path);
+                let field = file.field();
+                let facts = if field == "video" && file.width > 0 && !file.shape_only {
+                    // Refresh older measurements from the stream header; the duration and frame count are already known.
+                    File { display_aspect: Some(super::tools::display_aspect(&ffprobe, &path)?), ..file.clone() }
+                } else {
+                    super::tools::measured(&found.path, &ffprobe, &path, field)?
+                };
+                Some((file.sha256.clone(), facts))
+            })
             .collect();
         if measured.is_empty() {
             return Ok(());
@@ -2417,10 +2440,11 @@ impl Folder {
         for (sha256, probed) in &measured {
             let front = lock.turns(sha256);
             if let Some(file) = lock.files.get_mut(sha256) {
+                let needs_picture = file.width == 0 || file.shape_only;
                 file.measured_as(probed);
                 // A video that landed: the page plays its preview on a hover. A picture's is made as it lands (`adopt`, an import), not as an
                 // older project's files are measured: thousands at once would hold up its pages (web-scale 43380245255).
-                if file.field() == "video" && file.width > 0 {
+                if needs_picture && file.field() == "video" && file.width > 0 {
                     super::thumbs::landed(self.dir.join(&file.path), sha256, "video", file.lasts_ms() as f64 / 1000.0, front);
                 }
             }
