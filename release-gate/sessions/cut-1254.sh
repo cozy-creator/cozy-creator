@@ -4,16 +4,21 @@
 #   render  `cozy render upgraded --on local` (the page's route): "updating local first (… runtime …)", and the take lands
 #   page    Calcifer's page in Chrome (e2e/cli/web/cut-1254.spec.js): Render pressed on a box in Focus, "Updating local first", its picture
 #   old     `cozy run ./draw.py/draw --on local`: local code floored at cozy-runtime>=0.43.1, which the Latest's Runtime meets (W-S2)
-# Each leg's green also needs `machine show local` on cozy <to> and Runtime <runtime> after it. The box's tool is draw.py, a weightless
-# still (CPU). Rents nothing; `rent` is not read.
+#   held    last, local held by hand on the Latest's pair (no let-go): a render must still be refused `runtime_held`
+# Each move leg's green also needs `machine show local` on the new cozy and a Runtime of <runtime> after it. The box's tool is draw.py, a
+# weightless still (CPU). Rents nothing; `rent` is not read.
 # params:
-#   to       the cozy to update to (default 0.27.0)
-#   runtime  the Runtime each leg must move local to (default 0.48.0)
+#   to       the cozy `cozy update` installs (default 0.27.0)
+#   runtime  what local's Runtime must start with after each move leg (default 0.48.0)
+#   place    instead of `cozy update <to>`, a build put in place as `cozy update` puts it (binary kept as .cozy-previous, Calcifer
+#            restarted by its service), then the update `cozy update`'s activate sends, by the Latest's CLI: `machine update local
+#            --tensord <its version>` (activate also asks PyTorch, which no hold reads). `release:<version>` (that release's archive,
+#            held to its sha256.sum) or `dev:<dev-build run id>` (its cozy-* artifact): a build with no signed archive to `cozy update` to
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 WEB=$ROOT/e2e/cli/web
-TO=$(jq -r '.to // "0.27.0"' <<< "$PARAMS") WANT=$(jq -r '.runtime // "0.48.0"' <<< "$PARAMS")
+TO=$(jq -r '.to // "0.27.0"' <<< "$PARAMS") WANT=$(jq -r '.runtime // "0.48.0"' <<< "$PARAMS") PLACE=$(jq -r '.place // ""' <<< "$PARAMS")
 mkdir -p "$OUT"
 R=$OUT/report.txt RED=0
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
@@ -40,7 +45,7 @@ moved() {
   ready || red "$1: local not ready after it"
   p=$(pair)
   say "$1: after it, local: $p"
-  [ "$(jq -r .version <<< "$p")" = "$TO" ] && [ "$(jq -r .runtime <<< "$p")" = "$WANT" ] || red "$1: local is not on cozy $TO, Runtime $WANT: $p"
+  [ "$(jq -r .version <<< "$p")" = "$TO" ] && [[ $(jq -r .runtime <<< "$p") == "$WANT"* ]] || red "$1: local is not on cozy $TO, Runtime $WANT: $p"
 }
 # said <leg> <files...>: what the leg printed about local, and no runtime_outdated.
 said() {
@@ -68,13 +73,41 @@ printf 'upgraded:\n  %s:\n    instructions: A still for the cut %s\n' "$P/draw.p
 (cd "$P" && cozy apply -f n.yaml) > "$OUT/apply.txt" 2>&1 || fail "cozy apply: $(tail -c 300 "$OUT/apply.txt")"
 say "setup: project $P, box upgraded (draw.py), on cozy $LATEST"
 
-cozy update "$TO" -y > "$OUT/update.txt" 2>&1 || fail "cozy update $TO: $(tail -c 400 "$OUT/update.txt")"
+if [ -z "$PLACE" ]; then
+  cozy update "$TO" -y > "$OUT/update.txt" 2>&1 || fail "cozy update $TO: $(tail -c 400 "$OUT/update.txt")"
+else
+  NEW=$OUT/placed && rm -rf "$NEW" && mkdir -p "$NEW" || fail "no $NEW"
+  case $PLACE in
+    release:*)
+      v=${PLACE#release:} a=cozy-x86_64-unknown-linux-gnu.tar.gz
+      curl -fsSL --retry 5 -o "$NEW/$a" "https://github.com/cozy-creator/cozy-creator/releases/download/v$v/$a" &&
+        curl -fsSL --retry 5 -o "$NEW/sha256.sum" "https://github.com/cozy-creator/cozy-creator/releases/download/v$v/sha256.sum" &&
+        (cd "$NEW" && awk -v f="$a" '{ n = $2; sub(/^\*/, "", n) } n == f' sha256.sum | sha256sum -c --strict -) && tar -xzf "$NEW/$a" -C "$NEW" ||
+        fail "release $v's $a"
+      bin=$(find "$NEW" -type f -name cozy -print -quit) ;;
+    dev:*)
+      gh run download "${PLACE#dev:}" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$NEW" > "$OUT/placed.log" 2>&1 || fail "dev-build ${PLACE#dev:}: $(tail -c 300 "$OUT/placed.log")"
+      bin=$(find "$NEW" -type f -name cozy-linux-x86_64 -print -quit) ;;
+    *) fail "place is release:<version> or dev:<run id>, not $PLACE" ;;
+  esac
+  [ -n "${bin:-}" ] && chmod 755 "$bin" && TO=$("$bin" --version | awk '{print $2}') && [ -n "$TO" ] || fail "no cozy in $PLACE"
+  # As `cozy update` puts it: the old binary kept beside it, the new one renamed over it, Calcifer restarted by its service.
+  COZY=$(command -v cozy) BINDIR=$(dirname "$(command -v cozy)")
+  cp "$bin" "$BINDIR/.cozy-update-cut" && { ln -f "$COZY" "$BINDIR/.cozy-previous" 2> /dev/null || cp "$COZY" "$BINDIR/.cozy-previous"; } &&
+    mv -f "$BINDIR/.cozy-update-cut" "$COZY" && systemctl --user restart cozy-calcifer > "$OUT/update.txt" 2>&1 &&
+    "$BINDIR/.cozy-previous" --json machine ls >> "$OUT/update.txt" 2>&1 || fail "$TO not put in place: $(tail -c 300 "$OUT/update.txt")"
+  say "setup: cozy $TO put in place ($PLACE); before activate's update, local: $(pair), held: $(held)"
+  # `cozy update`'s activate, by the Latest's CLI: local to the cozy installed here.
+  "$BINDIR/.cozy-previous" --json machine update local --tensord "$TO" -y >> "$OUT/update.txt" 2>&1 ||
+    fail "the Latest's CLI: machine update local --tensord $TO: $(tail -c 300 "$OUT/update.txt")"
+  say "setup: activate's update by cozy $LATEST's CLI: $(grep -oE '"target":"[^"]*"' "$OUT/update.txt" | tail -1)"
+fi
 [ "$(cozy --version)" = "cozy $TO" ] || fail "cozy is $(cozy --version) after cozy update $TO"
 # Calcifer restarts on the new binary at once; local moves to it once its runs end.
 for _ in $(seq 120); do [ "$(pair | jq -r .version)" = "$TO" ] && break; sleep 5; done
 ready || fail "local not ready after cozy update $TO"
 p=$(pair)
-say "setup: cozy update $TO: $(grep -E '^cozy .* → ' "$OUT/update.txt" | head -1 | cut -c1-120); local: $p, held: $(held)"
+say "setup: cozy $TO: $(grep -E '^cozy .* → ' "$OUT/update.txt" | head -1 | cut -c1-120); local: $p, held: $(held)"
 [ "$(jq -r .version <<< "$p")" = "$TO" ] && [ "$(jq -r .runtime <<< "$p")" = "$OLD_RT" ] || red "setup: local is not on cozy $TO with Runtime $OLD_RT: $p"
 
 # 1. The render leg (the page's route).
@@ -109,6 +142,18 @@ if back "old-package leg"; then
   said "old-package leg" "$OUT/old.out" "$OUT/old.err"
   moved "old-package leg"
 fi
+
+# 4. A hold by hand still holds: local on the Latest's pair by hand, not let go, and a new box rendered there is refused.
+cozy --json machine update local --runtime "$OLD_RT" --tensorfs "$OLD_TFS" -y > "$OUT/hold.json" 2>&1 && ready ||
+  red "held leg: local not held on $OLD_RT / $OLD_TFS: $(tail -c 300 "$OUT/hold.json")"
+say "held leg: before it, local: $(pair), held: $(held)"
+printf 'held:\n  %s:\n    instructions: A still while local is held %s\n' "$P/draw.py/draw" "$RANDOM" > "$P/h.yaml"
+(cd "$P" && cozy apply -f h.yaml && timeout 600 cozy render held --on local -y) > "$OUT/held.out" 2> "$OUT/held.err"; code=$?
+say "held leg: exit $code: $(cat "$OUT/held.err" | head -2 | tr '\n' ' ' | cut -c1-300)"
+grep -qs 'error\[runtime_held\]' "$OUT/held.err" || red "held leg: a render on local held by hand was not refused runtime_held (exit $code)"
+p=$(pair)
+say "held leg: after it, local: $p"
+[ "$(jq -r .runtime <<< "$p")" = "$OLD_RT" ] || red "held leg: local held on $OLD_RT moved to $(jq -r .runtime <<< "$p")"
 
 say "$([ "$RED" = 0 ] && echo GREEN || echo RED): cut-1254 on cozy $TO from $LATEST, local from Runtime $OLD_RT"
 exit "$RED"
