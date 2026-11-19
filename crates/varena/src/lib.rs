@@ -151,6 +151,14 @@ pub struct Stats {
     pub out_of_books_bytes: usize,
     /// What every map leaves free for the driver's own allocations still expected here.
     pub driver_room_bytes: usize,
+    /// That room as the last request began, before what the driver took during it.
+    pub driver_room_begin_bytes: usize,
+    /// This process's context's measured cost (free before less after), the room of a model set the
+    /// card never ran; 0 where NVML could not read the card.
+    pub context_bytes: usize,
+    /// The most a process running this model set on this card held outside its books, as learned
+    /// when the room was last measured; 0 for a set the card never ran.
+    pub out_of_books_learned_bytes: usize,
     pub poisoned: bool,
 }
 
@@ -729,6 +737,11 @@ pub struct Device {
     driver_room_outside: AtomicUsize,
     /// This process's bytes outside its books, as last measured (`cooperative::expect`).
     out_of_books: AtomicUsize,
+    /// For the record (`DeviceStats`): the room as the last request began, the context's measured
+    /// cost, and the learned figure the room was measured from.
+    driver_room_begin: AtomicUsize,
+    context_cost: AtomicUsize,
+    out_of_books_learned: AtomicUsize,
     // The most weight bytes held for use at once in this plan phase (`enter_plan_phase` resets it).
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
@@ -781,6 +794,9 @@ impl Device {
             driver_room: AtomicUsize::new(0),
             driver_room_outside: AtomicUsize::new(0),
             out_of_books: AtomicUsize::new(0),
+            driver_room_begin: AtomicUsize::new(0),
+            context_cost: AtomicUsize::new(0),
+            out_of_books_learned: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
@@ -945,10 +961,18 @@ impl Device {
     /// The driver is now expected to take `room` more bytes for this process, which holds
     /// `out_of_books` outside its books (`cooperative::expect`).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) fn expect_driver(&self, room: usize, out_of_books: usize) {
+    pub(crate) fn expect_driver(&self, room: usize, out_of_books: usize, context: usize, learned: usize) {
         self.driver_room_outside.store(self.outside.load(Ordering::Acquire), Ordering::Release);
         self.driver_room.store(room, Ordering::Release);
         self.out_of_books.store(out_of_books, Ordering::Release);
+        self.context_cost.store(context, Ordering::Release);
+        self.out_of_books_learned.store(learned, Ordering::Release);
+    }
+
+    /// A request began with `room` kept for the driver.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn driver_room_began(&self, room: usize) {
+        self.driver_room_begin.store(room, Ordering::Release);
     }
 
     /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the card
@@ -1257,6 +1281,9 @@ impl Device {
             event_waits,
             out_of_books_bytes: self.out_of_books.load(Ordering::Acquire),
             driver_room_bytes: self.driver_room(),
+            driver_room_begin_bytes: self.driver_room_begin.load(Ordering::Acquire),
+            context_bytes: self.context_cost.load(Ordering::Acquire),
+            out_of_books_learned_bytes: self.out_of_books_learned.load(Ordering::Acquire),
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };
