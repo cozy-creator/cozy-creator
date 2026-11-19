@@ -491,6 +491,7 @@ in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local >
 # The web suite's lanes (cl-973), each a job of its own with its own Calcifer: their cells at once (web.sh's web_suite), balanced by
 # measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
 WEB_1=(
+  picture-pending
   video
   render
   upload

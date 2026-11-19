@@ -2079,7 +2079,7 @@ export class CanvasStore {
     } }
     if (landed.length > 1) return void say(`${landed.length} renders are ready: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view })
     const noun = this.get(name)?.asset?.noun ?? "take"
-    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
+    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, picture: sha256 && this.projectId ? { project: this.projectId, sha256 } : undefined })
   }
 
   /** Stops one of its takes, by its id (cl-945), gone from the box at once, and its others go on: one sent, its run; one queued, that take. */

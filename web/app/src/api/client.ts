@@ -168,6 +168,8 @@ export interface Hooks {
 }
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
+/** A file's thumbnail and preview path, one spelling for one file (Calcifer reads either): one URL, so one cache entry and one asking. */
+const fileOf = (sha256: string) => sha256.replace(/^sha256:/i, "").toLowerCase()
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
 const namedRun = (name: string) => `/v1/runs/${encodeURIComponent(name)}`
 export type ProjectRun = { project: string; run: string | number }
@@ -636,12 +638,12 @@ export class Client {
    *  `strip` frames or a waveform (a sound's, or with `wave` a video's) that wide. */
   thumb(id: string, sha256: string, w?: number, strip?: number, wave?: boolean): string {
     const asked = [w ? `w=${w}` : "", strip ? `strip=${strip}` : "", wave ? "wave=true" : ""].filter(Boolean).join("&")
-    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?${asked}`
+    return `${project(id)}/thumbs/${fileOf(sha256)}?${asked}`
   }
 
   /** A video's preview: a few seconds of it, small and silent. */
   preview(id: string, sha256: string): string {
-    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?preview=true`
+    return `${project(id)}/thumbs/${fileOf(sha256)}?preview=true`
   }
 
   file(id: string, file: string): string {
