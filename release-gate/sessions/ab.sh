@@ -108,11 +108,12 @@ oneway=$(jq -r --argjson a "$ARMS" '[.[] | [$a[.[0]], $a[.[1]]] | select(.[0].bu
 # memokey <cell> [arg...]: what TensorD's call memo keys the cell's request on, as far as a session can say: its Runtime and
 # TensorFS (not the cap, not TensorD), its packages tree, target and arguments (its own, or those given).
 memokey() {
-  local k=$1; shift
-  jq -r --arg k "$k" --argjson a "$ARMS" 'map(select(.name == $k)) | first
+  local k=$1 p='[]'; shift
+  # The arguments as one JSON list (NUL-separated): jq would read one that starts with `--` (`--lane`) as its own option.
+  [ $# = 0 ] || p=$(printf '%s\0' "$@" | jq -Rsc 'split("\u0000")[:-1]')
+  jq -r --arg k "$k" --argjson a "$ARMS" --argjson p "$p" 'map(select(.name == $k)) | first
     | [($a[$k].build | fromjson | del(.tensord) | tojson), (.tree // ""), .target,
-       ((if ($ARGS.positional | length) > 0 then $ARGS.positional else .args end) | join("\u0001"))] | join("\u0002")' \
-    --args "$@" <<<"$CELLS"
+       ((if ($p | length) > 0 then $p else .args end) | join("\u0001"))] | join("\u0002")' <<<"$CELLS"
 }
 same=$(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE" | while read -r a b; do [ "$(memokey "$a")" != "$(memokey "$b")" ] || echo "$a vs $b"; done | paste -sd';')
 [ -z "$same" ] || fail "compared pairs ask the same request of the same Runtime and TensorFS, which TensorD's call memo answers from the first (it keys no memory cap): $same"
@@ -317,13 +318,13 @@ for k in "${names[@]}"; do
   [ -z "$tree" ] || target=./$target
   # A request this session already asked of this Runtime and TensorFS, as asked (a moved seed counts), takes the next seed none
   # of them asked: the call memo would answer it.
-  key=$(memokey "$k" "${args[@]}")
+  key=$(memokey "$k" "${args[@]}"); [ -n "$key" ] || fail "$k: no call-memo key for its request"
   if [ -n "${ASKED[$key]:-}" ] && ! printf '%s\n' "${args[@]}" | grep -q '^seed:=[0-9][0-9]*$'; then
     say "$k: asked before of this Runtime and TensorFS, with no seed to move: the call memo may answer it"
   elif [ -n "${ASKED[$key]:-}" ]; then
     while [ -n "${ASKED[$key]:-}" ]; do
       mapfile -t args < <(printf '%s\n' "${args[@]}" | awk '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + 1; next} {print}')
-      key=$(memokey "$k" "${args[@]}")
+      key=$(memokey "$k" "${args[@]}"); [ -n "$key" ] || fail "$k: no call-memo key for its request"
     done
     say "$k: asked before of this Runtime and TensorFS: $(printf '%s\n' "${args[@]}" | grep -m1 '^seed:=')"
   fi
