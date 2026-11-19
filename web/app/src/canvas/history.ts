@@ -1,4 +1,4 @@
-import { ApiError, type Client } from "../api/client"
+import type { Client } from "../api/client"
 import type { HistoryEntry } from "../api/calcifer"
 import { signal } from "../ui/signal"
 
@@ -40,8 +40,6 @@ export class PageHistory<S> {
   readonly entries = signal<HistoryEntry[]>([])
   /** What Undo and Redo take moved. */
   readonly moved = signal(0)
-  /** Calcifer keeps a history: one older than this page doesn't, and has nothing to undo. */
-  readonly kept = signal(true)
   private steps: Step<S>[] = []
   /** Undone (true) or done again (false) as this page asked, until the history says so. */
   private asked = new Map<string, boolean>()
@@ -99,12 +97,9 @@ export class PageHistory<S> {
         const last = this.steps.reduce((at, step, i) => (listed.has(step.edit) ? i : at), -1)
         this.steps = this.steps.filter((step, at) => at >= last || step.entry !== undefined || listed.has(step.edit))
         this.entries.set(history.entries)
-        this.kept.set(true)
         this.tell()
       },
-      (error) => {
-        if (error instanceof ApiError && error.body.code === "unknown_route") this.kept.set(false)
-      },
+      () => {},
     ).finally(() => {
       this.reading = false
       if (this.again) {

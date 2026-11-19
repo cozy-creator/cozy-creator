@@ -2785,7 +2785,6 @@ export class CanvasStore {
 
   /** A note saying what `edit` did, its Undo the history's: one that's undone goes. */
   private offer(edit: string, message: string): number {
-    if (!this.history.kept.get()) return say(message)
     const note = say(message, undefined, { action: { label: "Undo", run: () => this.undo({ edit }) } })
     this.offers.set(edit, note)
     return note
@@ -2855,7 +2854,7 @@ export class CanvasStore {
 
   private historyStep(target: Target, back: boolean) {
     const id = this.projectId
-    if (!id || !this.history.kept.get()) return
+    if (!id) return
     const words = this.history.wordsOf(target)
     const shown = this.showStep(target, back)
     this.history.mark(target, back)
