@@ -363,15 +363,16 @@ impl References {
     }
 
     /// `function`'s time at `size` on one GPU of `gpu` whose `memory` its peak there exceeds (`peak`): by its rows measured under the
-    /// largest budget at or below `memory` (the coordinator, 11-18: "so a 6 GB card isn't quoted at a 24 GB card's speed"), of that
-    /// card (`Basis::Reference`), else another's scaled to it (`Basis::Scaled`). None: it fits, or nothing measured it so. Never a
-    /// refusal: every model runs in 6 GB (Paul 11-18).
+    /// largest budget at or below `memory` (the coordinator, 11-18: "so a 6 GB card isn't quoted at a 24 GB card's speed"), else the
+    /// smallest (a card under every budget is at least as squeezed), of that card (`Basis::Reference`), else another's scaled to it
+    /// (`Basis::Scaled`). None: it fits, or nothing measured it so. Never a refusal: every model runs in 6 GB (Paul 11-18).
     pub fn memory_bound(&self, function: &str, gpu: &str, memory: u64, size: &JobSize, lane: &str) -> Option<(f64, Basis)> {
         if memory == 0 || self.peak(function, gpu, size, lane)? <= memory as f64 {
             return None;
         }
         let rows = self.budgeted.get(&reference_key(function))?;
-        let budget = rows.iter().filter_map(|row| row.budget_bytes).filter(|budget| *budget <= memory).max()?;
+        let budgets = || rows.iter().filter(|row| row.gpus == 1).filter_map(|row| row.budget_bytes);
+        let budget = budgets().filter(|budget| *budget <= memory).max().or_else(|| budgets().min())?;
         let at = || rows.iter().filter(|row| row.gpus == 1 && row.budget_bytes == Some(budget));
         let card = at_lane(at().filter(|row| is_card(gpu, &row.gpu)), lane);
         if let Some((_, ms)) = nearest(card, rows, size, WARM) {
@@ -547,7 +548,7 @@ fn same_card(a: &str, b: &str) -> bool {
 
 /// Of `rows`, the one most like `size` with a `value`: the nearest pictures read, then the nearest size; and that value at `size`, each unit
 /// scaled by its own exponent (`exponents`): as `rows` measure it where they vary in it, else as all the function's rows (`of`)
-/// do, each card, lane and count of pictures on its own (Paul 11-18: "we should be able to have more than one [variable]").
+/// do, each card, lane, count of pictures and memory budget on its own (Paul 11-18: "we should be able to have more than one [variable]").
 fn nearest<'r>(rows: Vec<&'r Benchmark>, of: &[Benchmark], size: &JobSize, value: fn(&Benchmark) -> Option<f64>) -> Option<(&'r Benchmark, f64)> {
     let rows: Vec<&Benchmark> = rows.into_iter().filter(|row| value(row).is_some()).collect();
     let refs = size.refs.unwrap_or(0);
@@ -557,9 +558,10 @@ fn nearest<'r>(rows: Vec<&'r Benchmark>, of: &[Benchmark], size: &JobSize, value
         a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
     })?;
     let timed = |rows: &[&Benchmark]| rows.iter().filter_map(|row| Some((units(&row.request), value(row)?))).collect::<Vec<_>>();
-    let mut groups: BTreeMap<(&str, u32, &str, u32), Vec<&Benchmark>> = BTreeMap::new();
+    let mut groups: BTreeMap<(&str, u32, &str, u32, Option<u64>), Vec<&Benchmark>> = BTreeMap::new();
     for other in of {
-        groups.entry((other.gpu.as_str(), other.gpus, other.lane.as_str(), other.request.refs.unwrap_or(0))).or_default().push(other);
+        let group = (other.gpu.as_str(), other.gpus, other.lane.as_str(), other.request.refs.unwrap_or(0), other.budget_bytes);
+        groups.entry(group).or_default().push(other);
     }
     let mut k = exponents(&groups.values().map(|group| timed(group)).collect::<Vec<_>>());
     k.extend(exponents(&[timed(&rows)]));
