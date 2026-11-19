@@ -885,10 +885,16 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         pinned.push(listing.pinned.clone());
         let read = |m: &remote::Member| remote::Scope::new(req.access, req.stop).read_small(m);
         let ggufs: Vec<String> = (listing.members.iter()).map(|m| m.path.clone()).filter(|p| is_gguf(p)).collect();
-        let selected = remote::select(listing, req.source_variant, remote::Files::All, &read)?;
+        // One model's folder deeper in its repository is its component, named by its last part (`models/image_encoder`
+        // is `image_encoder`, as a top folder `vae` is `vae`); a file is its folder's.
+        let above = format!("{}/", folder(if listing.exact { folder(&listing.root) } else { listing.root.as_str() }));
+        let mut selected = remote::select(listing, req.source_variant, remote::Files::All, &read)?;
         if let (true, Some(taken)) = (ggufs.len() > 1, selected.iter().find(|m| is_gguf(&m.path))) {
             let others = ggufs.iter().filter(|p| **p != taken.path).map(String::as_str).collect::<Vec<_>>().join(", ");
             progress(&format!("warning: {} GGUF files: taking {}. Name another by its path to take it instead: {others}", ggufs.len(), taken.path), 0, 0);
+        }
+        for m in &mut selected {
+            m.path = m.path.strip_prefix(above.as_str()).unwrap_or(&m.path).to_owned();
         }
         for m in selected {
             match members.iter().find(|o| o.path == m.path) {
