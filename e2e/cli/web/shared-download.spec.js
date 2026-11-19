@@ -29,7 +29,7 @@ const softly = expect.configure({ soft: true });
 /** A repository as the page says it (activity.ts `modelWords`): `zhengpeng7/birefnet` is `Birefnet`. */
 const modelWords = (subject) => subject.replace(/^hf:\/\//, '').split('/')[1].split(/[-_]/).filter(Boolean).map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
 /** An activity id as the page anchors its row (activity.ts `anchorOf`). */
-const anchorOf = (id) => `download-${id.replace(/[^\w-]+/g, '-')}`;
+const anchorOf = (id) => id.replace(/[^\w-]+/g, '-');
 
 /** The isolated Hub's store link slowed to `rate` (tc on the loopback, from its MinIO's port), as ondemand.sh's slow_store; undone after. */
 function slowStore(rate) {

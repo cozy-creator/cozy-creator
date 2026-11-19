@@ -9,7 +9,7 @@ import { Icon } from "../../ui/Icon"
 import { Bar, Section } from "../common"
 import { ordinal } from "../format"
 import { downloadWait, runName as runLabel, waitWords, workWords } from "../runs/words"
-import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, downloadsOf, fetchedWords, fetchesWords, fractionOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
+import { anchorOf, clientFraction, clientFrom, clientFunction, clientWords, fetchedWords, fetchesWords, fractionOf, namedOf, operationName, ownActivity, runName, showRow, waitersWords, waitingWords, waitsOnOf } from "./activity"
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
@@ -21,15 +21,16 @@ const order = (a: LiveRun, b: LiveRun) =>
 function OperationRow({ operation }: { operation: Operation }) {
   const fraction = fractionOf(operation)
   const download = operation.kind === "download"
-  // A box's "Waiting for … to download" leads here (`#download-…`, cl-1205): the row is shown and lit.
+  // A box's "Waiting for download" or "Waiting for install" leads here (`#download-…`, `#install-…`; cl-1205, cl-1218): the row is
+  // shown and lit.
   const { hash } = useLocation()
   const row = useRef<HTMLLIElement>(null)
   const anchor = anchorOf(operation.id)
   useEffect(() => {
-    if (download && row.current && hash === `#${anchor}`) showRow(row.current, operation.id)
-  }, [download, hash, anchor, operation.id])
+    if (row.current && hash === `#${anchor}`) showRow(row.current, operation.id)
+  }, [hash, anchor, operation.id])
   return (
-    <li className="qrow" data-queue={operation.kind} data-download={download ? operation.id : undefined} id={download ? anchor : undefined} ref={row}>
+    <li className="qrow" data-queue={operation.kind} data-operation={operation.id} id={anchor} ref={row}>
       <span className={`mark ${download ? "download" : "install"}`}>
         <Icon name={download ? "download" : "package"} />
       </span>
@@ -58,12 +59,12 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
     )
   }
   const on = waitsOnOf(activity, run)
-  // Waiting on downloads, it says so and leads to each, which alone shows how far it is (cl-1205).
-  const downloads = on?.kind === "download" ? downloadsOf(activity, run) : []
+  // Waiting on an install or downloads, it says so and leads there, which alone shows how far it is (cl-1205, cl-1218).
+  const waited = namedOf(activity, run, on)
   const fraction = run.progress?.done_fraction
   const waiting = held.waiting || run.waiting
-  const said = on
-    ? waitingWords(downloads.length ? downloads : [on])
+  const said = waited.length
+    ? waitingWords(waited)
     : going || downloadWait(run)
       ? workWords(run) || waitWords(waiting) || "Running"
       : state === "queued"
@@ -79,8 +80,8 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
       </Link>
       <span className="kind">Run {runLabel(run)}</span>
       {going && !on && fraction != null && <Bar fraction={fraction} />}
-      {downloads.length ? (
-        <a className="said waits" href={`#${anchorOf(downloads[0].id)}`} title={downloads.map(fetchesWords).join("; ")} onClick={(event) => { event.preventDefault(); showRow(event.currentTarget, downloads[0].id) }}>
+      {waited.length ? (
+        <a className="said waits" href={`#${anchorOf(waited[0].id)}`} title={waited.map(fetchesWords).join("; ")} onClick={(event) => { event.preventDefault(); showRow(event.currentTarget, waited[0].id) }}>
           {said}
         </a>
       ) : (

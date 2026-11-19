@@ -944,7 +944,8 @@ impl Machines {
         self.picture_for(row, &[])
     }
 
-    /// The machine, its installs and downloads with those of `projects`' own runs: never another project's, nor a locked one's.
+    /// The machine, its installs and downloads naming those of `projects`' own runs that wait on each: never another project's, nor a
+    /// locked one's, which are counted (`operation`).
     pub(crate) fn picture_for(&self, row: &MachineRow, projects: &[String]) -> Result<Machine, Error> {
         let store = self.store();
         let ending = self.pending_end(&row.name)?;
@@ -1142,9 +1143,10 @@ impl Machines {
     /// `operation` as a reader showing `projects` sees it (cl-1205; Paul: models are machine-wide, projects isolate files and runs): what
     /// the machine fetches or installs, its bytes, rate and time left, to any reader on the account. Which runs wait on it is scoped:
     /// maintenance runs and runs of `projects` by number and name, every other one (another project's, a locked one's, another client's)
-    /// only counted (`unnamed`). An operation of a project's own is in its private scope (`resource_key`): only its views read it.
-    /// `waiters`: the runs of `projects` that say they wait on downloads, which this computer's machine counts and names only in their
-    /// project's scope.
+    /// only counted (`unnamed`). A download, and a published package's install, is one item whichever projects' runs wait on it (cl-1205,
+    /// cl-1218); a local package's install is its project's, in its private scope (`resource_key`): only its views read it.
+    /// `waiters`: the runs of `projects` that say they wait on downloads or installs, which this computer's machine counts and names only
+    /// in their project's scope.
     fn operation(&self,operation:&v1::Operation,projects:&[String],waiters:&[Waiter])->Option<wire::Operation> {
         let mut project=None;
         let (mut runs,mut names,mut unnamed)=(vec![],vec![],operation.unnamed);

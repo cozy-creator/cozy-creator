@@ -1,6 +1,6 @@
 //! What this machine does for runs besides their own work: weights arriving and packages' environments built, each listed once however
-//! many runs wait on it, until the last of them stops waiting. Status shows each caller what its runs wait on (`api::machine_status`),
-//! and a run waiting on one names it (`Waiting::shown`, cl-1205).
+//! many runs wait on it, until the last of them stops waiting. Status shows each to every caller, with those of its own runs that wait
+//! on it and the rest counted (`api::machine_status`), and a run waiting on one names it (`Waiting::shown`, cl-1205, cl-1218).
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError},
@@ -63,6 +63,8 @@ struct Operation {
     /// Status has listed it: one that ended before then is listed once, however short it was, unless no one looks for [`UNSEEN`].
     listed: bool,
     ended: Option<Instant>,
+    /// A project's own code installing (`wait`), encrypted or not: listed only to the readers of its runs that wait on it.
+    private: bool,
 }
 
 const WINDOW: Duration = Duration::from_secs(10);
@@ -135,13 +137,17 @@ pub(crate) struct Waiting {
     wanted: Mutex<Vec<String>>,
 }
 
-/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. A download is the machine's,
-/// one however many projects' runs wait on it (cl-1205: a project's and the machine's own scope each listed BiRefNet once); an install
-/// is its scope's.
+/// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. Each is the machine's, one
+/// however many projects' runs wait on it (Paul: packages and models are machine-wide, projects isolate files and runs). cl-1205: a
+/// project's and the machine's own scope each listed BiRefNet's download once. cl-1218: a package installing for two projects was
+/// an item in each one's scope, and none to a reader outside them. A project's own code (`local/`, in any project's scope, encrypted or
+/// not) is its files, not a package of the machine's: its install stays in the project's scope, as its installation's record does
+/// (`bind_installation`).
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
-    let id = match kind {
-        Kind::Download => format!("{} {subject}", kind.word()),
-        Kind::Install => crate::private_io::resource_key(&format!("{} {subject}", kind.word())),
+    let private = kind == Kind::Install && subject.starts_with("local/") && crate::private_io::current().is_some();
+    let id = match private {
+        true => crate::private_io::resource_key(&format!("{} {subject}", kind.word())),
+        false => format!("{} {subject}", kind.word()),
     };
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
@@ -160,10 +166,12 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         seen: VecDeque::new(),
         listed: false,
         ended: None,
+        private,
     });
-    // Joined again after its last wait ended: that wait's run no longer waits.
+    // Joined again after its last wait ended: that wait's run no longer waits, and where it was is no longer where it is.
     if operation.ended.take().is_some() {
         operation.runs.clear();
+        operation.stage.clear();
     }
     *operation.runs.entry(run.to_owned()).or_default() += 1;
     drop(listed);
@@ -186,6 +194,14 @@ impl Waiting {
     /// Its id as Status lists it (`v1::Operation::id`).
     pub(crate) fn shown(&self) -> &str {
         &self.shown
+    }
+
+    /// Where its job is as it joins: said unless another job's stage says where the operation is already (an install another
+    /// project's job builds, cl-1218).
+    pub(crate) fn joins(&self, stage: &str) {
+        if let Some(operation) = operations().get_mut(&self.id).filter(|operation| operation.stage.is_empty()) {
+            stage.clone_into(&mut operation.stage);
+        }
     }
 
     /// What of it was here already: a download's bytes are only those it fetches. Its first wait to say found it so.
@@ -406,7 +422,6 @@ pub(crate) fn ahead_of(run: &str, reads: impl Fn(&str) -> crate::others::Read) -
     Some(format!("{what}{whose} to finish{left}"))
 }
 
-/// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
 /// The repositories each run (by its caller's id) waits to download now.
 pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {
     let mut waits: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
@@ -428,19 +443,23 @@ pub(crate) fn drive_left() -> HashMap<String, (u64, u64)> {
         .collect()
 }
 
+/// Every download and install, to every caller (cl-1205, cl-1218): what the machine does is its own. Which runs wait is their
+/// caller's: each names only the runs `mine` admits, the rest counted. A project's own code installing (`private`) is listed only to
+/// a caller whose runs wait on it. One that ended unlisted is listed this once.
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations
         .iter_mut()
         .filter_map(|(id, operation)| {
             let runs: Vec<String> = operation.runs.keys().filter(|run| mine(run)).cloned().collect();
-            // A download is listed to every caller, the runs it can't read counted (cl-1205).
+            if operation.private && runs.is_empty() {
+                return None;
+            }
             let unnamed = (operation.runs.len() - runs.len()) as u32;
-            let shown = !runs.is_empty() || (operation.kind == Kind::Download && unnamed > 0);
-            operation.listed |= shown;
+            operation.listed = true;
             let bytes_per_s = rate(&operation.seen);
             let left = operation.total.saturating_sub(operation.done);
-            shown.then(|| v1::Operation {
+            Some(v1::Operation {
                 id: crate::private_io::unscoped_key(id),
                 kind: operation.kind.word().into(),
                 subject: operation.subject.clone(),

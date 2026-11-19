@@ -117,6 +117,7 @@
     { "match": "downloading the result", "says": "Downloading the result", "phase": "result", "counts": "bytes" },
     { "match": "downloading {models} weights", "says": "Downloading {models}", "phase": "downloading", "counts": "bytes" },
     { "match": "waiting for {models} to download", "says": "Waiting for {models} to download", "phase": "downloading" },
+    { "match": "waiting for {package} to install", "says": "Waiting for {package} to install", "phase": "installing" },
     { "match": "reading headers for {slot}", "says": "Reading the files for {slot}", "phase": "importing", "counts": "item" },
     { "match": "checking its family for {slot}", "says": "Checking the model for {slot}", "phase": "importing" },
     { "match": "family: {what}", "says": "Model family: {what}", "phase": "importing" },

@@ -485,7 +485,7 @@ function Canvas({
     }
     store.onPlaced = fitOnce
     store.askMachine = () => navigate(to("machines"))
-    store.showDownload = (machine, download) => navigate(to(leadsTo({ machine, download })))
+    store.showWaited = (machine, on) => navigate(to(leadsTo({ machine, on })))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
       navigate(`${to("machines")}${chosen}`)

@@ -1330,10 +1330,23 @@ impl Engine {
     /// own; `None` once they are here, when its own shows again. Their bytes left change it quietly: only its line's estimate reads
     /// them, and a client hears it once it waits on others. A queued run keeps why it waits. A dispatchable run waits for its
     /// weights queued and owned by no dispatcher yet, so a queued run is observed whoever owns it (cl-691: its bytes froze at their
-    /// first value).
+    /// first value). An install it waits on meanwhile stays said (`observe_install`).
     pub(crate) fn observe_waits(&self, id: &str, waits: Option<Waits>) -> io::Result<()> {
+        self.waits(id, |held| Waits::of(waits, held.map(|held| held.installs.clone()).unwrap_or_default()))
+    }
+
+    /// The machine's install run `id` waits on while another job builds it (cl-1218): its item's id there and its package, shown
+    /// over its own progress as a download it waits on is; `None` once it is built. Downloads it waits on meanwhile stay said.
+    pub(crate) fn observe_install(&self, id: &str, install: Option<(&str, &str)>) -> io::Result<()> {
+        let installs: Vec<(String, String)> = install.into_iter().map(|(on, package)| (on.to_owned(), package.to_owned())).collect();
+        self.waits(id, |held| Waits::of(held.and_then(Waits::downloads), installs))
+    }
+
+    /// What run `id` waits on becomes what `change` makes of what it waited on.
+    fn waits(&self, id: &str, change: impl FnOnce(Option<&Waits>) -> Option<Waits>) -> io::Result<()> {
         let owned = self.owned.lock().contains(id);
         let mut progress = self.progress.lock();
+        let waits = change(progress.get(id).and_then(|snapshot| snapshot.waits.as_ref()).map(|(held, _)| held));
         if let (Some(snapshot), Some(now)) = (progress.get_mut(id), &waits) {
             if let Some((held, own)) = snapshot.waits.as_mut().filter(|pair| pair.0.same(now)) {
                 if held.left != now.left {

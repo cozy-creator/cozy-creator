@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import type { Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { fractionOf, useWaitsOn, waits } from "../panels/machines/activity"
+import { boxWaitWords, useWaitsOn, waits } from "../panels/machines/activity"
 import { called } from "../panels/machines/words"
 import { bytesKind, countsOf, phaseOf } from "../panels/runs/words"
 import type { ElementView } from "./CanvasStore"
@@ -21,10 +21,10 @@ export function takeNow(run: Run | undefined, on: Operation | undefined, machine
   if (run.cancel_requested) return { phase: "Canceling" }
   if (run.status === "completed") return { phase: "Saving", share: run.arriving ? share(run.arriving.bytes_done, run.arriving.bytes_total) : undefined }
   if (machine?.state === "booting") return { phase: "Starting up" }
-  // Its package installing on its machine, before it runs. Waiting on downloads it says so, with no share of its own: each is its
-  // machine's, shown once there (cl-1205).
-  if (on?.kind === "download" || run.progress?.waiting_on?.length) return { phase: "Waiting for download" }
-  if (on) return { phase: "Installing", share: fractionOf(on) }
+  // Waiting on its machine's install or downloads it says so, with no share of its own: each is its machine's, shown once there
+  // (cl-1205, cl-1218). Its machine's list not here yet, its own stage says which.
+  if (on) return { phase: boxWaitWords(on.kind) }
+  if (run.progress?.waiting_on?.length) return { phase: boxWaitWords(phaseOf(run.progress.stage) === "installing" ? "install" : "download") }
   if (!run.machine || waits(run) || run.queue_position != null) return { phase: "Queued" }
   const progress = run.progress
   if (!progress) return { phase: run.machine_state === "preparing" ? "Preparing" : "Starting" }
@@ -54,7 +54,7 @@ export function TakeProgress({ view, run }: { view: ElementView; run?: number })
   const { data: machines } = useQuery(machinesQuery(client))
   const machine = mine?.machine ? machines?.machines.find((held) => held.name === mine.machine) : undefined
   const now = takeNow(mine, on, machine)
-  const queued = now.phase === "Queued" || now.phase === "Waiting for download"
+  const queued = now.phase === "Queued" || now.phase === boxWaitWords("download") || now.phase === boxWaitWords("install")
   const where = machine ? called(machine) : (mine?.machine ?? undefined)
   // What it has made so far plays on its tile, silent (cl-907): a pick of the tile plays it with its sound.
   const glimpse = run !== undefined && view.glimpse?.media === "video" && view.glimpse.number === run ? view.glimpse : undefined

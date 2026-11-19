@@ -209,6 +209,21 @@ pub(crate) fn reads_of(engine: &Arc<crate::execution::Engine>, sender: &str) -> 
     Some(Box::new(move |id: &str| crate::others::read_by(&engine, &sender, project.as_ref(), id)))
 }
 
+/// Where a preparation says the install it waits on: its item's id in the machine's list and its package, then none.
+pub(crate) type Installs = Box<dyn Fn(Option<(&str, &str)>) + Send + Sync>;
+
+/// Run `run` told the installs it waits on (`Engine::observe_install`); none for no run.
+pub(crate) fn installs_of(engine: &Arc<crate::execution::Engine>, run: &str) -> Option<Installs> {
+    let (engine, run) = (engine.clone(), run.to_owned());
+    (!run.is_empty()).then(|| {
+        Box::new(move |install: Option<(&str, &str)>| {
+            if let Err(error) = engine.observe_install(&run, install) {
+                tracing::warn!("run {run}: the install it waits on was not shown: {error}");
+            }
+        }) as Installs
+    })
+}
+
 /// How long a resolve's read of a checkpoint's structure goes before its run says what it waits behind (cl-1185).
 const SAY_AHEAD: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -225,6 +240,9 @@ pub(crate) struct Job {
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
     /// How far its run's own readers read run `id` (a caller's id): what it waits behind names no other project's run (cl-1217).
     pub(crate) reads: Option<Reads>,
+    /// How its run is told the machine's install it waits on while another job builds it (`Engine::observe_install`): the item's
+    /// id and its package; none once it no longer waits.
+    pub(crate) installs: Option<Installs>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
     /// Its run's place in this machine's install and download lines (`origin::priority`).
@@ -262,18 +280,28 @@ impl Job {
         }
         *self.stage.lock().unwrap() = stage;
     }
-    /// Its stages move the machine's `kind` of `subject` for its run until what this answers drops.
+    /// Its stages move the machine's `kind` of `subject` for its run until what this answers drops. One another job moves keeps
+    /// that job's stage until this one's moves it.
     pub(crate) fn within(&self, kind: crate::activity::Kind, subject: &str) -> Within<'_> {
         let wait = crate::activity::wait(kind, subject, &self.caller);
-        wait.moved(&self.stage.lock().unwrap(), 0, 0);
+        wait.joins(&self.stage.lock().unwrap());
         Within(self, self.within.lock().unwrap().replace(wait))
     }
-    fn waiting(&self, reason: Option<String>) {
+    /// Its run waits on the machine's install of `package`, which another job builds, until what this answers drops (cl-1218): it is
+    /// one of the jobs that install lists, once however many wait, and its run says it waits on it, with no stage of its own.
+    pub(crate) fn awaits(&self, package: &str) -> Awaited<'_> {
+        let wait = crate::activity::wait(crate::activity::Kind::Install, package, &self.caller);
+        if let Some(tell) = &self.installs {
+            tell(Some((wait.shown(), package)));
+        }
+        Awaited(self, wait)
+    }
+    pub(crate) fn waiting(&self, reason: Option<String>) {
         if let Some(waiting) = &self.waiting {
             waiting(reason);
         }
     }
-    fn reads(&self, id: &str) -> crate::others::Read {
+    pub(crate) fn reads(&self, id: &str) -> crate::others::Read {
         self.reads.as_ref().map_or(crate::others::Read::No, |reads| reads(id))
     }
     pub(crate) fn stage(&self, stage: String) {
@@ -286,6 +314,16 @@ impl Job {
         }
         if let Some(within) = &*self.within.lock().unwrap() {
             within.moved(&stage, moved, total);
+        }
+    }
+}
+
+/// A job waiting on an install another job builds, until this drops.
+pub(crate) struct Awaited<'a>(&'a Job, #[allow(dead_code)] crate::activity::Waiting);
+impl Drop for Awaited<'_> {
+    fn drop(&mut self) {
+        if let Some(tell) = &self.0.installs {
+            tell(None);
         }
     }
 }
@@ -587,6 +625,7 @@ impl Publisher {
             stop: stop.cloned(),
             order: request.order,
             caller: service.engine.caller_id(&run),
+            installs: installs_of(&service.engine, &run),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
                     if let Err(error) = engine.waiting(&run, reason) {
@@ -1415,14 +1454,14 @@ impl Publisher {
             let holder = self.building.lock().unwrap().get(identity).cloned();
             // A guess building it goes at this run's place in line until it's built (`line::Line::raise`).
             let _raised = holder.as_deref().and_then(|holder| crate::line::INSTALLS.raise(holder, job.order));
-            // The package is this run's own; the run building it as this run's readers hear it (cl-1223).
+            // The package is this run's own; the run building it as this run's readers hear it (cl-1223), and the machine's one install
+            // of it, which its run waits on (cl-1218).
             job.waiting(Some(match crate::others::Others::of(holder.as_deref(), |id| job.reads(id)).said("and") {
                 Some(run) => format!("waiting for {run} to install {package} {release}"),
                 None => format!("waiting for another render to install {package} {release}"),
             }));
-            let _install = crate::activity::wait(crate::activity::Kind::Install, package, &job.caller);
+            let _awaited = job.awaits(package);
             lock.lock().map_err(io_failure)?;
-            job.waiting(None);
         }
         self.building.lock().unwrap().insert(identity.into(), job.caller.clone());
         let _building = Building(&self.building, identity.into());

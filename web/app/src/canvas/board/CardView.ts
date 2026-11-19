@@ -289,7 +289,7 @@ export class CardView {
     const cancel = progress.cancel ? 70 : 0
     const count = progress.count ? width(progress.count, BODY, false, true) : 0
     const words = ellipsis(progress.state, Math.max(0, w - cancel - count - (count ? 6 : 0) - 8), BODY, false, true, true)
-    // Waiting on a download, its words lead to it on its machine (cl-1205).
+    // Waiting on a download or an install, its words lead to it on its machine (cl-1205, cl-1218).
     const color = progress.phase === "failed" ? colors.failed : progress.leads ? colors.ember2 : colors.ink
     label("progress", words, 0, y + 4, w - cancel - count, { size: BODY, color, bold: true })
     if (progress.leads) this.area("waits", { x: 0, y, w: width(words, BODY, false, true), h: UNDER.cancel })

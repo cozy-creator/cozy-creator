@@ -257,6 +257,8 @@ export class Scene {
 
   views(): Iterable<[string, Held]> { return this.held }
   viewOf(name: string): Held | undefined { const id = this.o.board.byName(name)?.id; return id ? this.held.get(id) : undefined }
+  /** Where the card's "Waiting for …" words lead, as it shows them now. */
+  leadsOf(name: string) { return this.viewOf(name)?.show?.progress?.leads }
   get settled() { return this.settledZoom }
 
   private release(id: string, held: Held) {

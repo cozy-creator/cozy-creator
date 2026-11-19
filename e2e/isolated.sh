@@ -309,8 +309,8 @@ case $key in
   # plan_queue's shot reads BiRefNet's weights (cl-1107).
   cli:queue) needs='packages birefnet' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
-  cli:prefetch | cli:prefetch-retry | cli:prefetch-order) needs='packages pre' ;;
-  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre fields' ;;
+  cli:prefetch | cli:prefetch-retry | cli:prefetch-order) needs='packages pre slow' ;;
+  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre fields slow' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -321,6 +321,8 @@ case $key in
   cpu:*) needs='' ;;
   *) echo "isolated.sh runs the cli, imports or cpu suite, not '$suite'" >&2; exit 2 ;;
 esac
+# web-shared-install's package besides, whose environment takes a wheel its cell sends slowly (cl-1218).
+[ "$suite:$shard" != cli:web-shared-install ] || needs+=' slow'
 
 # hub_dependencies [package dir...]: the checkout's packages that those packages' `tensorhub` sources name (every
 # package's when none is named), by directory.
@@ -713,15 +715,18 @@ PYH3
         || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model#e2e/}.json")" >&2; exit 1; }
     done
     publish "$here/cli/project/prefetched"
-    # prefetch_disk's slow install: its lock pins the wheel its server makes the same each time, served fast while it publishes.
+    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0 and e2e-prefetched"
+    rm -f "$seed"/pre-*.safetensors
+  fi
+  if [[ " $needs " == *" slow "* ]]; then
+    # prefetch_disk's and web-shared-install's slow install (cl-1104, cl-1218): its lock pins the wheel its server makes the same each
+    # time, served fast while it publishes.
     python3 "$here/cli/project/slowinstall/wheel.py" "$seed/slow-wheel" > "$seed/slow-wheel.log" 2>&1 &
     slow_wheel=$!
     for _ in $(seq 100); do curl -fsI http://127.0.0.1:47104/e2e_slow_wheel-0.0.0-py3-none-any.whl > /dev/null 2>&1 && break; sleep 0.2; done
-    publish "$here/cli/project/slowinstall" || log "e2e-slow-install wasn't published: prefetch_disk's install line is not judged"
+    publish "$here/cli/project/slowinstall" || log "e2e-slow-install wasn't published: what installs it is not judged"
     kill "$slow_wheel" 2> /dev/null || true
     rm -rf "$seed/slow-wheel"
-    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0, e2e-prefetched and e2e-slow-install"
-    rm -f "$seed"/pre-*.safetensors
   fi
   if [[ " $needs " == *" fits "* ]]; then
     # lane_fit (xs-191): fitting/vae is fitting/whole (an 8 MiB `model`) with a 1 MiB `vae` added, as

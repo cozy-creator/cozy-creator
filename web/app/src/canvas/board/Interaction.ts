@@ -29,7 +29,7 @@ export interface InteractionOptions {
   store: CanvasStore
   /** The card part a display object belongs to, or null for the background. */
   hitOf(target: Container | null): Hit | null
-  scene: { setHover(hit: Hit | null): void; setResize(name: string | null, label?: string): void; setMarquee(box: Box | null): void }
+  scene: { setHover(hit: Hit | null): void; setResize(name: string | null, label?: string): void; setMarquee(box: Box | null): void; leadsOf(name: string): { machine: string; on: string } | undefined }
   /** The surface's latest props. */
   props(): StageProps
   invalidate(): void
@@ -266,10 +266,10 @@ export function createInteraction(o: InteractionOptions): Interaction {
     props.onNodeClick(event, node)
     if (part === "delete") { store.remove([name]); return }
     if (part === "untool") { store.takeToolOff(name); return }
-    // A box waiting on a download: its words lead to it on its machine (cl-1205).
+    // A box waiting on a download or an install: its words lead to it on its machine (cl-1205, cl-1218).
     if (part === "waits") {
-      const run = store.get(name)?.run, download = run?.progress?.waiting_on?.[0]
-      if (run?.machine && download) store.showDownload(run.machine, download)
+      const leads = scene.leadsOf(name)
+      if (leads) store.showWaited(leads.machine, leads.on)
       return
     }
     if (part === "cancel") {

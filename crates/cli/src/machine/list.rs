@@ -399,7 +399,8 @@ fn operation_line(operation: &Operation) -> (String, String) {
         (false, 0) => format!("for {}", runs.join(", ")),
         (false, others) => format!("for {} and {} more", runs.join(", "), jobs(others)),
     });
-    (format!("{} {}", operation.kind, operation.subject), cells.join(" · "))
+    // The Hub's own package without its `_/`, as a run's target is said.
+    (format!("{} {}", operation.kind, operation.subject.strip_prefix("_/").unwrap_or(&operation.subject)), cells.join(" · "))
 }
 
 /// A run the machine holds: its state there, target, stage and why it waits. One whose record
