@@ -1,0 +1,14 @@
+{
+ "note": "h94's IP-Adapter Plus for SDXL over OpenCLIP ViT-H/14 (tencent-ailab's Resampler as image_proj, each cross-attention's image key and value as ip_adapter.N); ipadapter.sdxl converts it to the layout Diffusers' loader builds (IPAdapterPlusImageProjection, SDXL's IP-Adapter attention processors)",
+ "members": [
+  {
+   "source": "h94/IP-Adapter@018e402774aeeddd60609b4ecdb7e298259dc729",
+   "member": "sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
+   "header_file": "ip-adapter-plus_sdxl_vit-h.safetensors.header",
+   "header_sha256": "ae89de1a2c8ba58fba3c4c69c7336cd2f1493c553826a6baeb93d708ff037ad6",
+   "header_bytes": 19784,
+   "full_length": 847517512,
+   "declared_source_sha256": "3f5062b8400c94b7159665b21ba5c62acdcd7682262743d7f2aefedef00e6581"
+  }
+ ]
+}

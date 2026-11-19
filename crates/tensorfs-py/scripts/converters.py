@@ -1495,6 +1495,68 @@ def h3_latent_upscaler() -> Table[TableRow]:
             "components": [{"name": "upscaler", "rows": [(k,) for k in census]}]}
 
 
+# ------------------------------------------------------------------ IP-Adapter (SDXL)
+
+IP_ADAPTER = VECTORS / "ip-adapter-headers"  # hf://h94/IP-Adapter@018e402774aeeddd60609b4ecdb7e298259dc729/sdxl_models
+
+
+def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
+    """h94's SDXL IP-Adapter Plus file (`image_proj.*`, `ip_adapter.N.*`) in the layout Diffusers' own loader converts it
+    to (`UNet2DConditionLoadersMixin._convert_ip_adapter_image_proj_to_diffusers`, `_convert_ip_adapter_attn_to_diffusers`):
+    `image_proj`, `IPAdapterPlusImageProjection`'s state_dict (each `to_kv`'s rows halved into `to_k` and `to_v`), and
+    `ip_adapter`, every SDXL cross-attention processor's `to_k_ip.0` and `to_v_ip.0` under its UNet name. Both run here on
+    a meta SDXL UNet over index stand-ins of the banked header, their loads captured."""
+    from diffusers import UNet2DConditionModel
+
+    keys = header(IP_ADAPTER / "ip-adapter-plus_sdxl_vit-h.safetensors.header")
+    stand: dict[str, torch.Tensor] = {k: torch.arange(math.prod(shape)).reshape(shape) for k, (_, shape) in keys.items()}
+    owner = {t.untyped_storage().data_ptr(): k for k, t in stand.items()}
+    parts: dict[str, dict[str, torch.Tensor]] = {"image_proj": {}, "ip_adapter": {}}
+    for k, t in stand.items():
+        part, rest = k.split(".", 1)
+        parts[part][rest] = t
+    loaded: list[tuple[torch.nn.Module, dict[str, torch.Tensor]]] = []
+    real = torch.nn.Module.load_state_dict
+
+    def capture(module: torch.nn.Module, state: dict[str, torch.Tensor], *_: object, **__: object) -> None:
+        loaded.append((module, dict(state)))
+
+    with torch.device("meta"):
+        unet = UNet2DConditionModel.from_config(unet_config)
+    torch.nn.Module.load_state_dict = capture  # type: ignore[method-assign,assignment]  # the loads are what this reads
+    try:
+        projection = unet._convert_ip_adapter_image_proj_to_diffusers(parts["image_proj"], low_cpu_mem_usage=False)
+        processors = unet._convert_ip_adapter_attn_to_diffusers([parts], low_cpu_mem_usage=False)
+    finally:
+        torch.nn.Module.load_state_dict = real  # type: ignore[method-assign]
+
+    def rows(state: dict[str, torch.Tensor], prefix: str, into: str = "") -> list[TableRow]:
+        out: list[TableRow] = []
+        for target, value in state.items():
+            source = owner[value.untyped_storage().data_ptr()]
+            shape = keys[source][1]
+            cols = math.prod(shape[1:])
+            ops = row_ops((value.reshape(len(value), -1)[:, 0] // cols).numpy(), shape)
+            local = source.removeprefix(prefix)
+            name = f"{into}{target}"
+            out.append((name,) if local == name and ops is None else (name, local) if ops is None else (name, local, ops))
+        return out
+
+    (proj_module, captured), *sites = loaded
+    assert proj_module is projection and sorted(captured) == sorted(projection.state_dict()), "image_proj"
+    proj_state = {k: captured[k] for k in projection.state_dict()}  # construction order
+    named = {id(module): name for name, module in processors.items()}
+    site_rows = [row for module, state in sites for row in rows(state, "ip_adapter.", f"{named[id(module)]}.")]
+    assert len(site_rows) == len(parts["ip_adapter"]), "every ip_adapter weight is one processor's"
+    p = projection
+    config = {"_class_name": type(p).__name__, "embed_dims": p.proj_in.in_features, "output_dims": p.proj_out.out_features,
+              "hidden_dims": p.latents.shape[2], "depth": len(p.layers), "dim_head": 64, "heads": p.layers[0].attn.heads,
+              "num_queries": p.latents.shape[1], "ffn_ratio": p.layers[0].ff[1].net[0].proj.out_features // p.latents.shape[2]}
+    return {"name": "ipadapter.sdxl", "files": {"image_proj/config.json": config},
+            "components": [{"name": "image_proj", "prefix": "image_proj.", "rows": rows(proj_state, "image_proj.")},
+                           {"name": "ip_adapter", "prefix": "ip_adapter.", "rows": site_rows}]}
+
+
 # ------------------------------------------------------------------ RelayVSR
 
 RELAYVSR = "e856773350f53036d825404c9ea9228e6dffadca"  # kopperx/RelayVSR, Apache-2.0
@@ -1725,6 +1787,7 @@ def generate() -> dict[str, Generated]:
         "ltx2.lora": ltx2_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
+        "ipadapter.sdxl": ip_adapter_sdxl(vars(unet)),
         "relayvsr": relayvsr(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},
