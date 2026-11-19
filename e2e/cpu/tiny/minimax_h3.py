@@ -332,10 +332,11 @@ CELLS: list[Cell] = [
      "same_as": "fl2va_segment/text"},
     # cr-348 C: a group's sharded stage keys its degree on its first sharded call's tensor shapes. Another seed is the
     # same key; another length is another (the degree branch first keyed H3 on its stages' PipelineState, one key a
-    # function, and refine's seed made a key a seed).
+    # function, and refine's seed made a key a seed). 6 s: H3's DiT runs no clip under 5 s (MIN_DURATION), so 3 s was 5 s's
+    # key (44455575210).
     {"entry": "fl2va_segment", "name": "text-2-ranks-seed", "payload": {**_SEGMENT, "seed": 8}, "ranks": 2,
      "empty": _EMPTY, "keys": {"fl2va_segment/text-2-ranks": True}},
-    {"entry": "fl2va_segment", "name": "text-2-ranks-short", "payload": {**_SEGMENT, "duration_s": 3}, "ranks": 2,
+    {"entry": "fl2va_segment", "name": "text-2-ranks-long", "payload": {**_SEGMENT, "duration_s": 6}, "ranks": 2,
      "empty": _EMPTY, "keys": {"fl2va_segment/text-2-ranks": False}},
     {"entry": "fl2va_segment", "name": "turbo-2-ranks", "payload": {**_SEGMENT, "steps": None, "turbo": True},
      "ranks": 2, "empty": _EMPTY, "same_as": "fl2va_segment/turbo"},
