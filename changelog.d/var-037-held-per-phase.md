@@ -1,0 +1,1 @@
+A model whose weights exceed the card no longer runs every working-memory split at its finest level after a model before it in the same call held many of its own weights at once: each plan phase budgets only for what it holds itself. PAN2 at 6 GiB had run its DiT's RoPE, norms and feed-forward in up to 1024 pieces a step, 70.9 s a step against 10.8 s uncapped (var-037).
