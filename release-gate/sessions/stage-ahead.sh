@@ -218,25 +218,31 @@ until_held "$Q_ID" back
 HELD=$(item "$Q_ID" done)
 HOG='import os, sys, time
 def room():
+    # The tightest limit on this process's path, as TensorD reads it: a shell can be inside the machine's own number (44640195326).
     m = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in open("/proc/meminfo")}
     a = m["MemAvailable"]
-    try:
-        top = open("/sys/fs/cgroup/memory.max").read().strip()
-        if top != "max":
-            st = dict(l.split() for l in open("/sys/fs/cgroup/memory.stat"))
-            a = min(a, int(top) - int(open("/sys/fs/cgroup/memory.current").read()) + int(st["inactive_file"]) + int(st["active_file"]))
-    except OSError:
-        pass
-    return a
+    path = open("/proc/self/cgroup").read().strip().split("::")[-1]
+    while True:
+        d = "/sys/fs/cgroup" + path
+        try:
+            top = open(d + "/memory.max").read().strip()
+            if top != "max":
+                st = dict(l.split() for l in open(d + "/memory.stat"))
+                a = min(a, int(top) - int(open(d + "/memory.current").read()) + int(st["inactive_file"]))
+        except (OSError, KeyError):
+            pass
+        if path in ("", "/"):
+            return a
+        path = os.path.dirname(path)
 held, piece = [], 256 << 20
-while room() > (4 << 30):
+while room() > (8 << 30):
     b = bytearray(piece)
     b[::4096] = b"\1" * len(b[::4096])
     held.append(b)
 print(f"held {len(held) * piece / 2**30:.1f} GiB", flush=True)
 time.sleep(float(sys.argv[1]))'
 say "back: q holds $HELD bytes in RAM; $(meminfo)"
-# It takes memory until the host has 4 GiB left (minutes on a 1 TB pod: 333 GiB in 3.5 min, 44638451261), holds it 30 s, then ends.
+# It takes memory until 8 GiB are left under the tightest limit on its path (minutes on a 1 TB pod: 333 GiB in 3.5 min, 44638451261), holds it 30 s, then ends.
 T=1800 py "$HOG" 30 > "$OUT/hog.txt" 2>&1 & HOG_PID=$!
 until grep -q held "$OUT/hog.txt" || ! kill -0 "$HOG_PID" 2> /dev/null; do sleep 5; done
 sleep 5
