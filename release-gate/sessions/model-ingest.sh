@@ -40,6 +40,7 @@
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
 #   version    the release (required unless held)    tags, family   set with `model edit` / `lora edit`
 #   hold       true: commits only, private, never published
+#   cut        components the release keeps (`text_encoder,tokenizer`): each commit cut to them (a header alone, same chunks)
 # tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime installs a
 # Runtime no release has there too, for a package tree that needs it: a wheel source as lib.sh `wheel_from` takes (a
 # cozy-runtime dev-build run id: its wheel carries the kernels a machine requires), or true for this session's
@@ -68,6 +69,15 @@ printf 'bf16                 commit _/x@sha256:%064d (bf16)\ncheckpoint         
   [ "$(runno probe)" = 17999 ] || fail "parsers"
 trees=("$PACKAGES"/*/)
 lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.checkpoints[]? | select(.checkpoint==$c) | .lane'; }
+# held_commits <model> <lane>: its checkpoints of that lane on the Hub, one a line.
+held_commits() { model_details "$1" 2>/dev/null | jq -r --arg l "$2" '.checkpoints[]? | select(.lane == $l) | .checkpoint' | sort; }
+# uploaded <model> <lane> <step> <before>: the commit an upload step made, as its output names it, else the one checkpoint of
+# that lane the Hub lists now and did not before (cozy 0.27.1's upload names none).
+uploaded() {
+  local c; c=$(made "$3")
+  [ -n "$c" ] && [ "$(lane_of "$1" "$c")" = "$2" ] || c=$(comm -13 <(printf '%s\n' "$4") <(held_commits "$1" "$2") | grep . | head -1)
+  echo "$c"
+}
 # released <model> <release> <lane>: that release's checkpoint in that lane.
 released() {
   model_details "$1" 2>/dev/null | jq -r --arg v "$2" --arg l "$3" '.releases[]? | select((.version // .release) == $v)
@@ -76,7 +86,7 @@ released() {
 
 # mirror <i>: mirrors[i] uploaded, called, tagged and published (unless held); 1 on its first failure.
 mirror() {
-  local it m kind verb page slug version strength j k v u lane c n N fn req pulled=' ' bf16='' from src commits=() calls=() args
+  local it m kind verb page slug version strength j k v u lane c n N fn req pulled=' ' bf16='' from src commits=() calls=() args before cuts=()
   local -A up=()
   it=$(jq -c ".[$1]" <<<"$MIRRORS"); m=$(jq -r .model <<<"$it"); kind=$(jq -r '.kind // "model"' <<<"$it")
   page=$(jq -r .page <<<"$it"); version=$(jq -r '.version // ""' <<<"$it"); slug=${m//\//-} from=$(jq -r '.from // "bf16"' <<<"$it")
@@ -113,11 +123,12 @@ mirror() {
         [ -z "$v" ] || args+=("--${k#*:}" "$v")
       done
       # A failed upload is asked once more: what reached the Hub stays there, and the second sends the rest.
-      if step "upload-$slug-$j" "$verb" upload "${args[@]}" --on "$NAME"; then c=$(made "upload-$slug-$j")
+      before=$(held_commits "$m" "$lane")
+      if step "upload-$slug-$j" "$verb" upload "${args[@]}" --on "$NAME"; then c=$(uploaded "$m" "$lane" "upload-$slug-$j" "$before")
       else
         say "$m: upload $j ($lane) failed: $(tail -2 "$OUT/upload-$slug-$j.txt" | paste -sd' '); asking again"
         step "upload-$slug-$j-again" "$verb" upload "${args[@]}" --on "$NAME" || { say "MIRROR FAILED: $m: upload $j ($lane)"; return 1; }
-        c=$(made "upload-$slug-$j-again")
+        c=$(uploaded "$m" "$lane" "upload-$slug-$j-again" "$before")
       fi
     fi
     [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: ${c:-no commit} is no $lane commit"; return 1; }
@@ -146,10 +157,25 @@ mirror() {
     [ -n "$src" ] && [ -n "$v" ] || { say "MIRROR FAILED: $m: lane $lane needs a ${k:-$from} upload and recipes"; return 1; }
     [[ $pulled == *" $src "* ]] || step "pull-$slug-$j" model install "$m@$src" --on "$NAME" || { say "MIRROR FAILED: $m: pull"; return 1; }
     pulled+="$src "
+    before=$(held_commits "$m" "$lane")
     step "$lane-$slug" model quantize "$m@$src" --lane "$lane" --package "$v" --on "$NAME" &&
-      c=$(made "$lane-$slug") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: lane $lane"; return 1; }
+      c=$(uploaded "$m" "$lane" "$lane-$slug" "$before") && [ "$(lane_of "$m" "$c")" = "$lane" ] || { say "MIRROR FAILED: $m: lane $lane"; return 1; }
     commits+=("$c"); calls+=("$lane=$c"); say "COMMIT $m $lane $c (from $src)"
   done
+  # cut (`text_encoder,tokenizer`): the components the release keeps. Each commit is uploaded again as
+  # `<model>@<commit>:<cut>`, a header of those components alone on the same chunks (se-160h), and the cuts are what is
+  # called and released.
+  v=$(jq -r '.cut // ""' <<<"$it")
+  if [ -n "$v" ]; then
+    for k in "${calls[@]}"; do
+      lane=${k%%=*} c=${k#*=}; before=$(held_commits "$m" "$lane")
+      step "cut-$slug-$lane" "$verb" upload "$m@$c:$v" "$m" --lane "$lane" --mirror "$page" --on "$NAME" &&
+        u=$(uploaded "$m" "$lane" "cut-$slug-$lane" "$before") && [ -n "$u" ] && [ "$(lane_of "$m" "$u")" = "$lane" ] ||
+        { say "MIRROR FAILED: $m: the $lane cut of $c to $v"; return 1; }
+      say "CUT $m $lane $u ($v of $c)"; cuts+=("$lane=$u")
+    done
+    calls=("${cuts[@]}"); commits=("${cuts[@]#*=}")
+  fi
   fn=$(jq -r '.call.function // ""' <<<"$it")
   for v in "${calls[@]}"; do
     [ -n "$fn" ] || break
