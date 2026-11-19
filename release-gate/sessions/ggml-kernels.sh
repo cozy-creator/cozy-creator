@@ -106,6 +106,17 @@ if [ -n "$DECODE$MAKE" ]; then
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 fi
 
+# batch-shapes as it first ran, raced on torch's default stream with no sync, beside the same cases settled, once, while
+# the card is idle (the Runtime's bench, cozy-runtime#2309; red: 44407876384, 44407881866). A raced row unlike its
+# settled one fails the session at its end; the rest goes on.
+if step batch-shapes run "$FIX/drive/batch_shapes" --on "$NAME"; then
+  n=$(runno batch-shapes); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/batch-shapes.json"
+  say "batch-shapes: $(jq -c '{served, why, rows, raced_equals_settled, repeat_identical, differs}' "$OUT/batch-shapes.json" 2>&1 | cut -c1-600)"
+  jq -e '(.served | not) or (.raced_equals_settled and .repeat_identical)' "$OUT/batch-shapes.json" > /dev/null 2>&1 || ORDER_BAD=1
+else
+  ORDER_BAD=1; say "FAILED: batch-shapes: $(grep -m1 -E '^Run .* failed|^error' "$OUT/batch-shapes.txt" | cut -c1-300)"
+fi
+
 benches=()
 if [ "$KERNELS" = 1 ]; then
   # Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
@@ -204,8 +215,10 @@ if [ -n "$DECODE$MAKE" ]; then
 fi
 
 [ -z "${RIDE_BAD:-}" ] || say "FAILED: a ride-along lane (lines above)"
-[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}" ] || fail "a ride-along lane failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
+[ -z "${ORDER_BAD:-}" ] || say "FAILED: batch-shapes: a raced read on the default stream unlike its settled one (lines above)"
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}" ] || fail "a ride-along lane or batch-shapes failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
+[ -z "${ORDER_BAD:-}" ] || fail "batch-shapes: a raced read on the default stream unlike its settled one"
 say "PASS: llama.cpp's kernels in our Runtime at stock llama.cpp's speed on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
