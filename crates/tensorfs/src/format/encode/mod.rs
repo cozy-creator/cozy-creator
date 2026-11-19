@@ -1,8 +1,9 @@
 //! The writer side of each scheme TensorFS produces (spec §6): its complete `Encoding`, and the
 //! versioned producers `quantize_measured` runs (fp8.rowwise, int8.convrot, nvfp4's minimum-error
-//! search, w4a8.convrot, SVDQuant's fit). Shared math: `elem` (f32 to element codes) and `affine`
-//! (codes to packed words, the inverse of the decode's unpack). A producer has an explicit
-//! numerical revision: stored encoding semantics do not identify a quantizer.
+//! search, w4a8.convrot, SVDQuant's fit, ggml's reference quantizers). Shared math: `elem` (f32 to
+//! element codes) and `affine` (codes to packed words, the inverse of the decode's unpack). A
+//! producer has an explicit numerical revision: stored encoding semantics do not identify a
+//! quantizer.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +14,7 @@ pub(crate) mod affine;
 pub mod elem;
 
 mod fp8;
+mod ggml;
 mod int8;
 mod mxfp8;
 mod nvfp4;
@@ -20,6 +22,7 @@ mod svdq;
 mod w4a8;
 
 pub use fp8::FP8_ROWWISE_STRATEGY;
+pub use ggml::{GGML_REF_STRATEGY, written as ggml_written};
 pub use int8::CONVROT_STRATEGY;
 pub use nvfp4::MIN_SSE_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
@@ -110,6 +113,7 @@ pub fn implementation() -> String {
         include_str!("mod.rs"),
         include_str!("int8.rs"),
         include_str!("fp8.rs"),
+        include_str!("ggml.rs"),
         include_str!("w4a8.rs"),
         include_str!("affine.rs"),
         include_str!("nvfp4.rs"),
@@ -135,6 +139,7 @@ pub fn quantize_measured(input: &Input, strategy: &str) -> Result<Quantized> {
         ("w4a8.convrot", W4A8_STRATEGY) => w4a8::fixed_measured(input),
         ("int8.convrot", CONVROT_STRATEGY) => int8::convrot_measured(input),
         ("nvfp4", MIN_SSE_STRATEGY) => nvfp4::min_sse(input),
+        (_, GGML_REF_STRATEGY) => ggml::reference(input),
         _ => Err(Error::Encode(format!(
             "no quantizer strategy {strategy:?} for {}",
             input.encoding.scheme

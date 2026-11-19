@@ -67,8 +67,10 @@ def quantize(
 ) -> Encoded:
     """Encode immutable little-endian F32 values with an explicit producer revision.
 
-    Admits int8.convrot / int8-convrot256/1 with rotation_size=256 and
-    nvfp4 / nvfp4-min-sse/1 in low-first, row-major, multiply layout.
+    Admits int8.convrot / int8-convrot256/1 with rotation_size=256,
+    nvfp4 / nvfp4-min-sse/1 in low-first, row-major, multiply layout, and
+    ggml.q8_0, ggml.q5_0, ggml.q5_1, ggml.q4_k, ggml.q5_k, ggml.q6_k / ggml-ref/1
+    (ggml's reference quantizers, llama-quantize's bytes) with the type's block_size.
     NVFP4 requires the finite nonnegative whole-tensor tensor_amax on every chunk;
     ConvRot refuses that argument. Global-scale underflow/overflow is refused.
     Complete rows may be chunked without changing output bytes. The native arithmetic
