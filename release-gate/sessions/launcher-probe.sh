@@ -7,7 +7,9 @@
 #                          the host, no WHILE node); a section that crashes its process says its exit (-11: SIGSEGV);
 #   bucket-replayed        the real 9B's four rows through the decoder on the host-replayed path (`launcher=False`),
 #                          against Transformers' teacher-forced forward;
-#   bucket                 the same on the launcher's WHILE node, last (xs-213: it crashed driver 615.71.09).
+#   bucket                 the same on the path the engine judged (the launcher, its body lowered to kernels);
+#   decode-paths           the same 512-token decode launched and host-replayed, back to back, warm: launched must
+#                          make the replayed tokens and be no more than 5% slower (the decode drive's `engine`).
 # It fails only where it can't tell: a section that crashes is what it reports, not a failure of its own.
 # params: tensorfs, runtime (required), driver (615.), seconds (1200), skus and quoted (preflight.sh).
 . "$(dirname "$0")/lib.sh"
@@ -66,5 +68,20 @@ same=$(jq -rn --slurpfile a "$OUT/bucket-detail.json" --slurpfile b "$OUT/bucket
   '($a[0].drafted_digest == $b[0].drafted_digest and $a[0].plain_digest == $b[0].plain_digest)' 2> /dev/null)
 say "bucket (the judged path) and bucket-replayed made the same tokens: ${same:-?}"
 [ "$same" = true ] || FAILED+=("tokens")
+# The same 512-token decode launched and host-replayed, back to back in one process, warm (the decode drive's
+# `engine`): the lowering costs nothing where launched ≈ replayed, the replayed path being the old launcher's speed.
+if step decode-paths run "$FIX/drive/engine" --model "model=$Q8" --on "$NAME"; then
+  record decode-paths
+  jq -r '.result.detail // ""' "$OUT/decode-paths.json" > "$OUT/decode-paths-detail.json"
+  for mode in drafted plain; do
+    say "decode $mode: launched $(jq -r --arg m "$mode" '.[$m] | "\(.ms_step) ms a step over \(.steps) steps (launcher \(.launcher))"' "$OUT/decode-paths-detail.json") · replayed $(jq -r --arg m "$mode-replayed" '.[$m] | "\(.ms_step) ms a step, its tokens equal launched for \(.same_as_launched)"' "$OUT/decode-paths-detail.json")"
+  done
+  jq -e '[.drafted, .plain] | all(.launcher == true)' "$OUT/decode-paths-detail.json" > /dev/null 2>&1 || FAILED+=("decode-not-launched")
+  jq -e '[["drafted", "drafted-replayed"], ["plain", "plain-replayed"]] as $pairs | . as $d
+    | all($pairs[]; $d[.[1]].same_as_launched == $d[.[0]].tokens and $d[.[0]].ms_step <= 1.05 * $d[.[1]].ms_step)' \
+    "$OUT/decode-paths-detail.json" > /dev/null 2>&1 || FAILED+=("decode-paths")
+else
+  FAILED+=("decode-paths")
+fi
 [ "${#FAILED[@]}" = 0 ] || fail "failed: ${FAILED[*]}"
 say "DONE: each path's outcome on driver $driver above"
