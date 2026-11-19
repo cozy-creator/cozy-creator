@@ -45,19 +45,18 @@ while read -r r; do
 done < <(cut -f1 "$W/slots" | sort -u)
 # The rest from the Hub, four at a time (as e2e/cpu/lanes.py asks).
 awk '{print NR, $0}' "$W/asked" | xargs -r -P 4 -n 2 sh -c 'timeout 120 cozy --json model show "$2" > "$0/shown.$1" 2> /dev/null' "$W"
-# A run resolves `@x.y.z` to the newest release of its x.y series (TensorD published.rs `forward`, xs-183), so a private or
-# absent x.y.z still loads when that series' newest is public (cl-1254 11-19: 0.1.0 encoders unpublished for 0.1.1).
-forward() {  # <org/name@x.y.z>: the public newer release of its series a run loads instead, or nothing
-  local n=$(timeout 120 cozy --json model show "${1%@*}" 2> /dev/null) want=${1##*@}
-  [ "$(jq -r '.visibility // empty' <<< "$n" 2> /dev/null)" = public ] || return 1
-  local got=$(jq -r '.release // .version // empty' <<< "$n" 2> /dev/null)
-  [ "${got%.*}" = "${want%.*}" ] && [ "${got##*.}" -ge "${want##*.}" ] 2> /dev/null && echo "$got"
+# A run resolves `@x.y.z` to the newest public fix of its series (TensorD published.rs `forward`, xs-183), which `cozy model
+# show` names `resolves_to`: a private x.y.z still loads when that release is public (cl-1254 11-19: 0.1.0 encoders unpublished
+# for 0.1.1). An absent release has no such answer, and fails.
+forward() {  # <org/name@x.y.z> <its model show>: the public release a run loads instead, or nothing
+  local to; to=$(jq -r '.resolves_to // empty' <<< "$2" 2> /dev/null); [ -n "$to" ] || return 1
+  [ "$(timeout 120 cozy --json model show "${1%@*}@$to" 2> /dev/null | jq -r '.visibility // empty' 2> /dev/null)" = public ] && echo "$to"
 }
 i=0
 while read -r r; do
   i=$((i + 1)) shown=$(cat "$W/shown.$i" 2> /dev/null)
   kind=$(jq -r 'if .visibility then .visibility elif .error.kind == "not_found" then "absent" else empty end' <<< "$shown" 2> /dev/null)
-  if [ "$kind" != public ] && [ -n "$kind" ] && f=$(forward "$r"); then
+  if [ "$kind" != public ] && [ -n "$kind" ] && f=$(forward "$r" "$shown"); then
     public=$((public + 1)); echo "forwarded $r ($kind): a run loads public ${r%@*}@$f: $(where "$r")"; continue
   fi
   case $kind in
