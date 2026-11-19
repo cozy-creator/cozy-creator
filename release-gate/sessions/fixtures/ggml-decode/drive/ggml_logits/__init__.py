@@ -143,7 +143,10 @@ def decode(ctx: Context, model: VisionLM) -> Agreement:
 
 def _forced(net: torch.nn.Module, prompt: list[int], made: list[int]) -> dict[str, object]:
     """`made` held against Transformers' own forward over the prompt and `made` in one pass (teacher-forced): at
-    each position whose top logit leads the next by at least 0.5, whether `made` took it; the lead where it didn't."""
+    each position whose top logit leads the next by at least 0.5, whether `made` took it. Where it didn't (`wrong`,
+    the first 8): the forward's lead and how far `made`'s token sits below its top (`gap`), and the same read from
+    Transformers' own cached decode of the same tokens, one at a time (`decoded`): whether a decode, not a prefill
+    pass, takes `made`'s token there."""
     ids = torch.tensor([prompt + made[:-1]], device=net.device)
     with torch.inference_mode():
         logits = net(input_ids=ids).logits[0, len(prompt) - 1 :].float()
@@ -151,8 +154,35 @@ def _forced(net: torch.nn.Module, prompt: list[int], made: list[int]) -> dict[st
     choice, lead = top.indices[:, 0].tolist(), (top.values[:, 0] - top.values[:, 1]).tolist()
     clear = [t for t in range(len(made)) if lead[t] >= 0.5]
     wrong = [t for t in clear if choice[t] != made[t]]
-    return {"clear": len(clear), "agreed": len(clear) - len(wrong), "first_wrong": wrong[0] if wrong else None,
-            "lead": [round(x, 3) for x in lead[:12]]}
+    found: dict[str, object] = {"clear": len(clear), "agreed": len(clear) - len(wrong),
+                                "first_wrong": wrong[0] if wrong else None, "lead": [round(x, 3) for x in lead[:12]]}
+    if wrong:
+        at = wrong[:8]
+        found["wrong"] = [{"at": t, "lead": round(lead[t], 3), "gap": round(float(top.values[t, 0] - logits[t, made[t]]), 3),
+                           "top": round(float(top.values[t, 0]), 3)} for t in at]  # fmt: skip
+        found["decoded"] = _decoded(net, prompt, made, at)
+    return found
+
+
+def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], at: list[int]) -> list[dict[str, object]] | str:
+    """Transformers' cached decode of `prompt` then `made`, a token at a time: at each of `at`, whether its top choice
+    is `made`'s token, its lead, and how far `made`'s token sits below its top."""
+    rows: list[dict[str, object]] = []
+    try:
+        with torch.inference_mode():
+            out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True)
+            for t in range(max(at) + 1):
+                last = out.logits[0, -1].float()
+                if t in at:
+                    v, i = last.topk(2)
+                    rows.append({"at": t, "takes_made": int(i[0]) == made[t], "lead": round(float(v[0] - v[1]), 3),
+                                 "gap": round(float(v[0] - last[made[t]]), 3)})  # fmt: skip
+                if t < max(at):
+                    out = net(input_ids=torch.tensor([[made[t]]], device=net.device), past_key_values=out.past_key_values,
+                              use_cache=True)  # fmt: skip
+    except Exception as exc:  # told, not raised: the check above stands
+        return f"{type(exc).__name__}: {exc}"[:300]
+    return rows
 
 
 def _profile(decoder: object, ids: list[int]) -> dict[str, object]:
