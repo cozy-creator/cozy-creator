@@ -37,7 +37,7 @@ jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")
   and (.seed | type == "number") and (.duration_s | type == "number") and (.gpus | type == "number"))' <<<"$CELLS" > /dev/null || fail "cells"
 while read -r k; do grep -q "^\[models\.$k\]" "$BENCH/cells.toml" || fail "cells.toml has no model $k"; done < <(jq -r '.[].key' <<<"$CELLS")
 # The requests: cold, then warm, each cell's own.
-REQS=$(jq -c --arg tree "$TREE" 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true), cozy: (.cozy // true),
+REQS=$(jq -c --arg tree "$TREE" 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy != false), cozy: (.cozy != false),
   lane: (.lane // "int8"), tree: (.tree // $tree),
   requests: [{prompt, seed}, {prompt: (.prompt + ", at dawn"), seed: (.seed + 100000)}]})' <<<"$CELLS")
 PLAIN=${RUNNER_TEMP:-$OUT/..}/ltx-comfy-plain; rm -rf "$PLAIN"; mkdir -p "$PLAIN"
