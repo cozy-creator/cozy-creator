@@ -272,6 +272,20 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
 
 
 @app.entrypoint(accelerator=True)
+def rows(ctx: Context, model: VisionLM) -> Agreement:
+    """`VisionLM.ask` with 17 questions in one call, one more than the engine decodes at once (xs-213's fallback routes,
+    the engine-routes session): every row's answer, and which engine `VisionLM` holds; the run's `.engine` note says which
+    served the call and why."""
+    from cozy_runtime.vlm import Question
+
+    questions = [Question(text=f"In one sentence: what is {n} plus {n}?") for n in range(17)]
+    answers = model.ask(questions, system="", thinking=False, stop=[], max_new_tokens=24, presence_penalty=0.0,
+                        temperature=0.0, top_p=1.0, seed=0)  # fmt: skip
+    return Agreement(json.dumps({"engine": type(model.engine).__name__, "rows": len(answers),
+                                 "answered": sum(bool(a.strip()) for a in answers), "first": answers[0][:160]}))
+
+
+@app.entrypoint(accelerator=True)
 def head_reads(ctx: Context, model: VisionLM) -> Agreement:
     """How often a decode step reads a plain output head's weight, with the MTP head drafting and without: `PROMPT`
     decoded for 12 tokens, sampled, so its steps are new to an engine that has recorded the greedy ones and Python runs
