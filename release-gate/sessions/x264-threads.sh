@@ -4,14 +4,14 @@
 # change's must use more than 8 threads and save faster. Without `rent`, $0: the quote, and the checks before it.
 # params:
 #   runtime  the cozy-runtime dev-build run id of the change's Runtime (required)
-#   frames   the clip's frames (default 360: 15 s at 24 fps)
+#   frames   the clip's frames (default 720: 30 s at 24 fps, 2.2 GB of frames, under the 4 GiB a save may snapshot)
 #   min_cpus the fewest CPUs the rental must give for the arms to differ (default 16)
 #   seconds  what the cap must buy (default 1200)
 #   local    true: both arms on the runner's own machine, no rental and no comparison: the fixture's path checked for $0
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/x264/save.py
-SRC=$(param runtime '') FRAMES=$(param frames 360) MIN=$(param min_cpus 16) LOCAL=$(param local false)
+SRC=$(param runtime '') FRAMES=$(param frames 720) MIN=$(param min_cpus 16) LOCAL=$(param local false)
 [ -f "$FIX" ] || fail "no fixtures/x264/save.py"
 [[ $SRC =~ ^[0-9]+$ ]] || fail "runtime: a cozy-runtime dev-build run id"
 W=$(wheel_from "$OUT/wheel" "$SRC") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $SRC"
@@ -22,8 +22,8 @@ else
   quote "$(param seconds 1200)"
   rent
 fi
-# arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and save seconds (the run's
-# output phase: its first `output_encoding` to its `output_finished`, the encode alone) in <name>.facts, and said.
+# arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and encode seconds (the run's
+# start to its settling, less the call's own time making the frames) in <name>.facts, and said.
 arm() {
   step "$1" run "$FIX/save" "arm=$1" "frames:=$FRAMES" --on "$NAME" --output "$OUT/$1" || fail "$1: the save failed: $(tail -c 300 "$OUT/$1.txt")"
   local n mp4 threads cpus secs
@@ -35,13 +35,8 @@ arm() {
   threads=$(grep -aoE ' threads=[0-9]+' "$mp4" | head -1 | cut -d= -f2)
   [ -n "$threads" ] || fail "$1: $mp4 carries no x264 settings"
   cpus=$(jq -r '.result.value.cpus // .result.cpus // empty' "$OUT/$1.json")
-  [ -n "$cpus" ] || fail "$1: run $n's result names no cpus: $(jq -c .result "$OUT/$1.json" | head -c 300)"
-  # Its lines, replayed: the output phase's marks.
-  timeout 120 cozy --json run watch "$n" > "$OUT/$1.ndjson" 2>&1
-  secs=$(grep '^{' "$OUT/$1.ndjson" | jq -rs '[.[] | select(.type == "run.log") | .text | fromjson? | objects | select(.phase)] as $p
-    | ($p | map(select(.phase == "output_finished"))[0].at_ns) as $end | ($p | map(select(.phase == "output_encoding"))[0].at_ns) as $begin
-    | if $end and $begin then (($end - $begin) / 1e7 | round) / 100 else empty end')
-  [ -n "$secs" ] || fail "$1: run $n's lines carry no output phase: $(grep -c . "$OUT/$1.ndjson") lines"
+  secs=$(jq -r '((.settled_at_ms - .started_at_ms) / 1000 - (.result.value.made_s // .result.made_s)) * 100 | round / 100' "$OUT/$1.json" 2>/dev/null)
+  [ -n "$cpus" ] && [ -n "$secs" ] || fail "$1: run $n's record lacks cpus, made_s or its times: $(jq -c '{started_at_ms, settled_at_ms, result}' "$OUT/$1.json" | head -c 300)"
   printf '{"threads": %s, "cpus": %s, "save_s": %s}\n' "$threads" "$cpus" "$secs" > "$OUT/$1.facts"
   echo "$1: run $n, $threads x264 threads of $cpus CPUs, encoded in $secs s" | tee -a "$R"
 }
