@@ -144,8 +144,9 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 _FOX = _shared.picture("fox", 320, 256)
 #: 1 MP, the least Qwen-Image-2.1 serves, at its fixed 40 steps.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 1, "prompt_upsampling": False}
-#: The enhancer runs as upstream's, to its full token budget, which tiny weights spend whole (4-7 min a cell on CPU): only
-#: `upsampled` and `edit-upsampled` take it; the `image` cells test their bindings.
+#: The enhancer runs as upstream's, to its full token budget, which tiny weights spend whole (3-7 min a cell on CPU): only
+#: `generate/upsampled` (words) and `image/edit-upsampled` (an edit, the box's default path) take it; the other `image`
+#: cells test their bindings.
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -153,9 +154,10 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "upsampled", "payload": {"prompt": _prompt("a red fox"), **_SMALL, "prompt_upsampling": True}},
     {"entry": "generate", "name": "edit", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
-    {"entry": "generate", "name": "edit-upsampled",
-     "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL, "prompt_upsampling": True},
-     "files": {"prompt.references.0.file": _FOX}},
+    # The page's default path: the image tool, Turbo, with its own enhancer rule (`_BOX_NEEDS`) and upsampling on.
+    {"entry": "image", "name": "edit-upsampled",
+     "payload": {"instructions": _prompt("the fox in <fox> wears a hat", "fox"), "seed": 7, "megapixels": 1},
+     "files": {"instructions.references.0.file": _FOX}},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
                                                   "megapixels": 1, "prompt_upsampling": False}},
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},

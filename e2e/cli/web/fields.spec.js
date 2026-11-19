@@ -19,6 +19,8 @@ const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
 const ROUNDED = fixtureTool('rounded.py/shot');
 const DRAW = fixtureTool('draw.py/draw');
+// A slot with no model family (its `weights`, defaulting to BiRefNet): the picker lists its default alone (cl-1258).
+const WEIGHTED = fixtureTool('weighted.py/weighted');
 const RUN_MS = 120_000;
 // web/app/src/canvas/ratios.ts's.
 const STANDARD = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
@@ -58,14 +60,15 @@ test('fields', async ({ page, project, api, cli, guards }) => {
   await api.post(project.at('/assets/played/versions'), { source: await project.upload(MP4) });
   await project.add({ name: 'when', tool: WHEN, kind: 'image', fields: { instructions: 'a lighthouse at dusk', creativity: 'wild' }, at: { x: 720, y: 0 } });
   await project.add({ name: 'scene', tool: 'minimax-h3/generate', kind: 'video', fields: { summary: 'A harbour at dusk.', beats: [{ description: 'Boats come in.', duration: 5 }] }, at: { x: 360, y: 460 } });
+  await project.add({ name: 'weighed', tool: WEIGHTED, kind: 'image', fields: { instructions: 'a dot' }, at: { x: 1080, y: 460 } });
   await project.add({ name: 'still', tool: qwen.id, kind: 'image', fields: { [qwen.fields.find((field) => field.type === 'prompt').field]: 'A lighthouse.' }, at: { x: 720, y: 460 } });
-  let every, when;
+  let every, when, weighted;
   await expect.poll(async () => {
     const tools = await listed();
-    [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
-    return Boolean(every && when);
+    [every, when, weighted] = [EVERY, WHEN, WEIGHTED].map((id) => tools.find((tool) => tool.local && tool.id === id));
+    return Boolean(every && when && weighted);
   }, { message: 'the project lists its local tools', timeout: 180_000 }).toBe(true);
-  for (const name of ['walk', 'coast', 'every', 'played', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  for (const name of ['walk', 'coast', 'every', 'played', 'when', 'scene', 'weighed', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const fieldsOf = async (name) => (await project.asset(name))?.fields ?? {};
@@ -240,6 +243,26 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     await page.mouse.click(after.x + 8, after.y + after.height - 8);
     await expect(picker, 'a press outside closes it').toHaveCount(0);
     await expect(region, 'and only it: Focus stays').toBeVisible();
+    await leave(page);
+  });
+
+  await test.step('a slot with no model family lists its default and never says it has no choices (cl-1258)', async () => {
+    await fit(page);
+    await focus(page, 'weighed');
+    await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+    await expect(picker).toBeVisible();
+    const row = picker.locator('button[data-model-slot="weights"]');
+    if (await row.count()) await row.click();
+    const slot = picker.locator('section.model-picker-slot[data-model-slot="weights"]');
+    await expect(slot, 'weights opens').toBeVisible();
+    // No family: its search is off (ModelPicker.tsx), so this is the slot cl-1258 fixed.
+    await expect(slot.getByRole('searchbox', { name: 'Search models for weights', exact: true }), 'weights: a slot with no family').toBeDisabled();
+    await expect(slot.locator('.model-picker-choices [role="radio"]'), 'weights: its default, listed').toHaveCount(1);
+    await expect.soft(slot.getByText("Compatible choices aren't available for this slot."), "weights: no 'no choices' line over its default").toHaveCount(0);
+    await page.screenshot({ path: join(process.env.OUT, 'web', 'fields', 'no-family-slot.png') });
+    await page.keyboard.press('Escape');
+    await expect(picker, 'Escape closes it').toHaveCount(0);
     await leave(page);
   });
 
