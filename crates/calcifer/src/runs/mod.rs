@@ -606,13 +606,17 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         _ => (false, 1),
     };
     let mut offers = vec![];
+    // A machine the run names that has no GPU, where nothing measured says it runs without one: it goes there, warned, as asked (the
+    // release session, 11-18: fix, don't refuse); the refusal is placement's, for a run naming none.
+    let mut named_gpuless = false;
     // Placed among machines here rather than named: one of several, or a `new` run a machine up or on its way finishes sooner.
     let mut placed = set.len() > 1;
     // One machine is quoted too, for its disk's room (cl-1175): a run whose weights it has no room for never starts to download them.
     let one = purpose == For::Run && matches!(on, On::Machine(_));
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates || one => {
-            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, input.as_ref(), size, gpus, needs_gpu, count, !estimates).await;
+            let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, input.as_ref(), &submit.spec.models, size, gpus, needs_gpu, count, !estimates).await;
+            named_gpuless = !ask.on.is_empty() && matches!(&chosen, Err(e) if e.code == "machine_no_gpu");
             // Why a machine quoted nothing is an estimate's answer; a run goes to the one that finishes soonest, and says nothing of the others.
             if estimates {
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Info, message }));
@@ -622,6 +626,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             if let Err(e) = &chosen
                 && matches!(e.code.as_str(), "machine_disk_full" | "machine_no_gpu")
                 && !estimates
+                && !named_gpuless
             {
                 return Err(e.clone().next(format!("cozy run {} … --on new", ask.target)));
             }
@@ -633,7 +638,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
                         chosen
                     }
                     // An estimate shows each machine's refusal; a run nothing can take is refused, naming them.
-                    Err(_) if estimates => on,
+                    Err(_) if estimates || named_gpuless => on,
                     Err(e) => return Err(e),
                 };
                 // Held for a machine on its way that finishes it sooner, it says so (cl-915).
@@ -669,8 +674,9 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         submit.on = on.clone();
     }
     api::calcifer::local_usable(&submit.on.to_string())?;
-    // What its machines quoted placed it by what says it runs there (cl-1279); local code, which none quotes, goes where it's named.
-    if offers.is_empty()
+    // What its machines quoted placed it by what says it runs there (cl-1279); local code, which none quotes, and a machine named
+    // for it, go where named, warned.
+    if (offers.is_empty() || named_gpuless)
         && let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none())
     {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
@@ -724,7 +730,7 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
         return None;
     }
     let input: Option<serde_json::Value> = run.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok());
-    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, input.as_ref(), run.size, run.gpus, run.gpu, 1, false).await;
+    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, input.as_ref(), &run.spec.models, run.size, run.gpus, run.gpu, 1, false).await;
     let (chosen, _) = chosen.ok()?;
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;

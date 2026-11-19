@@ -3,16 +3,19 @@
 # on one picture (its first call here, a fresh executor: cold), then on another (warm), each watched by a sampler of the machine's
 # executors: the most host memory they held and the most cores they used. Prints the row as its package's `benchmarks.json` takes it
 # (`gpus: 0`; api::estimate::Benchmark) in results.txt and rows.json. It judges only that both runs completed on `local`.
+# The row names the lane and the model (`org/name@release`) its run's record says its main slot ran.
 # params:
 #   function  the function, as `cozy run` names it (default birefnet/remove_background)
-#   field     its file field, given a 1024×1024 picture (default image)
+#   field     its file field, given a 1024×1024 picture (default image; "" for none)
+#   args      more `cozy run` arguments, a JSON list: the request and `--model` (default [])
 . "$(dirname "$0")/lib.sh"
 fail() {
   cozy machine logs local tensord --since 2h -n 0 > "$OUT/tensord-local.log" 2>&1
   say "FAIL: $*"; RC=1; exit 1
 }
 FUNCTION=$(param function birefnet/remove_background) FIELD=$(param field image)
-[[ $FUNCTION =~ ^[a-z0-9._-]+/[a-z0-9_-]+$ && $FIELD =~ ^[a-z0-9_.]+$ ]] || fail "function $FUNCTION, field $FIELD"
+[[ $FUNCTION =~ ^[a-z0-9._-]+/[a-z0-9_-]+$ && $FIELD =~ ^[a-z0-9_.]*$ ]] || fail "function $FUNCTION, field $FIELD"
+mapfile -t ARGS < <(param args '[]' | jq -r '.[]') || fail "args isn't a JSON list"
 for tool in jq ffmpeg python3 lscpu; do command -v "$tool" > /dev/null || fail "no $tool"; done
 mkdir -p "$OUT/runs"
 for n in 1 2 3; do
@@ -91,19 +94,22 @@ PY
      memoized: (.memo != null), sampled: $s[0], measured_memory: (.measurements.memory // null | if . then {peak_allocated_bytes, peak_reserved_bytes} else null end)}' "$OUT/runs/$n.json" | cut -c1-900)"
 }
 
-sampled cold run "$FUNCTION" --file "$FIELD=$OUT/picture-1.png" --on local
-sampled warm run "$FUNCTION" --file "$FIELD=$OUT/picture-2.png" --on local
-sampled warm-again run "$FUNCTION" --file "$FIELD=$OUT/picture-3.png" --on local
+given() { [ -z "$FIELD" ] || echo "--file=$FIELD=$OUT/picture-$1.png"; }
+sampled cold run "$FUNCTION" $(given 1) "${ARGS[@]}" --on local
+sampled warm run "$FUNCTION" $(given 2) "${ARGS[@]}" --on local
+sampled warm-again run "$FUNCTION" $(given 3) "${ARGS[@]}" --on local
 
 cozy --json machine show local > "$OUT/local-after.json" 2>&1
 say "what local timed: $(jq -c '[.status.times[]? | {function, runs}]' "$OUT/local-after.json" 2> /dev/null | cut -c1-900)"
 jq -n --arg function "${FUNCTION##*/}" --arg cpu "$CPU" --argjson cores "$CORES" --arg cozy "$(cozy --version | awk '{print $2}')" \
   --arg runtime "$(jq -r '.status.runtime // empty' "$OUT/local-after.json")" --arg note "pod-session ${GITHUB_RUN_ID:-local}: GitHub ubuntu-24.04 runner, $(nproc) threads" \
   --slurpfile cold "$OUT/runs/cold.json" --slurpfile warm "$OUT/runs/warm.json" --slurpfile cs "$OUT/cold.sample.json" --slurpfile ws "$OUT/warm.sample.json" \
-  '[{function: $function, gpus: 0, cpu: $cpu, cores: $cores, threads: ([$cs[0].cores, $ws[0].cores] | max | ceil),
-     request: {}, warm_ms: $warm[0].execution_ms, cold_ms: $cold[0].execution_ms,
+  '([$cold[0].measurements.models[]?, $cold[0].calls[]?.measurements.models[]?] | first // {}) as $m
+   | [{function: $function, gpus: 0, cpu: $cpu, cores: $cores, threads: ([$cs[0].cores, $ws[0].cores] | max | ceil),
+     request: {}, lane: ($m.lane // ""), model: (if $m.repository then "\($m.repository)@\($m.release)" else "" end),
+     warm_ms: $warm[0].execution_ms, cold_ms: $cold[0].execution_ms,
      peak_host_bytes: ([$cs[0].peak_host_bytes, $ws[0].peak_host_bytes] | max),
-     ran_on: {cozy: $cozy, runtime: $runtime}, note: $note} | with_entries(select(.value != 0 or .key == "gpus"))]' > "$OUT/rows.json" || fail "the row wasn't written"
+     ran_on: {cozy: $cozy, runtime: $runtime}, note: $note} | with_entries(select((.value != 0 and .value != "") or .key == "gpus"))]' > "$OUT/rows.json" || fail "the row wasn't written"
 say "the CPU row of $FUNCTION:"; jq -c '.[]' "$OUT/rows.json" | tee -a "$R"
 jq -e '.[0] | .warm_ms > 0 and .cold_ms > 0' "$OUT/rows.json" > /dev/null || fail "the row lacks a time"
 jq -e '.[0] | .peak_host_bytes > 0 and .threads > 0' "$OUT/rows.json" > /dev/null || say "the sampler read no memory or cores: $(cat "$OUT/cold.sample.json" "$OUT/warm.sample.json" 2> /dev/null | tr '\n' ' ')"

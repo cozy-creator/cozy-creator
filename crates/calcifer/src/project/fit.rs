@@ -215,7 +215,7 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     let placed = placed(api, hub, package, release, function).await?;
     let here = run_ms as f64;
     let references = crate::placement::references_for(api, [job], vec![]);
-    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::lane_of(&job.models), &placed.offers, (!cpu).then_some(here))?;
+    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::runs_of(&job.models), &placed.offers, (!cpu).then_some(here))?;
     let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
@@ -287,7 +287,7 @@ fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Plac
         return ran.min_by(|a, b| a.1.total_cmp(&b.1));
     };
     let references = crate::placement::references(&api.machines.hubs, &[target.to_owned()]);
-    let (rent, ms) = recommended(&references, target, &size_of(made), "", &placed.offers, took_s.map(|s| s * 1e3))?;
+    let (rent, ms) = recommended(&references, target, &size_of(made), Default::default(), &placed.offers, took_s.map(|s| s * 1e3))?;
     Some((rent.card, ms / 1e3))
 }
 
@@ -547,10 +547,10 @@ fn rent_for(machine: &::api::hub::types::RentalPlacementMachine) -> RentFor {
 /// source's) measured (`References::measured`, never a speed-scaled guess) that run it in under a third of `here_ms` and a minute sooner
 /// (with no GPU here, `None`: any), the cheapest a render (its price times its time there); of those as cheap, the faster. And its time
 /// there, ms.
-fn recommended(references: &References, function: &str, size: &JobSize, lane: &str, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
+fn recommended(references: &References, function: &str, size: &JobSize, runs: api::estimate::Runs, offers: &[RentFor], here_ms: Option<f64>) -> Option<(RentFor, f64)> {
     let cost = |(offer, ms): &(&RentFor, f64)| offer.usd_micros_per_hour as f64 * ms;
     (offers.iter())
-        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size, lane)?.0)))
+        .filter_map(|offer| Some((offer, references.measured(function, &offer.card, size, runs)?.0)))
         .filter(|(_, ms)| here_ms.is_none_or(|here| here > SLOWER * ms && here - ms > LONGER_S * 1e3))
         .min_by(|a, b| cost(a).total_cmp(&cost(b)).then(a.1.total_cmp(&b.1)))
         .map(|(offer, ms)| (offer.clone(), ms))
