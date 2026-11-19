@@ -18,6 +18,8 @@ mod cache;
 pub mod checks;
 mod observer;
 mod escape;
+mod host;
+pub use host::{fallback, release_host, set_fallback};
 pub use escape::{EscapeRecord, Verdict, escapes_take, pass_mark, set_site, site_id};
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
@@ -156,6 +158,16 @@ pub struct WorkingStats {
     pub cache_pending_bytes: usize,
     pub cache_ready_bytes: usize,
     pub caches: usize,
+    /// The last resort (`host`): pinned host memory its segments hold now and at most, the segments
+    /// pinned, the allocations served there and their bytes, and those host memory refused too.
+    pub host_working_bytes: usize,
+    pub host_working_peak: usize,
+    pub host_working_allocs: u64,
+    pub host_working_served: u64,
+    pub host_working_served_bytes: u64,
+    pub host_working_refusals: u64,
+    /// Refusals on a thread with a cheaper way out (`set_fallback`): its caller answered them.
+    pub answered_ooms: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,6 +204,8 @@ struct Block {
     reusable_on: Option<u64>,
     // A live eager block's (birth pass, site) in `escape`'s tally.
     tally: Option<(u32, u32)>,
+    // In pinned host memory (`host`): it takes no room on the card and counts in nothing that judges it.
+    host: bool,
 }
 
 impl Segment {
@@ -200,7 +214,7 @@ impl Segment {
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0 }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, host: false }
     }
 
     fn backed(&self) -> bool {
@@ -236,11 +250,14 @@ impl Block {
             life: Life::Ready,
             reusable_on: None,
             tally: None,
+            host: false,
         }
     }
 
     fn charge(&self) -> usize {
-        if self.life != Life::Ready || self.reusable_on.is_some() {
+        if self.host {
+            0
+        } else if self.life != Life::Ready || self.reusable_on.is_some() {
             self.capacity
         } else {
             0
@@ -274,6 +291,8 @@ struct Segment {
     touched: u64,
     // Unmapped VA after it (`checks::guard`), which goes back with it.
     guard: usize,
+    // One pinned host allocation (`host`), at its own address: goes whole, never by `trim_ready`.
+    host: bool,
 }
 
 #[derive(Default)]
@@ -343,6 +362,8 @@ pub(crate) struct State {
     escapes: escape::Escapes,
     /// The last allocation refused here, as it found the card (`refusal`).
     refusal: Option<Refusal>,
+    /// Free blocks of host segments by (capacity, address): only the last resort takes them.
+    host_free: BTreeSet<(usize, u64)>,
     /// Small weight regions packed back to back, their pages shared (cr-317).
     pub(crate) packs: crate::Packs,
 }
@@ -363,6 +384,8 @@ pub struct Refusal {
     pub caches: usize,
     /// Every lever of the reclaim order was tried first; false for a graph pool's own shortfall.
     pub offered: bool,
+    /// Host memory refused it too, as the last resort found it.
+    pub host: Option<crate::HostShort>,
 }
 
 impl Refusal {
@@ -372,12 +395,13 @@ impl Refusal {
         Self {
             requested,
             capacity: owner.total.load(Ordering::Acquire).min(owner.capacity()),
-            working_live: state.blocks.values().filter(|b| b.life == Life::Live && !b.scratch).map(|b| b.capacity).sum(),
+            working_live: state.blocks.values().filter(|b| b.life == Life::Live && !b.scratch && !b.host).map(|b| b.capacity).sum(),
             pinned: owner.held.load(Ordering::Acquire),
             weights_resident: owner.pages.load(Ordering::Acquire),
             pools: state.segments.values().filter(|s| s.pool.is_some() && s.backed()).map(|s| s.bytes).sum(),
             caches: caches.cache_mapped_bytes,
             offered,
+            host: None,
         }
     }
 }
@@ -391,6 +415,10 @@ pub fn refusal(device: i32) -> Result<Option<Refusal>> {
 impl State {
     /// A free block onto its list, and a run's onto the cut index too. The block is in the table.
     fn list(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        if self.blocks.get(&ptr).is_some_and(|block| block.host) {
+            self.host_free.insert((key.1, ptr));
+            return;
+        }
         self.free.entry(key).or_default().push(ptr);
         if key.0.is_none() && self.blocks.get(&ptr).is_some_and(|block| self.segments[&block.segment].size_class > LARGE) {
             self.runs.insert((key.1, ptr));
@@ -398,6 +426,7 @@ impl State {
     }
 
     fn unlist(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        self.host_free.remove(&(key.1, ptr));
         self.runs.remove(&(key.1, ptr));
         if let Some(slots) = self.free.get_mut(&key) {
             if let Some(index) = slots.iter().rposition(|listed| *listed == ptr) {
@@ -468,6 +497,9 @@ impl State {
 
     /// What of this segment could go back now.
     fn releasable(&self, base: u64, segment: &Segment) -> usize {
+        if segment.host {
+            return 0;
+        }
         segment.chunks.iter()
             .filter(|chunk| chunk.handle.is_some() && self.chunk_free(base, chunk))
             .map(|chunk| chunk.bytes)
@@ -916,7 +948,7 @@ impl Device {
     /// A wholly free completed slab page of another class becomes this class's: it is one handle.
     fn reslab(state: &mut State, class: usize) -> Option<()> {
         let (base, bytes) = state.segments.iter()
-            .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
+            .filter(|(_, segment)| segment.pool.is_none() && !segment.host && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
             .find(|(base, segment)| state.blocks.range(**base..**base + segment.bytes as u64)
                 .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none()))
             .map(|(base, segment)| (*base, segment.bytes))?;
@@ -1299,7 +1331,7 @@ impl Device {
         let mut candidates = Vec::new();
         let mut large = Vec::new();
         for (base, segment) in &state.segments {
-            if preserve.contains(base) {
+            if preserve.contains(base) || segment.host {
                 continue;
             }
             if exclude.is_some() && segment.pool == exclude {
@@ -1628,10 +1660,28 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
-    if matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. })) {
+    let refused = matches!(result, Err(Error::OutOfMemory { .. } | Error::Exhausted { .. }));
+    // The last resort, for what nothing cheaper answers in a request; never a library's workspace, which
+    // Torch keeps for good on its stream and every graph there would bind.
+    let mut host = None;
+    if refused && !workspace && !fallback() && owner.in_request() {
+        match owner.last_resort(device, class, bytes, stream)? {
+            Ok(ptr) => {
+                // The card was short for this leaf's level: the next selection knows.
+                let mut state = owner.lock()?;
+                split::refused(&mut state, bytes, stream);
+                return Ok(ptr);
+            }
+            Err(short) => host = short,
+        }
+    }
+    if refused {
         let mut state = owner.lock()?;
         state.stats.ooms += 1;
-        state.refusal = Some(Refusal::read(owner, &state, bytes, true));
+        if fallback() {
+            state.stats.answered_ooms += 1;
+        }
+        state.refusal = Some(Refusal { host, ..Refusal::read(owner, &state, bytes, true) });
         state.escapes.refused(owner.owned().saturating_add(bytes), escape::room_held(owner));
         split::refused(&mut state, bytes, stream);
     }
@@ -1720,7 +1770,8 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         || (block.life == Life::Captured && block.reusable_on.is_some());
     let class = block.capacity;
     let reusable_on = block.reusable_on;
-    let observed = measured.then(|| (block.charge(), block.phase, block.segment));
+    let host = block.host;
+    let observed = (measured && !host).then(|| (block.charge(), block.phase, block.segment));
     if let Some(key) = block.tally.take() {
         state.escapes.died(key, class);
     }
@@ -1734,7 +1785,9 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if reusable && run {
         Device::merge_run(&mut state, ptr);
     }
-    state.stats.allocated_bytes -= requested;
+    if !host {
+        state.stats.allocated_bytes -= requested;
+    }
     state.stats.frees += 1;
     Ok(())
 }
@@ -1791,6 +1844,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     let phase = block.phase;
     let segment = block.segment;
     let tally = block.tally.take();
+    let host = block.host;
     block.requested = 0;
     block.life = if completed {
         Life::Ready
@@ -1810,20 +1864,24 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     if completed {
         state.list((None, capacity, None), ptr);
     }
-    state.phase_changed(
-        capacity,
-        if completed { 0 } else { capacity },
-        phase,
-        phase,
-        segment,
-    );
+    if !host {
+        state.phase_changed(
+            capacity,
+            if completed { 0 } else { capacity },
+            phase,
+            phase,
+            segment,
+        );
+    }
     if state.phases.active.is_some() {
         split::refresh(&mut state);
     }
     if completed {
         Device::merge_run(&mut state, ptr);
     }
-    state.stats.allocated_bytes -= requested;
+    if !host {
+        state.stats.allocated_bytes -= requested;
+    }
     state.stats.frees += 1;
     Ok(())
 }
@@ -2390,24 +2448,13 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     let mut stats = state.stats;
     stats.room_moves = owner.room_epoch();
     stats.room_outside_moves = owner.room_outside.load(Ordering::Relaxed);
-    stats.allocated_capacity = state
-        .blocks
-        .values()
-        .filter(|b| b.life == Life::Live)
-        .map(|b| b.capacity)
-        .sum();
-    stats.pending_bytes = state
-        .blocks
-        .values()
+    let card = || state.blocks.values().filter(|b| !b.host);
+    stats.allocated_capacity = card().filter(|b| b.life == Life::Live).map(|b| b.capacity).sum();
+    stats.pending_bytes = card()
         .filter(|b| b.life != Life::Live && (b.life != Life::Ready || b.reusable_on.is_some()))
         .map(|b| b.capacity)
         .sum();
-    stats.free_bytes = state
-        .blocks
-        .values()
-        .filter(|b| b.life == Life::Ready && b.reusable_on.is_none())
-        .map(|b| b.capacity)
-        .sum();
+    stats.free_bytes = card().filter(|b| b.life == Life::Ready && b.reusable_on.is_none()).map(|b| b.capacity).sum();
     stats.reclaimable_bytes = state.reusable_eager_pages();
     let unmapped: usize = state.segments.values().map(Segment::unbacked).sum();
     stats.unassigned_bytes = (stats.mapped_bytes + unmapped)
@@ -2450,6 +2497,23 @@ pub fn ooms(device: i32) -> Result<u64> {
     Ok(owner.lock()?.stats.ooms)
 }
 
+/// Allocations the last resort served on `device` (`host`), one integer read: a pass whose count moved
+/// held memory on the host that a graph of it would need on the card.
+pub fn hosted(device: i32) -> Result<u64> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    Ok(owner.lock()?.stats.host_working_served)
+}
+
+/// Of `ooms`, those on a thread whose caller had a cheaper way out (`set_fallback`), which answered them.
+pub fn answered(device: i32) -> Result<u64> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    Ok(owner.lock()?.stats.answered_ooms)
+}
+
 pub fn reset_peak(device: i32) -> Result<()> {
     let Some(owner) = existing(device)? else {
         return Ok(());
@@ -2457,6 +2521,7 @@ pub fn reset_peak(device: i32) -> Result<()> {
     let mut state = owner.lock()?;
     state.stats.allocated_peak = state.stats.allocated_bytes;
     state.stats.mapped_peak = state.stats.mapped_bytes;
+    state.stats.host_working_peak = state.stats.host_working_bytes;
     Ok(())
 }
 

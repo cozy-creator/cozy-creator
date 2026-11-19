@@ -74,6 +74,10 @@ fn _varena_refusal(py: Python<'_>, device: i32) -> PyResult<Option<std::collecti
         ("pools", r.pools as u64),
         ("caches", r.caches as u64),
         ("offered", u64::from(r.offered)),
+        // Host memory refused it too (the last resort): what it wanted, had free, and its limit; 0 when not.
+        ("host_wanted", r.host.map_or(0, |host| host.wanted)),
+        ("host_free", r.host.map_or(0, |host| host.free)),
+        ("host_limit", r.host.map_or(0, |host| host.limit)),
     ].into_iter().collect()))
 }
 
@@ -361,6 +365,8 @@ fn _varena_public_keep(object: Py<PyAny>) -> (usize, usize) {
 
 #[pyfunction]
 fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
+    #[cfg(feature = "store")]
+    varena::set_host_admit(super::host::admit);
     py.detach(|| {
         check()?;
         varena::activate(device, shared)
@@ -384,6 +390,43 @@ fn _varena_working_ooms(py: Python<'_>, device: i32) -> PyResult<u64> {
         varena::working::ooms(device)
     })
     .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_hosted(py: Python<'_>, device: i32) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::hosted(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_answered(py: Python<'_>, device: i32) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::answered(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+/// Whether this thread's allocations have a cheaper way out than pinned host memory; the previous setting.
+#[pyfunction]
+fn _varena_fallback(on: bool) -> bool {
+    varena::working::set_fallback(on)
+}
+
+/// None when the machine's host memory takes `nbytes` more (idle executors asked first), else the line
+/// that refuses it.
+#[pyfunction]
+fn _varena_host_admit(py: Python<'_>, nbytes: u64) -> Option<String> {
+    #[cfg(feature = "store")]
+    return py.detach(|| super::host::admit(nbytes).err().map(|short| short.to_string()));
+    #[cfg(not(feature = "store"))]
+    {
+        let _ = (py, nbytes);
+        None
+    }
 }
 
 #[pyfunction]
@@ -458,6 +501,13 @@ fn _varena_working_stats(
         ("cache_pending_bytes", stats.cache_pending_bytes as u64),
         ("cache_ready_bytes", stats.cache_ready_bytes as u64),
         ("caches", stats.caches as u64),
+        ("host_working_bytes", stats.host_working_bytes as u64),
+        ("host_working_peak", stats.host_working_peak as u64),
+        ("host_working_allocs", stats.host_working_allocs),
+        ("host_working_served", stats.host_working_served),
+        ("host_working_served_bytes", stats.host_working_served_bytes),
+        ("host_working_refusals", stats.host_working_refusals),
+        ("answered_ooms", stats.answered_ooms),
     ]
     .into())
 }
@@ -939,6 +989,10 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_ooms, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_answered, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_hosted, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_fallback, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_host_admit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_site_id, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_site, module)?)?;

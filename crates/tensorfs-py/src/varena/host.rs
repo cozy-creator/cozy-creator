@@ -195,6 +195,24 @@ mod imp {
     pub(super) fn peers_running() -> bool {
         host().is_some_and(|host| host.table.peers_running(host.row))
     }
+
+    /// What every process on the host page says it holds.
+    pub(super) fn held_everywhere() -> u64 {
+        host().map_or(0, |host| host.table.held())
+    }
+
+    /// This process's own tiers give about `bytes` back, spares and the pages worth least first.
+    pub(super) fn give_own(bytes: u64) -> u64 {
+        let Some(host) = host() else { return 0 };
+        let mut given = 0;
+        for tier in host.tiers() {
+            if given >= bytes {
+                break;
+            }
+            given += tier.give(bytes - given);
+        }
+        given
+    }
 }
 
 /// `tier` gives and asks through this process's row; `shared`, on a person's computer.
@@ -236,6 +254,45 @@ pub(super) fn ask_idle(bytes: u64) -> bool {
         let _ = bytes;
         false
     }
+}
+
+/// The machine's one host admission (var-030 W5), for `bytes` more host memory this process will pin
+/// (varena's last resort, the Runtime's pinned wholes, a shared result mapping): what the number leaves
+/// (`varena_ledger::host::budget`: the tightest limit on this process's path, as TensorD enforces it)
+/// past every executor's holdings (the kernel's charge, or the host page's sum where that is more) and
+/// the headroom. Short of it, idle executors give pages back, then this process's own tiers, whose
+/// pages the store fills again; still short, what it lacked, before the kernel would end anything.
+/// Unreadable figures admit it: only the pin itself can refuse then.
+pub(super) fn admit(bytes: u64) -> Result<(), varena::HostShort> {
+    use varena_ledger::host::{Budget, budget};
+    fn room(now: &Budget) -> i64 {
+        #[cfg(target_os = "linux")]
+        let ledger = i64::try_from(imp::held_everywhere()).unwrap_or(i64::MAX);
+        #[cfg(not(target_os = "linux"))]
+        let ledger = 0;
+        now.total - now.held.max(ledger) - now.headroom
+    }
+    let want = i64::try_from(bytes).unwrap_or(i64::MAX);
+    let short = |now: &Budget| u64::try_from(want - room(now)).unwrap_or(0);
+    let mut now = budget();
+    if now.total <= 0 || room(&now) >= want {
+        return Ok(());
+    }
+    ask_idle(short(&now));
+    now = budget();
+    #[cfg(target_os = "linux")]
+    if room(&now) < want {
+        imp::give_own(short(&now));
+        now = budget();
+    }
+    if room(&now) >= want {
+        return Ok(());
+    }
+    Err(varena::HostShort {
+        wanted: bytes,
+        free: u64::try_from(room(&now)).unwrap_or(0),
+        limit: u64::try_from(now.total).unwrap_or(0),
+    })
 }
 
 /// Another process on this machine is in a request: an idle tier pins nothing meanwhile.

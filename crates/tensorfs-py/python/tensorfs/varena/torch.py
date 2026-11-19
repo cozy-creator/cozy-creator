@@ -206,6 +206,33 @@ def ooms(device: DeviceLike = 0) -> int:
     return _ext._varena_working_ooms(_device(device))
 
 
+def answered(device: DeviceLike = 0) -> int:
+    """Of `ooms(device)`, those refused inside `fallback`: their caller answered them another way."""
+    _installed()
+    return _ext._varena_working_answered(_device(device))
+
+
+def hosted(device: DeviceLike = 0) -> int:
+    """Allocations varena's last resort served on `device` (pinned host memory the card reads over
+    the link), one integer read: a pass whose count moved held memory a graph would need on the card."""
+    _installed()
+    return _ext._varena_working_hosted(_device(device))
+
+
+@contextmanager
+def fallback(on: bool = True) -> Iterator[None]:
+    """Allocations on this thread inside have a cheaper way out than varena's last resort, pinned
+    host memory the card reads over the link: a finer split level, a split's whole on host, a
+    library's own smaller choice, a graph that goes. A refusal then comes back to the caller, and
+    counts as answered (`answered`). An enclosing `fallback` holds inside: only `on` can set it."""
+    prior = _ext._varena_fallback(True)
+    _ext._varena_fallback(prior or on)
+    try:
+        yield
+    finally:
+        _ext._varena_fallback(prior)
+
+
 def room(device: DeviceLike = 0) -> Room:
     """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
     outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""

@@ -28,7 +28,7 @@ pub(crate) fn idle_bytes(device: i32) -> Result<u64> {
     let Some(owner) = existing(device)? else { return Ok(0) };
     let state = owner.lock()?;
     let mut idle = cache::ready_bytes(&state, owner.page()) as u64;
-    for (base, segment) in &state.segments {
+    for (base, segment) in state.segments.iter().filter(|(_, segment)| !segment.host) {
         let held = segment.pool.is_some_and(|id| {
             let pool = &state.pools[&id];
             pool.prepared || (pool.references != 0 && !Device::pool_idle(&state, id, pool)) || pool.capture.is_some()

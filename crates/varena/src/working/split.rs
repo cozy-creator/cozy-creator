@@ -149,7 +149,7 @@ pub fn room(device: i32) -> Result<Room> {
 }
 
 fn live_working(state: &State) -> usize {
-    state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch).map(|block| block.capacity).sum()
+    state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch && !block.host).map(|block| block.capacity).sum()
 }
 
 #[derive(Clone, Debug)]

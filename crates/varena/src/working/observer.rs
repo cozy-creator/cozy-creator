@@ -67,8 +67,8 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
     let states = owners.iter().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
     let mut segments = Vec::new();
     for (owner, state) in owners.iter().zip(&states) {
-        // By handle, as each comes and goes.
-        for (address, segment) in &state.segments {
+        // By handle, as each comes and goes; pinned host segments are no device range of ours.
+        for (address, segment) in state.segments.iter().filter(|(_, segment)| !segment.host) {
             segments.extend(segment.chunks.iter().filter(|chunk| chunk.handle.is_some()).map(|chunk| WorkingSegment {
                 device: owner.ordinal, address: *address + chunk.offset as u64, bytes: chunk.bytes,
                 size_class: segment.size_class, pool: segment.pool,
@@ -88,7 +88,8 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     let mut out = Vec::new();
     for owner in owners {
         let state = owner.lock()?;
-        for (address, segment) in &state.segments {
+        // Card memory only: pinned host segments are no device range of ours.
+        for (address, segment) in state.segments.iter().filter(|(_, segment)| !segment.host) {
             for chunk in segment.chunks.iter().filter(|chunk| chunk.handle.is_some()) {
                 let start = *address + chunk.offset as u64;
                 let end = start + chunk.bytes as u64;

@@ -68,6 +68,9 @@ type StreamContext = unsafe extern "system" fn(Object, *mut Context) -> Status;
 type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
 type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
+type HostAlloc = unsafe extern "system" fn(*mut *mut c_void, usize, c_uint) -> Status;
+type HostFree = unsafe extern "system" fn(*mut c_void) -> Status;
+type HostDevicePointer = unsafe extern "system" fn(*mut Pointer, *mut c_void, c_uint) -> Status;
 
 #[derive(Default)]
 pub(crate) struct Counters {
@@ -131,6 +134,9 @@ pub(crate) struct Driver {
     stream_wait_event: StreamWaitEvent,
     stream_context: StreamContext,
     memory_info: MemoryInfo,
+    host_alloc: HostAlloc,
+    host_free: HostFree,
+    host_device_pointer: HostDevicePointer,
     pub(crate) granularity: usize,
 }
 
@@ -208,6 +214,9 @@ impl Driver {
             stream_wait_event: symbol!("cuStreamWaitEvent", StreamWaitEvent),
             stream_context: symbol!("cuStreamGetCtx", StreamContext),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
+            host_alloc: symbol!("cuMemHostAlloc", HostAlloc),
+            host_free: symbol!("cuMemFreeHost", HostFree),
+            host_device_pointer: symbol!("cuMemHostGetDevicePointer_v2", HostDevicePointer),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -467,6 +476,40 @@ impl Driver {
         status("cuStreamWaitEvent", unsafe {
             (self.stream_wait_event)(stream as Object, event as Object, 0)
         })
+    }
+
+    /// `bytes` of pinned host memory this card reads and writes directly over the link (no fault, no
+    /// migration), at the address the card uses for it. A host that cannot pin them is a refusal.
+    pub(crate) fn alloc_host(&self, bytes: usize) -> crate::AllocationResult<u64> {
+        let mut host = std::ptr::null_mut();
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: valid output pointer; CU_MEMHOSTALLOC_PORTABLE | CU_MEMHOSTALLOC_DEVICEMAP; context entered.
+        let code = self.timed(|| unsafe { (self.host_alloc)(&mut host, bytes, 0x01 | 0x02) });
+        if code == 2 {
+            return Err(crate::AllocationFailure::Other(Error::OutOfMemory { requested_bytes: bytes }));
+        }
+        status("cuMemHostAlloc", code)?;
+        let mut ptr = 0;
+        // SAFETY: `host` was just mapped for the device; flags 0.
+        if let Err(error) = status("cuMemHostGetDevicePointer", unsafe { (self.host_device_pointer)(&mut ptr, host, 0) }) {
+            // SAFETY: the allocation just made, never used.
+            let _ = unsafe { (self.host_free)(host) };
+            return Err(error.into());
+        }
+        if ptr != host as u64 {
+            // Freed by its host address: under unified addressing the two are one.
+            // SAFETY: as above.
+            let _ = unsafe { (self.host_free)(host) };
+            return Err(Error::Unsupported("mapped host memory without unified addressing".into()).into());
+        }
+        Ok(ptr)
+    }
+
+    /// An `alloc_host` allocation, with no work left on it.
+    pub(crate) fn free_host(&self, ptr: u64) -> Result<()> {
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: only an owned host allocation whose every use completed reaches here.
+        status("cuMemFreeHost", self.timed(|| unsafe { (self.host_free)(ptr as *mut c_void) }))
     }
 
     pub(crate) fn create_stream(&self) -> Result<usize> {
