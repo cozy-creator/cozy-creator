@@ -7,12 +7,15 @@
 // 30 boxes (pictures, videos, words) made by `cozy apply` with no place, then opened for the first time: laid in rows that wrap, not one column,
 // in the file's order, none on another, the whole near 16:9; opened fitted, every box in view, at 25% or more. 400 such boxes: opened at 25%,
 // their middle in view. Each opened at 1440×900 and at 1920×1080, kept on paper and dark in web/unplaced (Paul: look at your own UI).
+// One box applied alone that reads one there goes right of it, level with it, as a box made from another does (cl-759); a second that reads
+// the same box goes under the first.
 const { execFile } = require('child_process');
 const { appendFileSync, mkdirSync, writeFileSync } = require('fs');
 const { randomBytes } = require('crypto');
 const { join } = require('path');
 const { test, expect, canvasIdle, canvasNames, themed, png, MP4, DARK_OPEN } = require('./fixtures');
 const { lying, rowsOf, sameCamera } = require('./geometry');
+const { fit } = require('./hands');
 
 const SIZES = [[1440, 900], [1920, 1080]];
 const SCREEN = 16 / 9;
@@ -173,4 +176,37 @@ test('unplaced', async ({ context, project, api, signIn, removeAfter }, testInfo
       await shown.page.close();
     });
   }
+
+  await test.step('one Edit applied alone that reads owl-1: right of it, level with it; a second: under the first', async () => {
+    const one = await another('reads');
+    await apply(one, Object.fromEntries([0, 1].map((i) => node(i, files))), 'reads');
+    await one.look('paper');
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await signIn(page, one.url());
+    await expect(page.locator('.stage')).toBeVisible();
+    await themed(page, 'paper');
+    await rowsOf(one, ['fox-1', 'owl-1']);
+    // Each applied once the page has placed the one before: alone, not a batch.
+    for (const name of ['cut-1', 'cut-2']) {
+      await apply(one, { [name]: { 'cozy/edit': { timeline: { tracks: [{ clips: [{ clip: '<owl-1>' }] }] } } } }, name);
+      await rowsOf(one, [name]);
+    }
+    await expect.poll(() => canvasNames(page), { message: 'reads: four boxes on the canvas', timeout: 120_000 }).toHaveLength(4);
+    await canvasIdle(page);
+    const at = await page.evaluate(() => {
+      const inspection = document.querySelector('.canvas-root').canvasInspection;
+      return { zoom: inspection.camera().zoom, cards: Object.fromEntries(['owl-1', 'cut-1', 'cut-2'].map((name) => { const card = inspection.card(name); return [name, { top: card.bounds.y, bottom: card.bounds.y + card.bounds.height, left: card.body.x, right: card.body.x + card.body.width }]; })) };
+    });
+    const { zoom, cards: { 'owl-1': owl, 'cut-1': first, 'cut-2': second } } = at;
+    const gap = (first.left - owl.right) / zoom;
+    soft(gap > 0 && gap <= 120, `reads: cut-1 right of owl-1, ${gap.toFixed(0)} apart: ${JSON.stringify(at)}`).toBe(true);
+    soft(Math.abs(first.top - owl.top) / zoom, `reads: cut-1 level with owl-1: ${JSON.stringify(at)}`).toBeLessThan(2);
+    soft(Math.abs(second.left - first.left) / zoom, `reads: cut-2 right of owl-1 too: ${JSON.stringify(at)}`).toBeLessThan(2);
+    soft(second.top >= first.bottom - 1 && (second.top - first.bottom) / zoom <= 200, `reads: cut-2 just under cut-1: ${JSON.stringify(at)}`).toBe(true);
+    soft(await lying(page, one), 'reads: no box on another').toEqual([]);
+    await fit(page);
+    await page.screenshot({ path: join(shots, 'reads-1440x900-paper.png') });
+    await page.close();
+  });
 });
