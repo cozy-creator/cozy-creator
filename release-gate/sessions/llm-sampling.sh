@@ -45,10 +45,18 @@ record() {
   NOTE=$(jq -r '[.. | strings | select(test("tokens after .* ms/token"))] | last // ""' "$2")
 }
 SETTINGS=(greedy greedy-presence recipe order knobs)
-# arm <label> <Runtime wheel>: the pod on that Runtime, then each setting undrafted and drafted (one run each, a fresh engine
-# each), judged by the bar.
+# split <file>: a judged call's line: the same tokens, or where it split from the reference, the least logit change that turns it
+# (`split_margin`), which token a teacher-forced forward picks, and the parts.
+split() {
+  jq -r '.result | if .same then "same" else "split at \(.first_difference), margin \(.margin * 1000 | round / 1000) (\(if (if .margin < 0 then -.margin else .margin end) < 0.5 then "near tie" else "CLEAR" end); the teacher forward picks \(.teacher_picks); parts \(.parts | map_values(. * 1000 | round / 1000) | tojson))" end' "$1"
+}
+clear() { jq -e '.result | (.same | not) and ((if .margin < 0 then -.margin else .margin end) >= 0.5)' "$1" > /dev/null; }
+# arm <label> <Runtime wheel>: the pod on that Runtime; the forward run twice (`repeat`: where it first differs); then each
+# setting undrafted (the reference), undrafted again (the noise floor) and drafted, each its own run on a fresh engine, the last
+# two judged against the first. The bug's signature (the coordinator, 11-19): a drafted split clear on every part while no
+# undrafted repeat ever splits clear.
 arm() {
-  local label=$1 wheel=$2 set p d plain bad
+  local label=$1 wheel=$2 set p q d ref floor=0 bugs=()
   WANT=$(basename "$wheel" | cut -d- -f2)
   step "update-$label" machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$wheel" --tensorfs "$TF" -y || fail "$label: the pod's TensorD, Runtime and TensorFS"
   for _ in $(seq 180); do
@@ -57,24 +65,39 @@ arm() {
     sleep 5
   done
   say "$label on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name)"] | join(", "))' "$OUT/show-$label.json")"
+  step "repeat-$label" run "$ROOT/e2e/cli/sampler/repeat" ${MODEL:+--model "model=$MODEL"} "arm=$label" --on "$NAME" || fail "$label repeat: $(tail -c 400 "$OUT/repeat-$label.txt")"
+  record "repeat-$label" "$OUT/repeat-$label.json"
+  say "  $label repeat: $(jq -r '.result | "logits differ by \(.logits_max_diff) between two identical forwards; first differing module \(.first_module // "none") by \(.first_diff); \(.differing) of \(.watched) watched modules differ"' "$OUT/repeat-$label.json")"
   for set in "${SETTINGS[@]}"; do
-    p=$OUT/plain-$label-$set.json d=$OUT/drafted-$label-$set.json
+    p=$OUT/plain-$label-$set.json q=$OUT/again-$label-$set.json d=$OUT/drafted-$label-$set.json
     step "plain-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=false "arm=$label" --on "$NAME" ||
       fail "$label $set undrafted: $(tail -c 400 "$OUT/plain-$label-$set.txt")"
     record "plain-$label-$set" "$p"
     jq -e '.result.head' "$p" > /dev/null || fail "$label: the checkpoint has no draft head"
     if [ -n "$(jq -r '.result.error' "$p")" ]; then say "  $label $set: not run: $(jq -r '.result.error' "$p")"; continue; fi
     [[ $NOTE != *drafting* ]] || { say "FAIL $label $set: the undrafted call drafted: $NOTE"; RC=1; }
-    plain=$(jq -c '.result.tokens' "$p")
-    step "drafted-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=true "against:=$plain" "arm=$label" --on "$NAME" ||
+    ref=$(jq -c '.result.tokens' "$p")
+    step "again-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=false "against:=$ref" "arm=$label-again" --on "$NAME" ||
+      fail "$label $set undrafted again: $(tail -c 400 "$OUT/again-$label-$set.txt")"
+    record "again-$label-$set" "$q"
+    [[ $NOTE != *drafting* ]] || { say "FAIL $label $set: the undrafted repeat drafted: $NOTE"; RC=1; }
+    step "drafted-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=true "against:=$ref" "arm=$label" --on "$NAME" ||
       fail "$label $set drafted: $(tail -c 400 "$OUT/drafted-$label-$set.txt")"
     record "drafted-$label-$set" "$d"
     [[ $NOTE == *drafting\ [0-9]* && $NOTE =~ ,\ [1-9][0-9]*\ captures ]] || { say "FAIL $label $set: the drafted call did not draft on recorded graphs: $NOTE"; RC=1; }
-    say "  $label $set: $(jq -r '.result | "undrafted \($p[0].result.tokens | length), drafted \(.tokens | length) tokens, " + (if .same then "same" else "split at \(.first_difference), margin \(.margin * 1000 | round / 1000) (the teacher forward picks \(.teacher_picks))" end)' --slurpfile p "$p" "$d"); drafted: ${NOTE#*: }"
-    bad=$(jq -r --argjson clear 0.5 '.result | select((.same | not) and ((if .margin < 0 then -.margin else .margin end) >= $clear)) | "split at \(.first_difference), margin \(.margin)"' "$d")
-    [ -z "$bad" ] || { say "FAIL $label $set: a split at a clear position: $bad"; RC=1; }
-    echo "- $label $set: $(jq -r '.result | if .same then "same" else "split at \(.first_difference), margin \(.margin)" end' "$d")" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+    say "  $label $set ($(jq '.result.tokens | length' "$p") tokens): undrafted again $(split "$q")"
+    say "  $label $set: drafted $(split "$d"); ${NOTE#*: }"
+    ! clear "$q" || floor=$((floor + 1))
+    ! clear "$d" || bugs+=("$set")
+    echo "- $label $set: again $(jq -r '.result | if .same then "same" else "split \(.first_difference) margin \(.margin)" end' "$q"), drafted $(jq -r '.result | if .same then "same" else "split \(.first_difference) margin \(.margin)" end' "$d")" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   done
+  if [ "${#bugs[@]}" -gt 0 ] && [ "$floor" = 0 ]; then
+    say "FAIL $label: the bug's signature: drafted splits clear on every part (${bugs[*]}) while no undrafted repeat split clear"; RC=1
+  elif [ "${#bugs[@]}" -gt 0 ]; then
+    say "  $label: drafted splits clear by this measure (${bugs[*]}), and $floor undrafted repeats split clear too: the measure doesn't separate them; no bug's signature"
+  else
+    say "  $label: every drafted split is a near tie; $floor undrafted repeats split clear"
+  fi
 }
 arm candidate "$W"
 [ -z "$CW" ] || arm control "$CW"

@@ -6,6 +6,7 @@ that seed and position. The RC's order (top-k before the presence penalty) is sc
 
 from __future__ import annotations
 
+import math
 from importlib import metadata
 
 import msgspec
@@ -288,7 +289,7 @@ class Drafted(msgspec.Struct):
     setting: str
     #: decode with the model's draft head, or with it set aside (a fresh engine either way)
     drafting: bool = True
-    #: the undrafted call's tokens, which a drafted one is judged against
+    #: a reference call's tokens (the first undrafted one's), which this call is judged against
     against: list[int] = []
     prompt: str = PROMPT
     max_tokens: int = 256
@@ -312,29 +313,54 @@ class Decoded(msgspec.Struct):
     first_difference: int = -1
     margin: float = 0.0
     teacher_picks: str = ""
+    parts: dict[str, float] = {}
     error: str = ""
 
 
 def split_margin(hf: torch.nn.Module, prompt: torch.Tensor, prefix: list[int], a: int, b: int, settings: dict[str, float],
-                 seed: int) -> tuple[float, str]:
-    """How far apart tokens `a` (undrafted) and `b` (drafted) are after `prefix`: a fresh eager forward over the prompt and
-    prefix, its last logits through vLLM's penalties (and temperature, min-p, top-k and top-p and the Runtime's noise when
-    sampled); `a`'s score less `b`'s, and which that forward picks."""
+                 seed: int) -> tuple[float, str, dict[str, float]]:
+    """How near a tie tokens `a` (the reference call's) and `b` (the judged call's) are after `prefix`: a fresh eager forward
+    over the prompt and prefix, its last logits through vLLM's penalties, and the smallest logit change that would turn one
+    choice into the other, each part in logits: the draw's gap (the logits' gap greedy; T times the gap in z + Gumbel when
+    sampled), and each token's distance from the top-k, min-p and top-p edges that decide whether it may be drawn at all (top-p
+    to first order: the mass before it against top-p, over its own probability). Returns the least part (signed as the draw's
+    gap), which token that forward picks, and the parts."""
     ids = torch.cat([prompt, torch.tensor(prefix, dtype=torch.long)])[None].to(hf.device)
     with torch.inference_mode():
         logits = hf(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False).logits[:, -1].float().cpu()
     vocab = int(logits.shape[-1])
-    if settings.get("temperature", 0.0) > 0:
-        scores = vllm_order(logits, prompt, prefix, settings) + gumbel(seed, len(prefix), vocab)
+    one = lambda v: torch.tensor([float(v)])  # noqa: E731
+    made = torch.tensor([prefix or [vocab]], dtype=torch.long)
+    p, f, r = (settings.get(k, d) for k, d in (("presence_penalty", 0.0), ("frequency_penalty", 0.0), ("repetition_penalty", 1.0)))
+    scored = apply_penalties(logits.clone(), prompt[None], made, one(p), one(f), one(r))[0]
+    t = settings.get("temperature", 0.0)
+    if t <= 0:
+        pick = int(scored.argmax())
+        gap = float(scored[a] - scored[b])
+        parts = {"draw": gap}
     else:
-        one = lambda v: torch.tensor([float(v)])  # noqa: E731
-        made = torch.tensor([prefix or [vocab]], dtype=torch.long)
-        p, f, r = (settings.get(k, d) for k, d in (("presence_penalty", 0.0), ("frequency_penalty", 0.0),
-                                                     ("repetition_penalty", 1.0)))
-        scores = apply_penalties(logits.clone(), prompt[None], made, one(p), one(f), one(r))
-    pick = int(scores.argmax())
-    said = "undrafted" if pick == a else "drafted" if pick == b else f"neither ({pick})"
-    return float(scores[0, a] - scores[0, b]), said
+        kept = vllm_order(logits, prompt, prefix, settings)[0]
+        drawn = kept + gumbel(seed, len(prefix), vocab)[0]
+        pick = int(drawn.argmax())
+        noisy = scored / t + gumbel(seed, len(prefix), vocab)[0]
+        gap = float(t * (noisy[a] - noisy[b]))
+        parts = {"draw": gap}
+        ordered = scored.sort(descending=True).values
+        k = int(settings.get("top_k", 0))
+        probabilities = (scored / t).softmax(-1)
+        for name, x in (("a", a), ("b", b)):
+            if 0 < k < vocab:
+                parts[f"top_k_{name}"] = float(scored[x] - ordered[k] if scored[x] >= ordered[k - 1] else ordered[k - 1] - scored[x])
+            if settings.get("min_p", 0.0) > 0:
+                parts[f"min_p_{name}"] = float((scored[x] - (ordered[0] + t * math.log(settings["min_p"]))).abs())
+            if settings.get("top_p", 1.0) < 1:
+                above = float(probabilities[scored > scored[x]].sum())
+                px = float(probabilities[x])
+                if above > 0 and px > 0:
+                    parts[f"top_p_{name}"] = t * abs(above - settings["top_p"]) / (above * px)
+    least = min(abs(v) for v in parts.values())
+    said = "reference" if pick == a else "judged" if pick == b else f"neither ({pick})"
+    return (least if gap >= 0 else -least), said, parts
 
 
 @app.entrypoint(defaults={"model": DRAFTING})
@@ -379,8 +405,70 @@ def drafted(payload: Drafted, model: VisionLM) -> Decoded:
         out.same = plain == tokens
         if first >= 0:
             out.first_difference = first
-            out.margin, out.teacher_picks = split_margin(hf, prompt, plain[:first], plain[first], tokens[first], settings,
-                                                         payload.seed)
+            out.margin, out.teacher_picks, out.parts = split_margin(hf, prompt, plain[:first], plain[first], tokens[first],
+                                                                    settings, payload.seed)
         elif not out.same:
             out.first_difference = min(len(plain), len(tokens))
     return out
+
+
+class Repeat(msgspec.Struct):
+    prompt: str = STORY
+    arm: str = ""
+
+
+class Repeated(msgspec.Struct):
+    #: the last position's logits, largest difference between two identical forwards
+    logits_max_diff: float
+    #: the first module, in the order the forward ran them, whose output differs between the two, and by how much
+    first_module: str
+    first_diff: float
+    #: of the modules watched (every module of the first two decoder layers, each later layer's own children)
+    differing: int
+    watched: int
+    runtime: str
+
+
+@app.entrypoint(defaults={"model": DRAFTING})
+def repeat(payload: Repeat, model: VisionLM) -> Repeated:
+    """The same prompt through the model's own forward twice, eagerly: where their outputs first differ, the module whose
+    kernels make a forward not reproducible run to run."""
+    processor = model.processor
+    hf = model.pipe.components[vlm.COMPONENT]
+    chat = processor.apply_chat_template(  # type: ignore[attr-defined]
+        [{"role": "user", "content": [{"type": "text", "text": payload.prompt}]}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False,
+    )
+    ids = processor(text=[chat], return_tensors="pt").to(hf.device)["input_ids"]  # type: ignore[operator]
+    layers = hf.get_decoder().layers
+    watched: list[tuple[str, torch.nn.Module]] = []
+    for i, layer in enumerate(layers):
+        mods = layer.named_modules() if i < 2 else layer.named_children()
+        watched += [(f"layers.{i}.{n}" if n else f"layers.{i}", m) for n, m in mods]
+    runs: list[dict[str, torch.Tensor]] = [{}, {}]
+    order: list[str] = []
+    current = [0]
+
+    def hook(name: str):  # type: ignore[no-untyped-def]
+        def keep(_m, _a, out) -> None:  # type: ignore[no-untyped-def]
+            t = out[0] if isinstance(out, tuple) else out
+            if isinstance(t, torch.Tensor) and name not in runs[current[0]]:
+                runs[current[0]][name] = t.detach().float().cpu()
+                if current[0] == 0:
+                    order.append(name)
+        return keep
+
+    handles = [m.register_forward_hook(hook(n)) for n, m in watched]
+    lasts: list[torch.Tensor] = []
+    try:
+        for run in (0, 1):
+            current[0] = run
+            with torch.inference_mode():
+                lasts.append(hf(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False).logits[0, -1].float().cpu())
+    finally:
+        for h in handles:
+            h.remove()
+    diffs = {n: float((runs[0][n] - runs[1][n]).abs().max()) for n in order if n in runs[1] and runs[0][n].shape == runs[1][n].shape}
+    first = next((n for n in order if diffs.get(n, 0.0) > 0), "")
+    return Repeated(float((lasts[0] - lasts[1]).abs().max()), first, diffs.get(first, 0.0),
+                    sum(1 for v in diffs.values() if v > 0), len(order), metadata.version("cozy-runtime"))
