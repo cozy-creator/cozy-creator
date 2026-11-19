@@ -2129,14 +2129,27 @@ impl Drop for Region {
             return;
         };
         // Reclamation may already have retired this unowned VA while teardown was deferred.
-        let Some(entry) = state.entries.get_mut(&self.id) else {
+        let Some(mapped) = state.entries.get(&self.id).map(|entry| entry.handle.is_some()) else {
             return;
         };
-        // Defer physical teardown to reclamation; destructors cannot block capture.
-        if entry.handle.is_some() || gate.not_capturing().is_err() {
+        // Destructors cannot block capture: under one, teardown is reclamation's.
+        if gate.not_capturing().is_err() {
             return;
         }
         let Ok(_context) = self.gpu.driver().enter() else {
+            return;
+        };
+        if mapped {
+            // Its pages go now once its uses are done (that removes it too); still read, reclamation
+            // takes them first. Left mapped, an edit chain's dropped retained state held 1-6 GiB
+            // nothing owned until a demand ran short (var-035).
+            if self.gpu.poll_fences(&mut state).is_ok() && self.gpu.completion(&state, self.id) == Completion::Done {
+                let mut released = 0;
+                let _ = self.gpu.release_backing_counted(&mut state, self.id, &mut released, None, 0);
+            }
+            return;
+        }
+        let Some(entry) = state.entries.get(&self.id) else {
             return;
         };
         let packed = entry.packed;
