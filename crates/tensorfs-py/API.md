@@ -462,10 +462,6 @@ separate work.
 ### Save a checkpoint file
 
 Model operations use `model_id` for the named model; `Checkpoint.model_id` reports that identity when present.
-For the current Runtime 0.45 and existing package locks, Python temporarily accepts the old `repo_id` keyword and
-checkpoint property. Supplying both keywords refuses even when equal. Removal is planned for TensorFS 0.25.0
-after the minimum supported Runtime and package consumers have migrated; this is a compatibility cut target,
-not a published-release promise. New code uses `model_id`.
 
 `Writer` writes the cozytensors format. To create Safetensors files, first commit the
 checkpoint and then use `tensorfs.materialize(..., format="safetensors")`. This writes

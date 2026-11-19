@@ -24,15 +24,6 @@ pub(crate) use crate::errors::raise;
 use crate::classref::{class, PyClassRef};
 use crate::tensors::{PyEncoded, PyTensors};
 
-/// Finite keyword bridge for published Runtime/package callers; planned removal at 0.25.0
-/// after the supported consumer floor uses model_id. Never accept two identities.
-pub(crate) fn model_argument<'a>(model_id: Option<&'a str>, repo_id: Option<&'a str>) -> PyResult<Option<&'a str>> {
-    match (model_id, repo_id) {
-        (Some(_), Some(_)) => Err(pyo3::exceptions::PyTypeError::new_err("model_id and legacy repo_id cannot both be supplied")),
-        (model_id, repo_id) => Ok(model_id.or(repo_id)),
-    }
-}
-
 pub(crate) fn invalid(py: Python<'_>, detail: impl Into<String>) -> PyErr {
     raise(
         py,
@@ -305,21 +296,18 @@ impl PyClient {
         .or_raise(py)
     }
 
-    #[pyo3(signature = (model_id = None, filename = None, *, release = None, lane = None, local_dir = None, local_files_only = false, repo_id = None))]
+    #[pyo3(signature = (model_id, filename, *, release = None, lane = None, local_dir = None, local_files_only = false))]
     #[allow(clippy::too_many_arguments)]
     fn download_file(
         &self,
         py: Python<'_>,
-        model_id: Option<&str>,
-        filename: Option<&str>,
+        model_id: &str,
+        filename: &str,
         release: Option<String>,
         lane: Option<String>,
         local_dir: Option<PathBuf>,
         local_files_only: bool,
-        repo_id: Option<&str>,
     ) -> PyResult<PathBuf> {
-        let model_id = model_argument(model_id, repo_id)?.ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("model_id is required"))?;
-        let filename = filename.ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("filename is required"))?;
         let reference = reference(model_id, release, lane).or_raise(py)?;
         py.detach(|| {
             block_on(self.client.download_file(
@@ -332,10 +320,8 @@ impl PyClient {
         .or_raise(py)
     }
 
-    #[pyo3(signature = (folder_path, model_id = None, lane = None, *, repo_id = None))]
-    fn upload_folder(&self, py: Python<'_>, folder_path: PathBuf, model_id: Option<&str>, lane: Option<&str>, repo_id: Option<&str>) -> PyResult<String> {
-        let model_id = model_argument(model_id, repo_id)?.ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("model_id is required"))?;
-        let lane = lane.ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("lane is required"))?;
+    #[pyo3(signature = (folder_path, model_id, lane))]
+    fn upload_folder(&self, py: Python<'_>, folder_path: PathBuf, model_id: &str, lane: &str) -> PyResult<String> {
         let reference = reference(model_id, None, None).or_raise(py)?;
         py.detach(|| block_on(self.client.upload_folder(&reference, &folder_path, lane, None)))
             .map(|tree| tree.id())
@@ -811,11 +797,6 @@ impl PyCheckpoint {
     #[getter]
     fn model_id(&self) -> Option<&str> {
         self.named.as_ref().map(|named| named.model_id.as_str())
-    }
-    /// Legacy compatibility property; use model_id. Planned removal at 0.25.0.
-    #[getter]
-    fn repo_id(&self) -> Option<&str> {
-        self.model_id()
     }
     #[getter]
     fn release(&self) -> Option<&str> {
@@ -1769,7 +1750,7 @@ impl Drop for PyWriter {
 #[pymethods]
 impl PyWriter {
     #[new]
-    #[pyo3(signature = (dest = None, *, base = None, resume = None, cache_dir = None, model_id = None, lane = None, endpoint = None, token = None, ca_der = None, repo_id = None))]
+    #[pyo3(signature = (dest = None, *, base = None, resume = None, cache_dir = None, model_id = None, lane = None, endpoint = None, token = None, ca_der = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1782,9 +1763,7 @@ impl PyWriter {
         endpoint: Option<String>,
         token: Option<&Bound<'_, PyAny>>,
         ca_der: Option<Vec<u8>>,
-        repo_id: Option<String>,
     ) -> PyResult<Self> {
-        let model_id = model_argument(model_id.as_deref(), repo_id.as_deref())?.map(str::to_owned);
         let base = base.map(|base| base.core(py)).transpose()?;
         let config = crate::credentials::config(endpoint, cache_dir, token, ca_der)?;
         let writer = py

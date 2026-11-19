@@ -98,7 +98,7 @@ pub struct Resolved {
     pub release: String,
     #[serde(default)]
     pub lane: String,
-    #[serde(rename = "commit", alias = "checkpoint")]
+    #[serde(rename = "commit")]
     pub checkpoint: ObjectRef,
     pub header: ObjectRef,
     #[serde(default)]
@@ -866,22 +866,4 @@ pub(crate) fn streaming_writer(store: &Store, stream: Arc<Stream>, name: &str, l
     let mut writer = crate::writer(store, base, key)?;
     writer.uploading(Arc::new(Streamed { stream, name: name.to_owned(), lane: lane.to_owned() }));
     Ok(writer)
-}
-
-#[cfg(test)]
-mod checkpoint_wire_tests {
-    #[test]
-    fn resolved_checkpoint_reads_both_names_and_emits_the_supported_wire_field() {
-        let object = crate::format::ObjectRef::of(b"fixture");
-        let legacy = serde_json::json!({"commit":object,"header":object});
-        let canonical = serde_json::json!({"checkpoint":object,"header":object});
-        let resolved: super::Resolved = serde_json::from_value(legacy.clone()).unwrap();
-        assert_eq!(serde_json::from_value::<super::Resolved>(canonical).unwrap(), resolved);
-        let wire = serde_json::to_value(&resolved).unwrap();
-        assert!(wire.get("commit").is_some());
-        assert!(wire.get("checkpoint").is_none());
-        let mut ambiguous = legacy;
-        ambiguous["checkpoint"] = serde_json::to_value(object).unwrap();
-        assert!(serde_json::from_value::<super::Resolved>(ambiguous).is_err());
-    }
 }

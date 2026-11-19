@@ -12,40 +12,6 @@ import tensorfs
 
 
 class PortableCheckpointTests(unittest.TestCase):
-    def test_model_identity_keyword_bridge_is_finite_and_unambiguous(self) -> None:
-        from tensorfs import _ext
-        for writer_type in (tensorfs.Writer, _ext.Writer):
-            with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
-                writer_type(model_id="local/example", repo_id="local/example")
-        with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
-            tensorfs.download_file(model_id="local/example", repo_id="local/example", filename="README.md")
-        with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
-            tensorfs.upload_folder(model_id="local/example", repo_id="local/example", folder_path=".", lane="f32")
-        with tempfile.TemporaryDirectory() as directory:
-            for legacy in (False, True):
-                writer = (tensorfs.Writer(cache_dir=directory, lane="f32", repo_id="local/example") if legacy
-                          else tensorfs.Writer(cache_dir=directory, lane="f32", model_id="local/example"))
-                component = writer.component("model", config={"width": 1})
-                component.put("weight", array("f", [2]), dtype="F32", shape=[1])
-                checkpoint = writer.commit()
-                self.assertEqual(checkpoint.model_id, "local/example")
-                self.assertEqual(checkpoint.repo_id, checkpoint.model_id)
-                checkpoint.close()
-
-    def test_executor_checkpoint_identity_preserves_the_supported_frame(self) -> None:
-        from tensorfs.executor import CheckpointItem
-        fields = {"output": "weights", "revision": "sha256:" + "0" * 64}
-        canonical = CheckpointItem(model_id="local/example", **fields)
-        legacy = CheckpointItem(repo_id="local/example", **fields)
-        self.assertEqual(canonical, legacy)
-        self.assertEqual(canonical.model_id, "local/example")
-        frame = json.loads(canonical.json())
-        self.assertEqual(frame["repo_id"], "local/example")
-        self.assertNotIn("model_id", frame)
-        self.assertEqual(canonical.replace(model_id="local/replaced").model_id, "local/replaced")
-        with self.assertRaises((TypeError, ValueError)):
-            CheckpointItem(model_id="local/example", repo_id="local/example", **fields)
-
     def test_writer_destination_is_complete_in_a_fresh_offline_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
