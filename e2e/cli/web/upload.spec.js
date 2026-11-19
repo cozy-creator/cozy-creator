@@ -4,7 +4,7 @@
 // each is first drawn where and as it stays, its picture decoded, and nothing moves, resizes or swaps, for 5 s or after a reload, a JPEG
 // standing upright. Esc while a dropped file is being named leaves nothing. No hash shows on the page.
 const { createHash } = require('crypto');
-const { readdirSync, readFileSync } = require('fs');
+const { mkdirSync, readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, MP4, photo, png, wav, canvasCard, canvasNames, canvasVisible, screenshotPixels } = require('./fixtures');
 const { dropFiles, ffmpeg } = require('./hands');
@@ -122,6 +122,9 @@ test('media uses the display shape and playable sound timing', async ({ project,
     const body = (await canvasCard(page, 'anamorphic'))?.rendered?.body;
     return body && body.width / body.height;
   }).toBeCloseTo(853 / 480, 2);
+  // The 853:480 box as drawn at its real size, to read beside the numbers above.
+  mkdirSync(join(process.env.OUT, 'web', 'upload'), { recursive: true });
+  await page.screenshot({ path: join(process.env.OUT, 'web', 'upload', 'anamorphic-box.png') });
   const path = project.at(`/thumbs/${encodeURIComponent(sound.sha256)}?preview=true`);
   await expect.poll(async () => (await project.api.raw('HEAD', path)).status).toBe(200);
   const read = await page.evaluate(async (path) => {
