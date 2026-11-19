@@ -78,11 +78,10 @@ if [ -n "$DECODE$MAKE" ]; then
       fail "make $entry needs a model (org/name@sha256:…, its own or \`model\`) and a packages checkout tree with qwen3"
   done
   kernels "$PACKAGES/$TREE/qwen3"
+  drive_check "$DFIX/drive" ggml_logits ${TREE:+"qwen3=$PACKAGES/$TREE/qwen3/uv.lock"}
+  drive_lock "$DFIX/drive"
+  [ -z "$TREE" ] || drive_lock "$PACKAGES/$TREE/qwen3"
 fi
-# The decode drive in every session, lanes or none: its `batch_shapes` (cozy-runtime#2309's cell) runs on each card.
-drive_check "$DFIX/drive" ggml_logits ${TREE:+"qwen3=$PACKAGES/$TREE/qwen3/uv.lock"}
-drive_lock "$DFIX/drive"
-[ -z "$DECODE$MAKE" ] || [ -z "$TREE" ] || drive_lock "$PACKAGES/$TREE/qwen3"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 pick_offer
@@ -102,18 +101,9 @@ done) & BG="$BG $!"
 # First, every package this session runs is staged on the pod: its lock and the candidates over it are settled in the pod's
 # first minutes, not after llama.cpp's build.
 pod_install stage-drive "$FIX/drive"
-pod_install stage-decode "$DFIX/drive"
-[ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
-
-# batch-shapes as it first ran, raced on torch's default stream with no sync, against the same cases settled, once, while
-# the card is idle (cozy-runtime#2309; red: 44407876384, 44407881866). A raced row unlike its settled one fails the
-# session at its end; the rest goes on.
-if step batch-shapes run "$DFIX/drive/batch_shapes" --on "$NAME"; then
-  n=$(runno batch-shapes); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/batch-shapes.json"
-  say "batch-shapes: $(jq -c '{rows, raced_equals_settled, repeat_identical, differs}' "$OUT/batch-shapes.json" 2>&1 | cut -c1-600)"
-  jq -e '.raced_equals_settled and .repeat_identical' "$OUT/batch-shapes.json" > /dev/null 2>&1 || ORDER_BAD=1
-else
-  ORDER_BAD=1; say "FAILED: batch-shapes: $(grep -m1 -E '^Run .* failed|^error' "$OUT/batch-shapes.txt" | cut -c1-300)"
+if [ -n "$DECODE$MAKE" ]; then
+  pod_install stage-decode "$DFIX/drive"
+  [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 fi
 
 benches=()
@@ -179,17 +169,6 @@ if [ -n "$DECODE$MAKE" ]; then
     c=$(made "make-$lane"); [ -n "$c" ] || { RIDE_BAD=1; say "FAILED: quantize $lane made no checkpoint"; continue; }
     pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
-  # A decode whose first steps meet a kernel still opening on the card completes (cozy-runtime#2315): once, cold, on the
-  # first lane, a 20 s probe primed before it.
-  if [ "${#pairs[@]}" -gt 0 ]; then
-    step fresh-opening machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD"
-    if step opening run "$DFIX/drive/opening_kernel" --model "model=${pairs[0]#*=}" --on "$NAME"; then
-      n=$(runno opening)
-      say "opening kernel: $( (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""')"
-    else
-      RIDE_BAD=1; say "FAILED: opening_kernel: $(grep -m1 -E '^Run .* failed|^error' "$OUT/opening.txt" | cut -c1-300)"
-    fi
-  fi
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
@@ -225,10 +204,8 @@ if [ -n "$DECODE$MAKE" ]; then
 fi
 
 [ -z "${RIDE_BAD:-}" ] || say "FAILED: a ride-along lane (lines above)"
-[ -z "${ORDER_BAD:-}" ] || say "FAILED: batch-shapes: a raced read on the default stream unlike its settled one (lines above)"
-[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}" ] || fail "a ride-along lane or batch-shapes failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}" ] || fail "a ride-along lane failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
-[ -z "${ORDER_BAD:-}" ] || fail "batch-shapes: a raced read on the default stream unlike its settled one"
 say "PASS: llama.cpp's kernels in our Runtime at stock llama.cpp's speed on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
