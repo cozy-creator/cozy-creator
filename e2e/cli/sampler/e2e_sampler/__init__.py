@@ -284,6 +284,12 @@ DRAFTING = "qwen/qwen3.5-9b@0.2.0"
 
 
 class Drafted(msgspec.Struct):
+    #: which of `DRAFTED`'s settings
+    setting: str
+    #: decode with the model's draft head, or with it set aside (a fresh engine either way)
+    drafting: bool = True
+    #: the undrafted call's tokens, which a drafted one is judged against
+    against: list[int] = []
     prompt: str = PROMPT
     max_tokens: int = 256
     seed: int = 7
@@ -291,43 +297,22 @@ class Drafted(msgspec.Struct):
     arm: str = ""
 
 
-class Pair(msgspec.Struct):
-    name: str
-    settings: dict[str, float]
-    plain: int
-    drafted: int
-    #: the drafted call's tokens are the undrafted one's
-    same: bool
-    first_difference: int
-    #: at the first difference: the undrafted token's lead over the drafted one's, from a teacher-forced eager forward over
-    #: the shared prefix through vLLM's own penalties (z + Gumbel when sampled); which of them that forward picks
-    margin: float
-    teacher_picks: str
-    #: each call's engine: graphs recorded, replays, eager steps, graphs that draft
-    plain_engine: dict[str, int]
-    drafted_engine: dict[str, int]
-    plain_text: str
-    drafted_text: str
-    error: str = ""
-
-
-class Pairs(msgspec.Struct):
-    pairs: list[Pair]
-    #: the checkpoint has a draft head
+class Decoded(msgspec.Struct):
+    setting: str
+    drafting: bool
+    #: the checkpoint has a draft head; the Runtime that ran it
     head: bool
-    #: the Runtime that ran it
     runtime: str
-    arm: str
-
-
-def engine_facts(hf: torch.nn.Module) -> dict[str, int]:
-    """What the call's engine did, read before it is released: its graphs, replays and eager steps, and how many of its
-    graphs draft (`lm._Key`'s third entry)."""
-    facts = lm._graph_snapshot(hf)[0]
-    engine = lm._ENGINES.get(hf)
-    drafting = sum(1 for key in engine.graphs if key[2]) if engine is not None else 0
-    return {"graphs": int(facts.get("active_graphs", 0)), "replays": int(facts.get("replays", 0)),
-            "eager": int(facts.get("eager_steps", 0)), "drafting_graphs": drafting}
+    tokens: list[int]
+    text: str
+    #: against `against`: the same tokens, or where they split and by what margin there: the undrafted token's lead over
+    #: the drafted one's, from a teacher-forced eager forward over the shared prefix through vLLM's own penalties (z + Gumbel
+    #: when sampled), and which of them that forward picks
+    same: bool = True
+    first_difference: int = -1
+    margin: float = 0.0
+    teacher_picks: str = ""
+    error: str = ""
 
 
 def split_margin(hf: torch.nn.Module, prompt: torch.Tensor, prefix: list[int], a: int, b: int, settings: dict[str, float],
@@ -340,23 +325,24 @@ def split_margin(hf: torch.nn.Module, prompt: torch.Tensor, prefix: list[int], a
         logits = hf(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False).logits[:, -1].float().cpu()
     vocab = int(logits.shape[-1])
     if settings.get("temperature", 0.0) > 0:
-        scores = vllm_order(logits, prompt.cpu(), prefix, settings) + gumbel(seed, len(prefix), vocab)
+        scores = vllm_order(logits, prompt, prefix, settings) + gumbel(seed, len(prefix), vocab)
     else:
-        scores = logits.clone()
         one = lambda v: torch.tensor([float(v)])  # noqa: E731
         made = torch.tensor([prefix or [vocab]], dtype=torch.long)
         p, f, r = (settings.get(k, d) for k, d in (("presence_penalty", 0.0), ("frequency_penalty", 0.0),
                                                      ("repetition_penalty", 1.0)))
-        scores = apply_penalties(scores, prompt.cpu()[None], made, one(p), one(f), one(r))
+        scores = apply_penalties(logits.clone(), prompt[None], made, one(p), one(f), one(r))
     pick = int(scores.argmax())
     said = "undrafted" if pick == a else "drafted" if pick == b else f"neither ({pick})"
     return float(scores[0, a] - scores[0, b]), said
 
 
 @app.entrypoint(defaults={"model": DRAFTING})
-def drafted(payload: Drafted, model: VisionLM) -> Pairs:
-    """Each setting decoded twice at one seed: without the model's draft head (a fresh engine, the head set aside), then
-    with it. Where their tokens split, the margin there says whether it was a near tie (`CLEAR`)."""
+def drafted(payload: Drafted, model: VisionLM) -> Decoded:
+    """One of `DRAFTED`'s settings decoded at one seed on a fresh engine, with the model's draft head or with it set aside;
+    a drafted call given the undrafted one's tokens says where they split and the margin there (`CLEAR`). Its run's decode
+    note says whether it drafted, and on how many recorded graphs."""
+    settings = dict(DRAFTED)[payload.setting]
     processor = model.processor
     tokenizer = processor.tokenizer  # type: ignore[attr-defined]
     tokenizer.padding_side = "left"
@@ -369,37 +355,32 @@ def drafted(payload: Drafted, model: VisionLM) -> Pairs:
     prompt = inputs["input_ids"][0].cpu()
     stops = [t for t in (tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id) if t is not None]
     head = lm.HEADS.get(hf)
-
-    def decode(settings: dict[str, float]) -> tuple[list[int], dict[str, int]]:
-        knobs = {k: int(v) if k == "top_k" else v for k, v in settings.items()}
-        made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0],
-                           seed=payload.seed, **knobs)[0].tolist()
-        end = next((i for i, t in enumerate(made) if t in stops), len(made) - 1)
-        return made[: end + 1], engine_facts(hf)
-
-    pairs: list[Pair] = []
-    for name, settings in DRAFTED:
-        lm.release(hf)
+    runtime = metadata.version("cozy-runtime")
+    knobs = {k: int(v) if k == "top_k" else v for k, v in settings.items()}
+    lm.release(hf)  # a fresh engine: the head it drafts with, or none, and its own graphs
+    if not payload.drafting:
         lm.HEADS.pop(hf, None)
-        try:
-            plain, plain_engine = decode(settings)
-            lm.release(hf)
-        except TypeError as exc:  # a Runtime that takes fewer settings
-            pairs.append(Pair(name, settings, 0, 0, False, -1, 0.0, "", {}, {}, "", "", error=f"{type(exc).__name__}: {exc}"))
-            continue
-        finally:
-            if head is not None:
-                lm.HEADS[hf] = head
-        drafts, drafted_engine = decode(settings)
+    try:
+        made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0], seed=payload.seed,
+                           **knobs)[0].tolist()
+    except TypeError as exc:  # a Runtime that takes fewer settings
+        return Decoded(payload.setting, payload.drafting, head is not None, runtime, [], "", error=f"{type(exc).__name__}: {exc}")
+    finally:
         lm.release(hf)
-        first = next((i for i, (a, b) in enumerate(zip(plain, drafts, strict=False)) if a != b), -1)
-        margin, picks = 0.0, ""
+        if head is not None:
+            lm.HEADS[hf] = head
+    end = next((i for i, t in enumerate(made) if t in stops), len(made) - 1)
+    tokens = made[: end + 1]
+    out = Decoded(payload.setting, payload.drafting, head is not None, runtime, tokens,
+                  str(tokenizer.decode(tokens, skip_special_tokens=True)))
+    if payload.against:
+        plain = list(payload.against)
+        first = next((i for i, (a, b) in enumerate(zip(plain, tokens, strict=False)) if a != b), -1)
+        out.same = plain == tokens
         if first >= 0:
-            margin, picks = split_margin(hf, prompt, plain[:first], plain[first], drafts[first], settings, payload.seed)
-        elif len(plain) != len(drafts):
-            first = min(len(plain), len(drafts))
-        pairs.append(Pair(
-            name, settings, len(plain), len(drafts), plain == drafts, first, margin, picks, plain_engine, drafted_engine,
-            str(tokenizer.decode(plain, skip_special_tokens=True)), str(tokenizer.decode(drafts, skip_special_tokens=True)),
-        ))  # fmt: skip
-    return Pairs(pairs, head is not None, metadata.version("cozy-runtime"), payload.arm)
+            out.first_difference = first
+            out.margin, out.teacher_picks = split_margin(hf, prompt, plain[:first], plain[first], tokens[first], settings,
+                                                         payload.seed)
+        elif not out.same:
+            out.first_difference = min(len(plain), len(tokens))
+    return out

@@ -36,9 +36,20 @@ step lock package install "$ROOT/e2e/cli/sampler" --on local || fail "the proof 
 cozy package ls > "$OUT/packages.txt" 2>&1; grep -i sampler "$OUT/packages.txt" | sed 's/^/  lock: /' | tee -a "$R"
 quote "$(param seconds 2400)"
 rent
-# arm <label> <Runtime wheel>: the pod on that Runtime, `drafted` on it, its record judged by the bar.
+# record <step> <file>: the run that step named, its whole record; fails on a memo's answer, which measured nothing.
+record() {
+  local n; n=$(runno "$1")
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$2" 2> "$2.err" || fail "$1: run $n's record"
+  [ "$(jq -r '.memoized // false' "$2")" != true ] || fail "$1: run $n was answered from the memo; it measured nothing"
+  [ "$(jq -r '.result.runtime // empty' "$2")" = "$WANT" ] || fail "$1: run $n ran Runtime $(jq -r '.result.runtime // "?"' "$2"), not $WANT"
+  NOTE=$(jq -r '[.. | strings | select(test("tokens after .* ms/token"))] | last // ""' "$2")
+}
+SETTINGS=(greedy greedy-presence recipe order knobs)
+# arm <label> <Runtime wheel>: the pod on that Runtime, then each setting undrafted and drafted (one run each, a fresh engine
+# each), judged by the bar.
 arm() {
-  local label=$1 wheel=$2 n f=$OUT/drafted-$1.json ran want bad
+  local label=$1 wheel=$2 set p d plain bad
+  WANT=$(basename "$wheel" | cut -d- -f2)
   step "update-$label" machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$wheel" --tensorfs "$TF" -y || fail "$label: the pod's TensorD, Runtime and TensorFS"
   for _ in $(seq 180); do
     cozy machine show "$NAME" --json > "$OUT/show-$label.json" 2> /dev/null
@@ -46,22 +57,24 @@ arm() {
     sleep 5
   done
   say "$label on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · " + ([.status.gpus[] | "GPU \(.index) \(.name)"] | join(", "))' "$OUT/show-$label.json")"
-  step "drafted-$label" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "arm=$label" --on "$NAME" || fail "$label: $(tail -c 400 "$OUT/drafted-$label.txt")"
-  n=$(runno "drafted-$label")
-  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$f" 2> "$OUT/drafted-$label.err" || fail "$label: run $n's record"
-  [ "$(jq -r '.memoized // false' "$f")" != true ] || fail "$label: run $n was answered from the memo; it measured nothing"
-  ran=$(jq -r '.result.runtime // empty' "$f") want=$(basename "$wheel" | cut -d- -f2)
-  [ "$ran" = "$want" ] || fail "$label: the run's Runtime is $ran, not $want"
-  jq -e '.result.head' "$f" > /dev/null || fail "$label: the checkpoint has no draft head"
-  jq -r --arg l "$label" '.result.pairs[] | "  \($l) \(.name): " + (if .error != "" then "not run: \(.error)" else
-    "plain \(.plain), drafted \(.drafted) tokens, same \(.same)" + (if .same then "" else ", split at \(.first_difference), margin \(.margin * 1000 | round / 1000) (the teacher forward picks \(.teacher_picks))" end)
-    + "; engines plain \(.plain_engine | tojson), drafted \(.drafted_engine | tojson)" end)' "$f" | tee -a "$R"
-  bad=$(jq -c --argjson clear 0.5 '[.result.pairs[] | select(.error == "" and (.same | not) and ((if .margin < 0 then -.margin else .margin end) >= $clear)) | {name, first_difference, margin}]' "$f")
-  [ "$bad" = '[]' ] || { say "FAIL $label: a split at a clear position: $bad"; RC=1; }
-  bad=$(jq -c '[.result.pairs[] | select(.error == "" and (.drafted_engine.drafting_graphs < 1 or .drafted_engine.replays < 1 or .plain_engine.drafting_graphs > 0)) | .name]' "$f")
-  [ "$bad" = '[]' ] || { say "FAIL $label: drafted calls that recorded no drafting graph or replayed none, or plain ones that drafted: $bad"; RC=1; }
-  { echo "## llm-sampling $label on $NAME ($SKU), run $n"
-    jq -r '.result.pairs[] | "- \(.name): " + (if .error != "" then "not run" elif .same then "same" else "split at \(.first_difference), margin \(.margin)" end)' "$f"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  for set in "${SETTINGS[@]}"; do
+    p=$OUT/plain-$label-$set.json d=$OUT/drafted-$label-$set.json
+    step "plain-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=false "arm=$label" --on "$NAME" ||
+      fail "$label $set undrafted: $(tail -c 400 "$OUT/plain-$label-$set.txt")"
+    record "plain-$label-$set" "$p"
+    jq -e '.result.head' "$p" > /dev/null || fail "$label: the checkpoint has no draft head"
+    if [ -n "$(jq -r '.result.error' "$p")" ]; then say "  $label $set: not run: $(jq -r '.result.error' "$p")"; continue; fi
+    [[ $NOTE != *drafting* ]] || { say "FAIL $label $set: the undrafted call drafted: $NOTE"; RC=1; }
+    plain=$(jq -c '.result.tokens' "$p")
+    step "drafted-$label-$set" run "$ROOT/e2e/cli/sampler/drafted" ${MODEL:+--model "model=$MODEL"} "setting=$set" drafting:=true "against:=$plain" "arm=$label" --on "$NAME" ||
+      fail "$label $set drafted: $(tail -c 400 "$OUT/drafted-$label-$set.txt")"
+    record "drafted-$label-$set" "$d"
+    [[ $NOTE == *drafting\ [0-9]* && $NOTE =~ ,\ [1-9][0-9]*\ captures ]] || { say "FAIL $label $set: the drafted call did not draft on recorded graphs: $NOTE"; RC=1; }
+    say "  $label $set: $(jq -r '.result | "undrafted \($p[0].result.tokens | length), drafted \(.tokens | length) tokens, " + (if .same then "same" else "split at \(.first_difference), margin \(.margin * 1000 | round / 1000) (the teacher forward picks \(.teacher_picks))" end)' --slurpfile p "$p" "$d"); drafted: ${NOTE#*: }"
+    bad=$(jq -r --argjson clear 0.5 '.result | select((.same | not) and ((if .margin < 0 then -.margin else .margin end) >= $clear)) | "split at \(.first_difference), margin \(.margin)"' "$d")
+    [ -z "$bad" ] || { say "FAIL $label $set: a split at a clear position: $bad"; RC=1; }
+    echo "- $label $set: $(jq -r '.result | if .same then "same" else "split at \(.first_difference), margin \(.margin)" end' "$d")" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  done
 }
 arm candidate "$W"
 [ -z "$CW" ] || arm control "$CW"
