@@ -22,7 +22,7 @@ from transformers import PreTrainedConfig, Qwen3_5ForConditionalGeneration, Qwen
 from cell import NARROW, Cell, Json, defined, module, size
 from tiny import _shared
 
-MODEL = "prunaai/p-h3-image@0.2.0"
+MODEL = "prunaai/p-h3-image@0.2.1"
 #: Qwen3-VL's text width, and the DiT's text channels the connector projects it to.
 TEXT_WIDTH, TEXT_DIM = 32, 64
 #: The DiT as uploaded (computed modulation): two heads of 32, 24 of them rotated (3 axes x 4 x 2).
