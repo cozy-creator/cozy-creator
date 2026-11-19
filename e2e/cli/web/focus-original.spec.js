@@ -143,6 +143,15 @@ test('focus-original', async ({ page, project }) => {
     });
     const region = await focusOn(page, PANORAMA.name);
     const file = await fileOf(PANORAMA.name);
+    // Proof only (red), never merged: a task of the page's own as long as one decode of its file, as a page decoding it on its main thread
+    // would run (a timer's task: what page.evaluate runs itself is the inspector's, not a task of the page).
+    await page.evaluate(async (src) => {
+      const blob = await (await fetch(src)).blob();
+      const began = performance.now();
+      (await createImageBitmap(blob)).close();
+      const took = performance.now() - began;
+      await new Promise((done) => setTimeout(() => { const t = performance.now(); while (performance.now() - t < took) { /* the stall */ } done(); }, 0));
+    }, file);
     await soft.poll(() => drawn(page), { message: `its own file, from ${file}`, timeout: 60_000 })
       .toMatchObject({ resolution: 'original', width: PANORAMA.width, height: PANORAMA.height, src: file });
     const longest = await page.evaluate(() => {
