@@ -8,7 +8,7 @@
 # row of escaped.tsv, a bug that once reached users, passed on a SKU it names in one of these gates, or escaped-accepted.tsv
 # accepts it by name for this release: such a row is printed in full, never passed over. --unchanged FILE (with --release):
 # a required row these gates did not run, named in FILE (`<row> <gate run id>`, gate-select's record), stands on that earlier
-# gate's pass when nothing its escaped-paths.tsv line names changed between that gate's set and this one: printed UNCHANGED.
+# gate's pass when nothing its escaped-paths.tsv line names changed since but versions (version-only.py): printed UNCHANGED.
 # --checkouts DIR: where the cozy-runtime and packages checkouts are (default: beside this one), each holding both sets' commits.
 set -euo pipefail
 RELEASE= UNCHANGED= CHECKOUTS=
@@ -91,8 +91,9 @@ if [ -n "$RELEASE" ]; then
   }
   # unchanged <row> <SKU pattern>: with --unchanged, its line's earlier gate must be trusted and have passed the row on such a
   # SKU, and `git diff --name-only` from that gate's set to this one must touch none of escaped-paths.tsv's paths for the row,
-  # each repo at its own commit in a checkout here (cozy-creator: this one; cozy-runtime and packages in --checkouts). Prints where
-  # it stands; anything it cannot read or verify says why and fails.
+  # each repo at its own commit in a checkout here (cozy-creator: this one; cozy-runtime and packages in --checkouts), but a file
+  # whose change is versions alone (version-only.py: a release cut's). Prints where it stands; anything it cannot read or verify
+  # says why and fails.
   # Read only with --unchanged: --release alone needs no checkout.
   top= && [ -z "$UNCHANGED" ] || top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
   CHECKOUTS=${CHECKOUTS:-$top/..}
@@ -112,7 +113,7 @@ if [ -n "$RELEASE" ]; then
     elif [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then [ "$1" = tf ] && echo "tensorfs-v$v" || echo "v$v"; fi
   }
   unchanged() {
-    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs
+    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs changed=() said versions=
     run=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$UNCHANGED")
     [[ $run =~ ^[0-9]+$ ]] || { echo "not in $UNCHANGED"; return 1; }
     line=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$paths" 2>/dev/null)
@@ -156,10 +157,16 @@ if [ -n "$RELEASE" ]; then
         [ -n "$a" ] && [ -n "$b" ] || { echo "$k: no commit for $([ -n "$a" ] && echo this set || echo "$run's set") (a hand gate names no harness commit)"; return 1; }
         for c in "$a" "$b"; do git -C "${repo[$k]}" rev-parse -q --verify "$c^{commit}" > /dev/null || { echo "$k: $c is not in ${repo[$k]}: fetch it"; return 1; }; done
         files=$(git -C "${repo[$k]}" diff --name-only "$a" "$b" -- "${spec[@]}") || { echo "$k: git diff ${a:0:10}..${b:0:10} failed"; return 1; }
+        if [ -n "$files" ]; then
+          mapfile -t changed <<< "$files"
+          said=$(python3 -I "$(dirname "$0")/version-only.py" "${repo[$k]}" "$a" "$b" --files "${changed[@]}" | sed -n 's/^version only //p') || true
+          files=$(grep -vxFf <(printf '%s\n' "$said") <<< "$files" || true)
+          [ -z "$said" ] || versions="$versions $k:$(paste -sd, <<< "$said")"
+        fi
         [ -z "$files" ] || { echo "changed since $run ($k ${a:0:10}..${b:0:10}): $(head -3 <<< "$files" | paste -sd' ')"; return 1; }
       done
     done
-    echo "since $run on $(jq -r '[.cozy, .runtime, .tensorfs, .packages_ref[0:10]] | join(" · ")' <<< "$old"): none of its paths changed to this set"
+    echo "since $run on $(jq -r '[.cozy, .runtime, .tensorfs, .packages_ref[0:10]] | join(" · ")' <<< "$old"): none of its paths changed to this set${versions:+ but versions:$versions}"
   }
   while IFS=$'\t' read -r row skus issue when; do
     [ -n "$row" ] && [ "${row:0:1}" != "#" ] || continue

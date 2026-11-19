@@ -1,12 +1,12 @@
 # What each escaped.tsv row's cell exercises, coarse on purpose: a doubtful path counts as changed. `verify.sh --release
 # --unchanged FILE` takes a required row that these gates did not run as UNCHANGED only when `git diff --name-only` between the
-# set of its last passing gate and the candidate set touches none of its paths (Paul 11-18: a case is tested only when it is new
-# or its code changed). Every escaped.tsv row has a line; a row with none can only pass.
+# set of its last passing gate and the candidate set touches none of its paths but by versions alone (version-only.py) (Paul 11-18:
+# a case is tested only when it is new or its code changed). Every escaped.tsv row has a line; a row with none can only pass.
 # `@name<TAB>patterns` defines a macro; `<row><TAB>patterns`: space-separated `<repo>:<pathspec glob>`, `!` first takes one out.
 # Repos, each at the set's own commit: cr cozy-creator at cozy's (TensorD, Calcifer), tf cozy-creator at TensorFS's (varena
 # too), rt cozy-runtime at the Runtime's, pk packages at the set's packages_ref, rg cozy-creator at the gate run's own commit
 # (the harness that ran the cell).
-@harness	rg:release-gate/* !rg:release-gate/README.md !rg:release-gate/verify.sh !rg:release-gate/promote.sh !rg:release-gate/defaults.sh !rg:release-gate/escaped*.tsv rg:release-gate/suites/contract/** rg:e2e/run.sh rg:e2e/test-hub.sh
+@harness	rg:release-gate/* !rg:release-gate/README.md !rg:release-gate/verify.sh !rg:release-gate/version-only.py !rg:release-gate/promote.sh !rg:release-gate/defaults.sh !rg:release-gate/escaped*.tsv rg:release-gate/suites/contract/** rg:e2e/run.sh rg:e2e/test-hub.sh
 @run	rt:src/** rt:kernels/** rt:pyproject.toml rt:uv.lock tf:crates/tensorfs/** tf:crates/tensorfs-py/** tf:crates/varena*/** tf:Cargo.lock cr:crates/tensord/** cr:crates/calcifer/** cr:crates/cli/** cr:crates/executor-api/** cr:crates/api/** cr:crates/platform/** cr:crates/needs/** cr:Cargo.lock @harness
 @machine	cr:crates/tensord/** cr:crates/calcifer/** cr:crates/cli/** cr:crates/api/** cr:crates/platform/** cr:Cargo.lock @harness
 prompt-lm-capture	@run pk:p-h3-image/** pk:sdxl/** pk:flux.3-klein/** rg:release-gate/suites/execution/**
