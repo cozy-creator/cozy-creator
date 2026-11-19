@@ -191,15 +191,10 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
 /// `<home>/calcifer/refused.json` for the CLI: the failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
     crate::health::service_health(crate::health::HealthEvent::StartRefused);
-    // Its code only (a message may name a project: health.rs, never project detail), and the legacy cut's reason, a fixed sentence
-    // that names none (cl-1003).
-    let said = match error.code.as_str() {
-        "legacy_cut" => format!("Calcifer could not start: {}", error.message),
-        _ => "Calcifer could not start".to_owned(),
-    };
-    error!(target: "cozy.service_health", code = %error.code, "{said}");
+    // Its code only (a message may name a project: health.rs, never project detail).
+    error!(target: "cozy.service_health", code = %error.code, "Calcifer could not start");
     let envelope = serde_json::to_vec(&Envelope {
-        error: Error::new(Kind::Unavailable, "calcifer_start_failed", said)
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
             .cause(error.code.clone())
             .next("cozy doctor"),
     })
@@ -301,13 +296,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     steps.done("home");
 
-    let calcifer = Calcifer::open(&home.calcifer()).map_err(|e| {
-        failed(match e {
-            // The legacy cut stopped before it replaced the old store (cl-1003): what to do, and the old store as it was.
-            crate::Error::Store(crate::store::StoreError::Cut(why)) => Error::new(Kind::Unavailable, "legacy_cut", why),
-            e => Error::new(Kind::Internal, "calcifer_store", e.to_string()),
-        })
-    })?;
+    let calcifer = Calcifer::open(&home.calcifer()).map_err(|e| failed(Error::new(Kind::Internal, "calcifer_store", e.to_string())))?;
     steps.done("store");
     let listener = match listen(port, PORT).await {
         Ok(listener) => listener,

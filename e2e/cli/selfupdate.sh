@@ -87,15 +87,9 @@ FW_HOME=''
 echo "forward update: cozy $latest → $candidate: the update and Calcifer's first start on its home took $FW_TOOK s, its store version $latest_store → $(su_store)"
 
 in_project "$P" --json status > "$OUT/fw-status.json" 2>&1 || check "forward update: cozy $latest's project doesn't open on $candidate: $(tail -c 300 "$OUT/fw-status.json")"
-# Its run's history is cut where the store's version moves (cl-1003's hard cut: store.rs rebuilds 7 and 8 with their history
-# cut), else kept: listed. (What a project's runs made stays in it: hard_cut.)
-if [ "$latest_store" != "$cand_store" ]; then
-  in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'all(.runs[]; .id != $id)' "$OUT/fw-runs.json" > /dev/null \
-    || check "forward update: cozy $latest's run $id is still listed on $candidate across the store's cut ($latest_store → $cand_store), or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
-else
-  in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'any(.runs[]; .id == $id)' "$OUT/fw-runs.json" > /dev/null \
-    || check "forward update: cozy $latest's run $id isn't listed on $candidate, though its store's version $cand_store is the Latest's (no cut), or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
-fi
+# Its run is still listed: an update keeps the store's history.
+in_project "$P" --json run ls --limit 0 > "$OUT/fw-runs.json" 2>&1 && jq -e --arg id "$id" 'any(.runs[]; .id == $id)' "$OUT/fw-runs.json" > /dev/null \
+  || check "forward update: cozy $latest's run $id isn't listed on $candidate, or the list failed: $(tail -c 300 "$OUT/fw-runs.json")"
 # The upgrade a person meets (cl-1055): local still on the Latest's TensorD and Runtime, below the candidate's minor, nothing moved by
 # hand. The next run in the Latest's own project (nothing of it pending) moves local to the candidate's
 # own Runtime first, saying so, completes, and its call's temporary file is in its project's scratch.
