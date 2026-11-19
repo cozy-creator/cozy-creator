@@ -139,6 +139,19 @@ def wanted(interface: Interface, manifests: dict[str, str], cells: list[Cell]) -
     return refs
 
 
+def unbuilt(interface: Interface, manifests: dict[str, str]) -> dict[str, list[str]]:
+    """Each Hub default no build of the fixture binds (`built`), with the slots naming it: the suite's Hub won't hold it, so a
+    call that reads it fails `release.not_found`. A fixture keys a slot's model by the slot's name, not by a ref, so it follows
+    the default to another author's model (se-160)."""
+    missing: dict[str, list[str]] = {}
+    for entry in interface["entrypoints"]:
+        for slot in entry.get("models", []):
+            ref = slot.get("default")
+            if not slot.get("weights") and ref and "/" in ref.partition("@")[0] and built(manifests, slot) is None:
+                missing.setdefault(ref, []).append(slot["path"])
+    return missing
+
+
 def made(source: Source, folder: Path) -> Path:
     if callable(source):
         folder.mkdir(parents=True, exist_ok=True)
@@ -265,6 +278,9 @@ def main() -> int:
             traceback.print_exc(file=err)
         line(False, "-", "tiny-weights", started, f"{type(exc).__name__}: {first_line(exc)}")
         return 1
+    for ref, paths in sorted(unbuilt(interface, manifests).items() if manifests else []):
+        print(f"NOTE {package} - unbuilt/{ref} 0.0s: {', '.join(paths)} default to it and the fixture builds nothing for it, so "
+              f"the suite's Hub won't hold it: a cell that reads it fails release.not_found", flush=True)
     for ref, manifest in sorted(refs.items()):
         started = time.monotonic()
         try:

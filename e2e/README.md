@@ -23,7 +23,9 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   package's own model classes (`tiny/<package>.py`, ingested by TensorFS's import or writer). With `--cozy` (CI), as a
   person runs them (`real.py`): each model a function names by default, a cell picks or a function stacks (a LoRA) is
   mirrored on the suite's Hub under that ref (`cozy model|lora upload <checkpoint>.cozytensors … --mirror`, then
-  `publish`), and each cell is `cozy run <package dir>/<function> --on local` through Calcifer and real TensorD, its
+  `publish`); a slot whose default is another author's model (an encoder, an upsampler) is keyed by its name, so its tiny
+  model follows the default the package declares, and a default the fixture builds nothing for is a `NOTE` (the Hub won't
+  hold it); and each cell is `cozy run <package dir>/<function> --on local` through Calcifer and real TensorD, its
   outputs downloaded (`-o`); a quantize cell is `cozy model quantize`, judged by the lane its checkpoint holds. A fixture
   that patches release geometry (`PATCH`, `WAIVE`: se-149) still runs in the stand-in (`drive.py`: the candidate
   Runtime's real executor driven over the seam with TensorD's frames, a child executor for an orchestrator's calls), as

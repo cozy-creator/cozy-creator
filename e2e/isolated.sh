@@ -454,6 +454,7 @@ if [ "$suite" = cpu ]; then
     GITHUB_STEP_SUMMARY='' bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" --mirror > "$seed/cpu-mirror.log" 2>&1 \
       || { echo "the cpu suite's tiny builds weren't published: $(grep '^FAIL' "$seed/cpu-mirror.log" | head -3)" >&2; exit 1; }
     sed -n 's/^PASS \([^ ]*\) - mirror\/\([^ ]*\) .*/\2 (\1'"'"'s tiny build)/p' "$seed/cpu-mirror.log" | while read -r line; do log "published $line"; done
+    grep '^NOTE [^ ]* - unbuilt/' "$seed/cpu-mirror.log" | while read -r line; do log "$line"; done || true
     for dependency in $dependencies; do
       publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
     done

@@ -1,7 +1,8 @@
 """Tiny MiniMax H3: the package's own constructors (the AdaLN-pruned dual DiT, the truncated Qwen3-VL conditioner, the
 video and audio VAEs, the PDD turbo overlay) at a few channels, with timestep plans of 2 and 3 evaluations, written as the
 five-root checkpoint and the turbo LoRA by TensorFS's own writer, beside Alissonerdx's VFX edit LoRA, which `edit` stacks
-on Ref2VA as a caller LoRA (drive.py `compose`).
+on Ref2VA as a caller LoRA (drive.py `compose`). The conditioner is also its own checkpoint, as the encoder's release is,
+keyed by the `text_encoder` slot's name: bound under whichever encoder the package defaults to (se-160).
 
 The release geometry (56 heads x 128, 50 layers, a 5120-wide conditioner) is pinned by `_validate_model_contract`;
 a tiny model cannot meet it, so that one check is waived (WAIVE) and stays GPU-only. The canvas (768 short edge) and the
@@ -159,6 +160,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     qwen_processor(processor)
     processor_assets = {f"processor/{path.name}": path.read_bytes() for path in sorted(processor.iterdir()) if path.is_file()}
     _write(base, "text_encoder", text, sections["text_encoder"], processor_assets)
+    encoder = tensorfs.Writer(cache_dir=store)
+    _write(encoder, "text_encoder", text, sections["text_encoder"], processor_assets)
     vae = module(official._apply_video_vae_dtype(TileBatchedVideoVAE.from_config(sections["vae"])))
     _fill(vae, 2)
     _write(base, "vae", vae, sections["vae"], {})
@@ -184,7 +187,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         overlay = module(built.components[_TURBO[trunk]])
         _fill(overlay, seed)
         _write(lora, _TURBO[trunk], overlay, overlays[_TURBO[trunk]], {official.PLAN_ASSET: turbo[trunk].canonical_bytes()})
-    return {H3: base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
+    return {H3: base.commit().id, "text_encoder": encoder.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
             REGENERATE: _regenerate(store), UPSCALER: _upscaler(store), VFX_EDIT: _edit_lora(store, dits["ref2va"])}
 
 
