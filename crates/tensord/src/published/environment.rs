@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
 };
@@ -181,7 +181,7 @@ impl Publisher {
                 args.extend(["--refresh-package", name]);
             }
             let placed = [("UV_PROJECT_ENVIRONMENT", env.as_os_str())];
-            self.uv(&args, &placed, job).map_err(|failure| platform(failure, project.label))?;
+            self.uv_reaching(&args, &placed, job, &locked.hosts)?;
             // An App the lock holds is described from its installed files, which the Runtime's
             // static reader refuses as links into an image's seeded cache: those are copied.
             let linked = linked_applications(env);
@@ -443,8 +443,8 @@ impl Publisher {
             let input = format!("{}{}\n", floor.name, floor.bounds);
             let resolved = update::compile_sdk(&self.sdk.uv, &self.sdk.python, &input, &stop, false).map_err(io_failure)?;
             let prefix = format!("{}==", floor.name);
-            // A failed lookup says nothing of what the index holds.
-            let unread = resolved.as_ref().err().filter(|said| network(said)).cloned();
+            // A failed lookup says nothing of what the index holds, when the index doesn't answer.
+            let unread = resolved.as_ref().err().filter(|_| !unreachable(index_urls(&[], &[])).is_empty()).cloned();
             let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
             let version = match on_index {
                 Some(version) => version,
@@ -493,6 +493,14 @@ impl Publisher {
     /// Linux tags the builder and its descendants before exec, so a new machine sweeps an
     /// interrupted builder before reusing its environment, even after SIGKILL.
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
+        self.uv_reaching(args, env, job, &BTreeMap::new())
+    }
+
+    /// [`Publisher::uv`] for a step that also fetches from `hosts` (a lock's, by host). A failure is judged by what TensorD reads
+    /// itself, never uv's words, which stay its detail: the disks it writes, sampled each second it runs and once after, at
+    /// or under their reserve is `machine_disk_full`; a host it needed that doesn't answer TensorD now is `UNREACHABLE`, asked
+    /// again (`patiently`); anything else is uv's (`package_installation_uv_failed`).
+    pub(crate) fn uv_reaching(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job, hosts: &BTreeMap<String, String>) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
@@ -502,17 +510,27 @@ impl Publisher {
         if stop.as_ref().is_some_and(|(stop, _)| stop.is_cancelled()) {
             return Err(canceled());
         }
-        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| job.bytes(read, 0))?;
+        let disks = written(self.sdk.uv.cache(), args, env);
+        let low = std::cell::Cell::new(false);
+        let sample = || low.set(low.get() || disks.iter().any(|disk| crate::reclaim::measure(disk).is_ok_and(|d| d.short().is_some())));
+        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, stop.as_ref().map(|(stop, _)| stop), &|read| {
+            job.bytes(read, 0);
+            sample();
+        })?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
             Supervised::Exited(status) if status.success() => Ok(()),
             Supervised::Exited(_) => {
                 let said = stderr_tail(&stderr);
-                Err(match (network(&said), full(&said)) {
-                    (true, _) => (super::UNREACHABLE, format!("uv {step}: {}", said.split_whitespace().collect::<Vec<_>>().join(" "))),
-                    (_, true) => ("machine_disk_full", format!("This machine's disk ran out of space while installing the package (uv {step}).{}",
-                        crate::reclaim::advice(self.store.root(), 0))),
-                    _ => ("package_installation_uv_failed", format!("uv {step}:\n{said}")),
+                sample();
+                if low.get() {
+                    return Err(("machine_disk_full", format!("This machine's disk ran out of space while installing the package (uv {step}).{}\nuv {step}:\n{said}",
+                        crate::reclaim::advice(self.store.root(), 0))));
+                }
+                let asked = index_urls(args, env).into_iter().chain(hosts.values().cloned()).collect();
+                Err(match unreachable(asked).as_slice() {
+                    [] => ("package_installation_uv_failed", format!("uv {step}:\n{said}")),
+                    hosts => (super::UNREACHABLE, format!("uv {step}: {} didn't answer: {}", hosts.join(", "), said.split_whitespace().collect::<Vec<_>>().join(" "))),
                 })
             }
             Supervised::Canceled => Err(canceled()),
@@ -799,26 +817,6 @@ fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A uv failure that says this platform is outside the lock: its author's to fix, by adding the
-/// platform to `[tool.uv] environments` and locking again.
-fn platform(failure: Failure, label: &str) -> Failure {
-    const OUTSIDE: [&str; 3] = [
-        "not compatible with the lockfile's supported environments",
-        "wheel for the current platform",
-        "has no wheels with a matching platform tag",
-    ];
-    match failure {
-        (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
-            "release_platform_unsupported",
-            format!("{label} is not locked for this machine ({}/{}): {detail}\n{}", std::env::consts::OS, std::env::consts::ARCH, match cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-                true => format!("Ask its author to support this platform; browse available packages with `cozy package ls {}`", label.split(' ').next().unwrap_or(label)),
-                false => "`--on new` rents a Linux machine, or its author adds this platform and locks again".to_string(),
-            }),
-        ),
-        failure => failure,
-    }
-}
-
 /// `3.12` of the `3.12.15` a release was published with: it runs on this machine's own Python of
 /// that minor (its ABI), which may be another patch, one this machine's uv cannot fetch.
 fn minor(python: &str) -> &str {
@@ -944,15 +942,88 @@ fn shown(pair: &BTreeMap<String, String>) -> String {
     pair.iter().map(|(name, version)| format!("{} {version}", label(name))).collect::<Vec<_>>().join(" and ")
 }
 
-/// Whether uv's words are about the network rather than what it was asked for: nothing about the
-/// package is settled, and asking again may be answered (`patiently`).
-fn network(said: &str) -> bool {
-    ["error sending request", "Request failed after", "operation timed out", "HTTP status server error"].iter().any(|word| said.contains(word))
+/// `scheme://host[:port]` of an http(s) `url`, its credentials left out.
+pub(crate) fn host(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://").filter(|(scheme, _)| matches!(*scheme, "http" | "https"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    (!host.is_empty()).then(|| format!("{scheme}://{host}"))
 }
 
-/// Whether uv stopped because the disk filled.
-fn full(said: &str) -> bool {
-    said.contains("No space left on device")
+/// The indexes a uv step may fetch from, as uv is set up here (`machine::uv`): PyPI and its files, or the index the machine's
+/// environment names; those `args` name; PyTorch's for `--torch-backend`; where `venv` fetches a Python. None with `--offline`
+/// or `--no-index`, or for `pip check`, which reads only the environment.
+fn index_urls(args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Vec<String> {
+    if args.starts_with(&["pip", "check"]) || args.iter().any(|arg| matches!(*arg, "--offline" | "--no-index")) {
+        return vec![];
+    }
+    let inherited = crate::launch_identity::inherited();
+    let set = |name: &str| env.iter().find(|(key, _)| *key == name).map(|(_, value)| value.to_string_lossy().into_owned())
+        .or_else(|| inherited.get(name).cloned()).filter(|value| !value.is_empty());
+    let mut urls = match set("UV_DEFAULT_INDEX").or_else(|| set("UV_INDEX_URL")) {
+        Some(index) => vec![index],
+        None => vec!["https://pypi.org/simple/".to_owned(), "https://files.pythonhosted.org/".to_owned()],
+    };
+    // An index named `name=url`.
+    let named = |index: &str| index.split_once('=').filter(|(name, _)| !name.contains("://")).map_or(index, |(_, url)| url).to_owned();
+    for name in ["UV_INDEX", "UV_EXTRA_INDEX_URL"] {
+        urls.extend(set(name).into_iter().flat_map(|list| list.split_whitespace().map(named).collect::<Vec<_>>()));
+    }
+    let flags = ["--index-url", "--default-index", "--extra-index-url", "--index", "--find-links", "-f"];
+    urls.extend(args.windows(2).filter(|pair| flags.contains(&pair[0])).map(|pair| named(pair[1])));
+    if args.contains(&"--torch-backend") {
+        urls.push("https://download.pytorch.org/whl/".to_owned());
+    }
+    if args.first() == Some(&"venv") {
+        urls.push(set("UV_PYTHON_INSTALL_MIRROR").unwrap_or_else(|| "https://github.com/astral-sh/python-build-standalone/releases".to_owned()));
+    }
+    urls.retain(|url| host(url).is_some());
+    urls
+}
+
+/// The hosts of `urls` that don't answer TensorD now: no connection within 5 s, no answer within 10 s, or a server's error.
+/// Asked once each, together, so a dead network costs one timeout; any other answer (a 404, a 405) is an answer.
+fn unreachable(urls: Vec<String>) -> Vec<String> {
+    let mut by_host: BTreeMap<String, String> = BTreeMap::new();
+    for url in urls {
+        if let Some(host) = host(&url) {
+            by_host.entry(host).or_insert(url);
+        }
+    }
+    if by_host.is_empty() {
+        return vec![];
+    }
+    // A private index's root as uv trusts it (`SSL_CERT_FILE`).
+    let roots = api::config::environment().get("SSL_CERT_FILE").and_then(|path| fs::read(path).ok())
+        .and_then(|pem| tensorfs::fetch::pem_roots(&pem).ok()).unwrap_or_default();
+    crate::hub::block(async move {
+        let extra: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
+        let Some(client) = tensorfs::fetch::http(&extra).ok().and_then(|builder| builder.timeout(std::time::Duration::from_secs(10)).build().ok()) else {
+            return vec![];
+        };
+        let asks = by_host.into_iter().map(|(host, url)| {
+            let client = &client;
+            async move {
+                match client.head(&url).send().await {
+                    Ok(answer) if answer.status().is_server_error() => Some(host),
+                    Ok(_) => None,
+                    Err(error) => (error.is_connect() || error.is_timeout()).then_some(host),
+                }
+            }
+        });
+        futures_util::future::join_all(asks).await.into_iter().flatten().collect()
+    })
+}
+
+/// The folders a uv step writes into: uv's cache, and the environment `args` or `env` name (`UV_PROJECT_ENVIRONMENT`, the
+/// interpreter `--python` points into, a `venv`'s target).
+fn written(cache: &Path, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Vec<PathBuf> {
+    let mut paths = vec![cache.to_path_buf()];
+    paths.extend(env.iter().filter(|(key, _)| *key == "UV_PROJECT_ENVIRONMENT").map(|(_, value)| PathBuf::from(value)));
+    paths.extend(args.windows(2).filter(|pair| pair[0] == "--python").map(|pair| PathBuf::from(pair[1])).filter(|path| path.is_absolute()));
+    paths.extend((args.first() == Some(&"venv")).then(|| args.last().map(PathBuf::from)).flatten());
+    // A path not made yet is measured at its nearest folder that is.
+    paths.into_iter().filter_map(|path| path.ancestors().find(|at| at.exists()).map(Path::to_path_buf)).collect()
 }
 
 /// What a person does about a floor nothing published meets.

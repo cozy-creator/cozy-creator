@@ -2479,6 +2479,9 @@ pub(crate) struct Locked {
     /// The rows only its Torch brings that a machine's layer provides (`layer::provides`): never
     /// installed on one, whichever CUDA wheels that machine's Torch itself needs.
     torch: Vec<String>,
+    /// One URL of each host its rows come from (their index, their files, a git remote), by host: what a failed sync asks is
+    /// reachable (`environment::unreachable`).
+    pub(crate) hosts: BTreeMap<String, String>,
 }
 
 /// The Runtime SDK pair: the machine's own, where it has one.
@@ -2524,8 +2527,8 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
     }
     let project = distribution(pyproject)?;
     let lock = toml::from_str::<Lock>(lock).map_err(|e| invalid("uv.lock", e))?;
-    // Refused before anything is fetched: a Mac or Windows computer told at once where it runs.
-    if let Some(there) = elsewhere(&lock.supported, uv_platform()) {
+    // Refused before anything is fetched: a computer of another OS or architecture told at once where it runs.
+    if let Some(there) = elsewhere(&lock.supported, uv_platform(), uv_machines()) {
         let here = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
         return Err(("release_platform_unsupported",
             format!("this package runs on {there}, not this machine ({here}): `--on new` rents a machine for it")));
@@ -2583,6 +2586,13 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
                 locked.hub.push(file);
             }
         }
+        let urls = ["registry", "url", "git"].iter().filter_map(|key| row.source.get(*key)?.as_str())
+            .chain(row.wheels.iter().filter_map(|wheel| wheel.url.as_deref()));
+        for url in urls {
+            if let Some(host) = environment::host(url) {
+                locked.hosts.entry(host).or_insert_with(|| url.to_owned());
+            }
+        }
         locked.packages.insert(name, row.version);
     }
     Ok(locked)
@@ -2614,12 +2624,30 @@ fn uv_platform() -> &'static str {
     }
 }
 
-/// Where a lock's `supported-markers` say it runs, when none of them is `here`'s OS: `Linux
-/// x86_64, Linux aarch64`. A lock without them, or one naming no OS, runs anywhere uv resolves it.
-fn elsewhere(markers: &[String], here: &str) -> Option<String> {
-    let value = |marker: &str, key: &str| Some(marker.split(&format!("{key} == '")).nth(1)?.split('\'').next()?.to_owned());
-    let platforms: Vec<Option<String>> = markers.iter().map(|m| value(m, "sys_platform")).collect();
-    if platforms.is_empty() || platforms.iter().any(|os| os.as_deref().is_none_or(|os| os == here)) {
+/// This machine's `platform_machine`, each way a lock's markers spell it (none: any architecture).
+fn uv_machines() -> &'static [&'static str] {
+    match std::env::consts::ARCH {
+        "x86_64" => &["x86_64", "AMD64", "amd64"],
+        "aarch64" => &["aarch64", "arm64", "ARM64"],
+        _ => &[],
+    }
+}
+
+/// Where a lock's `supported-markers` say it runs, when none of them is `here`'s OS and one of `machines`: `Linux
+/// x86_64, Linux aarch64`. A lock without them runs anywhere uv resolves it, and a marker naming no OS (or no
+/// architecture) any OS (or architecture). Every term of a marker counts, and any that names this machine lets it run
+/// (`… and (platform_machine == 'x86_64' or platform_machine == 'aarch64')`): a refusal is never wrong, at worst uv's.
+fn elsewhere(markers: &[String], here: &str, machines: &[&str]) -> Option<String> {
+    let values = |marker: &str, key: &str| -> Vec<String> {
+        marker.split(&format!("{key} == '")).skip(1).filter_map(|rest| Some(rest.split('\'').next()?.to_owned())).collect()
+    };
+    let value = |marker: &str, key: &str| values(marker, key).into_iter().next();
+    let runs_here = |marker: &String| {
+        let (oses, arches) = (values(marker, "sys_platform"), values(marker, "platform_machine"));
+        (oses.is_empty() || oses.iter().any(|os| os == here))
+            && (arches.is_empty() || machines.is_empty() || arches.iter().any(|arch| machines.contains(&arch.as_str())))
+    };
+    if markers.is_empty() || markers.iter().any(runs_here) {
         return None;
     }
     let named = |marker: &String| {
