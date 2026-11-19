@@ -729,7 +729,10 @@ pub struct Device {
     /// failed its first `index_select`). What it is still expected to take for this process, measured
     /// (`cooperative::expect`); 0 where nothing is known.
     /// The room is soft: kept only by evicting what is idle and finished, with no wait, it never fails a demand.
+    /// As measured; what the driver takes after that comes out of it (`driver_room`).
     driver_room: AtomicUsize,
+    /// `outside` when the room was measured.
+    driver_room_outside: AtomicUsize,
     /// This process's bytes outside its books, as last measured (`cooperative::expect`).
     out_of_books: AtomicUsize,
     // The most weight bytes held for use at once in this plan phase (`enter_plan_phase` resets it).
@@ -782,6 +785,7 @@ impl Device {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             driver_room: AtomicUsize::new(0),
+            driver_room_outside: AtomicUsize::new(0),
             out_of_books: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
@@ -930,15 +934,19 @@ impl Device {
         if TAKES_ROOM.get() { free } else { free.saturating_sub(self.driver_room()) }
     }
 
-    /// What every map leaves free for the driver's own allocations (`driver_room`).
+    /// What every map leaves free for the driver's own allocations: the room as measured, less what the
+    /// driver took beyond our books since, read at each sample. Measured only at a request's boundaries,
+    /// growth inside a request was counted twice, in `outside` and in the room it had been kept for.
     pub(crate) fn driver_room(&self) -> usize {
-        self.driver_room.load(Ordering::Acquire)
+        let grown = self.outside.load(Ordering::Acquire).saturating_sub(self.driver_room_outside.load(Ordering::Acquire));
+        self.driver_room.load(Ordering::Acquire).saturating_sub(grown)
     }
 
     /// The driver is now expected to take `room` more bytes for this process, which holds
     /// `out_of_books` outside its books (`cooperative::expect`).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn expect_driver(&self, room: usize, out_of_books: usize) {
+        self.driver_room_outside.store(self.outside.load(Ordering::Acquire), Ordering::Release);
         self.driver_room.store(room, Ordering::Release);
         self.out_of_books.store(out_of_books, Ordering::Release);
     }
