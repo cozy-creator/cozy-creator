@@ -2,14 +2,16 @@
 //! K/V). The core keeps one resident while there is room. A pinned host copy, taken on its own
 //! stream behind compute, refills it: once that copy lands the core may evict the region and
 //! fill it ahead of its next use, like a weight. Until then it stays pinned, so no byte is lost.
+//! A write the card has no room for goes straight to that host copy, from the tensors it copies,
+//! and the region is filled from it at its first use, as an evicted one is.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, Weak};
 
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::{PyRuntimeError, PyValueError}, prelude::*};
 use tensorfs::io::{self, cuda, Dst, ReadOpts, Src};
 
-use super::pages::{Page, PyPages, Tier};
+use super::pages::{Page, PyPages, Tier, WINDOW};
 use super::{raise, release_region, source, use_region, Deferred, PyDevice, PyUse};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -339,6 +341,51 @@ fn run(device: i32, context: usize, jobs: mpsc::Receiver<Job>) {
     }
 }
 
+/// Whether `error` is the core's refusal of room (`raise`'s `Exhausted`, for both of varena's).
+fn refusal(py: Python<'_>, error: &PyErr) -> bool {
+    py.import("tensorfs.varena.api").and_then(|api| api.getattr("Exhausted"))
+        .is_ok_and(|class| error.is_instance(py, &class))
+}
+
+/// `parts`, live on the card and ordered on `stream`, straight into a registered host page taken
+/// for the region, and the page its host copy: the region's fill reads it from there. False: no
+/// host room for it either. The copies run on `stream` and are waited for, so the tensors they
+/// read may go when this returns.
+fn land(retained: &Retained, device: i32, stream: u64, parts: &[(u64, u64, usize)], len: usize) -> Result<bool, String> {
+    let Some(page) = retained.tier.retained_page(len)? else { return Ok(false) };
+    let copied = (|| -> cuda::Result<()> {
+        let driver = cuda::driver()?;
+        let _context = cuda::CtxGuard::enter(spiller(device)?.context as cuda::CUcontext)?;
+        let raw = stream as cuda::CUstream;
+        for &(at, from, bytes) in parts {
+            let (mut at, mut from, end) = (at as usize, from, at as usize + bytes);
+            // One copy a registered window of the page.
+            while at < end {
+                let stop = end.min((at / WINDOW + 1) * WINDOW);
+                // SAFETY: a live device span ordered on `stream`, into the registered page.
+                cuda::check("cuMemcpyDtoHAsync", unsafe {
+                    (driver.memcpy_dtoh_async)(page.ptr().add(at).cast(), from, stop - at, raw)
+                })?;
+                from += (stop - at) as u64;
+                at = stop;
+            }
+        }
+        // SAFETY: the caller's live stream.
+        cuda::check("cuStreamSynchronize", unsafe { (driver.stream_synchronize)(raw) })
+    })();
+    match copied {
+        Ok(()) => {
+            *lock(&retained.host) = Some(Arc::new(page));
+            Ok(true)
+        }
+        Err(error) => {
+            // Unproven: the driver may still write the page, so it is never freed.
+            std::mem::forget(page);
+            Err(error.to_string())
+        }
+    }
+}
+
 /// The region's bytes into a registered host page, after its writer, window by window. None: no
 /// host room for it now.
 fn copy(job: &Job, stream: &cuda::Stream, context: usize) -> Result<Option<Page>, String> {
@@ -406,13 +453,33 @@ impl PyRetained {
     /// Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`, into the
     /// region on `stream`, pinned for it. Once, before any other use. `spill`: a host copy is taken
     /// behind compute, and the region is evictable once it lands; else it stays on the card.
+    /// None: the card had no room for the region with everything evictable gone, so the parts went
+    /// to its host copy, and its first use fills it from there (`use_on`), as an evicted one.
+    /// Qwen-Image 2's prefix K/V at a 6 GiB cap: 677 MB a layer beside the 4 GiB its step held.
     #[pyo3(signature = (stream, parts, *, spill = true))]
-    fn write(&self, py: Python<'_>, stream: u64, parts: Vec<(u64, u64, usize)>, spill: bool) -> PyResult<PyUse> {
+    fn write(&self, py: Python<'_>, stream: u64, parts: Vec<(u64, u64, usize)>, spill: bool) -> PyResult<Option<PyUse>> {
         if parts.iter().any(|&(at, _, len)| at as usize + len > self.region.len()) {
             return Err(PyValueError::new_err("a retained part lies past its region"));
         }
-        *lock(&self.retained.writes) = Some((parts, spill));
-        use_region(py, &self.region, stream)
+        *lock(&self.retained.writes) = Some((parts.clone(), spill));
+        let refused = match use_region(py, &self.region, stream) {
+            Ok(used) => return Ok(Some(used)),
+            Err(error) if refusal(py, &error) => error,
+            Err(error) => return Err(error),
+        };
+        lock(&self.retained.writes).take();
+        let (retained, device, len) = (&self.retained, self.region.device(), self.region.len());
+        match py.detach(|| land(retained, device, stream, &parts, len)) {
+            Ok(true) => Ok(None),
+            Ok(false) => Err(refused),
+            Err(error) => Err(PyRuntimeError::new_err(format!("{refused}; its host copy failed too: {error}"))),
+        }
+    }
+
+    /// Its device address: the same with or without its bytes on the card.
+    #[getter]
+    fn ptr(&self) -> u64 {
+        self.region.ptr()
     }
 
     /// Pinned for `stream`: refilled from its host copy if it was evicted.
