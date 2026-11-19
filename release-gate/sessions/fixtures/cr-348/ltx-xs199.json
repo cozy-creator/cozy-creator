@@ -1,0 +1,128 @@
+{
+ "gpus": 2,
+ "need_s": 2400,
+ "order": "one-way",
+ "compare": [],
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "d-g1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37005",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44537309538",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3432+g6337ebcf-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "d-g1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37006",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "d-g2-1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37007",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-g2-2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37008",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-g2-3",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37009",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-g2-4",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37010",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-g2-5",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37011",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  }
+ ]
+}
