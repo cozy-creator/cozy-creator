@@ -924,28 +924,33 @@ fn audio_seconds(ffprobe: &Path, path: &Path) -> Option<f64> {
         (time.is_finite() && time > 0.0).then_some(time)
     };
     let duration = seconds(&data["format"]["duration"]).or_else(|| seconds(&stream["duration"]))?;
-    // MP3's container duration includes encoder delay and end padding. Read the edge packets that declare those gaps.
-    if data["format"]["format_name"] == "mp3" && let Some(sample_rate) = number(&stream["sample_rate"]).filter(|&rate| rate > 0) {
-        return Some(mp3_samples_to_skip(ffprobe, path, duration)
-            .map(|samples| duration - samples as f64 / sample_rate as f64).filter(|&time| time > 0.0).unwrap_or(duration));
+    // An MP3's container duration counts its encoder delay and end padding, or not, by ffprobe's version: its frames' own span says it.
+    if data["format"]["format_name"] == "mp3" && let Some(rate) = number(&stream["sample_rate"]).filter(|&rate| rate > 0) {
+        return Some(mp3_seconds(ffprobe, path, duration, rate).filter(|&time| time > 0.0).unwrap_or(duration));
     }
     Some(duration)
 }
 
-fn mp3_samples_to_skip(ffprobe: &Path, path: &Path, duration: f64) -> Option<u64> {
+/// An MP3's playable seconds: its first frame to its last one's end, less the encoder delay and end padding its edge packets declare
+/// (`Skip Samples`). It reads the first packet and the last second only.
+fn mp3_seconds(ffprobe: &Path, path: &Path, duration: f64, rate: u64) -> Option<f64> {
     let intervals = if duration <= 1.0 { "%".to_owned() } else { format!("%+#1,{:.6}%", duration - 1.0) };
     let result = Media::new(ffprobe)
-        .args(["-v", "error", "-select_streams", "a:0", "-read_intervals", &intervals, "-show_packets",
-            "-show_entries", "packet_side_data=side_data_type,skip_samples,discard_padding", "-of", "json"])
+        .args(["-v", "error", "-select_streams", "a:0", "-read_intervals", &intervals, "-show_packets", "-show_entries",
+            "packet=pts_time,duration_time:packet_side_data=side_data_type,skip_samples,discard_padding", "-of", "json"])
         .input(path).output().ok()?;
     if !result.status.success() { return None; }
     let data: Value = serde_json::from_slice(&result.stdout).ok()?;
-    let padding = data["packets"].as_array()?.iter()
+    let packets = data["packets"].as_array()?;
+    let time = |value: &Value| value.as_str()?.parse::<f64>().ok().filter(|time| time.is_finite());
+    let (first, last) = (packets.first()?, packets.last()?);
+    let span = time(&last["pts_time"])? + time(&last["duration_time"])? - time(&first["pts_time"])?;
+    let padding = packets.iter()
         .flat_map(|packet| packet["side_data_list"].as_array().into_iter().flatten())
         .filter(|side| side["side_data_type"] == "Skip Samples");
     let head = padding.clone().filter_map(|side| number(&side["skip_samples"])).max().unwrap_or(0);
     let tail = padding.filter_map(|side| number(&side["discard_padding"])).max().unwrap_or(0);
-    head.checked_add(tail)
+    Some(span - head.checked_add(tail)? as f64 / rate as f64)
 }
 
 /// Display geometry from just the video header, for a file whose other measurements are already known.
