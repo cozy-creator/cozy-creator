@@ -166,10 +166,10 @@ fn seed(nvml: &Nvml, gpu: &nvml_wrapper::Device<'_>) -> Option<u64> {
 
 /// The driver's room every map leaves on `device` (`Device::driver_room`): the most any process on
 /// this card held outside its books (learned this boot, else the release's figure for the card and
-/// driver) less what this process holds there now, measured; with neither, its context's measured
-/// cost less what it grew since. A fixed 800 MiB was left before, 10-13% of an 8 GB card. `learn`: a
-/// request ended, and what this process holds outside its books joins what the card's processes
-/// learned. Read where NVML's per-process figure is cheap enough: as the process comes up and at each
+/// driver) less what this process holds there now, measured (by NVML, else read from the card); with
+/// neither, its context's measured cost. A fixed 800 MiB was left before, 10-13% of an 8 GB card.
+/// `learn`: a request ended, and what this process holds outside its books joins what the card's
+/// processes learned. Read where NVML's per-process figure is cheap enough: as the process comes up and at each
 /// request's boundaries.
 fn expect(device: i32, learn: bool) -> usize {
     let Ok(gpu) = crate::gpu(device) else { return 0 };
@@ -178,20 +178,19 @@ fn expect(device: i32, learn: bool) -> usize {
     else {
         return 0;
     };
+    // Where NVML can't name this process (a container's nested PID namespace), what it holds outside its
+    // books is read from the card: its context, and what lies outside its books now past the least it
+    // did. Unread, a 4090's room stood at its context's 391 MiB under an 8 GiB cap for every request,
+    // and a prompt LM streamed 20% more a token.
     let measured = split(device).map(|(ours, _)| (ours as usize).saturating_sub(gpu.owned()));
-    if learn && let Some(own) = measured {
-        let _ = varena_ledger::held_out_of_books(&uuid, own as u64);
-    }
-    // Where NVML can't name this process (a container's nested PID namespace), what it took since it came
-    // up is read from the card: its context, and what lies outside its books now past the least it did.
-    // Held at the context's cost, a 4090's 391 MiB stood under an 8 GiB cap for the whole process, and its
-    // prompt LM streamed 20% more a token.
     let floor = gpu.outside_floor.load(Ordering::Acquire);
     let grown = if floor == usize::MAX { 0 } else { gpu.outside.load(Ordering::Acquire).saturating_sub(floor) };
     let own = measured.unwrap_or(context + grown);
-    // With nothing learned or seeded: its context, and about as much again to come (`join`).
-    let most = varena_ledger::out_of_books(&uuid).max(seeded).map_or(2 * context, |most| most as usize);
-    let room = most.saturating_sub(own);
+    if learn {
+        let _ = varena_ledger::held_out_of_books(&uuid, own as u64);
+    }
+    let most = varena_ledger::out_of_books(&uuid).max(seeded);
+    let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
     gpu.expect_driver(room, measured.unwrap_or(0));
     room
 }
