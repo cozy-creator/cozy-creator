@@ -5,9 +5,8 @@
   "twin_managed": false,
   "runtime": "44457222411",
   "tensorfs": "artifact:44458303819/tensorfs-wheel-f712f2c6f359cf455d29b93640c53bc022bc1176",
-  "red_tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
   "twin_tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
-  "need_s": 4800,
+  "need_s": 3300,
   "floor_mb_s": 25,
   "min_ram_gib": 24,
   "host_tries": 2,
@@ -17,15 +16,13 @@
       "name": "seedvr2-1440p",
       "target": "seedvr2/upscale",
       "args": ["--file", "video={clip5}", "resolution=1440p", "aspect_ratio=16:9", "seed:=30018"],
-      "max_s": 2700,
-      "red": true
+      "max_s": 2100
     },
     {
       "name": "seedvr2-1s",
       "target": "seedvr2/upscale",
       "args": ["--file", "video={clip1}", "seed:=30019"],
       "max_s": 600,
-      "red": true,
       "no_twin": true
     }
   ]
