@@ -1,0 +1,232 @@
+{
+ "gpus": 2,
+ "need_s": 3600,
+ "order": "one-way",
+ "compare": [],
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "a-warm1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36001",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2347+g24fb6ecc-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "a-5s-g1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36002",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "a-20s-g1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36003",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "a-warm2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36004",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "warmup": true
+  },
+  {
+   "name": "a-5s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36005",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "a-20s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36006",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36007",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44455277380",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "d-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36008",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-5s-g2b",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36009",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-5s-g2c",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36010",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36011",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-20s-g2b",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36012",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d-20s-g2c",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=36013",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  }
+ ]
+}
