@@ -16,10 +16,11 @@
 //!
 //! Each list goes when it changes, and again once its machine starts again; the machine fetches, evicts and reports. A prepare item
 //! is no job there (`tensord::ahead`): behind every run's needs and guesses in its lines, never a rental's use, the first to go on a
-//! short disk. A guess that changes goes as the new list: its machine cancels what the list drops but what the next item reads too
-//! (Paul: "I switch to another checkpoint, then cancel the parts of that download which are not needed"). Each item's row moves with
-//! the downloads its machine's Status lists under it: an upcoming job's on its walk's board, a guess's on its boxes ("Ready on
-//! kamitsure"), and only while it is the guess.
+//! short disk. A prepare list's order is the order its machine makes its items ready in (cl-1278): what a render named, then the
+//! guesses, the box touched last first (the likeliest rendered next), then demand elsewhere. A guess that changes goes as the new
+//! list: its machine cancels what the list drops but what the next item reads too (Paul: "I switch to another checkpoint, then
+//! cancel the parts of that download which are not needed"). Each item's row moves with the downloads its machine's Status lists
+//! under it: an upcoming job's on its walk's board, a guess's on its boxes ("Ready on kamitsure"), and only while it is the guess.
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -92,6 +93,8 @@ pub(crate) struct Guess {
     pub placed: Placed,
     /// Its box's draft request, hashed (`guess::draft`): edited, it is a new guess, and a failed one starts over.
     pub draft: u64,
+    /// When that draft was last new (`guess::touched`): the newest goes first on its machine's prepare list (cl-1278).
+    pub touched: std::time::Instant,
     /// The files its item's request reads (`spec.inputs`), carried to its machine ahead of its render (`Calcifer::carry_ahead`).
     pub files: Vec<crate::AheadFile>,
 }
@@ -387,6 +390,8 @@ impl Lists {
             }
             guessed.retain(|guess| guess.machine != "local" || guess.project.upgrade().is_none_or(|project| !owed.iter().any(|folder| *folder == project.folder_root())));
         }
+        // The box touched last is the likeliest rendered next (cl-1278): each machine's guesses go newest first, the rest as they stood.
+        guessed.sort_by_key(|guess| std::cmp::Reverse(guess.touched));
         // What each machine's guesses read, carried there behind every run's carry (`Calcifer::carry_ahead`, cl-1123): each file of a
         // project once, with the boxes that read it.
         let mut files: HashMap<String, Vec<crate::AheadFile>> = HashMap::new();
@@ -418,19 +423,19 @@ impl Lists {
             let planned = if name == "local" { &planned_local } else { &planned };
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
             upcoming.sort_by_key(|listed| listed.start_at_ms);
-            // Its guesses, each once, then what demand elsewhere asks of it that no guess does: nothing of an encrypted project where
-            // its request may not go ahead (`Calcifer::sealed_from`, cl-1123).
+            // Its list, each item once, in the order its machine makes them ready (cl-1278): what a render named, until the machine
+            // answers it (`answered`), the oldest first; its guesses, the box touched last first; then what demand elsewhere asks of
+            // it that no guess does: nothing of an encrypted project where its request may not go ahead (`Calcifer::sealed_from`,
+            // cl-1123).
             let mut prepare: Vec<(String, String, v1::Predicted)> = vec![];
+            lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
+            let mut pinned: Vec<Pinned> = lock(&self.pinned).iter().filter(|((machine, _), _)| *machine == name).map(|(_, pinned)| pinned.clone()).collect();
+            pinned.sort_by_key(|pinned| pinned.since);
+            let pinned = pinned.into_iter().map(|pinned| (pinned.hub, v1::Predicted { key: String::new(), ..pinned.item }));
             let sealed = upcoming.is_empty().then(|| machines.calcifer.sealed_from(&name)).flatten();
             let asked = (guessed.iter().filter(|guess| guess.machine == name).map(|guess| (guess.hub.clone(), guess.item.clone())))
                 .chain(demand(&planned, &name, &frame, upcoming.is_empty(), sealed.as_deref()));
-            // And what a render named, until the machine answers it (`answered`).
-            lock(&self.pinned).retain(|_, pinned| pinned.since.elapsed() < PINNED);
-            let pinned: Vec<(String, v1::Predicted)> = (lock(&self.pinned).iter())
-                .filter(|((machine, _), _)| *machine == name)
-                .map(|(_, pinned)| (pinned.hub.clone(), v1::Predicted { key: String::new(), ..pinned.item.clone() }))
-                .collect();
-            for (hub, item) in asked.chain(pinned) {
+            for (hub, item) in pinned.chain(asked) {
                 let made = identity(&item);
                 if !prepare.iter().any(|(held, ..)| *held == made) {
                     prepare.push((made, hub, item));

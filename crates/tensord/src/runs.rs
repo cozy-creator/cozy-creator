@@ -371,7 +371,8 @@ pub(crate) fn upload(
 impl Runs {
     /// Run `id`'s place in this machine's install and download lines (cl-905), `rank` within it: a
     /// started run's call first, then each root in job order (its acceptance, as its GPU work
-    /// queues); a project's fetch ahead behind every run, as the job it prepares will be.
+    /// queues); a project's fetch ahead behind every run, as the job it prepares will be; a prepare
+    /// item behind those, where its list has it (`ahead::place`).
     fn order(&self, id: &str, spec: &Spec, rank: u32) -> u64 {
         self.place(id, fetches_ahead(spec), rank)
     }
@@ -381,8 +382,9 @@ impl Runs {
         use crate::origin::priority;
         match self.service.engine.get(id) {
             Ok(record) if !record.invocation.parent.is_empty() => priority::next(call_order(&record), rank),
-            Ok(record) if ahead && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
-                priority::prepare(record.root_seq(), rank)
+            // A caller's guess goes at its item's place in its list, not at its run's acceptance (cl-1278).
+            Ok(_) if ahead && crate::ahead::guess(&self.service.engine.caller_id(id)) => {
+                priority::prepare(crate::ahead::place(&self.service.engine.caller_id(id)), false, rank)
             }
             Ok(record) if ahead => priority::ahead(record.root_seq(), rank),
             Ok(record) => priority::next(record.root_seq(), rank),
@@ -394,7 +396,7 @@ impl Runs {
         // A caller's guess resolves ahead of every guess's weights, still behind every run (cl-1104): what a changed guess reads is
         // known at once, never once the guess before it has fetched all it wanted, and what that one wanted alone ends (`ahead::put`).
         let order = match fetches_ahead(spec) && crate::ahead::guess(&self.service.engine.caller_id(id)) {
-            true => crate::origin::priority::prepare(0, 0),
+            true => crate::origin::priority::prepare(0, false, 0),
             false => self.order(id, spec, 0),
         };
         Asker { owner: spec.owner.clone(), providers: spec.providers.clone(), gpus: spec.gpus, order }
@@ -1571,6 +1573,8 @@ impl Runs {
     fn download(&self, hub: Option<hub::Source>, reads: &crate::access::Needs, order: (&dyn Fn(u32) -> u64, &dyn Fn(u32) -> u64),
         room: impl FnOnce(u64) -> Result<(), Refused>, stoppable: &Stoppable, id: &str, wanted: &dyn Fn()) -> Result<tensorfs::fetch::Landed, Refused> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
+        let (engine, caller) = (&self.service.engine, self.service.engine.caller_id(id));
+        crate::ahead::lines(&caller, &fetch, reads);
         let free = match reads.extras.is_empty() {
             true => 0,
             false => crate::reclaim::Disk::measure(self.publisher.store().root())?.free(),
@@ -1582,7 +1586,6 @@ impl Runs {
                 crate::private_io::warning(&self.service.engine, id, format_args!("{note} ({error})"));
             }
         }
-        let (engine, caller) = (&self.service.engine, self.service.engine.caller_id(id));
         // The machine's download of each repository it needs, waited on by its run (cl-1205): its run says so, never their bytes.
         let waits = lined.waits(self.publisher.machine(), &caller);
         let report = |done: u64, total: u64| {
@@ -1621,12 +1624,13 @@ impl Runs {
     }
 
     /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order. A caller's guess
-    /// (a prepare item) has no sure need: all it fetches goes behind every run's guesses too (cl-1104).
+    /// (a prepare item) has no sure need: all it fetches goes behind every run's guesses too (cl-1104), its extras behind what
+    /// every item of the lists needs (cl-1278).
     fn order_guess(&self, id: &str, rank: u32) -> u64 {
-        let seq = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
-        match crate::ahead::guess(&self.service.engine.caller_id(id)) {
-            true => crate::origin::priority::prepare(seq, rank),
-            false => crate::origin::priority::guess(seq, rank),
+        let caller = self.service.engine.caller_id(id);
+        match crate::ahead::guess(&caller) {
+            true => crate::origin::priority::prepare(crate::ahead::place(&caller), true, rank),
+            false => crate::origin::priority::guess(self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq()), rank),
         }
     }
 
@@ -1705,6 +1709,7 @@ impl Runs {
             crate::ahead::needs(self.publisher.store(), &caller, &reads.needed);
             self.record_reads(id, None, &reads.needed);
         }
+        crate::ahead::lines(&caller, fetch, reads);
         let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
         let lined = fetch.lined(reads, &|rank| self.place(id, ahead, rank), &|rank| self.order_guess(id, rank), free)?;
         // What another download under way has taken its room for already isn't asked again (cl-1256).

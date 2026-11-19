@@ -343,7 +343,7 @@ case $key in
   # plan_queue's shot reads BiRefNet's weights (cl-1107).
   cli:queue) needs='packages birefnet' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
-  cli:prefetch | cli:prefetch-retry) needs='packages pre' ;;
+  cli:prefetch | cli:prefetch-retry | cli:prefetch-order) needs='packages pre' ;;
   cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
