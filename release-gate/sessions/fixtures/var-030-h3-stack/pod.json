@@ -38,7 +38,7 @@
         "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
       ],
       "update": {
-        "runtime": "44634808186",
+        "runtime": "44639451556",
         "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
         "gpu_memory_limit": "off"
       }
@@ -55,11 +55,36 @@
       "max_s": 2400,
       "tree": "se",
       "update": {
-        "runtime": "44634808186",
+        "runtime": "44639451556",
         "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
         "gpu_memory_limit": "6GiB"
       },
       "keep_state": true
+    },
+    {
+      "name": "relayvsr-hardest",
+      "target": "relayvsr/upscale",
+      "args": [
+        "--file",
+        "video={clip15}",
+        "resolution=2160p",
+        "aspect_ratio=16:9",
+        "window_size:=64"
+      ],
+      "max_s": 900,
+      "tree": "se"
+    },
+    {
+      "name": "moss-gen-hardest-control",
+      "target": "moss-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, studio shot",
+        "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"},{\"kind\":\"lineart\",\"image\":\"{lines}\"}]",
+        "megapixels:=4",
+        "seed:=30050"
+      ],
+      "max_s": 900,
+      "tree": "se"
     },
     {
       "name": "h3-gen-full-fbcache",
