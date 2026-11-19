@@ -27,10 +27,15 @@
 # - seedvr2-color (se-151, Paul 11-18, asked to "Switch SeedVR2's colour step to adain": "yeah sure you can go with this"): the
 #   three mascots where `lab` pasted the 9x blow-up's blocks and chroma back in (konqi-graphics, konqi-utility, konqi-plasma). Under
 #   Lanczos' DISTS on them `lab` measured 80.6%, `adain` 85.8% (pod-session 44182909321): the bar 83%.
+# - gan (se-151, Paul 11-18: "yes, you can add a GAN upscaler as well, thanks"): upscale-models at its default network
+#   (IllustrationJaNai V3detail, two x4 passes from a 225 px JPEG) on qwen's three: 70.4%, 39.7% and 60.8% under Lanczos' DISTS,
+#   56.3% on their mean (pod-session 44428043715, a local copy of the file the Hub now serves: konqi-friends and hokusai-wave
+#   score the same from the Hub, 44555685735): the bar 50%, the design's phase-1 bar.
 UPSCALERS=(
   "qwen qwen-image-2/upscale konqi-friends,hokusai-wave,kiki 0.30 ledger seed:=42"
   "seedvr2 seedvr2/upscale_image kiki,hokusai-wave,revoy-shichimi 0.50 - seed:=42"
   "seedvr2-color seedvr2/upscale_image konqi-graphics,konqi-utility,konqi-plasma 0.83 - seed:=42"
+  "gan upscale-models/upscale_image konqi-friends,hokusai-wave,kiki 0.50 -"
 )
 UPSCALE=$HERE/sessions/fixtures/upscale-bench UPSCALE_PY=${RUNNER_TEMP:-/tmp}/upscale-iqa
 mkdir -p upscale/runs
