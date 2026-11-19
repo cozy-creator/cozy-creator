@@ -429,7 +429,12 @@ def recorded(repo: str, sku: str) -> list[Row]:
 
 
 # Comparing: a candidate row against the newest recorded row of the same SKU, function, request form, GPUs, cap and state.
-UNFIT = {'cold_shared_state', 'local_stage_memo_miss', 'fetched_weights', 'no_ballast', 'host_throttled'}
+
+
+def fit(r: Row) -> bool:
+    """Whether a row may be a base or a figure: one with any flaw (what its run said makes its time no measure: a cold shared state,
+    fetched weights, a held-back GPU, a run that ran elsewhere, cl-1316) never is, by one rule for every comparison."""
+    return not arr(r.get('flaws'))
 
 
 def key(r: Row) -> tuple[str, ...]:
@@ -485,7 +490,7 @@ def compare(path: str, repo: str, against: list[str]) -> None:
         sku = str(c.get('sku'))
         if sku not in recorded_by:
             recorded_by[sku] = [r for r in recorded(repo, sku) if obj(r.get('outcome')).get('status') == 'completed'
-                                and not obj(r.get('state')).get('memoized') and not set(map(str, arr(r.get('flaws')))) & UNFIT]
+                                and not obj(r.get('state')).get('memoized') and fit(r)]
         st = obj(c.get('state'))
         if st.get('temperature') == 'warmup' or st.get('memoized'):
             continue
@@ -544,7 +549,7 @@ def seconds(d: str, repo: str, sku: str, cells: list[str], establish: bool) -> s
         c = str(src.get('cell'))
         if (src.get('kind') == 'gate' and c in judged and key(r) == key(mine[c]) and obj(r.get('outcome')).get('status') == 'completed'
                 and obj(r.get('outcome')).get('verdict') != 'FAIL' and not obj(r.get('state')).get('memoized')
-                and not set(map(str, arr(r.get('flaws')))) & UNFIT):
+                and fit(r)):
             runs.setdefault(str(src.get('run')), {})[c] = r
     cand = summed([mine[c] for c in judged])
     said = f"{len(judged)} {'warm' if warm else 'cold'} cells' exec {num(obj(cand.get('phases')).get('execution_s')) or 0:.1f} s on {sku}"
@@ -601,7 +606,7 @@ def skip(d: str, path: str, name: str, target: str, asked: str, packages: str | 
         print(f'{name}: runs: its code is not a committed package of the --packages checkout')
         return False
     passed = sorted((r for r in (json.loads(l) for l in open(path) if l.strip()) if obj(r.get('source')).get('cell') == name
-                     and obj(r.get('outcome')).get('verdict') == 'PASS' and not arr(r.get('flaws'))), key=lambda r: str(r.get('at')))
+                     and obj(r.get('outcome')).get('verdict') == 'PASS' and fit(r)), key=lambda r: str(r.get('at')))
     same = [r for r in passed if obj(r.get('workload')).get('ask') == asked]
     if not same:
         print(f'{name}: runs: ' + (f'its request differs from its last PASS, {passed[-1].get("id")}' if passed else 'no PASS of it is recorded'))
