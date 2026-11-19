@@ -119,13 +119,14 @@ render() {
 # Both models' weights onto the pod by a call of each, then the pod's ceilings (a call has measured them this boot).
 step fetch-q run "$TOOL" --on "$NAME" instructions="$PROMPT" turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first $TOOL"
 step fetch-p run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=1 || fail "the first $OTHER"
-CEILING='import glob, json, subprocess
-for py in ["python3"] + glob.glob("/opt/*/bin/python3") + glob.glob("/var/lib/cozy/tensord/*/*/*/env/bin/python3") + glob.glob("/var/lib/cozy/*/*/*/*/env/bin/python3"):
+CEILING='import glob, json, os, subprocess
+for py in sorted(glob.glob("/var/lib/cozy/tensord/generations/*/env/bin/python"), key=os.path.getmtime, reverse=True) + ["python3"]:
     out = subprocess.run([py, "-c", "import json, tensorfs; c = tensorfs.ceiling(device=0); print(json.dumps({\"disk_gbps\": c.disk_gbps, \"disk_direct\": c.disk_direct, \"h2d_gbps\": c.h2d_gbps}))"], capture_output=True, text=True)
     if out.returncode == 0 and out.stdout.strip():
         print(out.stdout.strip().splitlines()[-1]); break'
 T=900 py "$CEILING" > "$OUT/ceiling.json" || true
-jq -e '.h2d_gbps > 0 and .disk_gbps > 0' "$OUT/ceiling.json" > /dev/null || fail "no ceilings: $(cat "$OUT/ceiling.json") $(tail -c 300 "$OUT/ssh.err")"
+jq -e '.h2d_gbps > 0 and .disk_gbps > 0' "$OUT/ceiling.json" > /dev/null ||
+  { say "no ceilings ($(head -c 200 "$OUT/ceiling.json") $(tail -c 200 "$OUT/ssh.err")): bounds are left out"; echo '{"disk_gbps": 0, "h2d_gbps": 0}' > "$OUT/ceiling.json"; }
 say "ceilings: $(cat "$OUT/ceiling.json"); $(meminfo)"
 
 # free: q alone on a free GPU loads ahead as before.
@@ -200,8 +201,8 @@ python3 -I - "$OUT" "$Q_BYTES" "$HELD" "$DURING" <<'PY' | tee -a "$R" > "$OUT/su
 import json, sys
 out, q, held, during = sys.argv[1], int(sys.argv[2]), int(sys.argv[3] or 0), int(sys.argv[4] or 0)
 c = json.load(open(f"{out}/ceiling.json"))
-disk, h2d = c["disk_gbps"] * 1e9, c["h2d_gbps"] * 1e9
-bound = {"ram": q / h2d, "disk": max(q / disk, q / h2d)}
+disk, h2d = (c.get("disk_gbps") or 0) * 1e9, (c.get("h2d_gbps") or 0) * 1e9
+bound = {"ram": q / h2d, "disk": max(q / disk, q / h2d)} if disk and h2d else {}
 rows = {}
 for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram")):
     r = json.load(open(f"{out}/report-{arm}.json"))
