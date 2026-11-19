@@ -342,8 +342,10 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "beat", "payload": {
         "beats": [{"duration": 5, "description": {"text": "a red fox runs across a snowy field"}}], "seed": 7,
         "quality": "full"}},
-    # cl-1103: a pickup whose take has no latents opens its new part on the take's frame, by FL2VA, which its rules must
-    # fetch up front (drive.py `missed`); it then joins the take's kept start.
+    # cl-1103, se-177 (packages #1058): a pickup whose take has no latents goes on from the take's last 22 frames and second
+    # of sound, encoded, on Ref2VA, which its rules fetch up front (drive.py `missed`). The new part is spliced into the take
+    # by packet copy (`Outputs.splice_video`), so the result keeps the take's own size, rate and sound (320x180, 48 kHz),
+    # and returns no latents.
     {"entry": "generate", "name": "pickup-take", "payload": {
         "beats": [{"duration": 5, "description": {"text": "the fox stops and looks back"}}], "seed": 7, "quality": "full",
         "pickup": {"take": {}, "out_frame": 124}},
