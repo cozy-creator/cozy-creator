@@ -98,7 +98,8 @@ name the rental (the account's rentals are one pool, cl-1224).
   layout), `idle-held` (a second model beside an idle one, cl-1159), `vram-yield` (a game takes the card mid-call, xs-088).
 - **Models:** `model-ingest` puts a first-party model or an author's mirror on the Hub from a pod.
 - **One open issue each**, deleted when it closes: `at-rest`, `carry-ahead`, `edit-ahead`, `first-guess`, `load-ahead`,
-  `needs-ahead`, `nofit-local`, `submit-at-once` (cl-1123, cl-1202), `control-plane`, `derived-disk`, `egress`, `far-reads`,
+  `needs-ahead`, `nofit-local`, `submit-at-once` (cl-1123, cl-1202), `cold-load` (cl-1318: time until inference starts
+  against the machine's disk and PCIe bound), `control-plane`, `derived-disk`, `egress`, `far-reads`,
   `group-formation`, `h3-upscaler`, `h3-vae`, `install-share`, `io-fault`, `lane-floor`, `llm-stream`, `llm-tools`,
   `llm-two-gpus`, `lm-construct`, `ltx-images`, `one-pool`, `orbit`, `upscale`, `user-flow` (xs-203: Paul's flow through
   the page on real rentals). `bundle` runs several on one rental; `gpu-reader` is `ab`'s helper.
