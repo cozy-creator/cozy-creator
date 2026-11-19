@@ -612,13 +612,16 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 /// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
 /// turbo streaming in the same process, run 39070).
 pub fn request_boundary(device: i32, begin: bool) {
-    if let Ok(device) = gpu(device) {
+    if let Ok(gpu) = gpu(device) {
         if !begin {
-            let _ = device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            // The last request out returns the host memory its last resort pinned (`working::host`).
+            if gpu.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)) == Ok(1) {
+                let _ = working::release_host(device);
+            }
         } else {
-            device.held_peak.store(0, Ordering::Release);
-            if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
-                state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+            gpu.held_peak.store(0, Ordering::Release);
+            if gpu.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = gpu.lock() {
+                state.phase_boundary = Some(gpu.clock.load(Ordering::Relaxed));
             }
         }
     }
@@ -2059,6 +2062,43 @@ fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
     reclaim::release(device, wanted, usize::MAX, reclaim::Wait::No, reclaim::Protect::default(),
         ReclaimReason::Allocator, &mut completed)?;
     Ok(completed)
+}
+
+/// What the machine's host memory had for an allocation it refused: `wanted` more bytes, `free`
+/// under its `limit`, every executor's holdings counted and idle ones asked to give pages back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostShort {
+    pub wanted: u64,
+    pub free: u64,
+    pub limit: u64,
+}
+
+impl std::fmt::Display for HostShort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let gib = |bytes: u64| bytes as f64 / f64::from(1u32 << 30);
+        write!(
+            f,
+            "host memory has {:.1} GiB free under its {:.1} GiB limit for {:.1} GiB more, every executor's holdings \
+             counted and idle ones asked to give pages back",
+            gib(self.free), gib(self.limit), gib(self.wanted)
+        )
+    }
+}
+
+/// The machine's one host admission (`set_host_admit`): room for `bytes` more host memory this process
+/// will pin, or what it lacked.
+pub type HostAdmit = fn(u64) -> std::result::Result<(), HostShort>;
+
+static HOST_ADMIT: OnceLock<HostAdmit> = OnceLock::new();
+
+/// Set once by the frontend that keeps the machine's host ledger (tensorfs-py), before pinned host
+/// memory is asked for. Without it, only the pin itself can refuse.
+pub fn set_host_admit(admit: HostAdmit) {
+    let _ = HOST_ADMIT.set(admit);
+}
+
+pub(crate) fn host_admit(bytes: u64) -> std::result::Result<(), HostShort> {
+    HOST_ADMIT.get().map_or(Ok(()), |admit| admit(bytes))
 }
 
 /// Development only, for the fault suite: from the `n`th next cuMemCreate on `device`, `times`

@@ -142,6 +142,10 @@ class Refusal(TypedDict):
     pools: int
     caches: int
     offered: int
+    #: host memory refused it too (varena's last resort): bytes wanted, free under the limit, the limit; 0 when not
+    host_wanted: int
+    host_free: int
+    host_limit: int
 
 
 class WorkingStats(TypedDict):
@@ -198,6 +202,16 @@ class WorkingStats(TypedDict):
     cache_mapped_bytes: int
     cache_live_bytes: int
     cache_pending_bytes: int
+    #: the last resort: pinned host memory its segments hold now and at most, segments pinned,
+    #: allocations served there and their bytes, and those host memory refused too
+    host_working_bytes: int
+    host_working_peak: int
+    host_working_allocs: int
+    host_working_served: int
+    host_working_served_bytes: int
+    host_working_refusals: int
+    #: refusals on a thread whose caller had a cheaper way out (`torch.fallback`), which answered them
+    answered_ooms: int
 
 
 class SplitContext(TypedDict):
