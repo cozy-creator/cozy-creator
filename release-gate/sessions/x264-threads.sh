@@ -23,21 +23,27 @@ else
   rent
 fi
 # arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and save seconds (the run's
-# start to its settling, its encode included) in <name>.facts, and said.
+# output phase: its first `output_encoding` to its `output_finished`, the encode alone) in <name>.facts, and said.
 arm() {
   step "$1" run "$FIX/save" "arm=$1" "frames:=$FRAMES" --on "$NAME" --output "$OUT/$1" || fail "$1: the save failed: $(tail -c 300 "$OUT/$1.txt")"
   local n mp4 threads cpus secs
-  n=$(grep -m1 -oE '^run [A-Z][A-Z0-9]*-[0-9]+' "$OUT/$1.txt" | awk '{print $2}')
+  n=$(runno "$1")
   cozy run watch "$n" --once --json --full > "$OUT/$1.json" 2>&1
-  jq -e '(.run // .).status == "completed"' "$OUT/$1.json" > /dev/null || fail "$1: run $n is $(jq -r '(.run // .).status' "$OUT/$1.json")"
+  jq -e '.status == "completed"' "$OUT/$1.json" > /dev/null || fail "$1: run $n is $(jq -r .status "$OUT/$1.json")"
   mp4=$(find "$OUT/$1" -name '*.mp4' | head -1)
   [ -n "$mp4" ] || fail "$1: run $n exported no mp4 to $OUT/$1"
   threads=$(grep -aoE ' threads=[0-9]+' "$mp4" | head -1 | cut -d= -f2)
   [ -n "$threads" ] || fail "$1: $mp4 carries no x264 settings"
-  cpus=$(jq -r '(.run // .) | .result.value.cpus // .result.cpus' "$OUT/$1.json")
-  secs=$(jq -r '(.run // .) | (.settled_at_ms - .started_at_ms) / 1000' "$OUT/$1.json")
+  cpus=$(jq -r '.result.value.cpus // .result.cpus // empty' "$OUT/$1.json")
+  [ -n "$cpus" ] || fail "$1: run $n's result names no cpus: $(jq -c .result "$OUT/$1.json" | head -c 300)"
+  # Its lines, replayed: the output phase's marks.
+  timeout 120 cozy --json run watch "$n" > "$OUT/$1.ndjson" 2>&1
+  secs=$(grep '^{' "$OUT/$1.ndjson" | jq -rs '[.[] | select(.type == "run.log") | .text | fromjson? | objects | select(.phase)] as $p
+    | ($p | map(select(.phase == "output_finished"))[0].at_ns) as $end | ($p | map(select(.phase == "output_encoding"))[0].at_ns) as $begin
+    | if $end and $begin then (($end - $begin) / 1e7 | round) / 100 else empty end')
+  [ -n "$secs" ] || fail "$1: run $n's lines carry no output phase: $(grep -c . "$OUT/$1.ndjson") lines"
   printf '{"threads": %s, "cpus": %s, "save_s": %s}\n' "$threads" "$cpus" "$secs" > "$OUT/$1.facts"
-  echo "$1: run $n, $threads x264 threads of $cpus CPUs, saved in $secs s" | tee -a "$R"
+  echo "$1: run $n, $threads x264 threads of $cpus CPUs, encoded in $secs s" | tee -a "$R"
 }
 result() { jq -r ".$2" "$OUT/$1.facts"; }
 arm image
