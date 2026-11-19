@@ -93,7 +93,8 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
     let checking = part.clone();
     let access = super::vault::admit_work(project).await.map_err(|e| local(e.message))?;
     let got = tokio::task::spawn_blocking(move || {
-        let _access = access;
+        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+        let _access = access.here();
         folder::hash(&checking)
     }).await.map_err(local)?;
     if got.as_deref().map(hex).ok() != Some(hex(&sha256)) {
@@ -116,9 +117,15 @@ pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: fold
         hub => Origin::parse(hub).map_err(|e| e.message)?,
     };
     let endpoint = signed(api, &hub).map_err(|e| e.message)?;
-    let _held = project.moving.lock().await;
+    let held = project.moving.lock().await;
     crate::events::project_settled(&project.folder.dir);
     let store = project.folder.dir.join(folder::FILES);
-    std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
-    fetch(project, &endpoint, file).await.map_err(|e| failed(e).message)
+    let fetched = match std::fs::create_dir_all(&store) {
+        Ok(()) => fetch(project, &endpoint, file).await.map_err(|e| failed(e).message),
+        Err(e) => Err(format!("{}: {e}", store.display())),
+    };
+    // Its move ended: a transition waiting on it looks again.
+    drop(held);
+    super::vault::work_ended(&project.root);
+    fetched
 }

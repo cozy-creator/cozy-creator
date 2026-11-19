@@ -157,7 +157,9 @@ impl Api {
         let mut stopping = self.stopping.write().await;
         let was_stopping = *stopping;
         *stopping = true;
-        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
+        // Each vault waits its turn as an explicit lock does: a person waits on `cozy down`.
+        let until = std::time::Instant::now() + crate::project::vault::LOCK_DRAIN;
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self, until)) {
             *stopping = was_stopping || keep_admission_closed;
             return Err(error);
         }

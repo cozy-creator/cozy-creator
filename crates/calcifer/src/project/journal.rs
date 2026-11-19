@@ -2,7 +2,6 @@
 use std::{path::PathBuf, sync::{Arc, Weak}};
 use api::error::Error;
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
-use tokio::sync::OwnedRwLockReadGuard;
 use crate::{api::Api, store::{self, Answer, StoreError}};
 use super::{Project, Projects, vault};
 
@@ -14,11 +13,11 @@ pub(crate) struct ProjectRef {
     pub code: String,
 }
 
-/// A bounded operation on one verified mounted owner. Never retain across a worker wait.
+/// A bounded operation on one verified mounted owner, under a read of its gate. Never retain across a worker wait.
 pub(crate) struct ProjectStore {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
-    _view: OwnedRwLockReadGuard<()>,
+    _view: vault::Read,
     access: Access,
 }
 enum Access { Viewing, Work }
@@ -50,16 +49,20 @@ impl RunOwner {
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
-    /// Once the project takes reads again: at once, else when a lock queued on it has it, or gives up. Err: it's locked or gone.
-    pub(crate) async fn when_admitted(&self) -> Result<(), Error> {
-        vault::admit_work(&self.project).await.map(drop)
-    }
     /// A read of the project for one write into it (cl-1060), waited for behind a lock that has its turn: the lock waits for the
     /// write, and none starts into a view the lock took.
-    pub(crate) async fn writing(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    pub(crate) async fn writing(&self) -> Result<vault::Read, Error> {
         vault::admit_work(&self.project).await
     }
+    /// The project's journal, under a read of its gate waited for in order: behind a transition that has the project, refused
+    /// `project_locked` once a closing one has it, never `project_busy` for a moment's turn.
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
+        let view = vault::admit_work_blocking(&self.project).map_err(project_error)?;
+        Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })
+    }
+    /// [`Self::store`] now or not at all (`project_busy` while a transition waits for the project or has it): for what reads every
+    /// project, which skips one under a lock rather than wait on it (cl-1025).
+    pub(crate) fn try_store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
         Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })
     }
@@ -197,7 +200,8 @@ impl ProjectStore {
     fn validate(&self)->store::Result<()> {
         match self.access {
             Access::Viewing=>self.project.require_view().map_err(project_error),
-            Access::Work=>vault::try_admit_work(&self.project).map(drop).map_err(project_error),
+            // Its own read holds the project: no transition has it while this store lives, so its view is checked, not asked for again.
+            Access::Work=>vault::validate_work(&self.project).map_err(project_error),
         }
     }
     pub(crate) fn admit_new_work(&self)->store::Result<()> {self.project.require_view().map_err(project_error)}

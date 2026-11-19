@@ -600,7 +600,7 @@ impl Calcifer {
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             let _driving = me.driving(&id);
-            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); me.driver_done(&id); return; } };
+            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); me.driver_done(&id); return; } };
             if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
                 if row.state==State::Settled {me.driver_done(&id);return;}
                 if row.cancel_requested {me.ended_here(&id,Err(::api::error::Error::new(::api::error::Kind::Conflict,"canceled","canceled")));me.driver_done(&id);return;}
@@ -779,20 +779,10 @@ impl Calcifer {
 
 
     /// What a run that ended still owes its project, handed on before its driver lets go (cl-1060): what stays on its machine noted,
-    /// and its exporter started, so it's never neither driven nor exporting while its project is owed a write. A lock's turn on the
-    /// project is waited out, not dropped.
+    /// and its exporter started, so it's never neither driven nor exporting while its project is owed a write. Its journal read waits
+    /// its turn behind a lock that has the project.
     async fn hand_on(self: &Arc<Self>, id: &RunId) {
-        let owner = lock(&self.run_owners).get(id.as_str()).cloned().flatten();
-        for _ in 0..3 {
-            match self.note_stays(id) {
-                Err(StoreError::Locked(code)) if code == "project_busy" => match &owner {
-                    Some(owner) if owner.when_admitted().await.is_ok() => continue,
-                    _ => break,
-                },
-                Err(e) => { warn!("what a run left on its machine isn't noted in its project: {e}"); break; }
-                Ok(()) => break,
-            }
-        }
+        if let Err(e) = self.note_stays(id) { warn!("what a run left on its machine isn't noted in its project: {e}"); }
         self.export(id);
     }
 
@@ -800,23 +790,8 @@ impl Calcifer {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
         let Some(owner) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
         let Some(owner) = owner else { return self.job_released(id) };
-        let store = match owner.store() {
-            Ok(store) => store,
-            // A lock queued on the project holds every new read until it has the project or gives up: this waits its turn, then looks
-            // again. Dropped, the route would hold its project open, which can hold the very lock (cl-1025). Locked, the project's routes
-            // went with it.
-            Err(StoreError::Locked(code)) if code == "project_busy" => {
-                let Some(calcifer) = self.api.get().and_then(Weak::upgrade).map(|api| api.calcifer.clone()) else { return };
-                let id = id.clone();
-                self.spawn_task(async move {
-                    if owner.when_admitted().await.is_ok() {
-                        calcifer.release_run(&id);
-                    }
-                });
-                return;
-            }
-            Err(_) => return,
-        };
+        // Its read waits its turn behind a lock that has the project. Locked, the project's routes went with it.
+        let Ok(store) = owner.store() else { return };
         let ended = store.run(id.as_str()).ok().flatten().is_some_and(|row| row.state == State::Settled)
             && store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty());
         drop(store);
@@ -865,13 +840,16 @@ impl Calcifer {
     }
 
     pub(crate) fn run_store(&self, id: &str) -> store::Result<store::RunStore<'_>> {
-        match lock(&self.run_owners).get(id).cloned() {
+        // The route read and its lock let go before the journal's read waits its turn: a transition takes `run_owners` (xs-215).
+        let route = lock(&self.run_owners).get(id).cloned();
+        match route {
             Some(Some(owner)) => owner.store().map(store::RunStore::Project),
             Some(None) => Ok(store::RunStore::Maintenance(&self.store)),
             // An ended run's route went with its project's release: its journal is an open project's, else Calcifer's own.
             None => {
+                // Each project tried, not waited for: one project's lock never holds up a search of all of them (cl-1025).
                 for owner in self.live_owners() {
-                    if let Ok(store) = owner.store() && store.run(id).ok().flatten().is_some() { return Ok(store::RunStore::Project(store)); }
+                    if let Ok(store) = owner.try_store() && store.run(id).ok().flatten().is_some() { return Ok(store::RunStore::Project(store)); }
                 }
                 match self.store.run(id)? {
                     Some(_) => Ok(store::RunStore::Maintenance(&self.store)),
@@ -924,10 +902,6 @@ impl Calcifer {
             private_io::scope_for_project(owner.project_id(),owner.root())
         }).transpose()
     }
-    async fn run_scope_when_ready(&self,id:&str,wake:&Notify)->Result<Option<private_io::Scope>,::api::error::Error> {
-        let mut pause=Pause::default();
-        loop {match self.run_scope(id) {Err(error) if error.code=="project_busy"=>pause.wait(wake,None).await,result=>return result}}
-    }
 
     /// A run by its owning journal, Calcifer's or an open project's; none for a locked project's or an unknown one.
     pub(crate) fn active_run(&self, id: &str) -> Option<RunRow> {
@@ -940,7 +914,8 @@ impl Calcifer {
         let owners = self.owners();
         let mut rows = vec![];
         for owner in owners {
-            let Ok(store) = owner.store() else { continue };
+            // Tried, not waited for: a machine's view never waits on one project's lock (cl-1025).
+            let Ok(store) = owner.try_store() else { continue };
             for id in store.unsettled().unwrap_or_default() {
                 if let Ok(Some(row)) = store.run(id.as_str())
                     && row.state == State::Accepted && row.machine.as_deref() == Some(machine) && row.owner == store.project_id()
@@ -964,7 +939,9 @@ impl Calcifer {
         for owner in self.owners() {
             // A project deleted while this reads has no journal: nothing of it counts, and it fails no one else's.
             let gone = || !crate::project::vault::logical(owner.root()).exists();
-            match owner.store() {
+            // Tried, not waited for: what reads every project (the machines view, the status counts, a driver's busy check, another
+            // project's edit) skips one under a lock, never waits on it (cl-1025).
+            match owner.try_store() {
                 Ok(store) => match read(&store::RunStore::Project(store)) {
                     Ok(value) => values.push(value),
                     Err(_) if gone() => {},
@@ -1307,12 +1284,13 @@ impl Calcifer {
             // again and recorded under one guard.
             let input_root = match new.project.as_deref() { Some(project)=>me.project_store(project)?.input_root()?, None=>me.inputs.clone() };
             stage(&input_root, &new.spec, &given, &held)?;
-            let _staging = lock(&me.staging);
-            let inputs = stage(&input_root, &new.spec, &given, &held)?;
+            // Its journal's read first, waited for in order: no lock is held across a wait on the gate (xs-215).
             let journal = match new.project.as_deref() {
                 Some(project) => store::RunStore::Project(me.project_store(project)?),
                 None => store::RunStore::Maintenance(me.maintenance_store()),
             };
+            let _staging = lock(&me.staging);
+            let inputs = stage(&input_root, &new.spec, &given, &held)?;
             Ok::<_, Error>(me.submit_routed(&journal, &key, &digest, NewRun { inputs, ..new })?)
         })
         .await
@@ -1601,7 +1579,8 @@ impl Calcifer {
     /// and nothing dials the address it had.
     fn requeued(&self, name: &str, mut events: Vec<(RunId, Event)>, why: &str) -> Result<(), Error> {
         for owner in self.owners() {
-            if let Ok(store) = owner.store() {
+            // Tried, as every project is: one under a lock keeps its runs as they were.
+            if let Ok(store) = owner.try_store() {
                 events.extend(store.requeue_machine(name, why)?);
             }
         }
@@ -2186,7 +2165,7 @@ impl Calcifer {
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             let _driving = me.driving(&id);
-            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
+            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.live).remove(&id);
             me.hand_on(&id).await;

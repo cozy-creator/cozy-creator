@@ -135,7 +135,12 @@ pub(super) async fn thumb(
         // A take's file still on its way here, its run ended on its machine (cl-1108): not drawn yet, as one being drawn isn't. It's
         // drawn as it lands, and the `thumb` event says so.
         let digest = format!("sha256:{hex}");
-        if RunOwner::of(&project, &api.calcifer).store().and_then(|store| store.owes_file(&digest)).unwrap_or(false) {
+        // Its journal read waits its turn on the project: refused there (a lock has it), it's refused here.
+        let owed = RunOwner::of(&project, &api.calcifer).store().and_then(|store| store.owes_file(&digest));
+        if let Err(crate::store::StoreError::Locked(code)) = &owed && code == "project_locked" {
+            return Err(Refusal(Error::new(Kind::Conflict, "project_locked", "the project is locked").next("cozy vault unlock")));
+        }
+        if owed.unwrap_or(false) {
             return Ok(pending());
         }
         return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
@@ -302,16 +307,14 @@ fn wait_for_project(drawing: Drawing) {
     });
 }
 
-/// A moment's admission to `drawing`'s project, never waiting: `None` while a lock waits for it or holds it. A plain project has no gate.
-fn admitted(drawing: &Drawing) -> Result<Option<Option<tokio::sync::OwnedRwLockReadGuard<()>>>, Error> {
+/// A moment's admission to `drawing`'s project, now or not at all: `None` while a lock waits for it or holds it, and the drawing waits
+/// its turn on a task of its own (`wait_for_project`). Waiting here would hold up every other project's thumbnails behind one
+/// project's lock (cl-1025). A plain project has no gate.
+fn admitted(drawing: &Drawing) -> Result<Option<Option<super::vault::Read>>, Error> {
     if !drawing.private {
         return Ok(Some(None));
     }
-    match super::vault::try_admit_root(&drawing.root) {
-        Ok(access) => Ok(Some(Some(access))),
-        Err(error) if error.code == "project_busy" => Ok(None),
-        Err(error) => Err(error),
-    }
+    Ok(super::vault::try_admit_root(&drawing.root)?.map(Some))
 }
 
 /// The thumbnail called `name` in `dir`, if it is there.
@@ -337,7 +340,8 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
     let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
     drawing.source = super::vault::resolve_path(&drawing.source)?;
     tokio::task::spawn_blocking(move || {
-        let _access = access;
+        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+        let _access = access.map(super::vault::Read::here);
         let _permit = permit;
         // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept; a failed one is said by its drawer.
         crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name))

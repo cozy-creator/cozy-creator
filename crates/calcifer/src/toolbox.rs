@@ -318,11 +318,24 @@ fn reading(api: &Arc<Api>, hub: &str, scope: Option<private_io::Scope>, path: Pa
     }
     let (api, hub, began, held) = (api.clone(), hub.to_owned(), Instant::now(), key.clone());
     let task = tokio::spawn(private_io::context(scope.clone(), async move {
-        let _turn = LOCAL_READS.acquire().await;
-        match staged(&api, scope.as_ref(), &path) {
-            Ok(code) => Box::pin(local_code::read_source(&api, &code, &hub)).await,
-            Err(why) => Err(why),
-        }
+        // Its turn, then its project now or not at all: waiting for the project holding a turn would hold up every other project's
+        // reads behind one project's lock (cl-1025). Behind one, it waits its turn on the project holding none, then asks again.
+        let root = scope.as_ref().map(|scope| vault::logical(&scope.storage.view_root));
+        let (_turn, admitted) = loop {
+            let turn = LOCAL_READS.acquire().await;
+            let Some(root) = &root else { break (turn, None) };
+            match vault::try_admit_root(root)? {
+                Some(read) => break (turn, Some(read)),
+                None => {
+                    drop(turn);
+                    drop(vault::admit_root(root).await?);
+                }
+            }
+        };
+        // Held while its code is copied in, not while it's read: a lock waits for the copy alone.
+        let code = staged(&api, &path);
+        drop(admitted);
+        Box::pin(local_code::read_source(&api, &code?, &hub)).await
     }));
     let read = async move {
         let described = task.await.ok();
@@ -337,9 +350,8 @@ fn reading(api: &Arc<Api>, hub: &str, scope: Option<private_io::Scope>, path: Pa
     read
 }
 
-/// `path`'s code copied into its project, which holds still meanwhile: a lock under way refuses the read, and one asked waits.
-fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<api::code::LocalCode, Error> {
-    let _admitted = scope.map(|scope| vault::try_admit_root(&vault::logical(&scope.storage.view_root))).transpose()?;
+/// `path`'s code copied into its project, which holds still meanwhile: its caller holds a read of the project.
+fn staged(api: &Api, path: &Path) -> Result<api::code::LocalCode, Error> {
     local_code::own(api, path)
 }
 

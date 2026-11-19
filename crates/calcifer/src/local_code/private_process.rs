@@ -162,7 +162,8 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     };
     let Some(scope)=scope else { return command.output(); };
     let root=scope.storage.view_root;
-    let admission=crate::project::vault::try_admit_root(&crate::project::vault::logical(&root)).map_err(error)?;
+    // Its turn behind a transition, refused once a closing one has the project: a lock waits for no tool it didn't end.
+    let admission=crate::project::vault::admit_root_blocking(&crate::project::vault::logical(&root)).map_err(error)?;
     let cwd=platform::durable::canonical(command.get_current_dir().ok_or_else(||error("a project tool needs an owned working directory"))?).map_err(error)?;
     if !cwd.starts_with(&root) { return Err(error("the tool working directory is outside the project")); }
     // This guard covers processes, captured output, and every policy/native handle.

@@ -23,7 +23,6 @@ use api::{
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::{api::{Api, IdempotencyKey, Refusal, parse}, hub::jobs::Job, project::vault};
 
@@ -354,6 +353,8 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                     // the lease until its retention work has finished.
                     let access=crate::project::vault::admit_root(&project).await?;
                     let (kept, _access) = tokio::task::spawn_blocking(move || {
+                        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+                        let access = access.here();
                         (crate::project::keep_given(&project, &given, &uploads), access)
                     }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;
                     notes.extend(kept?.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
@@ -472,7 +473,7 @@ enum For {
     Estimate(u32),
 }
 
-async fn project_access(api: &Api, project: Option<&str>) -> Result<Option<OwnedRwLockReadGuard<()>>, Error> {
+async fn project_access(api: &Api, project: Option<&str>) -> Result<Option<crate::project::vault::Read>, Error> {
     match project {
         Some(named) => crate::project::vault::admit_project(api, named).await.map(Some),
         None => Ok(None),

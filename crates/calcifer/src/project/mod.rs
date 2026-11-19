@@ -394,22 +394,13 @@ impl Projects {
         drop(gone);
     }
 
-    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
-    pub(crate) fn close_lingering(&self) {
-        let mut lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
-        // A read under way leaves its project busy for that moment: tried again until `CLOSE_TRIES`, then left with its WAL.
-        let until = Instant::now() + CLOSE_TRIES;
-        while !lingering.is_empty() {
-            lingering.retain(|held| match held.project.folder.close_connections(true) {
-                Err(error) if error.code == "project_busy" && Instant::now() < until => true,
-                Err(error) => {
-                    warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
-                    false
-                }
-                Ok(()) => false,
-            });
-            if !lingering.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops. Each waits
+    /// for its database's uses in flight to end, up to the stop's deadline `until`, then is left with its WAL.
+    pub(crate) fn close_lingering(&self, until: Instant) {
+        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        for held in lingering {
+            if let Err(error) = held.project.folder.close_connections(true, until) {
+                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
             }
         }
     }
@@ -560,8 +551,6 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
 /// An encrypted one closes with its request, as every project did.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
-/// How long a stop tries again to close a project a read keeps busy (`close_lingering`).
-const CLOSE_TRIES: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A project held open after a request (`Projects::linger`).
 struct Lingering {
@@ -846,7 +835,8 @@ impl Holding {
             let clip = made.clip.clone();
             let access = vault::admit_root(&self.dir).await?;
             let sha256 = tokio::task::spawn_blocking(move || {
-                let _access = access;
+                // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+                let _access = access.here();
                 folder::hash(&clip)
             }).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
             cut.insert(sha256.clone(), made.clip);
@@ -1429,6 +1419,9 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
         let following = following(&api, &walk.project, active);
         if let Err(error) = walk.go(&following).await {
             walk.measure_at_end();
+            // The gate, then `walking`, then the writer: its read first, so the board it writes under `walking` is granted beside it.
+            // Refused (a lock closing the project), the end goes on, its writes refused at once.
+            let _read = vault::read_gate(&walk.project.root).await.ok();
             let mut walking = walk.project.walking.lock().expect("walking lock");
             walk.project.unsent.lock().expect("unsent lock").push(error.clone());
             // The stopped walk reports every accepted ask it still owes. Their
@@ -2891,6 +2884,8 @@ async fn delete_project(State(api): State<Arc<Api>>, Path(named): Path<String>) 
 /// Asset `from` called `to`, as `POST rename` has it, in one transaction.
 fn rename_now(project: &Arc<Project>, id: &str, asked: Rename) -> Result<Renamed, Refusal> {
     // Under `walking`, as a walk's end is: it is over, or it follows this. Taken before the transaction, as every writer takes it.
+    // The gate, then `walking`, then the writer: its read first, so the writes under `walking` are granted beside it and never queue.
+    let _read = vault::read_gate_blocking(&project.root).map_err(Refusal)?;
     let walking = project.walking.lock().expect("walking lock");
     let done = renamed_under(project, id, asked, *walking);
     drop(walking);
@@ -3201,6 +3196,8 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     };
     // Hold admission through the commit and its board. The previous walk
     // publishes its end under this same lock before a new one can begin.
+    // The gate, then `walking`, then the writer: its read first, so the writes under `walking` are granted beside it and never queue.
+    let _read = vault::read_gate_blocking(&project.root).map_err(Refusal)?;
     let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
     let added = if resent { 0 } else { takes.len() as u32 };
@@ -3587,10 +3584,14 @@ async fn measure_once(host: &Host, project: &Arc<Project>) {
     if let Err(error) = host.ffmpeg().await {
         return warn!("measuring a project's files: {}", error.message);
     }
+    // Its turn, then the project now or not at all: waiting for the project holding a turn would hold up every other project's
+    // measures behind one project's lock (cl-1025). Behind one, it waits its turn on the project holding none, then asks again.
     let (access, permit) = loop {
         let permit = MEASURES.acquire().await.expect("measuring's turn never closes");
-        if let Ok(access) = vault::try_admit_root(&project.root) {
-            break (access, permit);
+        match vault::try_admit_root(&project.root) {
+            Ok(Some(access)) => break (access, permit),
+            Ok(None) => {}
+            Err(_) => return,
         }
         drop(permit);
         let Ok(_access) = vault::admit_root(&project.root).await else { return; };
@@ -3599,7 +3600,8 @@ async fn measure_once(host: &Host, project: &Arc<Project>) {
     let (dir, project) = (project.folder.dir.clone(), project.clone());
     let measuring = tokio::task::spawn_blocking(move || {
         // This task can outlive its importer and must drain before storage is replaced.
-        let _access = access;
+        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+        let _access = access.here();
         let _permit = permit;
         let measured = crate::tools::quietly(|| project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock)));
         // What was read before this finished said nothing of how long a clip is.
@@ -4405,6 +4407,8 @@ impl Walk {
             self.say_cuts(&doc, &stand).await?;
         }
         // Under `walking`, as an ask keeps its words and joins: one asked now of the same words keeps them.
+        // The gate, then `walking`, then the writer: its read first, so the writes under `walking` are granted beside it and never queue.
+        let _read = vault::read_gate(&self.project.root).await?;
         let _walking = self.project.walking.lock().expect("walking lock");
         let asks = self.folder().walk_now()?.walk.asks;
         if let Some(digest) = asks.iter().find(|ask| ask.id == id).map(|ask| &ask.digest) {
@@ -5649,6 +5653,9 @@ impl Walk {
             return Ok(false);
         }
         self.measure_at_end();
+        // The gate, then `walking`, then the writer: its read first, so its end's writes are granted beside it. Refused (a lock closing
+        // the project), it goes on, its writes refused at once.
+        let _read = vault::read_gate_blocking(&self.project.root).ok();
         let mut walking = self.project.walking.lock().expect("walking lock");
         let walk = self.folder().walk_now()?;
         if owes(&walk) {
@@ -5740,7 +5747,8 @@ impl Walk {
             let (_, ffprobe) = self.host.ffmpeg().await?;
             let access = vault::admit_work(&project).await?;
             tokio::task::spawn_blocking(move || {
-                let _access = access;
+                // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+                let _access = access.here();
                 tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut)
             }).await.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?
         }.await;
@@ -5968,7 +5976,8 @@ impl Walk {
             let clip = made.clip.clone();
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
             let sha256 = tokio::task::spawn_blocking(move || {
-                let _access = access;
+                // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+                let _access = access.here();
                 folder::hash(&clip)
             }).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
             self.clips.lock().expect("clips lock").insert(sha256.clone(), made.clip);
@@ -6523,6 +6532,8 @@ impl Walk {
         let access = vault::admit_work(&self.project).await?;
         // The abandoned result must drop its temporary frame before releasing the view.
         let (grabbed, _access) = tokio::task::spawn_blocking(move || {
+            // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+            let access = access.here();
             (tools::frame(&ffmpeg, &path, early, &dir), access)
         }).await.map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
         let (frame, past) = grabbed?;
@@ -6660,7 +6671,8 @@ impl Walk {
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
-            let _access = access;
+            // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+            let _access = access.here();
             let _held = cutting.lock().expect("cutting lock");
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
@@ -6675,6 +6687,8 @@ impl Walk {
             tools::cut_around(&ffmpeg, &ffprobe, &project.folder, pieces, &canvas, &cutting_name, &cache, &told)
         })
         .await;
+        // Its cut ended: a transition waiting on it looks again.
+        vault::work_ended(&self.project.root);
         self.project.rendering.lock().expect("rendering lock").remove(&asset.name);
         crate::events::project_settled(&folder.dir);
         let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next("cozy open"))?;
@@ -6776,7 +6790,8 @@ impl Walk {
             let changed = if here {
                 let access = vault::admit_work(&self.project).await?;
                 tokio::task::spawn_blocking(move || {
-                    let _access = access;
+                    // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+                let _access = access.here();
                     folder::hash(&path).is_ok_and(|got| got != digest)
                 }).await.unwrap_or(false)
             } else {

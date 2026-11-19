@@ -13,7 +13,6 @@ use api::{
     error::{Error, Kind},
 };
 use sha2::{Digest as _, Sha256};
-use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::tools::Media;
 
@@ -111,7 +110,7 @@ impl Clips {
         crate::tools::ready_ffmpeg(&self.home).await
     }
 
-    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, ffmpeg: crate::tools::Ffmpeg, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, ffmpeg: crate::tools::Ffmpeg, access: crate::project::vault::Read) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }
@@ -146,7 +145,9 @@ impl Clips {
         let began = Instant::now();
         let (source, dir) = (source.to_owned(), self.dir.clone());
         let (encoded, _access) = tokio::task::spawn_blocking(move || {
-            // The encoder can finish after its async caller has been canceled.
+            // The encoder can finish after its async caller has been canceled. Its read, held by this blocking task now: the tool it
+            // starts asks for the project beside it.
+            let access = access.here();
             (encode(&ffmpeg, &source, range, fps, past.is_some(), &dir, &clip), access)
         })
         .await

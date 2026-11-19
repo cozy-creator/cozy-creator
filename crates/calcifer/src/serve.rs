@@ -423,9 +423,11 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
 
     api.stopped().await;
     crate::health::service_health(crate::health::HealthEvent::Stopping);
+    // What the stop waits for, each in order, is bounded by its deadline (`stop_deadline` ends what's left past it).
+    let until = Instant::now() + STOP_WITHIN;
     stop_deadline(api.clone());
     stop_step(StopStep::Views);
-    tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
+    tokio::task::block_in_place(|| crate::project::vault::close_all(&api, until)).map_err(failed)?;
     stop_step(StopStep::Answers);
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
@@ -438,7 +440,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     // Projects held after their last request close now, their WAL emptied, no request left to hold one again: a stop just after a
     // request leaves no -wal or -shm in a person's folder, nor commits only there.
     stop_step(StopStep::Projects);
-    tokio::task::block_in_place(|| api.projects.close_lingering());
+    tokio::task::block_in_place(|| api.projects.close_lingering(until));
     stop_step(StopStep::Machines);
     machines.close();
     stop_step(StopStep::Store);

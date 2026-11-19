@@ -1,5 +1,5 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, fs, io::Read as _, marker::PhantomData, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, PoisonError, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
@@ -31,8 +31,8 @@ impl std::hash::Hash for MountIdentity {
 }
 static SESSIONS: LazyLock<Mutex<BTreeMap<PathBuf, Held>>> = LazyLock::new(Mutex::default);
 static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex::default);
-static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
-static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>= LazyLock::new(Mutex::default);
+/// Each project's vault operation, one at a time: kept for Calcifer's life, as what holds one borrows it (`Operating`).
+static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, &'static Mutex<()>>>> = LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 /// What wakes the vault clock (`start`) before its next deadline: a session began or is closing, its mount ended, work on its project
 /// began or ended (`stir`). A wall-clock alarm, which a suspend or a clock change doesn't put off.
@@ -45,13 +45,70 @@ const AGAIN: Duration = Duration::from_secs(1);
 /// A session closed: a shutdown waiting on the views to close tries again.
 pub(crate) static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+/// Told on each stir: what waits on a project's holders off the clock's thread (a transition awaiting its walk, move, cut or tools,
+/// the deadline lock awaiting its runs) looks again then, never on a timer.
+static STIRS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
 pub(crate) fn stir() {
+    nudge();
     if let Some(clock) = &*CLOCK { clock.wake(); }
 }
 
-/// Work on the project at `root` ended (a request answered, a tool's process gone): its vault's clocks go on.
+/// The vault clock looks again; nothing waiting on a project's holders is told (a transition's or an operation's own end).
+fn wake_clock() {
+    if let Some(clock) = &*CLOCK { clock.wake(); }
+}
+
+/// What waits on a project's holders looks again (`STIRS`); the clock isn't woken.
+fn nudge() {
+    STIRS.send_modify(|told| *told = told.wrapping_add(1));
+}
+
+/// Work on the project at `root` ended (a request answered, a tool's process gone, a move or a cut done): a transition waiting for it
+/// looks again, and its vault's clocks go on.
 pub(crate) fn work_ended(root: &FsPath) {
+    nudge();
     if SESSIONS.lock().expect("vault sessions").contains_key(root) { stir(); }
+}
+
+/// Until `done`, looked at again on each stir, or until `until`: whether it's done.
+fn stirred_until(until: Instant, mut done: impl FnMut() -> bool) -> bool {
+    let mut stirs = STIRS.subscribe();
+    loop {
+        stirs.borrow_and_update();
+        if done() { return true; }
+        if off_the_workers(|| block_on(Some(until), stirs.changed())).is_none() { return done(); }
+    }
+}
+
+/// `wait` on this thread, parked between its wakes, with no runtime of its own: from a blocking thread, the vault clock's, or inside a
+/// `block_on` that blocks on something else. None once `until` passes.
+fn block_on<F: std::future::Future>(until: Option<Instant>, wait: F) -> Option<F::Output> {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) { self.0.unpark(); }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut wait = std::pin::pin!(wait);
+    loop {
+        if let std::task::Poll::Ready(done) = wait.as_mut().poll(&mut context) { return Some(done); }
+        match until {
+            Some(at) => match at.checked_duration_since(Instant::now()) {
+                Some(left) if !left.is_zero() => std::thread::park_timeout(left),
+                _ => return None,
+            },
+            None => std::thread::park(),
+        }
+    }
+}
+
+/// `f`, which may wait, with this runtime worker's other tasks handed on first.
+fn off_the_workers<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
+    }
 }
 
 struct Session {
@@ -251,19 +308,130 @@ fn work_view(root: &FsPath) -> Result<PathBuf, Error> {
     platform::durable::canonical(session.mount.view()).map_err(provider)
 }
 
-fn operation(root: &FsPath) -> Arc<Mutex<()>> {
-    OPERATIONS.lock().expect("vault operations").entry(root.to_owned()).or_default().clone()
+fn operation(root: &FsPath) -> &'static Mutex<()> {
+    *OPERATIONS.lock().expect("vault operations").entry(root.to_owned()).or_insert_with(|| Box::leak(Box::default()))
 }
 
-fn access(root: &FsPath) -> Arc<tokio::sync::RwLock<()>> {
-    ACCESS.lock().expect("vault access").entry(root.to_owned()).or_default().clone()
+/// `root`'s vault operation, held until dropped. An operation's end wakes the vault clock, which looks at a vault one held then;
+/// the clock's own look wakes nothing (`wakes`), or it would wake itself.
+struct Operating { guard: Option<std::sync::MutexGuard<'static, ()>>, wakes: bool }
+
+impl Drop for Operating {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if self.wakes { wake_clock(); }
+    }
 }
 
-/// Exclusive authority for this exact project's storage transition. Internal final
-/// journal writes may borrow it while public work/read admission is already closed.
+fn operating(root: &FsPath) -> Operating {
+    Operating { guard: Some(operation(root).lock().expect("vault operation")), wakes: true }
+}
+
+/// [`operating`] now or not at all: what goes on without the operation while one is going (the clock's look, a recovery in a view).
+fn operating_now(root: &FsPath) -> Option<Operating> {
+    match operation(root).try_lock() {
+        Ok(guard) => Some(Operating { guard: Some(guard), wakes: false }),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(_)) => panic!("vault operation poisoned"),
+    }
+}
+
+/// Who holds a project's gate or asks for it: its tokio task (inside `block_in_place` and `spawn_blocking` too), else its thread (the
+/// vault clock's).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Holder { Task(tokio::task::Id), Thread(std::thread::ThreadId) }
+
+fn holder() -> Holder {
+    tokio::task::try_id().map_or_else(|| Holder::Thread(std::thread::current().id()), Holder::Task)
+}
+
+/// One project's gate (xs-215). Reads share it, a transition has it alone, and a transition waiting for it holds back the reads asked
+/// after it, so each waits its turn in order; nothing tries it and asks again on a timer. What deadlocks can't come from it:
+/// - a transition waits only for (a) the reads held now, (b) the tools it ended itself, awaited by their exits (`forget_with`), and
+///   (c) the database's uses in flight, each held across one database operation, never across a wait on a network or a worker
+///   (`Folder::close_connections`), each up to its bound;
+/// - a read held is held by its holder, which asks nothing more of the gate: its nested reads are granted at once beside it;
+/// - a read queued behind a transition holds nothing of the gate. Behind a closing one it's refused once that has the project; behind
+///   an encrypt or a rotate it ends at their `LOCK_DRAIN`. So a database use that asks for a read mid-operation never waits in a circle.
+/// - a transition asked by a holder of the project's gate fails at once (`gate_self_wait`), never waits on itself.
+/// - the gate before the writer, always: a use of the project's database writer takes its gate read first (`Folder::writer_turn`), and
+///   a read asked by a thread holding that writer, which would make a transition's write wait on it, is refused at once, never waited
+///   for. The transition's own writes take no read: it holds the project alone.
+/// - the lock order is the gate, then a project's `walking`, then its writer: whatever writes under `walking` (a walk's end, a render
+///   asked, a rename, Undo and Redo) takes its read first, so no one waits on the gate holding `walking`, and a read holder may wait on
+///   `walking` (a store starting its owed walk). `moving` is waited on only by the project's one walker, which holds no read then;
+///   `cutting` is taken under a read already held.
+/// - no std lock that a read holder or a transition asks for is held across a wait on the gate or on a holder. `operation(root)` is held
+///   across a transition and its waits: no read holder asks for it.
+struct Gate {
+    lock: Arc<tokio::sync::RwLock<()>>,
+    /// Each holder's reads now, with the read of the lock they share: one per holder, shared with a holder its read moved to (`share`).
+    reads: HashMap<Holder, (usize, Arc<tokio::sync::OwnedRwLockReadGuard<()>>)>,
+    /// The transition's holder, once it has the project.
+    transition: Option<Holder>,
+    /// While a closing transition has the project: new reads of it are refused at once, and so are those queued behind it.
+    closing: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self { lock: Arc::default(), reads: HashMap::new(), transition: None, closing: tokio::sync::watch::channel(false).0 }
+    }
+}
+
+static GATES: LazyLock<Mutex<BTreeMap<PathBuf, Gate>>> = LazyLock::new(Mutex::default);
+
+fn gates() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Gate>> { GATES.lock().unwrap_or_else(PoisonError::into_inner) }
+
+/// A read of a project's gate: no transition has the project while one is held. Dropped, the project goes on to what waits for it.
+pub(crate) struct Read { root: PathBuf, holder: Holder }
+
+impl Read {
+    /// Another read of the project for the task or thread this is on now, sharing this one's hold of the gate: what a read moved to a
+    /// blocking task gives that task, so its own reads there (a tool it starts, its journal) are granted beside it, never queued behind
+    /// a transition that waits for this read.
+    pub(crate) fn share(&self) -> Read {
+        let who = holder();
+        let mut gates = gates();
+        let gate = gates.entry(self.root.clone()).or_default();
+        let guard = gate.reads.get(&self.holder).map(|(_, guard)| guard.clone()).expect("a read held is in its gate");
+        gate.reads.entry(who).and_modify(|held| held.0 += 1).or_insert((1, guard));
+        Read { root: self.root.clone(), holder: who }
+    }
+
+    /// This read, held by the task or thread it's on now (`share`): the first thing a blocking task it moved to does.
+    pub(crate) fn here(self) -> Read {
+        if self.holder == holder() { return self; }
+        self.share()
+    }
+}
+
+impl Drop for Read {
+    fn drop(&mut self) {
+        let mut gates = gates();
+        let Some(gate) = gates.get_mut(&self.root) else { return };
+        if let std::collections::hash_map::Entry::Occupied(mut held) = gate.reads.entry(self.holder) {
+            held.get_mut().0 -= 1;
+            if held.get().0 == 0 { held.remove(); }
+        }
+    }
+}
+
+/// Whether a transition closes its project: a lock, a decrypt, a move to the trash. While one has the project, a read of it is refused
+/// at once (`project_locked`), so a walk, a move or a cut that asks ends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Closing { Closes, Stays }
+
+/// A project's gate held alone: what changes its storage. Not `Send`: taken and dropped on one blocking thread (`block_in_place`,
+/// `spawn_blocking`), never held across an `.await`. Internal final journal writes borrow it (`Projects::transition_store`).
 pub(super) struct ProjectTransition {
     root: PathBuf,
-    _access: tokio::sync::OwnedRwLockWriteGuard<()>,
+    /// The bound it was asked with, for what it waits on once it has the project.
+    until: Instant,
+    /// Whether it closes the project (`Closing::Closes`).
+    closes: bool,
+    access: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    _thread: PhantomData<*const ()>,
 }
 
 impl ProjectTransition {
@@ -274,11 +442,23 @@ impl ProjectTransition {
     }
 }
 
+impl Drop for ProjectTransition {
+    fn drop(&mut self) {
+        if let Some(gate) = gates().get_mut(&self.root) {
+            gate.transition = None;
+            gate.closing.send_replace(false);
+        }
+        drop(self.access.take());
+        // The clock looks again at a vault a storage change held. Reads it held back go on by the gate itself.
+        wake_clock();
+    }
+}
+
 /// Read authority over this exact project's journal, beside its other readers: what the vault clock looks at a project's work under
-/// (`working`). It took the transition (`exclusive`) once, and a tool starting then was refused: its run failed `lock_failed` (cl-1066).
+/// (`working`). It took the transition once, and a tool starting then was refused: its run failed `lock_failed` (cl-1066).
 pub(super) struct ProjectInspection {
     root: PathBuf,
-    _access: tokio::sync::OwnedRwLockReadGuard<()>,
+    _read: Read,
 }
 
 impl ProjectInspection {
@@ -300,85 +480,245 @@ fn validate_authority(root: &FsPath, project: &super::Project) -> Result<(), Err
     Ok(())
 }
 
-/// [`ProjectInspection`], now: none while a transition holds the project or waits for it.
-fn inspection(root: &FsPath) -> Result<ProjectInspection, Error> {
-    let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing"))?;
-    Ok(ProjectInspection { root: root.to_owned(), _access: guard })
+/// A wait on a project's gate by what holds that gate already: it would wait on itself, so it's refused, and said as the bug it is.
+fn self_wait(root: &FsPath, what: &str) -> Error {
+    tracing::error!("{}: {what} of its gate was asked by what holds that gate already, so it would wait on itself; refused (a bug)", root.display());
+    Error::new(Kind::Internal, "gate_self_wait", format!("{what} of the project was asked by what holds it already"))
 }
 
-fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
-    let guard = access(root).try_write_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "a project request is still running; retry after it finishes"))?;
-    Ok(ProjectTransition { root: root.to_owned(), _access: guard })
+/// What a read finds: granted now, or its turn behind a transition, by the lock and what says it closes.
+enum Turn { Now(Read), Queued(Arc<tokio::sync::RwLock<()>>, tokio::sync::watch::Receiver<bool>) }
+
+fn ask(root: &FsPath, who: Holder) -> Result<Turn, Error> {
+    let mut gates = gates();
+    let gate = gates.entry(root.to_owned()).or_default();
+    if gate.transition == Some(who) { return Err(self_wait(root, "a read")); }
+    let read = || Read { root: root.to_owned(), holder: who };
+    // Its holder holds the project already: beside its own read, never behind a transition that waits for that read.
+    if let Some(held) = gate.reads.get_mut(&who) {
+        held.0 += 1;
+        return Ok(Turn::Now(read()));
+    }
+    if *gate.closing.borrow() { return Err(locked(root)); }
+    match gate.lock.clone().try_read_owned() {
+        Ok(guard) => {
+            gate.reads.insert(who, (1, Arc::new(guard)));
+            Ok(Turn::Now(read()))
+        }
+        // Holding the project's writer, it would make the transition ahead wait on it while it waits on that transition.
+        Err(_) if super::folder::writing_here(root) => Err(self_wait(root, "a read asked holding the project's database writer")),
+        Err(_) => Ok(Turn::Queued(gate.lock.clone(), gate.closing.subscribe())),
+    }
 }
 
-/// [`exclusive`], queued: what asks for the project after it waits behind it, so it has the project once the requests already
-/// holding it end, or `project_busy` after `within`. Only from a blocking thread (`block_in_place`, `spawn_blocking`) holding no
-/// read of the project: it would wait for itself.
-fn exclusive_within(api: &Api, root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
-    let queued = tokio::time::timeout(within, access(root).write_owned());
-    let Ok(guard) = tokio::runtime::Handle::current().block_on(queued) else {
-        let holder = if api.projects.active_requests(root) { "a project request" }
-            else if crate::local_code::private_process_active(root) { "a project tool" }
-            else { "a project read (an upload, a thumbnail or a measurement)" };
-        return Err(Error::new(Kind::Conflict, "project_busy", format!("{holder} is still running; retry after it finishes")));
+/// Its turn behind the transition ahead: the read, else `project_locked` once a closing transition has the project.
+async fn queued(root: &FsPath, lock: Arc<tokio::sync::RwLock<()>>, mut closing: tokio::sync::watch::Receiver<bool>) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    tokio::select! {
+        biased;
+        guard = lock.read_owned() => Ok(guard),
+        _ = closing.wait_for(|closing| *closing) => Err(locked(root)),
+    }
+}
+
+fn granted(root: &FsPath, who: Holder, guard: tokio::sync::OwnedRwLockReadGuard<()>) -> Read {
+    let mut gates = gates();
+    let gate = gates.entry(root.to_owned()).or_default();
+    match gate.reads.entry(who) {
+        std::collections::hash_map::Entry::Occupied(mut held) => held.get_mut().0 += 1,
+        std::collections::hash_map::Entry::Vacant(free) => { free.insert((1, Arc::new(guard))); }
+    }
+    Read { root: root.to_owned(), holder: who }
+}
+
+/// A read of `root`'s gate, waited for in order.
+pub(crate) async fn read_gate(root: &FsPath) -> Result<Read, Error> {
+    let who = holder();
+    match ask(root, who)? {
+        Turn::Now(read) => Ok(read),
+        Turn::Queued(lock, closing) => Ok(granted(root, who, queued(root, lock, closing).await?)),
+    }
+}
+
+/// [`read_gate`], for code that can't await: it waits off the runtime's workers.
+pub(crate) fn read_gate_blocking(root: &FsPath) -> Result<Read, Error> {
+    let who = holder();
+    match ask(root, who)? {
+        Turn::Now(read) => Ok(read),
+        Turn::Queued(lock, closing) => {
+            let guard = off_the_workers(|| block_on(None, queued(root, lock, closing))).expect("a wait with no bound ends")?;
+            Ok(granted(root, who, guard))
+        }
+    }
+}
+
+/// A read of `root`'s gate for a use of its database writer, asked before the writer is taken (`Folder::writer_turn`), waited for in
+/// order. None for the transition's own writes: it holds the project alone.
+pub(crate) fn read_for_writer(root: &FsPath) -> Result<Option<Read>, Error> {
+    if gates().get(root).is_some_and(|gate| gate.transition == Some(holder())) { return Ok(None); }
+    read_gate_blocking(root).map(Some)
+}
+
+/// [`read_gate`] now or not at all, only where waiting would be wrong; each caller says why.
+pub(crate) fn try_read_gate(root: &FsPath) -> Option<Read> {
+    let who = holder();
+    let mut gates = gates();
+    let gate = gates.entry(root.to_owned()).or_default();
+    if gate.transition == Some(who) { return None; }
+    if let Some(held) = gate.reads.get_mut(&who) {
+        held.0 += 1;
+        return Some(Read { root: root.to_owned(), holder: who });
+    }
+    let guard = gate.lock.clone().try_read_owned().ok()?;
+    gate.reads.insert(who, (1, Arc::new(guard)));
+    Some(Read { root: root.to_owned(), holder: who })
+}
+
+/// What holds `root` up, as a refusal names it.
+fn holding(api: &Api, root: &FsPath) -> &'static str {
+    if api.projects.active_requests(root) { "a project request" }
+    else if crate::local_code::private_process_active(root) { "a project tool" }
+    else { "a project read (an upload, a thumbnail or a measurement)" }
+}
+
+/// `root`'s gate alone, waited for in order behind the reads held now until `until`, else `project_busy` naming what holds it. Only
+/// from a blocking thread (`block_in_place`, `spawn_blocking`); asked by a holder of the project's gate, it fails at once.
+fn transition(api: &Api, root: &FsPath, closing: Closing, until: Instant) -> Result<ProjectTransition, Error> {
+    let who = holder();
+    let lock = {
+        let mut gates = gates();
+        let gate = gates.entry(root.to_owned()).or_default();
+        if gate.transition == Some(who) || gate.reads.contains_key(&who) { return Err(self_wait(root, "a transition")); }
+        gate.lock.clone()
     };
-    Ok(ProjectTransition { root: root.to_owned(), _access: guard })
+    let Some(guard) = off_the_workers(|| block_on(Some(until), lock.write_owned())) else {
+        // It gave up: what it held back goes on, and the clock looks again.
+        wake_clock();
+        return Err(Error::new(Kind::Conflict, "project_busy", format!("{} is still running; retry after it finishes", holding(api, root))));
+    };
+    let mut gates = gates();
+    let gate = gates.entry(root.to_owned()).or_default();
+    gate.transition = Some(who);
+    if closing == Closing::Closes { gate.closing.send_replace(true); }
+    Ok(ProjectTransition { root: root.to_owned(), until, closes: closing == Closing::Closes, access: Some(guard), _thread: PhantomData })
+}
+
+/// [`transition`] now or not at all: a recovery in `view`, asked under its caller's own read of the project, would wait on itself.
+fn try_transition(root: &FsPath) -> Option<ProjectTransition> {
+    let who = holder();
+    let mut gates = gates();
+    let gate = gates.entry(root.to_owned()).or_default();
+    if gate.transition.is_some() || gate.reads.contains_key(&who) { return None; }
+    let guard = gate.lock.clone().try_write_owned().ok()?;
+    gate.transition = Some(who);
+    Some(ProjectTransition { root: root.to_owned(), until: Instant::now() + LOCK_DRAIN, closes: false, access: Some(guard), _thread: PhantomData })
+}
+
+/// [`ProjectInspection`], waited for in order. Only from a blocking thread.
+fn inspection(root: &FsPath) -> Result<ProjectInspection, Error> {
+    Ok(ProjectInspection { root: root.to_owned(), _read: read_gate_blocking(root)? })
+}
+
+/// [`ProjectInspection`] now or not at all: the clock looks at every vault on its one thread, and one project's transition mustn't
+/// hold up another's deadline. Its end stirs the clock, which looks again then.
+fn inspection_now(root: &FsPath) -> Option<ProjectInspection> {
+    Some(ProjectInspection { root: root.to_owned(), _read: try_read_gate(root)? })
 }
 
 /// Upload routes are outside the project router, but must hold the same storage transition
 /// lease through their body and commit. A delayed upload cannot write into a reused drive.
-pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<Read, Error> {
     let root = location(api, named)?;
     admit_root(&root).await
 }
 
 /// [`admit_project`], with the project's root: an upload that lets go of the gate while a lock waits asks for it again by it.
-pub(crate) async fn admit_project_root(api: &Api, named: &str) -> Result<(PathBuf, tokio::sync::OwnedRwLockReadGuard<()>), Error> {
+pub(crate) async fn admit_project_root(api: &Api, named: &str) -> Result<(PathBuf, Read), Error> {
     let root = location(api, named)?;
     let held = admit_root(&root).await?;
     Ok((root, held))
 }
 
-pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
-    let guard = access(root).read_owned().await;
+pub(crate) async fn admit_root(root: &FsPath) -> Result<Read, Error> {
+    let read = read_gate(root).await?;
     view(root)?;
-    Ok(guard)
+    Ok(read)
 }
 
-/// Synchronous tool admission holds the transition gate only until its active
-/// owner has been registered. The caller releases it before waiting for work.
-pub(crate) fn try_admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
-    let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
+/// [`admit_root`] for code that can't await (a project tool starting, local code staged): it waits its turn off the runtime's workers.
+pub(crate) fn admit_root_blocking(root: &FsPath) -> Result<Read, Error> {
+    let read = read_gate_blocking(root)?;
     view(root)?;
-    Ok(guard)
+    Ok(read)
+}
+
+/// [`admit_root`] now or not at all: none while a transition waits for the project or has it. Only where waiting would be wrong;
+/// each caller says why.
+pub(crate) fn try_admit_root(root: &FsPath) -> Result<Option<Read>, Error> {
+    let Some(read) = try_read_gate(root) else { return Ok(None) };
+    view(root)?;
+    Ok(Some(read))
 }
 
 /// Whether a lock waits for this project, or holds it: what holds a read of it for long (an upload's body) lets go then, and asks again.
 pub(crate) fn lock_waiting(root: &FsPath) -> bool {
-    access(root).try_read_owned().is_err()
+    let lock = gates().entry(root.to_owned()).or_default().lock.clone();
+    lock.try_read().is_err()
 }
 
 /// An already accepted walker may finish while viewing is closing, but only on its own mount.
-pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
-    let guard = access(&project.root).read_owned().await;
+pub(super) async fn admit_work(project: &super::Project) -> Result<Read, Error> {
+    let read = read_gate(&project.root).await?;
     validate_work(project)?;
-    Ok(guard)
+    Ok(read)
 }
 
-/// Bounded access for an internal active-run callback. It must not wait behind a
-/// closing transition or turn an unavailable project into global maintenance state.
-pub(super) fn try_admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
-    let guard = access(&project.root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
+/// [`admit_work`] now or not at all, `project_busy` while a transition waits for the project or has it: what reads every project
+/// (the machines view, the status counts, a driver's busy check, another project's edit) skips one, never waits on one project's lock.
+pub(super) fn try_admit_work(project: &super::Project) -> Result<Read, Error> {
+    let read = try_read_gate(&project.root).ok_or_else(|| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing"))?;
     validate_work(project)?;
-    Ok(guard)
+    Ok(read)
 }
 
-fn validate_work(project: &super::Project) -> Result<(), Error> {
+/// [`admit_work`] for code that can't await: an active run's journal (`RunOwner::store`), waited for in order off the workers.
+pub(super) fn admit_work_blocking(project: &super::Project) -> Result<Read, Error> {
+    let read = read_gate_blocking(&project.root)?;
+    validate_work(project)?;
+    Ok(read)
+}
+
+pub(super) fn validate_work(project: &super::Project) -> Result<(), Error> {
     if project.mount_id != mount_identity(&project.root) || resolve_path(&project.root)? != project.folder.dir {
         return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
     }
     Ok(())
 }
+
+/// Uploads into each project's view now, by root (`uploading`): each keeps its file and the view's upload store open for its life,
+/// past the read it lets go of while a lock waits (cl-1025).
+static UPLOADING: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// An upload into the project at `root`, from its first byte to its answer.
+pub(crate) struct Uploading(PathBuf);
+
+pub(crate) fn uploading(root: &FsPath) -> Uploading {
+    *UPLOADING.lock().expect("vault uploads").entry(root.to_owned()).or_default() += 1;
+    Uploading(root.to_owned())
+}
+
+impl Drop for Uploading {
+    fn drop(&mut self) {
+        let mut uploads = UPLOADING.lock().expect("vault uploads");
+        if let Some(count) = uploads.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 { uploads.remove(&self.0); }
+        }
+        drop(uploads);
+        work_ended(&self.0);
+    }
+}
+
+fn uploads_going(root: &FsPath) -> bool { UPLOADING.lock().expect("vault uploads").contains_key(root) }
 
 /// Clients following a run of each project's (`following`), by root: the project is in use until they let go.
 static FOLLOWING: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
@@ -462,10 +802,8 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
     Ok(super::known(api, named)?.path)
 }
 
-/// An idle lock that failed: retried by the standard backoff, each attempt said in the log, and
-/// its next commands shown by status until a lock succeeds.
-struct LockRetry { backoff: tensorfs::fetch::Backoff, at: std::time::Instant, next: Vec<String> }
-static LOCK_RETRIES: LazyLock<Mutex<BTreeMap<PathBuf, LockRetry>>> = LazyLock::new(Mutex::default);
+/// What a deadline lock's last close that failed says to do next, shown by status until the vault locks.
+static LOCK_NEXT: LazyLock<Mutex<BTreeMap<PathBuf, Vec<String>>>> = LazyLock::new(Mutex::default);
 
 /// What a locking project last waited for (cl-1130): its runs ending (`RUNS`), or an app with its files open (`FILES`). Its status says it.
 static HOLDING: LazyLock<Mutex<BTreeMap<PathBuf, &'static str>>> = LazyLock::new(Mutex::default);
@@ -476,20 +814,24 @@ fn holds(root: &FsPath, what: &'static str) {
     HOLDING.lock().expect("vault holders").insert(root.to_owned(), what);
 }
 
-fn idle_lock_failed(root: &FsPath, failure: &Error) {
-    let mut retries = LOCK_RETRIES.lock().expect("lock retries");
-    let retry = retries.entry(root.to_owned()).or_insert_with(|| LockRetry { backoff: tensorfs::fetch::Backoff::background(), at: std::time::Instant::now(), next: vec![] });
-    // Its code alone, with the folder: what refused it can name a run, which no log outside the project carries (cl-1060).
-    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.code);
-    let (wait, said) = retry.backoff.again(&why, false, None).unwrap_or_else(|| {
-        // Never left unlocked quietly: say the spent round and start another.
-        let spent = retry.backoff.spent(&why);
-        retry.backoff = tensorfs::fetch::Backoff::background();
-        (Duration::from_secs(16), spent)
-    });
-    tracing::warn!("{said}");
-    retry.at = std::time::Instant::now() + wait;
-    retry.next = failure.next.iter().cloned().chain(["cozy vault lock".to_owned()]).collect();
+/// A deadline lock's close that failed (cl-1060's code alone, with the folder: what refused it can name a run, which no log outside the
+/// project carries): said once by its code, and its next commands shown by status until it locks. It tries again on the next stir.
+fn lock_failed(root: &FsPath, failure: &Error) {
+    once(root, "deadline lock", &failure.code, || format!("{} did not lock at its deadline yet: {}", root.display(), failure.code));
+    let next = failure.next.iter().cloned().chain(["cozy vault lock".to_owned()]).collect();
+    LOCK_NEXT.lock().expect("lock next").insert(root.to_owned(), next);
+}
+
+/// What's said of a vault once for each `code` until its session closes (`forget_said`): a mount another program holds, a deadline
+/// lock's failure, a checkpoint an outside reader holds.
+static SAID_ONCE: LazyLock<Mutex<BTreeSet<(PathBuf, &'static str, String)>>> = LazyLock::new(Mutex::default);
+
+fn once(root: &FsPath, what: &'static str, code: &str, said: impl FnOnce() -> String) {
+    if SAID_ONCE.lock().expect("vault said once").insert((root.to_owned(), what, code.to_owned())) { tracing::warn!("{}", said()); }
+}
+
+fn forget_said(root: &FsPath) {
+    SAID_ONCE.lock().expect("vault said once").retain(|(said, _, _)| said != root);
 }
 
 fn status(root: &FsPath) -> VaultStatus {
@@ -524,7 +866,7 @@ fn status(root: &FsPath) -> VaultStatus {
         ("locked" | "storage_update_required", _) => vec!["cozy vault unlock".into()],
         // Its runs, which the lock ended, are still finishing: nothing to do but wait (cl-1130).
         ("locking", RUNS) => vec!["wait: it locks once its runs have ended".into()],
-        ("locking", _) => LOCK_RETRIES.lock().expect("lock retries").get(root).map(|retry| retry.next.clone())
+        ("locking", _) => LOCK_NEXT.lock().expect("lock next").get(root).cloned()
             .unwrap_or_else(|| vec!["close applications using the project, then lock again".into()]),
         _ => vec![],
     };
@@ -724,6 +1066,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     // Its supervisor's exit is its mount's end: a lock, its provider dying, an unmount from outside.
     let supervisor = session.mount.supervisor();
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
+    forget_said(root);
     match supervisor {
         Ok(supervisor) => {
             let _ = std::thread::Builder::new().name("vault-mount".into()).spawn(move || {
@@ -742,12 +1085,14 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
 }
 
 /// [`forget`], `snapshot` when what's next reads its files as they are (a conversion, a lock): project.db's WAL checkpointed into it.
-/// A folder moved whole (cl-1097) takes its WAL with it, and waits on no reader for that.
+/// A folder moved whole (cl-1097) takes its WAL with it, and waits on no reader for that. What it waits for, under the transition and
+/// up to its bound, is what the gate's invariant names: the project's tools, which it ends and awaits by their exits; a render walking,
+/// a move or a cut, each ending once it next asks for the project (a closing transition refuses it) and saying so (`work_ended`); and
+/// the database's uses in flight (`Folder::close_connections`). A request is never waited for: one holds the project only while it
+/// holds a read, which the transition waited for already. Unsettled runs are a hold of their own (`RUNS`): refused, and the sweeper
+/// finishes once they settle.
 fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, snapshot: bool) -> Result<(), Error> {
     let available = !encrypted(root) || held(root).is_some_and(|session| session.lock().expect("vault session").mount.is_mounted().unwrap_or(false));
-    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) {
-        return Err(Error::new(Kind::Conflict, "project_busy", "a project request or tool is still finishing; retry after it stops"));
-    }
     for project in api.projects.now_open().iter().filter(|project| project.root == root) {
         let store = api.projects.transition_store(api, &project.id, transition)?;
         if !store.unsettled().map_err(|_| error("project_journal", "the project journal could not be checked"))?.is_empty()
@@ -759,18 +1104,38 @@ fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, sn
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
     }
+    // Its tools, ended here: none starts while the transition has the project, as a tool's start is a read of it.
+    crate::local_code::cancel_private_processes(root);
+    if !stirred_until(transition.until, || !crate::local_code::private_process_active(root)) {
+        return Err(Error::new(Kind::Conflict, "project_busy", "a project tool is still finishing; retry after it stops"));
+    }
     if available { crate::local_code::retire_private_processes(root)?; }
-    let projects = api.projects.now_open();
-    for project in projects {
-        if project.root != root { continue; }
-        if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() {
-            return Err(Error::new(Kind::Conflict, "project_busy", "The project is rendering, cutting or transferring files.").remedy("Wait for project work to finish, then retry.").next("cozy open"));
+    // An upload keeps its file open in the view past the read it let go of. A closing transition refuses that upload's next read, which
+    // ends it: it awaits that end. One that leaves the project open would let it go on into a view it replaced: it refuses.
+    if transition.closes {
+        if !stirred_until(transition.until, || !uploads_going(root)) {
+            return Err(Error::new(Kind::Conflict, "project_busy", "an upload into the project is still ending; retry after it stops"));
         }
+    } else if uploads_going(root) {
+        return Err(Error::new(Kind::Conflict, "project_busy", "an upload into the project is going; retry after it finishes"));
+    }
+    let projects: Vec<_> = api.projects.now_open().into_iter().filter(|project| project.root == root).collect();
+    // Each tried, never waited on: a render's end holds `walking` while it waits for the writer.
+    let going = |project: &super::Project| project.walking.try_lock().map_or(true, |walking| *walking) || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err();
+    if !stirred_until(transition.until, || !projects.iter().any(|project| going(project))) {
+        return Err(Error::new(Kind::Conflict, "project_busy", "The project is rendering, cutting or transferring files.").remedy("Wait for project work to finish, then retry.").next("cozy open"));
+    }
+    // A project its last reader let go of a moment ago closes its connections on a thread of its own: those uses end first.
+    if !stirred_until(transition.until, || !super::folder::closing(root)) {
+        return Err(Error::new(Kind::Conflict, "project_busy", "Cozy is still closing the project's database; retry in a moment"));
+    }
+    for project in projects {
         if let Ok(mut model) = project.model.try_lock() { *model = None; }
-        *project.told.lock().expect("project told") = None;
+        // What streams were told of it, let go of if no one is telling them now; a closed project is read anew either way.
+        if let Ok(mut told) = project.told.try_lock() { *told = None; }
         crate::events::release_project_readers(&project.id);
         crate::local_code::forget_readings(&project.id);
-        project.folder.close_connections(available && snapshot)?;
+        project.folder.close_connections(available && snapshot, transition.until)?;
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);
     }
@@ -782,7 +1147,11 @@ fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, sn
             .map_err(|e| error("vault_database", format!("open project before storage transition: {e}")))?;
         let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
             .map_err(|e| error("vault_database", format!("checkpoint project before storage transition: {e}")))?;
-        if busy != 0 { return Err(Error::new(Kind::Conflict, "project_busy", "a database reader is preventing its verified storage snapshot")); }
+        // Every reader of Calcifer's has closed: one outside it holds the WAL, and can't be waited for.
+        if busy != 0 {
+            once(root, "checkpoint", "busy", || format!("{}: a database reader outside Cozy keeps its project.db from being checkpointed", root.display()));
+            return Err(Error::new(Kind::Conflict, "project_busy", "a database reader is preventing its verified storage snapshot"));
+        }
     }
     Ok(())
 }
@@ -829,32 +1198,22 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut local_gone: bool, mut saving: 
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
-    let (mut said, mut busy, began) = (false, None::<Instant>, Instant::now());
+    let (mut said, began) = (false, Instant::now());
     // While its saves wait their `LOCAL_STILL`, local is asked every half second (each ask given its 2 s): the first answer means it
     // came back (re-review 6939581151). Started with the first save from it; the asks end once one answers or the window does.
     let back = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut asking = false;
     loop {
-        let (owed, from_local) = match owner.store() {
-            Ok(store) => {
-                busy = None;
-                let owed = store.exports_owed().map_err(journal)?;
-                let from_local: Vec<crate::RunId> = if local_gone {
-                    owed.iter().filter(|(id, _)| store.run(id.as_str()).ok().flatten().is_some_and(|row| row.machine.as_deref() == Some("local"))).map(|(id, _)| id.clone()).collect()
-                } else {
-                    vec![]
-                };
-                (owed, from_local)
-            }
-            // Another lock's turn ahead of it on the project: looked at again shortly, no longer than a save may go silent.
-            Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => {
-                if busy.get_or_insert_with(Instant::now).elapsed() >= crate::outputs::EXPORT_SILENCE {
-                    return Err(Error::new(Kind::Conflict, "project_busy", "the project stayed busy; lock again in a moment"));
-                }
-                std::thread::sleep(Duration::from_millis(200));
-                continue;
-            }
-            Err(e) => return Err(journal(e)),
+        // Its journal read waits its turn on the project, behind a transition that has it.
+        let (owed, from_local) = {
+            let store = owner.store().map_err(journal)?;
+            let owed = store.exports_owed().map_err(journal)?;
+            let from_local: Vec<crate::RunId> = if local_gone {
+                owed.iter().filter(|(id, _)| store.run(id.as_str()).ok().flatten().is_some_and(|row| row.machine.as_deref() == Some("local"))).map(|(id, _)| id.clone()).collect()
+            } else {
+                vec![]
+            };
+            (owed, from_local)
         };
         if owed.is_empty() { return Ok((vec![], vec![])); }
         if !from_local.is_empty() && !std::mem::replace(&mut asking, true) {
@@ -936,9 +1295,8 @@ fn unanswered_seal() -> Error {
 
 /// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled. Whether it didn't answer.
 /// Its journal is read only for a project with runs going whose local doesn't answer: a lock whose local answers reads nothing more
-/// than it did, so it never meets a journal busy a moment (43969581564). Under the lock's own transition (`close`) the journal is
-/// read and written through it: any other read waits behind that transition's exclusive hold, and the lock waited on itself for
-/// `JOURNAL_BUSY` and failed `run_cancel` (cl-1259).
+/// than it did (43969581564). Under the lock's own transition (`close`) the journal is read and written through it, as any other read
+/// of it by the transition's holder would wait on itself (cl-1259); outside it, its reads wait their turn on the project.
 fn settle_unanswered(api: &Arc<Api>, root: &FsPath, transition: Option<&ProjectTransition>) -> Result<bool, Error> {
     let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
     if !api.calcifer.has_runs(&id) || tokio::runtime::Handle::current().block_on(api.machines.answers("local")) {
@@ -949,27 +1307,11 @@ fn settle_unanswered(api: &Arc<Api>, root: &FsPath, transition: Option<&ProjectT
         let settled = api.calcifer.cancel_unanswered_sealing(&store, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
         return Ok(!settled.is_empty());
     }
-    if !journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
+    if !api.calcifer.unsettled_on(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
         return Ok(false);
     }
-    journal(|| api.calcifer.cancel_unanswered_for_lock(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+    api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
     Ok(true)
-}
-
-/// How long a lock's look at its project's journal waits out a moment's `project_busy` (a transition queued on the project).
-const JOURNAL_BUSY: Duration = Duration::from_secs(5);
-
-/// `read` of a project's journal, asked again every 100 ms for `JOURNAL_BUSY` while it's busy. Only from a blocking thread.
-fn journal<T>(mut read: impl FnMut() -> Result<T, crate::Error>) -> Result<T, crate::Error> {
-    let began = Instant::now();
-    loop {
-        match read() {
-            Err(crate::Error::Store(crate::store::StoreError::Locked(code))) if code == "project_busy" && began.elapsed() < JOURNAL_BUSY => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            done => return done,
-        }
-    }
 }
 
 /// What `root`'s last lock says of a machine that didn't answer it, once.
@@ -1018,7 +1360,12 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
         let mut session = session.lock().expect("vault session");
         match &sealed {
             crate::private_io::Sealed::Closed => session.mount.try_unmount().map_err(|why| match why {
-                project_mount::Error::Busy(_) => { holds(root, FILES); Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change") }
+                // Another program's open file can't be waited for: said once, with who holds it.
+                project_mount::Error::Busy(view) => {
+                    holds(root, FILES);
+                    once(root, "mount busy", "busy", || format!("{}: its view can't be unmounted while {} has a file open in it", root.display(), using(&view)));
+                    Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change")
+                }
                 other => provider(other),
             })?,
             // Owed before the view ends, so a Calcifer stopped between them still tells the machine; let go if it doesn't end.
@@ -1041,9 +1388,11 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
         if matches!(sealed, crate::private_io::Sealed::Closed) { retire_runtime(&session.runtime)?; }
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
-        LOCK_RETRIES.lock().expect("lock retries").remove(root);
+        LOCK_NEXT.lock().expect("lock next").remove(root);
         HOLDING.lock().expect("vault holders").remove(root);
+        forget_said(root);
         CLOSED.notify_waiters();
+        nudge();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
             let state = status(root);
@@ -1061,6 +1410,47 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
         }
     }
     Ok(())
+}
+
+/// The programs with a file open in `view` (or working in it), by name and pid as Linux's `/proc` says: what a mount still in use is
+/// said held by. Elsewhere, and when none is found, "another program".
+fn using(view: &FsPath) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        // Inside the view, not the view itself: a mount holds a handle on the directory beneath its own mount point (project-mount's
+        // `ViewGuard`, the underlay), which `/proc` names by the view's path and which keeps nothing of the view busy.
+        let within = |to: &FsPath| to.starts_with(view) && to != view;
+        let inside = |link: PathBuf| fs::read_link(link).is_ok_and(|to| within(&to));
+        let mut held = BTreeSet::new();
+        for process in fs::read_dir("/proc").into_iter().flatten().flatten() {
+            let Some(pid) = process.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+            let open: Vec<PathBuf> = fs::read_dir(process.path().join("fd")).into_iter().flatten().flatten()
+                .filter_map(|fd| fs::read_link(fd.path()).ok()).filter(|to| within(to)).collect();
+            if !open.is_empty() || inside(process.path().join("cwd")) {
+                let name = fs::read_to_string(process.path().join("comm")).unwrap_or_default();
+                // Cozy's own: what of the project it has open, by kind only (Calcifer's own files, else "a project file"). Another
+                // program's files are never named: this is said outside the project.
+                let what = if pid == std::process::id() {
+                    let kinds: BTreeSet<&str> = open.iter().map(|to| match to.strip_prefix(view).ok().map(|rest| rest.components().next().and_then(|part| part.as_os_str().to_str())) {
+                        Some(Some(own @ (".vault-calcifer" | ".vault-uploads" | ".vault-journal" | ".vault-inputs" | ".vault-machine" | ".thumbs" | "files" | "project.db" | "project.db-wal" | "project.db-shm" | api::machine::LOCAL_PRIVATE_MARKER))) => own,
+                        _ => "a project file",
+                    }).collect();
+                    format!(": {}", kinds.into_iter().collect::<Vec<_>>().join(", "))
+                } else { String::new() };
+                held.insert(format!("{} ({pid}){what}", name.trim()));
+            }
+        }
+        if !held.is_empty() { return held.into_iter().collect::<Vec<_>>().join(", "); }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = view;
+    "another program".into()
+}
+
+/// Whether this process has a file open in `view` (Linux's `/proc/self/fd`; elsewhere, not that it knows). Its mount's own handle on the
+/// directory beneath the view (`ViewGuard`) isn't one: `/proc` names it by the view's path, and it keeps nothing of the view busy.
+fn own_files(view: &FsPath) -> bool {
+    fs::read_dir("/proc/self/fd").into_iter().flatten().flatten().any(|fd| fs::read_link(fd.path()).is_ok_and(|to| to.starts_with(view) && to != view))
 }
 
 /// A session whose folder is gone, removed from outside (cl-1124: on Windows its view dies with its backing): it ends at once, said
@@ -1084,11 +1474,12 @@ fn end_if_gone(api: &Arc<Api>, root: &FsPath) -> bool {
     if let Err(e) = super::let_go(api, std::slice::from_ref(&id)) {
         tracing::warn!("{}: a project whose folder is gone stays in the index until the next start: {e}", root.display());
     }
-    LOCK_RETRIES.lock().expect("lock retries").remove(root);
-    DUE.lock().expect("vault deadlines").remove(root);
+    LOCK_NEXT.lock().expect("lock next").remove(root);
+    forget_said(root);
     ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
     crate::events::project_vault(&id, "locked");
     CLOSED.notify_waiters();
+    nudge();
     // Its view let go, what Calcifer kept in the folder goes too (`.vault-runtime`), so the delete under way finishes on its next pass.
     // Where its runtime folder is now: a folder moved away (to the Trash) took it along.
     let runtime = { let session = session.lock().expect("vault session"); session.mount.view_now().and_then(|view| view.parent().map(FsPath::to_path_buf)).unwrap_or_else(|| session.runtime.clone()) };
@@ -1124,15 +1515,61 @@ pub(crate) fn end_all_now() {
     }
 }
 
-pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
+/// `root`'s view ended now, for this project alone, as a stop past its deadline ends every view (`end_all_now`): what a deadline
+/// lock does past `LOCK_FORCE`, so a security lock never stays open past its bound. Its tools and runs end, its provider is killed
+/// by its handle and its view unmounted, its session closes, and it's said once, at `error!`, with what still held it.
+fn force_close(api: &Arc<Api>, root: &FsPath, held_by: &str) {
+    tracing::error!("{}: its deadline lock had to force it closed after {} s; still holding it: {held_by}", root.display(), LOCK_FORCE.as_secs());
+    if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
+    vault_operation::revoke(root);
+    if let Err(failure) = end_work(api, root) { tracing::warn!("{}: a forced close couldn't end all its work: {}", root.display(), failure.code); }
+    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+        api.projects.open.lock().expect("projects lock").remove(&project.id);
+        crate::events::project_closed(&project.id);
+    }
+    // Its machine seals it if it answers at once; else what it ran in the view is owed, as a lock past a machine that doesn't answer.
+    let asked = tokio::runtime::Handle::current().block_on(tokio::time::timeout(FORCE_ASK, crate::private_io::close_private_project(api, root)));
+    let sealed = match asked { Ok(Ok(sealed)) => sealed, _ => crate::private_io::let_go(root) };
+    let session = SESSIONS.lock().expect("vault sessions").remove(root);
+    if let (crate::private_io::Sealed::Owed(view), Some(session)) = (&sealed, &session) {
+        let session = session.lock().expect("vault session");
+        let (ended, _) = api.machines.end_executors(session.keybag.info().project_id.as_str(), session.keybag.info().generation, view);
+        if let Err(e) = api.machines.owe(view, root, ended) { tracing::warn!("{}: a forced close's clean-up isn't owed to its machine: {e}", root.display()); }
+        let _ = fs::write(session.runtime.join(OWED_MARK), b"");
+    }
+    if let Some(ender) = ENDERS.lock().unwrap_or_else(PoisonError::into_inner).remove(root) { ender.end(); }
+    let _ = crate::runs::files::release_private(root);
+    if let Some(id) = project_id(root).or_else(|| session.as_ref().map(|session| session.lock().expect("vault session").secret.project_id().to_owned())) {
+        api.calcifer.retire_project(&id);
+    }
+    // Its provider gone, the session lets go of its mount at once; its runtime folder goes once nothing of it is owed.
+    let runtime = session.as_ref().map(|session| session.lock().expect("vault session").runtime.clone());
+    drop(session);
+    if let Some(runtime) = runtime.filter(|_| matches!(sealed, crate::private_io::Sealed::Closed)) { let _ = retire_runtime(&runtime); }
+    LOCK_NEXT.lock().expect("lock next").remove(root);
+    HOLDING.lock().expect("vault holders").remove(root);
+    forget_said(root);
+    ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
+    CLOSED.notify_waiters();
+    nudge();
+    if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
+        crate::events::project_vault(&keybag.info().project_id, &status(root).state);
+        if let Err(e) = api.calcifer.store().project_locked(&keybag.info().project_id, root) { tracing::warn!("{}: {e}", root.display()); }
+    }
+}
+
+/// How long a forced close asks the machine to seal the project before it lets go of it, owed.
+const FORCE_ASK: Duration = Duration::from_secs(5);
+
+/// Every open vault closed, as a stop or `cozy down` closes them: each waits its turn on its project up to `until`.
+pub(crate) fn close_all(api: &Arc<Api>, until: Instant) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
-        let op = operation(&root);
-        let _operation = op.lock().expect("vault operation");
+        let _operation = operating(&root);
         if end_if_gone(api, &root) { continue; }
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         drain_saves(api, &root, false, || {})?;
-        let transition = exclusive(&root)?;
+        let transition = transition(api, &root, Closing::Closes, until)?;
         close(api, &root, &transition)?;
         // No answer carries what this close says (logged as it was said): never the project's next one.
         unsaid(&root);
@@ -1181,13 +1618,11 @@ fn wait(at: Option<SystemTime>) {
     }
 }
 
-/// How long an explicit lock, its view revoked, waits for what still holds its project to finish before it refuses.
-const LOCK_DRAIN: Duration = Duration::from_secs(10);
-/// How long past an idle or maximum deadline a lock that failed waits out its retry backoff: after it, each look tries again, as the
-/// deadline is a security one.
-const SAVE_GRACE: Duration = Duration::from_secs(30);
-/// When each open vault was first seen past its deadline and not yet locked.
-static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
+/// How long an explicit lock, decrypt, encrypt, rotate or move waits its turn on the project, and for what it ends, before it refuses.
+pub(crate) const LOCK_DRAIN: Duration = Duration::from_secs(10);
+/// How long a deadline lock waits for what holds its project, from when it asks for it, before it forces the close (`force_close`):
+/// a security lock never stays open past it.
+const LOCK_FORCE: Duration = Duration::from_secs(60);
 
 /// When the clock last asked whether the machine of runs holding a vault past its deadline answers (cl-1064), and how often it asks.
 static ASKED: LazyLock<Mutex<BTreeMap<PathBuf, Instant>>> = LazyLock::new(Mutex::default);
@@ -1230,13 +1665,14 @@ fn held_on_local(api: &Arc<Api>, root: &FsPath, id: &str) -> Result<bool, Error>
 /// Vaults whose lock is going on a thread of its own.
 static LOCKING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
-/// One open vault's clocks and mount: when to look at it again (none: on a stir alone). Past its deadline, its lock begins on a thread
-/// of its own, as one slow close must not delay another vault's deadline.
+/// One open vault's clocks and mount: when to look at it again (none: on a stir alone). Past its deadline, its lock begins as a task of
+/// its own (`lock_lapsed`), as one slow close must not delay another vault's deadline; the clock never waits on it.
 fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Option<SystemTime> {
     let again = || Some(SystemTime::now() + AGAIN);
-    if LOCKING.lock().expect("vault locks").contains(&root) { return again(); }
-    let op = operation(&root);
-    let Ok(operation) = op.try_lock() else { say(&root, "operation", || "its clocks wait for a vault operation".into()); return again(); };
+    // Its lock is going on a task of its own, which wakes the clock as it ends.
+    if LOCKING.lock().expect("vault locks").contains(&root) { return None; }
+    // An operation is going: its end wakes the clock (`Operating`).
+    let Some(operation) = operating_now(&root) else { say(&root, "operation", || "its clocks wait for a vault operation".into()); return None; };
     // Its folder gone: it ends now, not at its deadline (cl-1124).
     if end_if_gone(api, &root) { return None; }
     let work = working(api, &root);
@@ -1276,70 +1712,97 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
         return Some(SystemTime::now() + ASKED_AGAIN);
     }
     if !needs {
-        DUE.lock().expect("vault deadlines").remove(&root);
         // Held by its runs short of a limit: looked at again as it passes one, so the ask above comes then, though they never end.
         let asks = until.filter(|_| work.is_some_and(|work| work.runs));
         return match work { Some(Work { told: false, .. }) => again(), _ => deadline.into_iter().chain(asks).min() };
     }
-    let due = *DUE.lock().expect("vault deadlines").entry(root.clone()).or_insert_with(Instant::now);
-    let forced = due.elapsed() >= SAVE_GRACE;
-    let retry = LOCK_RETRIES.lock().expect("lock retries").get(&root).map(|retry| retry.at).filter(|at| Instant::now() < *at);
-    if let Some(at) = retry.filter(|_| !forced) { return Some(SystemTime::now() + at.saturating_duration_since(Instant::now())); }
     LOCKING.lock().expect("vault locks").insert(root.clone());
     let api = api.clone();
     runtime.spawn_blocking(move || {
         lock_lapsed(&api, &root, false);
         LOCKING.lock().expect("vault locks").remove(&root);
+        wake_clock();
     });
-    // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
-    again()
+    None
 }
 
-/// A vault past its deadline locks once what holds it has ended or drained. Its pages aren't asked to send what they typed: a lapsed
-/// view takes no write. `unanswered`: its runs on a local that doesn't answer held it past its limit (cl-1064), a deadline lock too.
+/// A vault past its deadline locks on a task of its own: what holds it is awaited in order, its close tried again on each stir (a
+/// holder's end), never on a timer, and past `LOCK_FORCE` from when it asked for the project its close is forced (`force_close`).
+/// Its pages aren't asked to send what they typed: a lapsed view takes no write. `unanswered`: its runs on a local that doesn't answer
+/// held it past its limit (cl-1064), a deadline lock too.
 fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
-    let op = operation(root);
-    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
-    let still_needs = held(root).is_some_and(|session| {
-        let session = session.lock().expect("vault session");
-        lapsed(&session)
-    });
-    if !still_needs { return; }
+    // An explicit operation going finishes first: a lock ends the session itself.
+    let _operation = operating(root);
+    let still_needs = || held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
+    if !still_needs() { return; }
     // A run its machine hasn't begun doesn't keep it open past its deadline (cl-1082): it ends before anything else, before a queued
     // run can begin. An explicit lock (closing) has ended the project's runs its own way.
     let clocked = unanswered || held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
-    if let Some(id) = project_id(root).filter(|_| clocked) {
-        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(refused(root, "run_cancel", "the project's runs not begun could not be ended")) {
-            idle_lock_failed(root, &failure);
-            return;
-        }
+    if let Some(id) = project_id(root).filter(|_| clocked)
+        && let Err(failure) = api.calcifer.end_unstarted(&id).map_err(refused(root, "run_cancel", "the project's runs not begun could not be ended"))
+    {
+        lock_failed(root, &failure);
     }
     // Its runs on a local that doesn't answer settle here, before its gate, as an explicit lock's do (cl-1064): a client following one
     // holds the gate until it settles, and it settles only when the lock gives up on local.
-    if clocked && let Err(failure) = settle_unanswered(api, root, None) {
-        idle_lock_failed(root, &failure);
-        return;
-    }
-    // No page's save is waited for: the view has lapsed, so a page can't save into it, and a wait only lets queued work begin past the
-    // deadline (cl-1082 review). Its pages find it locked.
+    if clocked && let Err(failure) = settle_unanswered(api, root, None) { lock_failed(root, &failure); }
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
     // a writer is still active.
-    if let Err(failure) = drain_saves(api, root, unanswered, || {}) { idle_lock_failed(root, &failure); return; }
-    let Ok(transition) = exclusive(root) else {
-        say(root, "gate", || "locking waits for a request still holding the project".into());
-        return;
-    };
-    match close(api, root, &transition) {
-        Ok(_) => { DUE.lock().expect("vault deadlines").remove(root); }
-        Err(failure) => idle_lock_failed(root, &failure),
+    if let Err(failure) = drain_saves(api, root, unanswered, || {}) { lock_failed(root, &failure); }
+    let until = Instant::now() + LOCK_FORCE;
+    let mut stirs = STIRS.subscribe();
+    loop {
+        // What ends from here, the attempt's own doing included, is seen: no holder's end goes unheard.
+        stirs.borrow_and_update();
+        let failure = match transition(api, root, Closing::Closes, until) {
+            Ok(transition) => match close(api, root, &transition) {
+                // No answer carries what a deadline's lock says (logged as it was said): never the project's next one.
+                Ok(()) => return unsaid(root),
+                Err(failure) => failure,
+            },
+            Err(failure) => failure,
+        };
+        if !still_needs() { return; }
+        lock_failed(root, &failure);
+        // Another program with a file open in its view says nothing as it lets go, so no stir can tell; its close is forced at the bound.
+        // Cozy's own file there ends with its use, which stirs: tried again then.
+        let view = held(root).map(|session| session.lock().expect("vault session").mount.view().to_owned());
+        let files = HOLDING.lock().expect("vault holders").get(root) == Some(&FILES) && !view.is_some_and(|view| own_files(&view));
+        let stirred = !files && Instant::now() < until && block_on(Some(until), stirs.changed()).is_some();
+        if !stirred {
+            if files { block_on(Some(until), std::future::pending::<()>()); }
+            force_close(api, root, &still_holding(api, root, &failure));
+            return unsaid(root);
+        }
     }
-    // No answer carries what a deadline's lock says (logged as it was said): never the project's next one.
-    unsaid(root);
+}
+
+/// What holds `root` now, as its forced close says it: by kind, naming no run (cl-984).
+fn still_holding(api: &Arc<Api>, root: &FsPath, failure: &Error) -> String {
+    let mut held = vec![];
+    match HOLDING.lock().expect("vault holders").get(root).copied() {
+        Some(RUNS) => held.push("its runs, still settling".to_owned()),
+        Some(FILES) => {
+            let view = self::held(root).map(|session| session.lock().expect("vault session").mount.view().to_owned());
+            held.push(format!("{} with a file open in its view", view.map_or_else(|| "another program".into(), |view| using(&view))));
+        }
+        _ => {}
+    }
+    if crate::local_code::private_process_active(root) { held.push("a project tool".into()); }
+    let reads = gates().get(root).map_or(0, |gate| gate.reads.values().map(|(count, _)| count).sum::<usize>());
+    if reads > 0 { held.push(format!("{reads} read(s) of it")); }
+    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+        if project.walking.try_lock().map_or(true, |walking| *walking) { held.push("a render".into()); }
+        if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { held.push("a move or cut".into()); }
+    }
+    if held.is_empty() { held.push("nothing it can name".into()); }
+    format!("{}; its last close said {}", held.join(", "), failure.code)
 }
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
-    let _access = access(&root).read_owned().await;
+    // Its status once a storage change going has finished; at once while a closing one has the project, as it says locking then.
+    let _turn = read_gate(&root).await;
     Ok(private(axum::Json(status(&root)).into_response()))
 }
 
@@ -1369,7 +1832,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("waiting");
     // What its pages typed goes in first, while edits are still admitted.
     if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { save_first(root, LOCK_DRAIN); }
-    let op = operation(&root); let _guard = op.lock().expect("vault operation");
+    let _operation = operating(root);
     // Its folder gone (removed from outside, cl-1124): nothing is left to lock or change; its view ends now.
     if end_if_gone(api, root) || (ask.action == "lock" && held(root).is_none() && !root.exists()) {
         return Err(Error::new(Kind::NotFound, "project_gone", "Its folder is gone, so its encrypted view ended: nothing of it stays unlocked."));
@@ -1380,8 +1843,9 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
         let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
-        // A read that holds it a moment is no reason to refuse: the lock waits for it, as it does below for what ends.
-        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(api, root, LOCK_DRAIN)) {
+        // A read that holds it a moment is no reason to refuse: the lock waits its turn, as it does below for what ends. This turn only
+        // admits its receipt, so what queues behind it goes on after.
+        let busy = match held(root).filter(|_| !revoked).map(|_| transition(api, root, Closing::Stays, Instant::now() + LOCK_DRAIN)) {
             Some(Ok(transition)) => {
                 let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
                 let store = api.projects.transition_store(api, &id, &transition)?;
@@ -1406,9 +1870,10 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None });
         }
     }
-    // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
-    // refused), and for what it ended, still settling (its runs' last writes hold the project a moment), else it answers
-    // locking with what it ended, and the sweeper locks once it has settled.
+    // A lock or a decrypt waits its turn on the project, up to `LOCK_DRAIN`: for the reads held now, for the tools and the walk it
+    // ends, and for the database's uses in flight. A request in flight is never waited for: its reads are refused once the transition
+    // has the project. What it ended still settling (its runs), it answers locking with what it ended, and the sweeper locks once it
+    // has settled.
     // A decrypt reads the view it converts after its own close revoked it (a retried close revokes it first): the view must be
     // open when it's asked.
     if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
@@ -1419,8 +1884,8 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         cut.extend(more_cut);
         deferred.extend(more_deferred);
     }
-    let gate = if settling || matches!(ask.action.as_str(), "lock" | "decrypt") { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
-    let mut transition = match gate {
+    let closes = if matches!(ask.action.as_str(), "lock" | "decrypt") { Closing::Closes } else { Closing::Stays };
+    let transition = match transition(api, root, closes, Instant::now() + LOCK_DRAIN) {
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
             holds(root, RUNS);
@@ -1430,24 +1895,12 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         Err(error) => return Err(error),
     };
     progress.phase("preparing");
-    let draining = std::time::Instant::now() + LOCK_DRAIN;
-    let (drains, decrypting) = (matches!(ask.action.as_str(), "lock" | "decrypt"), ask.action == "decrypt");
+    let decrypting = ask.action == "decrypt";
     let failed = |error: Error| if decrypting { decrypt_failed(root, error) } else { error };
-    let mut changed = loop {
-        match change(&api, &root, ask, progress, &transition) {
-            // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if settling && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None } },
-            // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
-            // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
-            Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
-                say(root, "drain", || format!("its {} waits: {}", ask.action, busy.message));
-                drop(transition);
-                // What refused it says nothing when it ends: a moment, then the project again, queued.
-                std::thread::sleep(Duration::from_millis(200));
-                transition = exclusive_within(api, &root, draining.saturating_duration_since(std::time::Instant::now())).map_err(failed)?;
-            }
-            changed => break changed.map_err(failed)?,
-        }
+    let mut changed = match change(api, root, ask, progress, &transition) {
+        // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
+        Err(busy) if settling && busy.code == "project_busy" => { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None } },
+        changed => changed.map_err(failed)?,
     };
     changed.ended = ended;
     // Capture this exact mount's revocation token while the operation still
@@ -1472,9 +1925,8 @@ pub(super) fn preflight_creation(api: &Api) -> Result<Provider, Error> {
 
 /// Initialize the first database through encrypted storage. There is no plaintext source to convert or preserve.
 pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written: super::written::Written, passphrase: SecretString, engine: &Provider) -> Result<String, Error> {
-    let operation = operation(root);
-    let _operation = operation.lock().expect("vault operation");
-    let _access = exclusive(root)?;
+    let _operation = operating(root);
+    let _access = transition(api, root, Closing::Stays, Instant::now() + LOCK_DRAIN)?;
     let took = crate::took::Took::new("vault keys");
     let created = Keybag::create(id, passphrase).map_err(key)?;
     drop(took);
@@ -1635,10 +2087,15 @@ struct Work { why: &'static str, told: bool, held: Hold, runs: bool }
 /// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
 /// move, a reader, a run not settled or its driver, a client following a run, a run's submission.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
+    if api.projects.active_requests(root) { return Some(Work { why: "a project request being answered", told: true, held: Hold::Working, runs: false }); }
+    at_work(api, root)
+}
+
+/// [`working`] but a request in flight, which no transition waits for: what a rename refuses on, as it ends none of it.
+fn at_work(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let going = |why, told| Some(Work { why, told, held: Hold::Working, runs: false });
     let running = |why, told| Some(Work { why, told, held: Hold::Working, runs: true });
     let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting, runs: true });
-    if api.projects.active_requests(root) { return going("a project request being answered", true); }
     if crate::local_code::private_process_active(root) { return going("a private process", true); }
     let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
     let projects = api.projects.now_open();
@@ -1647,9 +2104,11 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
         return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
     };
     if api.calcifer.exporting_into(&project.id).is_some() { return running("a run saving its outputs", false); }
-    if *project.walking.lock().expect("walking lock") { return going("a render", true); }
-    if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
-    let Ok(inspection) = inspection(root) else { return going("a storage change", false) };
+    // Tried, never waited on: the clock's one thread mustn't wait on a render's end, which holds it waiting for the writer.
+    if project.walking.try_lock().map_or(true, |walking| *walking) { return going("a render", true); }
+    if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", true); }
+    // Now or not at all: the clock's one thread looks at every vault. A storage change's end wakes it.
+    let Some(inspection) = inspection_now(root) else { return going("a storage change", true) };
     let Ok(store) = api.projects.inspection_store(api, &project.id, &inspection) else { return going("a journal it cannot read", false) };
     // The inspection authority can read already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
@@ -1702,39 +2161,28 @@ pub(super) fn relocate(api: &Arc<Api>, root: &FsPath, to: &Relocation) -> Result
     if let Relocation::Rename(_) = to {
         let projects = api.projects.now_open();
         if let Some(project) = projects.iter().find(|project| project.root == root) {
-            if *project.walking.lock().expect("walking lock") { return Err(busy("rendering")); }
+            if project.walking.try_lock().map_or(true, |walking| *walking) { return Err(busy("rendering")); }
             if api.calcifer.exporting_into(&project.id).is_some() || api.calcifer.writing_into(&project.id).is_some() { return Err(busy("saving a run's results")); }
         }
     }
     if held(root).is_some() {
-        if let Relocation::Rename(_) = to { if let Some(work) = working(api, root).filter(|work| work.told) { return Err(busy(work.why)); } }
+        // A request in flight is no reason to refuse: the lock below waits for none (xs-215).
+        if let Relocation::Rename(_) = to { if let Some(work) = at_work(api, root).filter(|work| work.told) { return Err(busy(work.why)); } }
         let mut ask = VaultAsk { action: "lock".into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None };
         operate(api, root, &mut ask, &mut Progress::quiet())?;
-        let due = Instant::now() + LOCK_DRAIN;
-        while held(root).is_some() {
-            if Instant::now() >= due { return Err(busy("still locking")); }
-            std::thread::sleep(Duration::from_millis(200));
-        }
+        // Locking still, its runs settling: the sweeper closes it, and says so.
+        if !stirred_until(Instant::now() + LOCK_DRAIN, || held(root).is_none()) { return Err(busy("still locking")); }
     }
-    let op = operation(root);
-    let _guard = op.lock().expect("vault operation");
+    let _operation = operating(root);
     // From here no new request opens it (`view` answers `vault_busy`), and the index keeps it while it moves: a listing never takes the
     // old path for a folder gone.
     if matches!(to, Relocation::Trash) && !encrypted(root) { end_work(api, root)?; }
     CONVERTING.lock().expect("vault conversions").insert(root.to_owned());
     let _converting = Converting(root.to_owned());
-    let due = Instant::now() + LOCK_DRAIN;
-    let transition = loop {
-        let transition = exclusive_within(api, root, due.saturating_duration_since(Instant::now()))?;
-        match forget_with(api, root, &transition, false) {
-            Ok(()) => break transition,
-            Err(held) if held.code == "project_busy" && Instant::now() < due => {
-                drop(transition);
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(held) => return Err(held),
-        }
-    };
+    // A move to the trash closes the project: reads of it are refused while it has it. A rename's queue behind it.
+    let closes = if matches!(to, Relocation::Trash) { Closing::Closes } else { Closing::Stays };
+    let transition = transition(api, root, closes, Instant::now() + LOCK_DRAIN)?;
+    forget_with(api, root, &transition, false)?;
     let store = api.calcifer.store();
     let moved = match to {
         Relocation::Rename(next) => {
@@ -2017,11 +2465,9 @@ fn conversion(root: &FsPath) -> Result<Option<Conversion>, Error> {
 
 pub(super) fn recover_conversion(root: &FsPath) -> Result<(), Error> {
     if !exists(&receipt_path(root))? { return Ok(()); }
-    let op = operation(root);
-    let attempt = op.try_lock();
-    if matches!(attempt, Err(std::sync::TryLockError::WouldBlock)) { return Ok(()); }
-    let _operation = attempt.expect("vault operation");
-    let Ok(_access) = exclusive(root) else { return Ok(()) };
+    // Now or not at all: it runs inside `view`, under its caller's own read of the project, and an operation going recovers it itself.
+    let Some(_operation) = operating_now(root) else { return Ok(()) };
+    let Some(_access) = try_transition(root) else { return Ok(()) };
     recover_under_guards(root)
 }
 
@@ -2656,8 +3102,10 @@ pub(super) async fn privacy(
     let token = {
         // Handler-owned filesystem/database operations take their own bounded
         // admission. A worker/network wait must never hold the transition gate.
-        let _access = access(&root).read_owned().await;
-        if let Err(error) = view(&root) { return private(Refusal(error).into_response()); }
+        let _access = match admit_root(&root).await {
+            Ok(read) => read,
+            Err(error) => return private(Refusal(error).into_response()),
+        };
         readable_token(&root)
     };
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {

@@ -92,6 +92,8 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
         // Dropping a canceled request's JoinHandle cannot stop a blocking worker.
         // Its own clone keeps the mounted view leased until this read ends.
         let _reading = reading;
+        // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
+        let _here = _reading.share();
         read.require_view()?;
         read_model(&api, &read, rev, heard)
     }).await;
