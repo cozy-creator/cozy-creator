@@ -1,4 +1,4 @@
-import { type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useConnection } from "../../app/Connection"
 import type { ClipNow } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
@@ -230,8 +230,9 @@ class Saver {
  * track of clips on a time ruler, each as long as it lasts, its frames and its sound, snapped end to end. Drag to reorder, pull an end to trim,
  * S splits at the playhead, Delete takes a clip out with Undo. It plays in the page with no render; a moment after the cut changes it's joined
  * here, free, into the box's next version. What it writes is `fields.timeline`; a version's `timeline` is what made it, which an edit carries on from.
+ * Its tool's other fields (`settings`: its rate, shape and size) sit in its bar, where their keys aren't the timeline's.
  */
-export function VideoEditor({ name }: { name: string }) {
+export function VideoEditor({ name, settings }: { name: string; settings?: ReactNode }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   const view = useElement(name)
@@ -579,7 +580,7 @@ export function VideoEditor({ name }: { name: string }) {
   }
 
   const key = (event: KeyboardEvent) => {
-    if ((event.target as Element).closest("input")) return
+    if ((event.target as Element).closest("input, .tl-fields")) return
     const held = () => {
       event.preventDefault()
       event.stopPropagation()
@@ -636,6 +637,7 @@ export function VideoEditor({ name }: { name: string }) {
             <Icon name="trash" />
             Delete
           </button>
+          {settings && <div className="tl-fields">{settings}</div>}
           <span className="sp" />
           <button type="button" className="tb tl-zoom-step" aria-label="Zoom out timeline" title="Zoom out (−)" disabled={zoom <= 1} onClick={() => zoomTo(zoom / 1.5)}>
             <Icon name="minus" />

@@ -211,7 +211,7 @@ function Described({ field, bound, label }: Drawn) {
     <div className="slide described">
       <span className="ctl-name">{field.label}</span>
       <select className="field canvas-control" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
-        <option value={-1} disabled={!unset} hidden={!unset}>{unset ? "Auto" : (field.placeholder ?? "Choose…")}</option>
+        <option value={-1} disabled={!unset} hidden={!unset}>{field.placeholder ?? (unset ? "Auto" : "Choose…")}</option>
         {options.map((option, i) => (
           <option key={i} value={i} title={field.descriptions?.[String(option)]}>
             {optionWord(field, option)}
@@ -224,7 +224,8 @@ function Described({ field, bound, label }: Drawn) {
   )
 }
 
-/** Up to four options side by side, more in a menu; options that say what they are, a menu with the chosen one's line under it. */
+/** Up to four choices side by side, more in a menu, unset among them where it's a choice: it says its placeholder, else Auto. Options that say
+ *  what they are, a menu with the chosen one's line under it. */
 function ChoiceField(props: Drawn) {
   const { field, bound, label } = props
   if (field.descriptions && Object.keys(field.descriptions).length) return <Described {...props} />
@@ -232,12 +233,14 @@ function ChoiceField(props: Drawn) {
   const automatic = options.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
   const held = bound.value ?? field.default ?? (field.auto ? automatic : undefined)
   const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
-  if (options.length <= 4) {
+  const unset = field.placeholder ?? "Auto"
+  const unsetChoice = field.auto && automatic === undefined
+  if (options.length + Number(unsetChoice) <= 4) {
     return (
       <div className="slide" role="radiogroup" aria-label={label}>
         <span className="ctl-name">{field.label}</span>
         <span className="segments">
-          {field.auto && automatic === undefined && <button type="button" role="radio" aria-checked={at < 0} className={`seg canvas-control ${at < 0 ? "on" : ""}`} onClick={bound.unset}>Auto</button>}
+          {unsetChoice && <button type="button" role="radio" aria-checked={at < 0} className={`seg canvas-control ${at < 0 ? "on" : ""}`} onClick={bound.unset}>{unset}</button>}
           {options.map((option, i) => (
             <button key={i} type="button" role="radio" aria-checked={i === at} className={`seg canvas-control ${i === at ? "on" : ""}`} onClick={() => bound.write(option)}>
               {optionWord(field, option)}
@@ -252,8 +255,8 @@ function ChoiceField(props: Drawn) {
     <label className="slide">
       <span className="ctl-name">{field.label}</span>
       <select className="field canvas-control" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
-        <option value={-1} disabled={!field.auto || automatic !== undefined} hidden={!field.auto || automatic !== undefined}>
-          {field.auto ? "Auto" : ""}
+        <option value={-1} disabled={!unsetChoice} hidden={!unsetChoice}>
+          {unsetChoice ? unset : ""}
         </option>
         {options.map((option, i) => (
           <option key={i} value={i}>

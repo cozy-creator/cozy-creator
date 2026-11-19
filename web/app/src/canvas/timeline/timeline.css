@@ -197,6 +197,30 @@
 .tl-bar .sp {
   flex: 1;
 }
+/* Its tool's fields, its rate, shape and size, in its bar as large as its tools; short of room they wrap, the zoom staying. */
+.tl-fields {
+  min-width: 0;
+  margin-left: 8px;
+}
+.tl-fields .edit-parameters {
+  gap: 6px 20px;
+  padding-block: 0;
+}
+.tl-fields .slide,
+.tl-fields .field {
+  font-size: 18px;
+}
+.tl-fields .field {
+  min-height: 40px;
+}
+.tl-fields .seg {
+  min-height: 40px;
+  padding: 4px 14px;
+  font-size: 18px;
+}
+.tl-fields .reset {
+  font-size: 17px;
+}
 .tl-zoom {
   width: 160px;
   height: 28px;

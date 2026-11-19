@@ -1,6 +1,8 @@
 //! What a project says, as `project.db` holds it (cl-803): its head sections and its boxes in order, each box its fields in order. The
 //! reader (`format::Doc`) reads it; a render reads the snapshot it was asked with (`snapshot`). Every edit sets values, so a write
 //! changes only the fields it names.
+use std::borrow::Cow;
+
 use api::error::{Error, Kind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -132,6 +134,17 @@ impl Written {
     pub(crate) fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
         super::format::node_kind(fields.get(NODE_KIND))?;
         super::format::selected_version(fields.get(SELECTED_VERSION))?;
+        // An Edit's points count frames at its rate: a new rate moves them with it, whoever writes it (the page, PATCH, `cozy apply`).
+        let held = self.get(name).filter(|_| fields.contains_key("fps"));
+        let fields = match held.and_then(|held| super::tools::retimed_timeline(&held.map(), fields)) {
+            Some(timeline) => {
+                let mut with = fields.clone();
+                with.insert("timeline".to_owned(), timeline);
+                Cow::Owned(with)
+            }
+            None => Cow::Borrowed(fields),
+        };
+        let fields: &Map<String, Value> = &fields;
         let (mut translated, said) = super::tools::in_the_file(fields)?;
         if fields.contains_key("approved") && !fields.contains_key(SELECTED_VERSION) {
             translated.insert(SELECTED_VERSION.to_owned(), Value::Null);
