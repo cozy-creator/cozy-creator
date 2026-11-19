@@ -7,16 +7,21 @@
 #   frames   the clip's frames (default 360: 15 s at 24 fps)
 #   min_cpus the fewest CPUs the rental must give for the arms to differ (default 16)
 #   seconds  what the cap must buy (default 1200)
+#   local    true: both arms on the runner's own machine, no rental and no comparison: the fixture's path checked for $0
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/x264/save.py
-SRC=$(param runtime '') FRAMES=$(param frames 360) MIN=$(param min_cpus 16)
+SRC=$(param runtime '') FRAMES=$(param frames 360) MIN=$(param min_cpus 16) LOCAL=$(param local false)
 [ -f "$FIX" ] || fail "no fixtures/x264/save.py"
 [[ $SRC =~ ^[0-9]+$ ]] || fail "runtime: a cozy-runtime dev-build run id"
 W=$(wheel_from "$OUT/wheel" "$SRC") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $SRC"
 say "runtime: ${W##*/}"
-quote "$(param seconds 1200)"
-rent
+if [ "$LOCAL" = true ]; then
+  NAME=local; say "local: the runner's own machine, the fixture's path only (no rental, no comparison)"
+else
+  quote "$(param seconds 1200)"
+  rent
+fi
 # arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and save seconds (the run's
 # start to its settling, its encode included) in <name>.facts, and said.
 arm() {
@@ -37,10 +42,15 @@ arm() {
 result() { jq -r ".$2" "$OUT/$1.facts"; }
 arm image
 say "image Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
-[ "$(result image cpus)" -ge "$MIN" ] || fail "$NAME gives $(result image cpus) CPUs, under the $MIN the arms need to differ"
+[ "$LOCAL" = true ] || [ "$(result image cpus)" -ge "$MIN" ] || fail "$NAME gives $(result image cpus) CPUs, under the $MIN the arms need to differ"
 step update machine update "$NAME" --runtime "$W" -y || fail "the change's Runtime on $NAME"
 say "change's Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
 arm change
+if [ "$LOCAL" = true ]; then
+  [ "$(result change threads)" -le "$(result change cpus)" ] || fail "change: $(result change threads) threads of $(result change cpus) CPUs"
+  say "PASS (local path): image $(result image threads) threads in $(result image save_s) s, change $(result change threads) of $(result change cpus) CPUs in $(result change save_s) s"
+  exit "$RC"
+fi
 [ "$(result image threads)" -le 8 ] || fail "image: $(result image threads) threads, past its ceiling of 8"
 [ "$(result change threads)" = "$(result change cpus)" ] || fail "change: $(result change threads) threads of $(result change cpus) CPUs"
 awk -v a="$(result image save_s)" -v b="$(result change save_s)" 'BEGIN { exit !(b < a) }' ||

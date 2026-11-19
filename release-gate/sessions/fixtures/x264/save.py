@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.47", "msgspec>=0.19", "numpy>=1.26"]
+# dependencies = ["cozy-runtime[media]>=0.47", "msgspec>=0.19", "numpy>=1.26"]
 # ///
 """x264-threads' clip (xs-220, hack audit runtime #8): `frames` frames of 1344x768 saved as one mp4, and the CPUs this process
 may use. The Runtime encodes it after the call returns (its output phase), so the session reads the rest from outside: the
