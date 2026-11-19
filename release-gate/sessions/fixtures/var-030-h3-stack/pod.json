@@ -98,6 +98,19 @@
       "tree": "se"
     },
     {
+      "name": "f2-gen-hardest",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30034"
+      ],
+      "max_s": 1800,
+      "tree": "se"
+    },
+    {
       "name": "h3-gen-full-fbcache",
       "target": "minimax-h3/generate",
       "args": [
