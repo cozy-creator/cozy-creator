@@ -35,7 +35,8 @@
 #   red_tensorfs   a wheel every cell that completed (and each marked `"red": true`, but none marked `"no_red": true`) runs
 #              again on, held, unmanaged: what the release does there. A cell marked `"no_twin": true` has no twin.
 #   The runtime and tensorfs wheels may be artifact:<run>/<name> too (a runtime also a cozy-runtime dev-build run id), and
-#   a cell may name its own `tree`. Rows stay in measured.jsonl: none goes to the ledger,
+#   a cell may name its own `tree`, and its own `cap`: the machine is updated to it with the holder off before the cell
+#   (and back to the session's cap, held, before a later cell without one). Rows stay in measured.jsonl: none goes to the ledger,
 #   whose cap field cannot say "held physically".
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree '') CAPV=$(param cap 6GiB) RW=$(param runtime '') TW=$(param tensorfs '') CELLS=$(param cells '[]')
@@ -118,7 +119,7 @@ for k in "${names[@]}"; do
   done < <(jq -r '.args[]' <<< "$c")
   # ledger.py reads these two lines: the cell's package code and its cap.
   say "cell $k: $(git -C "$PACKAGES/$tr" rev-parse --short HEAD) ./$t $(jq -r '.args | join(" ")' <<< "$c" | cut -c1-600)"
-  say "cell $k: caps VRAM at $CAPV"
+  say "cell $k: caps VRAM at $(jq -r --arg d "$CAPV" '.cap // $d' <<< "$c")"
   kernels "$PACKAGES/$tr/${t%/*}"
 done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
@@ -212,11 +213,14 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "no holder: $(head -c 300 "$OUT/hold-$1.txt")"
   say "holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free (nvidia-smi: $(timeout 30 cozy machine ssh "$NAME" 'nvidia-smi --query-gpu=memory.used,memory.free,memory.total --format=csv,noheader' 2> /dev/null | tail -1))"
 }
+# No switch where nothing asks for one: the build under test has none (var-030 W8).
+[ "$MANAGED$TWM" != falsefalse ] || managed_working() { :; }
 managed_working "$MANAGED"
 step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$RWF" --tensorfs "$TWF" --gpu-memory-limit "$CAPV" -y ||
   fail "update: $(tail -c 300 "$OUT/update.txt")"
-WANT=0
-[ "$CAPV" = off ] || WANT=$(( ${CAPV%[MG]iB} << 20 )); [[ $CAPV != *GiB ]] || WANT=$(( ${CAPV%GiB} << 30 ))
+# bytes_of <cap>: its bytes, 0 for off.
+bytes_of() { case $1 in off) echo 0 ;; *GiB) echo $(( ${1%GiB} << 30 )) ;; *MiB) echo $(( ${1%MiB} << 20 )) ;; esac; }
+WANT=$(bytes_of "$CAPV")
 said=''
 for _ in $(seq 60); do
   cozy machine show "$NAME" --json > "$OUT/show-capped.json" 2> /dev/null
@@ -412,7 +416,7 @@ run() {
   echo "$procmib $hostgrow $hostpeak $hostsys $h2d $d2h" > "$OUT/$name.mem"
   host_use "$NAME" > "$OUT/$name.hostuse"
   mg=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.working_allocator // empty)
-    | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add); host working memory peak \(map(.host_working_peak // 0) | max / 1048576 | floor) MiB in \(map(.host_working_allocs // 0) | add) allocations, \(map(.host_working_bytes // 0) | add / 1048576 | floor) MiB at the end" end' "$OUT/$name.json" 2> /dev/null)
+    | if length == 0 then "none" else "pinned peak \(map(.host_working_peak // 0) | max / 1048576 | floor) MiB in \(map(.host_working_allocs // 0) | max) segments, served \(map(.host_working_served // 0) | max) allocations (\(map(.host_working_served_bytes // 0) | max / 1048576 | floor) MiB), refused for host \(map(.host_working_refusals // 0) | max), \(map(.host_working_bytes // 0) | max / 1048576 | floor) MiB at the end; ooms \(map(.ooms // 0) | max), answered \(map(.answered_ooms // 0) | max) (process totals)" end' "$OUT/$name.json" 2> /dev/null)
   ceil=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.ceiling.h2d_gbps // empty) | max // "?"' "$OUT/$name.json" 2> /dev/null)
   fills=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.moved // empty | to_entries[] | .value.bytes // 0) | add // 0 | . / 1e9 | . * 10 | floor / 10' "$OUT/$name.json" 2> /dev/null)
   row "$name"
@@ -443,26 +447,13 @@ run() {
   RUNS[$name]=${N:-}; DONE[$name]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
-  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | host ${HOST_SIZE% *} cores ${HOST_SIZE#* } GiB, $(cat "$OUT/$name.hostuse" 2> /dev/null) | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB; the link measured ${ceil:-?} GB/s in) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
-  # The switch must have taken: a managed cell whose record says it was off measures nothing this session is for.
-  if [ "$name" = "$k" ] && [ "$MANAGED" = true ] && [[ ${mg:-none} == "on 0,"* ]]; then fail "$name ran with managed working memory off: $mg"; fi
+  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | host ${HOST_SIZE% *} cores ${HOST_SIZE#* } GiB, $(cat "$OUT/$name.hostuse" 2> /dev/null) | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB; the link measured ${ceil:-?} GB/s in) | last resort ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
   publish "$name" "$verdict" "$why"
   if [ "$st" = completed ] && jq -e --arg k "{out:$name|" 'any(.[].args[]; contains($k))' <<< "$CELLS" > /dev/null; then
     (cd "$RUN_PROJECT" && cozy run watch "$N" --once -o "$OUT/$name.out") > /dev/null 2>&1
     MADE[$name]=$(ls "$OUT/$name.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   fi
 }
-for k in "${names[@]}"; do
-  c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
-  after=$(jq -r '.after // empty' <<< "$c") unless=$(jq -r '.unless // empty' <<< "$c")
-  why=''
-  if [ -n "$LOST" ]; then why=$LOST
-  elif [ $(( END_AT - $(date +%s) )) -lt 600 ]; then why="the session's $NEED s are used"
-  elif [ -n "$after" ] && [ "${ENDED[$after]:-}" != completed ]; then why="$after ${ENDED[$after]:-did not run}"
-  elif [ -n "$unless" ] && [ "${ENDED[$unless]:-}" = completed ]; then why="$unless completed"; fi
-  if [ -n "$why" ]; then say "CELL $k | NOT RUN: $why"; skipped=$((skipped + 1)); continue; fi
-  run "$k" "$k" "$CAPV"
-done
 # rebuild <wheel> <managed> <cap> <label>: the holder ends, the config takes the switch, the machine updates to <wheel> under
 # <cap>, and is checked to run it.
 rebuild() {
@@ -470,7 +461,7 @@ rebuild() {
   hold off
   managed_working "$2"
   step "update-$4" machine update "$NAME" --tensorfs "$1" --gpu-memory-limit "$3" -y || { say "$4: the update: $(tail -c 300 "$OUT/update-$4.txt")"; return 1; }
-  local want=0; [ "$3" = off ] || want=$WANT
+  local want; want=$(bytes_of "$3")
   for _ in $(seq 60); do
     cozy machine show "$NAME" --json > "$OUT/show-$4.json" 2> /dev/null
     said=$(jq -r '[.status.gpus[]? | .memory_limit_bytes // 0 | tostring] | unique | join(",")' "$OUT/show-$4.json" 2> /dev/null)
@@ -482,6 +473,25 @@ rebuild() {
   say "$4: TensorFS $tfs, cap $3, managed working memory $2"
   gpuwatch
 }
+# A cell's own `cap`: the machine at that cap, unheld; a later cell without one, back to the session's (held).
+AT=session
+for k in "${names[@]}"; do
+  c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
+  after=$(jq -r '.after // empty' <<< "$c") unless=$(jq -r '.unless // empty' <<< "$c")
+  kcap=$(jq -r '.cap // empty' <<< "$c")
+  why=''
+  if [ -n "$LOST" ]; then why=$LOST
+  elif [ $(( END_AT - $(date +%s) )) -lt 600 ]; then why="the session's $NEED s are used"
+  elif [ -n "$after" ] && [ "${ENDED[$after]:-}" != completed ]; then why="$after ${ENDED[$after]:-did not run}"
+  elif [ -n "$unless" ] && [ "${ENDED[$unless]:-}" = completed ]; then why="$unless completed"
+  elif [ -n "$kcap" ] && [ "$AT" != "$kcap" ]; then
+    if rebuild "$TWF" "$MANAGED" "$kcap" "cap-$k"; then AT=$kcap; else why="the machine did not take the cell's cap $kcap"; fi
+  elif [ -z "$kcap" ] && [ "$AT" != session ]; then
+    if rebuild "$TWF" "$MANAGED" "$CAPV" "back-$k" && hold on; then AT=session; else why="the machine did not take the session's cap back"; fi
+  fi
+  if [ -n "$why" ]; then say "CELL $k | NOT RUN: $why"; skipped=$((skipped + 1)); continue; fi
+  run "$k" "$k" "${kcap:-$CAPV}"
+done
 # The red arm (red_tensorfs, the release's TensorFS): every cell that completed held, and each marked `red`, held again with
 # no managed working memory, so which cells the switch turns from failed to completed reads plainly.
 reds=()
@@ -534,7 +544,7 @@ same() {
   d=''
   if [ -n "$fa" ] && [ -n "$fb" ]; then
     nice -n 19 ffmpeg -nostdin -v error -i "$fa" -i "$fb" -lavfi "[0:v][1:v]psnr=stats_file=$OUT/psnr-$1-$2.log" -f null - 2> /dev/null
-    d=$(awk '{for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) {v = substr($i, 10); n++; s += (v == "inf" ? 100 : v); if (min == "" || (v != "inf" && v + 0 < min)) {min = v + 0; at = n}}}
+    d=$(awk '{for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) {v = substr($i, 10); n++; s += (v == "inf" ? 100 : v); if (v != "inf" && (min == "" || v + 0 < min)) {min = v + 0; at = n}}}
       END {if (n) printf "mean %.2f dB over %d frames, worst %s dB at frame %d", s / n, n, (min == "" ? "inf" : min), at}' "$OUT/psnr-$1-$2.log" 2> /dev/null)
   fi
   say "DIFFERS $1 $2 | $a against $b | video/picture PSNR (inf as 100) ${d:-unread}"
