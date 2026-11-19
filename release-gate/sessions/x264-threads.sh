@@ -20,6 +20,11 @@ if [ "$LOCAL" = true ]; then
   NAME=local; say "local: the runner's own machine, the fixture's path only (no rental, no comparison)"
 else
   quote "$(param seconds 1200)"
+  # Only the listed offer of $MIN vCPUs: a quote for another (a cheaper offer of fewer, 11-19: 4 vCPU at $0.25/h for a cpu listed
+  # as 16 at $0.834/h) is refused before anything is rented.
+  listed=$(cozy --json machine rent < /dev/null 2> /dev/null | jq -r --argjson m "$MIN" '.[]? | select(.name == "cpu") | .widths[] | select((.vcpu_count // 0) >= $m) | .price_usd_micros_per_hour' | head -1)
+  quoted=$(jq -r '.quote.usd_micros_per_hour // empty' "$OUT/quote.json")
+  [ -n "$listed" ] && [ "$quoted" = "$listed" ] || fail "the quote is ${quoted:-none} micro-USD/h, not the listed $MIN-vCPU offer's ${listed:-none}: nothing rented"
   rent
 fi
 # arm <name>: the clip saved on $NAME twice and the second exported; its threads (from the mp4's x264 settings), CPUs and encode seconds (the run's
