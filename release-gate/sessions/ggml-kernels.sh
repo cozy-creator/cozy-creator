@@ -106,17 +106,17 @@ if [ -n "$DECODE$MAKE" ]; then
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 fi
 
-# batch-shapes as it first ran, raced on torch's default stream with no sync, beside the same cases settled, once, while
-# the card is idle (the Runtime's bench, cozy-runtime#2309; red: 44407876384, 44407881866). A raced row unlike its
-# settled one fails the session at its end; the rest goes on.
-if step batch-shapes run "$FIX/drive/batch_shapes" --on "$NAME"; then
-  n=$(runno batch-shapes); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/batch-shapes.json"
-  say "batch-shapes: $(jq -c '{served, why, rows, raced_equals_settled, repeat_identical, differs}' "$OUT/batch-shapes.json" 2>&1 | cut -c1-600)"
-  jq -e '(.served | not) or (.raced_equals_settled and .repeat_identical)' "$OUT/batch-shapes.json" > /dev/null 2>&1 || ORDER_BAD=1
-else
-  ORDER_BAD=1; say "FAILED: batch-shapes: $(grep -m1 -E '^Run .* failed|^error' "$OUT/batch-shapes.txt" | cut -c1-300)"
-fi
-
+# quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
+# reference is noted in quality.refs. Defined for every session with lanes, kernels or none (44500040933 had none).
+quality() {
+  local n
+  if ! step "quality-$1" run "$DFIX/drive/quality" --model "model=$2" --on "$NAME"; then
+    say "quality $1: none ($(tail -n 2 "$OUT/quality-$1.txt" | tr '\n' ' ' | cut -c1-200))"; return 0
+  fi
+  n=$(runno "quality-$1")
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/quality-$1.json"
+  [[ $1 == bf16-* ]] || echo "${2%@*}@ $1 bf16-${2%@*}" | sed 's|bf16-[^ ]*/|bf16-|' >> "$OUT/quality.refs"
+}
 benches=()
 if [ "$KERNELS" = 1 ]; then
   # Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
@@ -149,18 +149,6 @@ if [ "$KERNELS" = 1 ]; then
     n=$(runno "bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/bench-$model.json"
     benches+=("$OUT/bench-$model.json")
   done
-
-  # quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
-  # reference is noted in quality.refs.
-  quality() {
-    local n
-    if ! step "quality-$1" run "$DFIX/drive/quality" --model "model=$2" --on "$NAME"; then
-      say "quality $1: none ($(tail -n 2 "$OUT/quality-$1.txt" | tr '\n' ' ' | cut -c1-200))"; return 0
-    fi
-    n=$(runno "quality-$1")
-    (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/quality-$1.json"
-    [[ $1 == bf16-* ]] || echo "${2%@*}@ $1 bf16-${2%@*}" | sed 's|bf16-[^ ]*/|bf16-|' >> "$OUT/quality.refs"
-  }
 fi
 
 if [ -n "$DECODE$MAKE" ]; then
@@ -242,6 +230,17 @@ if [ -n "$DECODE$MAKE" ]; then
 fi
 
 [ -z "${RIDE_BAD:-}" ] || say "FAILED: a ride-along lane (lines above)"
+# batch-shapes as it first ran, raced on torch's default stream with no sync, beside the same cases settled (the Runtime's
+# bench, cozy-runtime#2309; red: 44407876384, 44407881866), once, after the lanes and the bench, when the card's ggml
+# kernels have landed (44500040933's A40 hadn't verified them in 120 s). A raced row unlike its settled one fails the
+# session at its end; the rest goes on.
+if step batch-shapes run "$FIX/drive/batch_shapes" --on "$NAME"; then
+  n=$(runno batch-shapes); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/batch-shapes.json"
+  say "batch-shapes: $(jq -c '{served, why, rows, raced_equals_settled, repeat_identical, differs}' "$OUT/batch-shapes.json" 2>&1 | cut -c1-600)"
+  jq -e '(.served | not) or (.raced_equals_settled and .repeat_identical)' "$OUT/batch-shapes.json" > /dev/null 2>&1 || ORDER_BAD=1
+else
+  ORDER_BAD=1; say "FAILED: batch-shapes: $(grep -m1 -E '^Run .* failed|^error' "$OUT/batch-shapes.txt" | cut -c1-300)"
+fi
 [ -z "${ORDER_BAD:-}" ] || say "FAILED: batch-shapes: a raced read on the default stream unlike its settled one (lines above)"
 [ -z "${OPEN_BAD:-}" ] || say "FAILED: cr-342's opening_kernel cell (lines above)"
 [ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}" ] || fail "a ride-along lane, batch-shapes or opening_kernel failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
