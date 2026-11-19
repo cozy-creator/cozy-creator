@@ -111,11 +111,18 @@ case $PART in
       return "$code"
     }
     say "existing: cozy $OLD's local at first: $(pair), held: $(held)"
-    # The state an existing user's local is in: its own pair, given by a run (Calcifer's own move, so not held).
-    try setup "${PKG%%@*}/remove_background@${PKG#*@}" --file "image=$REF/seed.jpg" || true
+    # The state an existing user's local is in: its own pair 0.47.1 / 0.26.1, not held. A package's run gives its environment a Runtime,
+    # not the machine a pair; local code capped below the new Runtime (draw047.py) moves the machine to one (Calcifer's own move: no hold).
+    cp "$HERE/fixtures/cut-1254/draw047.py" "$P/draw047.py"
+    try setup ./draw047.py/draw "instructions=Its first pair on cozy $OLD $RANDOM" || true
     p=$(pair)
-    [ "$(jq -r .runtime <<< "$p")" = 0.47.1 ] && [ "$(held)" = none ] && say "existing: built: local on its own pair 0.47.1, not held" ||
-      say "existing: NOT the existing user's state: local $p, held $(held)"
+    if [ "$(jq -r .runtime <<< "$p")" = 0.47.1 ] && [ "$(held)" = none ]; then say "existing: built: local on its own pair 0.47.1, not held"
+    else
+      say "existing: NOT the existing user's state after a capped run: local $p, held $(held); nearest: the pair put there by hand (a hold)"
+      cozy --json machine update local --runtime 0.47.1 --tensorfs 0.26.1 -y > "$OUT/hand.json" 2>&1 && ready ||
+        fail "the pair by hand: $(tail -c 300 "$OUT/hand.json")"
+      say "existing: by hand: local $(pair), held: $(held)"
+    fi
     # (c) What the old cozy says at start, and of its own version.
     for c in status "machine ls"; do (cd "$P" && cozy $c) > "$OUT/start-${c// /-}.txt" 2>&1; done
     say "existing: (c) cozy status / machine ls say of an update: $(grep -hiE 'update|0\.27' "$OUT/start-status.txt" "$OUT/start-machine-ls.txt" | head -4 | tr '\n' ' ' | cut -c1-400)"
