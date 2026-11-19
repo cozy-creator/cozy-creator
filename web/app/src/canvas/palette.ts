@@ -24,6 +24,8 @@ export interface PaletteEntry {
   makes: string
   tool?: Tool
   variants: Tool[]
+  /** Each variant's row, by its id (`labelsOf`). */
+  labels: Map<string, string>
 }
 
 const hasSource = (fields: ToolField[], kind: string): boolean => fields.some((field) =>
@@ -58,16 +60,27 @@ export const modelLabel = (tool: Tool) => {
   return namesItsPackage(tool) ? tool.label : `${title} ${tool.label}`
 }
 
+/** Each row's words in its group, `modelLabel`'s; where two would read the same, each says its tool after its package's title: Qwen3 Caption
+ *  beside Qwen3 Write (se-151), as a video edit says what it does. */
+function labelsOf(tools: Tool[]): Map<string, string> {
+  const plain = tools.map((tool) => [tool, modelLabel(tool)] as const)
+  const count = new Map<string, number>()
+  for (const [, label] of plain) count.set(label, (count.get(label) ?? 0) + 1)
+  const said = (tool: Tool) => (namesItsPackage(tool) || !tool.package_title ? tool.label : `${tool.package_title} ${tool.label}`)
+  return new Map(plain.map(([tool, label]) => [tool.id, (count.get(label) ?? 0) > 1 && tool.label ? said(tool) : label]))
+}
+
 /** Collators made once, when first sorted: `localeCompare` makes one a call (cl-1018: the palette's sort was 60 ms of a cold project open). */
 let collators: { name: Intl.Collator; id: Intl.Collator } | null = null
 
 /** A group's rows: what makes something new, then what changes what it's given (MiniMax H3, then MiniMax H3 Edit), each by name; local code
  *  last. Each tool's place is worked out once, not in every comparison. */
-function inGroup(tools: Tool[]): Tool[] {
+function inGroup(tools: Tool[]): { variants: Tool[]; labels: Map<string, string> } {
   const { name, id } = collators ??= { name: new Intl.Collator(undefined, { sensitivity: "base" }), id: new Intl.Collator() }
-  const keyed = tools.map((tool) => ({ tool, local: Number(Boolean(tool.local)), changes: Number(changes(tool)), label: modelLabel(tool) }))
+  const labels = labelsOf(tools)
+  const keyed = tools.map((tool) => ({ tool, local: Number(Boolean(tool.local)), changes: Number(changes(tool)), label: labels.get(tool.id) ?? "" }))
   keyed.sort((a, b) => a.local - b.local || a.changes - b.changes || name.compare(a.label, b.label) || id.compare(a.tool.id, b.tool.id))
-  return keyed.map(({ tool }) => tool)
+  return { variants: keyed.map(({ tool }) => tool), labels }
 }
 
 /** Stable operation rows; executable choices live in the node's model control. */
@@ -75,8 +88,8 @@ export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   const available = withBuiltIns(tools)
   const operations = new Map(available.map((tool) => [tool, operationOf(tool)]))
   return OPERATIONS.map((operation) => {
-    const variants = inGroup(available.filter((tool) => operations.get(tool) === operation.key))
-    return { ...operation, tool: variants[0], variants }
+    const { variants, labels } = inGroup(available.filter((tool) => operations.get(tool) === operation.key))
+    return { ...operation, tool: variants[0], variants, labels }
   })
 }
 

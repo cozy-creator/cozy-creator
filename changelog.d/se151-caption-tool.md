@@ -1,0 +1,1 @@
+Tools › LLM names each row by its package's title, and where two rows would read the same, each adds its tool's label: qwen3's Caption and Write read "Qwen3 Caption" and "Qwen3 Write" (se-151). qwen3's `caption` is a canvas tool now (packages, qwen3 0.3.0rc1): e2e's timing cell and the CPU fixture call it as one, its picture mentioned in `instructions`.

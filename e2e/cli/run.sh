@@ -674,6 +674,7 @@ case $SHARD in
     first_run
     llm_write
     llm_stream
+    llm_caption
     responses_sdk
     llm_cli_words
     llm_sampling
@@ -758,6 +759,7 @@ case $SHARD in
     given_file
     llm_write
     llm_stream
+    llm_caption
     responses_sdk
     llm_cli_words
     llm_sampling

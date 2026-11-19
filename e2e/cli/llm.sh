@@ -47,22 +47,37 @@ echo "$1: $said"
 # for images (ideally streaming)": the page cell web/llm-stream.spec.js, on this shard's Qwen3.5 0.8B.
 llm_stream() {
 [ -n "$LOCAL" ] || return 0
-step "web-llm-stream: an LLM's words grow on its box while it writes them (xs-209)"
-local pw=$OUT/playwright-test web=$OUT/web chrome code=0 line
+web_alone llm-stream "an LLM's words grow on its box while it writes them (xs-209)"
+}
+
+# se-151 (Paul, 11-18): "add the caption tool to an image, (2) run it, it produces a caption, (3) then add the upscale tool, and use that
+# caption as one of its inputs": the page cell web/caption.spec.js, qwen3's Caption on this shard's Qwen3.5 0.8B, of torchvision's dog.
+llm_caption() {
+[ -n "$LOCAL" ] || return 0
+local dog
+dog=$(picture dog1.jpg) || return 0
+PICTURE=$(web_path "$dog") web_alone caption "Caption on a picture, and its words Upscale's prompt (se-151)"
+}
+
+# web_alone <cell> <what>: the page cell web/<cell>.spec.js by its own config (web/<cell>.config.js): the web suite's fixtures and Chrome,
+# without its setup, on this shard's Calcifer and models. $PICTURE goes to the cell as it is.
+web_alone() {
+local cell=$1 pw=$OUT/playwright-test web=$OUT/web chrome code=0 line
+step "web-$cell: $2"
 chrome=$(web_chrome)
-[ -n "$chrome" ] && [ -x "$chrome" ] || { check "llm-stream: no Google Chrome on this runner (${chrome:-none})"; return; }
+[ -n "$chrome" ] && [ -x "$chrome" ] || { check "$cell: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" @playwright/test@1.55.0 > "$OUT/web-npm.log" 2>&1 \
-  || { check "llm-stream: npm install @playwright/test failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
+  || { check "$cell: npm install @playwright/test failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
 mkdir -p "$web" && rm -f "$web/report.json"
 HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
-  NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/llm-stream.config.js")" \
-  > "$web/llm-stream.log" 2>&1 || code=$?
-node "$(web_path "$here/web/report.js")" "$(web_path "$web/report.json")" llm-stream > "$web/llm-stream.said" 2>&1 \
-  || { check "llm-stream: no report (exit $code): $(tail -c 600 "$web/llm-stream.log")"; return; }
+  PICTURE=${PICTURE:-} NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/$cell.config.js")" \
+  > "$web/$cell.log" 2>&1 || code=$?
+node "$(web_path "$here/web/report.js")" "$(web_path "$web/report.json")" "$cell" > "$web/$cell.said" 2>&1 \
+  || { check "$cell: no report (exit $code): $(tail -c 600 "$web/$cell.log")"; return; }
 while IFS= read -r line; do
   case $line in FAILED\ *) check "${line#FAILED }" ;; *) echo "$line" ;; esac
-done < "$web/llm-stream.said"
-[ "$code" = 0 ] || grep -q '^FAILED' "$web/llm-stream.said" || check "llm-stream: Playwright exited $code: $(tail -c 600 "$web/llm-stream.log")"
+done < "$web/$cell.said"
+[ "$code" = 0 ] || grep -q '^FAILED' "$web/$cell.said" || check "$cell: Playwright exited $code: $(tail -c 600 "$web/$cell.log")"
 }
 
 # xs-209 (Paul, 11-17): "Make sure our machines are speaking the standard Responses-API (ChatGPT / openai standardized). That should make it
