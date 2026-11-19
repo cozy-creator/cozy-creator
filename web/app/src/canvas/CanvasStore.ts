@@ -493,18 +493,6 @@ export class CanvasStore {
     if (this.retired) return
     this.viewport = viewport
     if (this.state && this.rows) this.reconcile()
-    // Restore any cards that arrived while this viewport was attaching.
-    setTimeout(() => {
-      if (this.viewport !== viewport) return
-      viewport.replaceNodes((() => {
-        const nodes = viewport.getNodes()
-        const there = new Set(nodes.map((node) => node.id))
-        return [
-          ...nodes,
-          ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : [])),
-        ]
-      })())
-    })
   }
 
   /** Its canvas goes, and the store stays for when it's drawn again: nothing is open or held in a drag by then. */

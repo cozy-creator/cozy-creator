@@ -53,24 +53,9 @@ const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 const HERE_MS = 260
 /** Entering or leaving Focus: the camera's move and the other boxes' fade with it (cl-1198), at once for a reader who asks for less motion. */
 const focusMs = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : HERE_MS)
-/** How long the wheel stays still before the canvas takes it again after Focus: a trackpad's glide goes on after the hand has left. */
-const WHEEL_QUIET_MS = 200
 
 /** The same view, to a pixel. */
 const sameView = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005
-
-/** `then` once a camera move has ended: when it lands, or by when it should have, as a move stopped on the way never says it ended. */
-function landing(move: Promise<boolean>, then: () => void) {
-  let done = false
-  const land = () => {
-    if (done) return
-    done = true
-    clearTimeout(late)
-    then()
-  }
-  const late = setTimeout(land, HERE_MS + 120)
-  void move.then(land, land)
-}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -330,24 +315,17 @@ function Canvas({
     showMotion()
     setHomingState(on)
   }, [showMotion])
-  /** A camera move asked for: moving from now, until it lands or should have. */
+  /** A camera move asked for: moving from now until it ends, landed or stopped on the way (the Camera says either). */
   const glide = useCallback((move: Promise<boolean>, then?: () => void) => {
     motion.current.glides += 1
     showMotion()
-    landing(move, () => {
+    const ended = () => {
       motion.current.glides -= 1
       showMotion()
       then?.()
-    })
-  }, [showMotion])
-  const wheeled = useRef(0)
-  useEffect(() => {
-    const wheel = () => {
-      wheeled.current = performance.now()
     }
-    window.addEventListener("wheel", wheel, { capture: true, passive: true })
-    return () => window.removeEventListener("wheel", wheel, { capture: true })
-  }, [])
+    void move.then(ended, ended)
+  }, [showMotion])
   const closingAddress = useRef<string | null>(null)
   // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
@@ -376,8 +354,8 @@ function Canvas({
       if (!sameView(flow.getViewport(), viewport)) void flow.setViewport(viewport)
       store.focusEntering.set(false)
     }
-    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same. The other boxes fade out
-    // as it moves (Paul, 11-17), each from where it is.
+    // Focus shows as the move ends, landed or cut short on the way (a wheel, a key, another move): the Camera says either. The other boxes
+    // fade out as it moves (Paul, 11-17), each from where it is.
     const ms = focusMs()
     others(ms)
     glide(flow.setViewport(viewport, { duration: ms }), arrived)
@@ -450,15 +428,11 @@ function Canvas({
     }
     setHoming(true)
     if (store.projectId) saveViewport(store.projectId, back)
-    // Exactly where it was, however the way back went: stopped by a key's zoom, or the canvas a moment late.
+    // Exactly where it was, however the way back went: a glide stopped on the way is put there. A trackpad's wheel still going is the
+    // Stage's to hold until it pauses (cl-955).
     const home = () => {
       if (transition.current !== token) return
       if (!sameView(flow.getViewport(), back)) void flow.setViewport(back)
-      const still = performance.now() - wheeled.current
-      if (still < WHEEL_QUIET_MS) {
-        setTimeout(home, WHEEL_QUIET_MS - still)
-        return
-      }
       visit.current = null
       store.restZoom = null
       setHoming(false)
