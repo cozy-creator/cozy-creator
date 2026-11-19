@@ -8,6 +8,10 @@
 #                     refused runtime_held: the hand's hold wins), let go (it takes its Hub's pair, the pin), and a render
 #            rental   the cheapest rental ($SKU) and one published GPU tool on it (`tool`, default sdxl/generate); rents only with
 #                     RENT=true (lib.sh `quote`, `rent`; its trap ends the pod)
+#            existing this runner's cozy an older release (pod-session `cozy`: v0.26.1): local given its own pair by a run of a published
+#                     package capped below the new Runtime (`old`, default birefnet@0.9.0, CPU), so not held; then, still on the old
+#                     cozy: (a) that package again and the same package unpinned, (b) local code (draw.py), (c) what the old cozy says at
+#                     start; then one plain `cozy update` and whatever failed again
 #   version  the promoted cozy (default 0.27.1)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -94,7 +98,42 @@ case $PART in
     say "leg 4: render after it: exit $code: $(cat "$OUT/leg4.out" | head -1 | cut -c1-200); local $(pair)"
     [ "$code" = 0 ] || red "leg 4: render on local after let-go failed: $(head -2 "$OUT/leg4.err" | tr '\n' ' ' | cut -c1-300)"
     ;;
-  *) fail "part is fresh, upgrade or rental, not '$PART'" ;;
+  existing)
+    OLD=$(cozy --version | awk '{print $2}') PKG=$(jq -r '.old // "birefnet@0.9.0"' <<< "$PARAMS")
+    ready || fail "local not ready on cozy $OLD"
+    mkdir -p "$P" && cp "$DRAW" "$P/draw.py" && (cd "$P" && cozy --json new --unencrypted .) > "$OUT/new.json" 2>&1 || fail "cozy new: $(tail -c 300 "$OUT/new.json")"
+    try() {  # try <name> <cozy run args...>: one run on local, its exit and its last words
+      local name=$1 code; shift
+      (cd "$P" && timeout 900 cozy run "$@" --on local) > "$OUT/$name.out" 2> "$OUT/$name.err"; code=$?
+      ready
+      say "existing: $name: cozy run $*: exit $code: $(grep -hE '^(error|cause|next)' "$OUT/$name.err" | head -3 | tr '\n' ' ' | cut -c1-400)$([ "$code" = 0 ] && tail -n 1 "$OUT/$name.out" | cut -c1-120); local $(pair), held: $(held)"
+      grep -hE 'Updating|updating|moves? local|Runtime' "$OUT/$name.err" | head -3 | sed 's/^/    /' | tee -a "$R"
+      return "$code"
+    }
+    say "existing: cozy $OLD's local at first: $(pair), held: $(held)"
+    # The state an existing user's local is in: its own pair, given by a run (Calcifer's own move, so not held).
+    try setup "${PKG%%@*}/remove_background@${PKG#*@}" --file "image=$REF/seed.jpg" || true
+    p=$(pair)
+    [ "$(jq -r .runtime <<< "$p")" = 0.47.1 ] && [ "$(held)" = none ] && say "existing: built: local on its own pair 0.47.1, not held" ||
+      say "existing: NOT the existing user's state: local $p, held $(held)"
+    # (c) What the old cozy says at start, and of its own version.
+    for c in status "machine ls"; do (cd "$P" && cozy $c) > "$OUT/start-${c// /-}.txt" 2>&1; done
+    say "existing: (c) cozy status / machine ls say of an update: $(grep -hiE 'update|0\.27' "$OUT/start-status.txt" "$OUT/start-machine-ls.txt" | head -4 | tr '\n' ' ' | cut -c1-400)"
+    # (a) the capped package again, and the same package unpinned; (b) local code.
+    a1=0 a2=0 b=0
+    try a-capped "${PKG%%@*}/remove_background@${PKG#*@}" --file "image=$REF/seed.jpg" || a1=1
+    try a-unpinned "${PKG%%@*}/remove_background" --file "image=$REF/seed.jpg" || a2=1
+    try b-local-code ./draw.py/draw "instructions=Local code on cozy $OLD $RANDOM" || b=1
+    say "existing: on cozy $OLD: (a) capped $([ $a1 = 0 ] && echo works || echo FAILS), unpinned $([ $a2 = 0 ] && echo works || echo FAILS); (b) local code $([ $b = 0 ] && echo works || echo FAILS)"
+    [ $a1$a2$b = 000 ] || red "existing: an existing user's local fails before they update (above)"
+    cozy update -y > "$OUT/update.txt" 2>&1 || red "existing: cozy update: $(tail -c 300 "$OUT/update.txt")"
+    for _ in $(seq 120); do [ "$(pair | jq -r .version)" = "$VERSION" ] && break; sleep 5; done
+    ready; say "existing: plain cozy update: $(grep -E '^cozy .* → ' "$OUT/update.txt" | head -1 | cut -c1-80); local $(pair), held: $(held)"
+    [ $a1 = 0 ] || try a-capped-after "${PKG%%@*}/remove_background@${PKG#*@}" --file "image=$REF/seed.jpg" || red "existing: (a) capped still fails after cozy update"
+    [ $a2 = 0 ] || try a-unpinned-after "${PKG%%@*}/remove_background" --file "image=$REF/seed.jpg" || red "existing: (a) unpinned still fails after cozy update"
+    [ $b = 0 ] || try b-local-code-after ./draw.py/draw "instructions=Local code after cozy update $RANDOM" || red "existing: (b) still fails after cozy update"
+    ;;
+  *) fail "part is fresh, upgrade, existing or rental, not '$PART'" ;;
 esac
 say "$([ "$RED" = 0 ] && echo GREEN || echo RED): post-promotion $PART"
 exit "$RED"
