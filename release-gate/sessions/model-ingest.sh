@@ -26,7 +26,7 @@
 #              commit in its lane, converted on the pod. `base` (a Hub model, release or checkpoint) supplies what the
 #              source lacks (a DiT-only file's text encoder and VAE), in the upload's lane, or the release's `base_lane`
 #              checkpoint. `commit` names one already made: a rerun skips it. In place of `source`, `run` {function, models?,
-#              request?}: a function of the checkout (./scripts/<file>.py/<fn>) run on the pod with `model.<slot>=<ref>` for
+#              request?}: a function of the checkout (./<dir>/<fn>) run on the pod with `model.<slot>=<ref>` for
 #              each of `models` and `--lane <lane>`, whose weights output is the upload (`run:N`, as it is: no `base`).
 #   installs   [[source, name, flags…], …]: `cozy model install` on the pod before the uploads, under a local name a
 #              `run`'s models name (an edit's two ends, read and never uploaded)
