@@ -1561,7 +1561,7 @@ fn force_close(api: &Arc<Api>, root: &FsPath, held_by: &str) {
 /// How long a forced close asks the machine to seal the project before it lets go of it, owed.
 const FORCE_ASK: Duration = Duration::from_secs(5);
 
-/// Every open vault closed, as a stop or `cozy down` closes them: each waits its turn on its project up to `until`.
+/// Every open vault closed, as a stop (`cozy restart`, an update, a service manager) closes them: each waits its turn on its project up to `until`.
 pub(crate) fn close_all(api: &Arc<Api>, until: Instant) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
