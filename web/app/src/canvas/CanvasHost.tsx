@@ -11,7 +11,7 @@ import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
 import { Unopened, useGone, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
-import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import { loadSelection, loadToolsShut, loadViewport, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Canvas, Opened, ProjectViewPatch } from "../api/calcifer"
 import { type Ask, asked, giveUp } from "../app/making"
 import { say } from "../ui/notes"
@@ -239,7 +239,7 @@ function Canvas({
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
     if (kept instanceof CanvasStore) return kept
-    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId, projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId, projectId), projectId, loadSelection(projectId))
     return made
   })
   const keepView = useCallback((patch: ProjectViewPatch) => {
@@ -484,9 +484,6 @@ function Canvas({
       if (flow.getNodes().length || !store.projectId) return fitOnce()
     }
     store.onPlaced = fitOnce
-    store.onMore = (names) => {
-      if (store.projectId && saveMore(store.projectId, names)) keepView({ more: names })
-    }
     store.askMachine = () => navigate(to("machines"))
     store.showDownload = (machine, download) => navigate(to(leadsTo({ machine, download })))
     store.rent = (pick) => {

@@ -27,11 +27,10 @@ export function rememberProjectView(id: string, view: ProjectView) {
 
 function updateProjectView(id: string, patch: ProjectViewPatch): boolean {
   if (blockedProjects.has(id)) return false
-  const view = views.get(id) ?? { viewport: null, selection: [], more: [] }
+  const view = views.get(id) ?? { viewport: null, selection: [] }
   views.set(id, {
     viewport: patch.viewport ?? view.viewport,
     selection: patch.selection ?? view.selection,
-    more: patch.more ?? view.more,
   })
   return true
 }
@@ -67,6 +66,4 @@ export const loadViewport = (id: string | null) => id ? views.get(id)?.viewport 
 export const saveViewport = (id: string, viewport: Viewport) => updateProjectView(id, { viewport })
 export const loadSelection = (id: string | null) => id ? views.get(id)?.selection ?? [] : []
 export const saveSelection = (id: string, names: string[]) => updateProjectView(id, { selection: [...names] })
-export const loadMore = (id: string | null) => id ? views.get(id)?.more ?? [] : []
-export const saveMore = (id: string, names: string[]) => updateProjectView(id, { more: [...names] })
 

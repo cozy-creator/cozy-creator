@@ -179,7 +179,7 @@ async function candidate(context, origin) {
       }
       if (Object.entries(cards).some(([name, box]) => ['x', 'y', 'w'].some(key => after.cards[name]?.[key] !== box[key]))) throw new Error('real canvas layout readback differs');
       project.cards = cards; project.canvas_seq = after.seq;
-      await api(`${path}/view`, { viewport: { x: 320, y: 145, zoom: 1 }, selection: [], more: [] });
+      await api(`${path}/view`, { viewport: { x: 320, y: 145, zoom: 1 }, selection: [] });
       for (const i of representatives(count, project.columns)) { const file = `reference-${count}-${i}.rgb`; writeFileSync(join(out, file), decode(files[i].file, 64, 36)); project.references[i] = file; }
       save('prepared.json', manifest);
       process.stderr.write(`[pixi-scale] prepared ${count} real cards\n`);
