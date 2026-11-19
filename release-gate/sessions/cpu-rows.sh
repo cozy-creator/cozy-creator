@@ -126,10 +126,10 @@ say "what local timed: $(jq -c '[.status.times[]? | {function, runs}]' "$OUT/loc
 NOTE="pod-session ${GITHUB_RUN_ID:-local}: GitHub ubuntu-24.04 runner, $(nproc) threads; warm again $(jq -r .execution_ms "$OUT/runs/warm-again.json") ms"
 [ -z "$TREE" ] || NOTE="$NOTE; ${FUNCTION%%/*} from $FROM"
 jq -n --arg function "${FUNCTION##*/}" --arg cpu "$CPU" --argjson cores "$CORES" --arg cozy "$(cozy --version | awk '{print $2}')" \
-  --arg runtime "$(jq -r '.status.runtime // empty' "$OUT/local-after.json")" --arg note "$NOTE" \
+  --arg runtime "$(jq -r '.status.runtime // empty' "$OUT/local-after.json")" --arg note "$NOTE" --argjson nproc "$(nproc)" \
   --argjson picked "$(printf '%s\n' "${ARGS[@]}" | grep -qx -- --model && echo true || echo false)" --slurpfile cold "$OUT/runs/cold.json" --slurpfile warm "$OUT/runs/warm.json" --slurpfile cs "$OUT/cold.sample.json" --slurpfile ws "$OUT/warm.sample.json" \
   '([$cold[0].measurements.models[]?, $cold[0].calls[]?.measurements.models[]?] | first // {}) as $m
-   | [{function: $function, gpus: 0, cpu: $cpu, cores: $cores, threads: ([$cs[0].cores, $ws[0].cores] | max | ceil),
+   | [{function: $function, gpus: 0, cpu: $cpu, cores: $cores, threads: ([([$cs[0].cores, $ws[0].cores] | max | ceil), $nproc] | min),
      request: {}, lane: ($m.lane // ""), model: (if $picked and $m.repository then "\($m.repository)@\($m.release)" else "" end),
      warm_ms: $warm[0].execution_ms, cold_ms: $cold[0].execution_ms,
      peak_host_bytes: ([$cs[0].peak_host_bytes, $ws[0].peak_host_bytes] | max),
