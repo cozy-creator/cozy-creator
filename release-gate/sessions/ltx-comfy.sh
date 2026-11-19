@@ -13,7 +13,7 @@
 #   cells      [{"name", "key" (ltx25, ltx25_i2v, ltx25_ms), "duration_s", "gpus", "picture" (true: first frame
 #              release-gate/ref/seed.jpg), "prompt", "seed"}]: each a cold request and a warm one (its prompt with
 #              ", at dawn" and seed + 100000), ComfyUI's and Cozy's the same; "comfy": false runs Cozy's alone (ComfyUI's
-#              4-GPU run would repeat its 2-GPU one: it splits nothing more)
+#              4-GPU run would repeat its 2-GPU one: it splits nothing more); "lane" Cozy's lane (int8; bf16 beside ltx25_bf16)
 #   stall_s    no ComfyUI progress for this long ends the session (1800)
 #   need_s     seconds the cap must buy (7200)
 . "$(dirname "$0")/lib.sh"
@@ -33,7 +33,7 @@ jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")
   and (.seed | type == "number") and (.duration_s | type == "number") and (.gpus | type == "number"))' <<<"$CELLS" > /dev/null || fail "cells"
 while read -r k; do grep -q "^\[models\.$k\]" "$BENCH/cells.toml" || fail "cells.toml has no model $k"; done < <(jq -r '.[].key' <<<"$CELLS")
 # The requests: cold, then warm, each cell's own.
-REQS=$(jq -c 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true),
+REQS=$(jq -c 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true), lane: (.lane // "int8"),
   requests: [{prompt, seed}, {prompt: (.prompt + ", at dawn"), seed: (.seed + 100000)}]})' <<<"$CELLS")
 PLAIN=${RUNNER_TEMP:-$OUT/..}/ltx-comfy-plain; rm -rf "$PLAIN"; mkdir -p "$PLAIN"
 jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | select(.comfy) | {cell: .name, key, tiers: ["cold", "w1"], requests,
@@ -42,9 +42,9 @@ jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | select(.comfy)
 AB=$(jq -c --arg tree "$TREE" --argjson update "$UPDATE" --argjson gpus "$GPUS" '{gpus: $gpus, cells: ([.[] | . as $c | range(0; 2) as $i
   | {name: "\($c.name)-\($i)", tree: $tree, target: "ltx-2.5/generate",
      args: (["prompt=\($c.requests[$i].prompt)", "seed:=\($c.requests[$i].seed)", "duration_s:=\($c.duration_s)", "resolution=1080p",
-             "aspect_ratio=16:9", "audio:=true", "--lane", "int8", "--gpus=\($c.gpus)"]
+             "aspect_ratio=16:9", "audio:=true", "--lane", $c.lane, "--gpus=\($c.gpus)"]
             + (if $c.picture then ["--file", "first_frame={ref}/seed.jpg"] else [] end))}]
-  | .[0] += {update: $update, download: [["lightricks/ltx-2.5@0.2.0", "--lane", "int8"]]})}' <<<"$REQS") || fail "ab cells"
+  | .[0] += {update: $update, download: ([$cells[].lane] | unique | map(["lightricks/ltx-2.5@0.2.0", "--lane", .]))})}' --argjson cells "$REQS" <<<"$REQS") || fail "ab cells"
 echo "$AB" > "$OUT/ab-params.json"
 say "benchmarks $(git -C "$BENCH" rev-parse --short HEAD), packages $TREE $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD): $(jq -r 'map(.name) | join(", ")' <<<"$CELLS")"
 seal() {
