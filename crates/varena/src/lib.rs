@@ -90,6 +90,8 @@ pub(crate) enum AllocationFailure {
     /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
     /// done for it, an idle peer's before our weights, and short of that takes the reserve.
     ReserveShort(usize),
+    /// Short of this many bytes of new pages, after reusing what it could: what the reclaim order frees.
+    Short(usize),
     Other(Error),
 }
 
@@ -99,12 +101,12 @@ impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
             Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
-            Self::Other(_) => None,
+            Self::Short(_) | Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_) | Self::Short(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -116,7 +118,8 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes)
+            | AllocationFailure::Short(requested_bytes) => {
                 Self::OutOfMemory { requested_bytes }
             }
             AllocationFailure::Other(error) => error,

@@ -468,6 +468,7 @@ fn _varena_working_stats(
         ("driver_physical_ooms", stats.driver_physical_ooms),
         ("driver_memory_ns", stats.driver_memory_ns),
         ("driver_memory_longest_ns", stats.driver_memory_longest_ns),
+        ("remapped_bytes", stats.remapped_bytes),
         ("observed_mapped", stats.observed_mapped),
         ("observed_retired", stats.observed_retired),
         ("observed_ns", stats.observed_ns),

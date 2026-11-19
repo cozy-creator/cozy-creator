@@ -74,7 +74,7 @@ impl Device {
         };
         let mut segment = Segment::new(mapped, class, None);
         segment.host = true;
-        segment.chunks = vec![Chunk { offset: 0, bytes: mapped, handle: Some(PINNED) }];
+        segment.chunks = vec![Chunk { offset: 0, bytes: mapped, handle: Some(PINNED), retiring: false }];
         state.segments.insert(ptr, segment);
         let stats = &mut state.stats;
         stats.host_working_bytes += mapped;

@@ -1,0 +1,1 @@
+TensorFS: working memory reuses its free pages across sizes with no wait. With no room for new pages, an allocation maps free pages done or freed on its own stream at a fresh address, and the old address is unmapped once its GPU work completes, so a call no longer drains the GPU or releases and remakes pages between window sizes. A split counts those pages as room (var-030).
