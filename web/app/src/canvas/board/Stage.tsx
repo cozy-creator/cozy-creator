@@ -293,6 +293,9 @@ export function Stage(props: StageProps) {
       made.canvas.addEventListener("webglcontextrestored", contextRestored)
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: made.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true, disableOnContextMenu: true })
+      // The stage clips input in screen pixels. A second hit area in world coordinates can use a stale Pixi transform
+      // when the camera moves without painting a new frame, as it does on an empty board.
+      viewport.forceHitArea = { contains: () => true }
       viewport.enableRenderGroup()
       viewport.cursor = "grab"
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).decelerate({ friction: 0.93 }).clampZoom({ minScale: MIN_ZOOM, maxScale: MAX_ZOOM })
