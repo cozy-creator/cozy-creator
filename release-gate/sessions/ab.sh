@@ -74,10 +74,43 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
 fi
+# var-031 proof only: cap-sweep's inputs ({pic1}..{pic16} 2048x2048, {depth} a grey map of seed.jpg, {long} 8192x1024,
+# {digits} 65,000 characters of digit groups), made where a cell names them.
+FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd) MEDIA=$OUT/media
+mkdir -p "$MEDIA"
+if jq -e 'any(.[].args[]?; test("[{](pic[0-9]+|depth|long)[}]"))' <<<"$CELLS" > /dev/null; then
+  SRC=("$REF/seed.jpg" "$FX/lighthouse.jpg" "$FX/teapot.jpg")
+  for i in $(seq 16); do
+    ffmpeg -nostdin -v error -y -i "${SRC[$((i % 3))]}" -vf "hue=h=$((i * 22)),scale=2048:2048:flags=lanczos" -q:v 2 "$MEDIA/pic$i.jpg" || fail "picture $i"
+  done
+  ffmpeg -nostdin -v error -y -i "$REF/seed.jpg" -vf "format=gray,gblur=sigma=8" "$MEDIA/depth.png" || fail "the depth map"
+  ffmpeg -nostdin -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1024:1024,tile=8x1" -frames:v 1 -q:v 2 "$MEDIA/long.jpg" || fail "the long picture"
+fi
+DIGITS=$(awk 'BEGIN { x = 20261118; for (i = 0; i < 16250; i++) { x = (x * 48271) % 2147483647; printf "%03d ", x % 1000 } }')
+media() {
+  local a=$1
+  a=${a//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{depth\}/$MEDIA/depth.png}; a=${a//\{long\}/$MEDIA/long.jpg}
+  a=${a//\{digits\}/$DIGITS}
+  while [[ $a =~ \{pic([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/$MEDIA/pic${BASH_REMATCH[1]}.jpg}; done
+  printf '%s' "$a"
+}
+# Each cell's files exist before anything is rented (a path in an "image" field, a bare absolute path, a --file value).
+checked() {
+  local k=$1 a f
+  while IFS= read -r a; do
+    a=$(media "$a")
+    for f in $(grep -oE '"image": ?"[^"]+"' <<<"$a" | sed -E 's/.*"([^"]+)"$/\1/'); do [ -f "$f" ] || fail "cell $k: no file $f"; done
+    if [[ $a == /* && $a != *' '* ]]; then [ -f "$a" ] || fail "cell $k: no file $a"; fi
+    if [[ $a =~ ^[A-Za-z_]+=(/[^ ]+)$ && -n ${PREV_FILE:-} ]]; then [ -f "${BASH_REMATCH[1]}" ] || fail "cell $k: no file ${BASH_REMATCH[1]}"; fi
+    PREV_FILE=; if [ "$a" = --file ]; then PREV_FILE=1; fi
+  done < <(jq -r '.args[]' <<<"$2" | grep -v '{out:' || true)
+  return 0
+}
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS")
+  checked "$k" "$c"
   [[ $k =~ ^[A-Za-z0-9_-]+$ ]] && [ "$(jq --arg k "$k" 'map(select(.name==$k)) | length' <<<"$CELLS")" = 1 ] || fail "cell names must be unique words: $k"
   if [ -z "$(jq -r '.tree // empty' <<<"$c")" ]; then say "cell $k: published $(jq -r .target <<<"$c") $(jq -r '.args | join(" ")' <<<"$c")"; continue; fi
   t=$PACKAGES/$(jq -r .tree <<<"$c")/$(jq -r .target <<<"$c")
@@ -254,7 +287,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}
+    a=$(media "${args[$i]}")
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
