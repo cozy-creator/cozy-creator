@@ -5,7 +5,7 @@ import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, use
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
-import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
+import { type HeldPreview, heldPreview, THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import type { MainFile } from "../api/calcifer"
@@ -263,29 +263,26 @@ export function useHeldMedia(path: string | undefined): string | undefined {
   return held && held.path === path ? held.url : undefined
 }
 
-/** Previews that couldn't play, by hash, and until when a hover doesn't ask again: a file still arriving has one soon. */
-const unpreviewable = new Map<string, number>()
-const PREVIEW_TRIES = 4
-const PREVIEW_AGAIN_MS = 30_000
-
 /**
  * A video's preview over its poster: a few seconds from the poster's frame on, silent and looping, which Calcifer made once as the file
- * landed. Nothing loads before the hover, it shows from its first frame, and it goes with the hover or with its tile.
+ * landed. Nothing loads before the hover, it shows from its first frame, and it goes with the hover or with its tile. One asked for before
+ * it's made waits for it (`heldPreview`).
  */
 export function Preview({ sha256 }: { sha256: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [playing, setPlaying] = useState(false)
-  const [attempt, setAttempt] = useState(0)
-  const [failed, setFailed] = useState<string>()
+  const [held, setHeld] = useState<{ url: string; release(): void }>()
   const element = useRef<HTMLVideoElement>(null)
-  const retry = useRef<number | undefined>(undefined)
-  useEffect(() => () => clearTimeout(retry.current), [])
+  const asking = useRef<HeldPreview>(undefined)
   const projectId = store.projectId
-  const [wanted] = useState(() => (unpreviewable.get(sha256) ?? 0) <= Date.now())
-  const path = projectId && wanted ? client.preview(projectId, sha256) : undefined
-  const held = useHeldMedia(path && (attempt ? `${path}&try=${attempt}` : path))
-  const src = held !== failed ? held : undefined
+  useEffect(() => {
+    if (!projectId) return
+    const preview = (asking.current = heldPreview(client.transport, projectId, sha256, client.preview(projectId, sha256), setHeld))
+    return () => preview.stop()
+  }, [client, projectId, sha256])
+  useEffect(() => () => held?.release(), [held])
+  const src = held?.url
   // Its bytes and decoder go with it, not when it's collected.
   useEffect(() => {
     const el = element.current
@@ -310,10 +307,8 @@ export function Preview({ sha256 }: { sha256: string }) {
       onPlaying={() => setPlaying(true)}
       onError={(event) => {
         if (event.currentTarget.error?.code === MediaError.MEDIA_ERR_NETWORK) return
-        setFailed(src)
-        // Made on its first ask, or its file still arriving: asked again while the pointer rests, then not for a while.
-        if (attempt + 1 < PREVIEW_TRIES) retry.current = window.setTimeout(() => setAttempt(attempt + 1), 1000 * 2 ** attempt)
-        else unpreviewable.set(sha256, Date.now() + PREVIEW_AGAIN_MS)
+        setHeld(undefined)
+        asking.current?.failed()
       }}
     />
   )

@@ -502,6 +502,7 @@ WEB_1=(
   gone
   references
   previews
+  preview-pending
   play-link
   update
   spacing
@@ -589,6 +590,7 @@ WEB_ENGINES=(
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
   open
+  preview-reconnect
   machine-details
   gpu-gauges
   account-rent

@@ -13,7 +13,7 @@ export interface Transport {
   src(path: string): Promise<string>
   /** A video's or a sound's bytes, whole, in this page's memory, for an element's `src` (cl-1215): fetched by one request that completes, so
    *  playing, looping and seeking it hold none of the six connections a browser opens to Calcifer. Shared while held; `release` when no
-   *  element shows it. One past MEDIA_IN_MEMORY plays from its URL with Range instead. */
+   *  element shows it. One past MEDIA_IN_MEMORY plays from its URL with Range instead. A `202` (not made yet) rejects with `Pending`. */
   media(path: string): Promise<{ url: string; release(): void }>
   /** `path` into `el` from memory (`media`): resolved once it's `el`'s source, to seek and play; it holds the bytes until `stop`. */
   play(path: string, el: HTMLMediaElement): Promise<Playback>
@@ -26,6 +26,14 @@ const MEDIA_IN_MEMORY = 1 << 30
 
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
+
+/** `media`'s refusal for a `202 thumb_pending`: Calcifer is still making what `path` names; the file's `thumb` event says when. */
+export class Pending extends Error {
+  constructor(readonly path: string) {
+    super(`Cozy is still making ${path}`)
+    this.name = "Pending"
+  }
+}
 
 /** An answer as Calcifer gives a refusal, made here. */
 const refusal = (status: number, kind: string, code: string, message: string) =>
@@ -53,6 +61,8 @@ export function sameOrigin(): Transport {
     if (!one) {
       const url = (async () => {
         const response = await fetch(direct(path), { signal: project?.signal })
+        // Not made yet: no bytes to hold, and nothing kept under `path`, so the next ask reads it again.
+        if (response.status === 202) { void response.body?.cancel(); throw new Pending(path) }
         if (!response.ok) { void response.body?.cancel(); return direct(path) }
         if (Number(response.headers.get("Content-Length")) > MEDIA_IN_MEMORY) { void response.body?.cancel(); return direct(path) }
         return URL.createObjectURL(await response.blob())
