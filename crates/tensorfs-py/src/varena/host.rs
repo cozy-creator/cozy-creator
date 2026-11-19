@@ -201,6 +201,14 @@ mod imp {
         host().map_or(0, |host| host.table.held())
     }
 
+    /// This process's row says what it holds now, not at its donor's last look.
+    pub(super) fn republish() {
+        if let Some(host) = host() {
+            let (held, idle) = Giving(host).holdings();
+            host.table.publish(host.row, held, idle);
+        }
+    }
+
     /// This process's own tiers give about `bytes` back, spares and the pages worth least first.
     pub(super) fn give_own(bytes: u64) -> u64 {
         let Some(host) = host() else { return 0 };
@@ -288,10 +296,17 @@ pub(super) fn admit(bytes: u64) -> Result<(), varena::HostShort> {
     }
     ask_idle(short(&now));
     now = budget();
+    // This process's own pages, until there is room or nothing is left to give. Its row in the host page
+    // is published again after each give: the number takes the larger of the kernel's charge and the
+    // page's rows, and a row the donor thread last published still counts what was just given.
     #[cfg(target_os = "linux")]
-    if room(&now) < want {
-        imp::give_own(short(&now));
+    while room(&now) < want {
+        let given = imp::give_own(short(&now));
+        imp::republish();
         now = budget();
+        if given == 0 {
+            break;
+        }
     }
     if room(&now) >= want {
         return Ok(());
