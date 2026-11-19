@@ -60,8 +60,9 @@ fi
 log "candidates: $cands, and birefnet to run"
 
 # Models first (th-412): this Hub, as production, refuses a package whose defaults aren't public model releases. BiRefNet's
-# default holds its weights, mirrored from the Hugging Face revision production's are, since its function runs; every other
-# default of the packages `task publish` ships (each candidate and birefnet, with the in-repo packages they take) a stand-in.
+# default holds its weights, mirrored from the Hugging Face revision production's are, since its function runs (never a
+# stand-in: the suite ends if they don't mirror); every other default of the packages `task publish` ships (each candidate
+# and birefnet, with the in-repo packages they take) a stand-in.
 seed=$OUT/seed && mkdir -p "$seed"
 . "$HERE/e2e/standins.sh"
 ships() { local p q; for p; do echo "$p"; for q in $(deps "$p"); do [ ! -d "$PKGS/$q" ] || ships "$q"; done; done; }
@@ -72,6 +73,7 @@ if [ -n "$birefnet" ] && (cd "$RUN_PROJECT" && mirror hf://ZhengPeng7/BiRefNet@e
   expect publish-models PASS "BiRefNet's weights mirrored as $birefnet"
 else
   expect publish-models FAIL "BiRefNet's weights did not mirror${birefnet:+ as $birefnet}: $(tail -c 300 mirror-birefnet.err 2> /dev/null)"
+  verdict
 fi
 for p in $(ships $cands birefnet | sort -u); do
   (cd "$RUN_PROJECT" && standin_defaults "$PKGS/$p") 2> "standins-$p.err" \

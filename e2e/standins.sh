@@ -2,11 +2,14 @@
 # the Hub holds no release of (th-412: production holds each public, and the Hub refuses a package whose default isn't). The
 # caller gives `seed` (a folder for its files), `log`, and `cozy` (on PATH or a function), signed in as the Hub's admin.
 STANDINS_E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$STANDINS_E2E/test-hub.sh"
 
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
-# published, as an admin mirrors an author's model.
+# published, as an admin mirrors an author's model. Only to the throwaway Hub cozy targets (COZY_HUB_URL, test-hub.sh):
+# a stand-in is random weights under a real author's name.
 mirror() {
   local name=${2//\//-} commit
+  require_test_hub "${COZY_HUB_URL:-}" || return 1
   cozy --json model upload "$1" "$2" --lane "$3" --mirror "$5" --on local -y "${@:6}" > "$seed/upload-$name.json" 2>&1 \
     || { echo "uploading $2 failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; return 1; }
   commit=$(python3 "$STANDINS_E2E/model-details.py" "$2" | jq -r '.checkpoints[0].checkpoint // empty')
