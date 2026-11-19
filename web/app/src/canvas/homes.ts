@@ -18,8 +18,8 @@ export interface Size {
 }
 type Point = { x: number; y: number }
 
-/** How far a shape is from a screen's, wider and taller alike. */
-const offScreen = (w: number, h: number) => Math.abs(Math.log(w / Math.max(1, h) / SCREEN))
+/** How far a shape, wide over tall, is from a screen's, wider and taller alike. */
+const offScreen = (shape: number) => Math.abs(Math.log(shape / SCREEN))
 
 /** `sizes` in `columns`, row by row from 0,0: each column as wide as its widest, each row as tall as its tallest. */
 function inColumns(sizes: Size[], columns: number): { at: Point[]; w: number; h: number } {
@@ -29,24 +29,27 @@ function inColumns(sizes: Size[], columns: number): { at: Point[]; w: number; h:
     widths[i % columns] = Math.max(widths[i % columns] ?? 0, w)
     heights[Math.floor(i / columns)] = Math.max(heights[Math.floor(i / columns)] ?? 0, h)
   })
-  const lefts = widths.map((_, column) => widths.slice(0, column).reduce((sum, w) => sum + w + GAP_X, 0))
-  const tops = heights.map((_, row) => heights.slice(0, row).reduce((sum, h) => sum + h + GAP_Y, 0))
-  return {
-    at: sizes.map((_, i) => ({ x: lefts[i % columns], y: tops[Math.floor(i / columns)] })),
-    w: lefts.at(-1)! + widths.at(-1)!,
-    h: tops.at(-1)! + heights.at(-1)!,
-  }
+  const lefts = [0]
+  for (const w of widths) lefts.push(lefts.at(-1)! + w + GAP_X)
+  const tops = [0]
+  for (const h of heights) tops.push(tops.at(-1)! + h + GAP_Y)
+  return { at: sizes.map((_, i) => ({ x: lefts[i % columns], y: tops[Math.floor(i / columns)] })), w: lefts.at(-1)! - GAP_X, h: tops.at(-1)! - GAP_Y }
 }
 
 /** `sizes` in their order, left to right in rows that wrap, with as many columns as bring the whole nearest 16:9: where each goes from the
  *  whole's top left, and the whole's size. */
 export function tile(sizes: Size[]): { at: Point[]; w: number; h: number } {
   if (!sizes.length) return { at: [], w: 0, h: 0 }
+  const narrowest = Math.min(...sizes.map(({ w }) => w))
+  const tallest = Math.max(...sizes.map(({ h }) => h))
   let best = inColumns(sizes, 1)
-  for (let columns = 2; columns <= sizes.length && best.w / best.h < SCREEN; columns++) {
+  for (let columns = 2; columns <= sizes.length; columns++) {
+    // Never narrower than this with this many columns or more: once it's past a screen's shape and further from it than the best, no more
+    // columns can do better. A count that mixes kinds into every column can be wider than one more, so each count up to there is tried.
+    const least = (columns * narrowest + (columns - 1) * GAP_X) / (Math.ceil(sizes.length / columns) * (tallest + GAP_Y))
+    if (least > SCREEN && offScreen(least) >= offScreen(best.w / best.h)) break
     const next = inColumns(sizes, columns)
-    if (offScreen(next.w, next.h) < offScreen(best.w, best.h)) best = next
-    else break
+    if (offScreen(next.w / next.h) < offScreen(best.w / best.h)) best = next
   }
   return best
 }
@@ -76,8 +79,8 @@ function beside(placed: Box[], block: Size): Point {
   const top = Math.min(...placed.map((box) => box.y))
   const w = Math.max(...placed.map((box) => box.x + box.w)) - left
   const h = Math.max(...placed.map((box) => box.y + box.h)) - top
-  const right = offScreen(w + GAP_X + block.w, Math.max(h, block.h))
-  const under = offScreen(Math.max(w, block.w), h + GAP_Y + block.h)
+  const right = offScreen((w + GAP_X + block.w) / Math.max(h, block.h))
+  const under = offScreen(Math.max(w, block.w) / (h + GAP_Y + block.h))
   return right <= under ? { x: left + w + GAP_X, y: top } : { x: left, y: top + h + GAP_Y }
 }
 
