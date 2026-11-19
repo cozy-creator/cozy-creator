@@ -22,9 +22,12 @@ else
   quote "$(param seconds 1200)"
   rent
 fi
-# arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and encode seconds (the run's
+# arm <name>: the clip saved on $NAME twice and the second exported; its threads (from the mp4's x264 settings), CPUs and encode seconds (the run's
 # start to its settling, less the call's own time making the frames) in <name>.facts, and said.
 arm() {
+  # Once to warm its executor and encoder (the local check's first arm took 2.92 s, its second 1.7 s, at the same 4 threads), then
+  # the save measured.
+  step "$1-warm" run "$FIX/save" "arm=$1-warm" "frames:=$FRAMES" --on "$NAME" --output "$OUT/$1-warm" || fail "$1: the warm save failed: $(tail -c 300 "$OUT/$1-warm.txt")"
   step "$1" run "$FIX/save" "arm=$1" "frames:=$FRAMES" --on "$NAME" --output "$OUT/$1" || fail "$1: the save failed: $(tail -c 300 "$OUT/$1.txt")"
   local n mp4 threads cpus secs
   n=$(runno "$1")
