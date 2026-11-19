@@ -2,9 +2,9 @@
 # would prefer the same output regardless of memory size available. Also do whatever produces the highest quality video in
 # the end." The refine's window layout changes the picture, so it must come from the request alone (minimax-h3
 # `regenerate.WINDOW_ROWS`), never from the room on the card.
-# One rental: each packages_refs tree in `trees` runs one Upscale request (`res` of the plate's first `seconds`) uncapped,
-# then again with the GPU at `cap`; each arm starts from no derived state (lib.sh `derived_state`: no memo answers the second
-# run, which is the same request). Per tree: the `h3 regenerate` line's layout (windows, latent frames) and the output's bytes
+# Two pods of one SKU booted together, one uncapped and one with its GPU at `cap` from the start: each packages_refs tree in
+# `trees` runs one Upscale request (`res` of the plate's first `seconds`) on both. A machine's call memo answers a request it has
+# served whatever its cap, so each cap gets a machine that has never served it. Per tree: the `h3 regenerate` line's layout (windows, latent frames) and the output's bytes
 # under both caps. SAME: one layout and identical bytes; DIFFERENT otherwise, with whether the decoded frames and sound match and
 # the PSNR between them. The session passes when each tree says what `expect` asks (default SAME): a tree whose layout follows the
 # card is red, one whose layout is the request's is green.
@@ -14,7 +14,7 @@
 # local machine through cozy. Every run names its machine. The pod ends after the last run; the verdicts follow.
 # params: runtime, tensorfs (wheels, https://…#sha256=<hex>: every run must run on them), trees ("rc fix": packages_refs
 # names, in order), expect ({"<tree>": "same"|"different"}), res (1080), seconds (15), cap (6GiB), source, start (25), prompt,
-# need_s (2700). (`cap` the dollar cap is lib.sh's CAP; this one is the GPU's.)
+# need_s (2100, both pods). (`cap` the dollar cap is lib.sh's CAP; this one is the GPU's.)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/h3-layout-caps
 TREES=$(param trees "rc fix") EXPECT=$(param expect '{}') RES=$(param res 1080) SECS=$(param seconds 15) GCAP=$(param cap 6GiB)
@@ -26,8 +26,6 @@ START=$(param start 25) PROMPT=$(param prompt "")
 jq -e 'type == "object" and all(.[]; . == "same" or . == "different")' <<< "$EXPECT" > /dev/null || fail "expect: {tree: same|different}"
 for tool in ffmpeg ffprobe curl jq unzip; do command -v "$tool" > /dev/null || fail "no $tool"; done
 for t in $TREES; do [ -f "$PACKAGES/$t/minimax-h3/minimax_h3/regenerate.py" ] || fail "no packages_refs checkout $t"; done
-RENT_ARGS=--ssh  # derived_state reads and clears the pod's derived state over its root shell
-[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 WORK=${RUNNER_TEMP:-$OUT/..}/h3-layout-caps; mkdir -p "$WORK" "$OUT/wheel" "$OUT/records" "$OUT/media"
 fetch_wheel() {
   local url=$1 f
@@ -58,25 +56,29 @@ for t in $TREES; do
   say "tree $t: locked and installed locally through cozy"
 done
 
-quote "$(param need_s 2700)"
-rent
-step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TW" -y || fail "update"
+quote "$(param need_s 2100)" "$SKU" "$SKU"
+# Two pods, booted together: one uncapped, one at the cap from its start. A machine's call memo answers a request it has served
+# whatever its cap (44431067473: the capped repeats on one pod were memo hits, and no verb or derived-state reset clears it), so
+# each cap gets a machine that has never served the request.
+order; order; ready 0; POD_OFF=$NAME RID_OFF=$RID; ready 1; POD_CAP=$NAME RID_CAP=$RID
+step update-off machine update "$POD_OFF" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TW" -y || fail "update $POD_OFF"
+step update-cap machine update "$POD_CAP" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TW" --gpu-memory-limit "$GCAP" -y ||
+  fail "update $POD_CAP"
+for p in "$POD_OFF" "$POD_CAP"; do
+  t0=$SECONDS
+  until timeout 60 cozy model ls --on "$p" --json > /dev/null 2>&1; do [ $((SECONDS - t0)) -lt 600 ] || fail "$p hasn't answered"; sleep 5; done
+  say "$p: $(cozy --json machine show "$p" | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name, limit: [.status.gpus[]? | .memory_limit_bytes // 0]}')"
+done
+want=$(( ${GCAP%GiB} << 30 ))
+[ "$(cozy --json machine show "$POD_CAP" | jq -r '[.status.gpus[]? | .memory_limit_bytes // 0] | unique | join(",")')" = "$want" ] || fail "$POD_CAP isn't at $GCAP"
+[ "$(cozy --json machine show "$POD_OFF" | jq -r '[.status.gpus[]? | .memory_limit_bytes // 0] | unique | join(",")')" = 0 ] || fail "$POD_OFF is capped"
 run_page import "$OUT/media/plate.mp4" --name plate --description "$PROMPT" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
-# arm <cap>: no derived state (no memo, bake or learned peak from before), the GPU at <cap> (off: uncapped), the pod answering.
-arm() {
-  derived_state "cap-$1" reset
-  step "cap-$1" machine update "$NAME" --gpu-memory-limit "$1" -y || fail "cap $1"
-  local t0=$SECONDS
-  until timeout 60 cozy model ls --on "$NAME" --json > /dev/null 2>&1; do [ $((SECONDS - t0)) -lt 600 ] || fail "$NAME hasn't answered at cap $1"; sleep 5; done
-  derived_state "cap-$1" settle
-  derived_zero || fail "cap $1: the arm starts with derived state it did not make: $DERIVED"
-  say "cap $1: $(cozy --json machine show "$NAME" | jq -c '[.status.gpus[]? | .memory_limit_bytes // 0]') bytes"
-}
 printf 'cell\ttree\tcap\trun\tstatus\twindows\twindow_frames\tdigest\texec_s\trefine_s\tpeak_gib\n' > "$OUT/cells.tsv"
+# run_cell <tree> <cap> <pod>: the request on that pod; its record, log, video and a cells.tsv row.
 run_cell() {
-  local t=$1 c=$2 k=$1-$2 n row line st
+  local t=$1 c=$2 pod=$3 k=$1-$2 n row line st
   cd "$PACKAGES/$t" || fail "no tree $t"
-  step "$k" run ./minimax-h3/upscale "video=<plate>" "to=${RES}p" "prompt=$PROMPT" --on "$NAME"
+  step "$k" run ./minimax-h3/upscale "video=<plate>" "to=${RES}p" "prompt=$PROMPT" --on "$pod"
   n=$(runno "$k"); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
   [ -n "$n" ] || { say "$k: no run: $(tail -c 400 "$OUT/$k.txt")"; printf '%s\t%s\t%s\t-\tnone\n' "$k" "$t" "$c" >> "$OUT/cells.tsv"; return; }
   cozy run watch "$n" --once --json --full > "$OUT/records/$k.json" 2> /dev/null
@@ -87,21 +89,21 @@ run_cell() {
   line=$(LC_ALL=C grep -a -o -m1 -E 'h3 regenerate .*' "$OUT/records/$k.log")
   st=$(jq -r '.status // "none"' <<< "$row")
   [ "$(jq -r '.memoized' <<< "$row")" != true ] || { say "$k: answered from the call memo, not rendered"; st=memoized; }
-  jq -e --arg r "$WANT_RT" --arg f "$WANT_TFS" '.software | length > 0 and all(.[]; .[0] == $r and .[1] == $f)' <<< "$row" > /dev/null ||
-    [ "$st" != completed ] || fail "$k ran on $(jq -c .software <<< "$row"), not Runtime $WANT_RT TensorFS $WANT_TFS"
+  if [ "$st" = completed ] && ! jq -e --arg r "$WANT_RT" --arg f "$WANT_TFS" '.software | length > 0 and all(.[]; .[0] == $r and .[1] == $f)' <<< "$row" > /dev/null; then
+    say "$k ran on $(jq -c .software <<< "$row"), not Runtime $WANT_RT TensorFS $WANT_TFS"; st=wrong-pair
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$t" "$c" "$n" "$st" "$(grep -o -E '\bwindows=[0-9]+' <<< "$line" | cut -d= -f2)" \
     "$(grep -o -E 'window_latent_frames=[0-9]+' <<< "$line" | cut -d= -f2)" "$(jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/records/$k.json" 2> /dev/null)" \
     "$(jq -r '[.execution_s, .refine_s, .peak_vram_gib] | map(. // "?" | tostring) | join("\t")' <<< "$row")" >> "$OUT/cells.tsv"
-  say "$k: run $n $st, ${line:-no h3 regenerate line}; $(jq -c 'del(.software)' <<< "$row")"
+  say "$k: run $n on $pod $st, ${line:-no h3 regenerate line}; $(jq -c 'del(.software)' <<< "$row")"
 }
-for c in off "$GCAP"; do
-  arm "$c"
-  for t in $TREES; do run_cell "$t" "$c"; done
-done
-for r in "${RIDS[@]}"; do
-  until gone "$r"; do cozy machine end "$r" -y >> "$OUT/end.txt" 2>&1; sleep 10; done
-  say "GONE $r; billed $(billed "$r")"
-done
+# end_pod <rid>: ended and gone, as soon as its cells are in.
+end_pod() { until gone "$1"; do cozy machine end "$1" -y >> "$OUT/end.txt" 2>&1; sleep 10; done; say "GONE $1; billed $(billed "$1")"; }
+# Each pod runs every tree in turn, the two pods side by side; each pod ends when its own runs are in.
+( NAME=$POD_OFF RID=$RID_OFF; for t in $TREES; do run_cell "$t" off "$POD_OFF"; done; end_pod "$RID_OFF" ) & A=$!
+( NAME=$POD_CAP RID=$RID_CAP; for t in $TREES; do run_cell "$t" "$GCAP" "$POD_CAP"; done; end_pod "$RID_CAP" ) & B=$!
+wait "$A"; wait "$B"
+for r in "${RIDS[@]}"; do gone "$r" || end_pod "$r"; done
 column -t -s $'\t' "$OUT/cells.tsv" | tee -a "$R"
 
 # Each tree's verdict: one layout and the same bytes under both caps.
