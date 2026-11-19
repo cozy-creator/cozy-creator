@@ -408,6 +408,29 @@ pub(super) unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Re
     unsafe { cuda::pin_region(ptr, len, false) }
 }
 
+/// `[ptr, ptr + len)` registered and mapped for `device`, and the device's address of it.
+///
+/// # Safety
+/// As `cuda::pin_mapped`, whose context this enters.
+pub(super) unsafe fn register_mapped(
+    device: i32,
+    ptr: *mut u8,
+    len: usize,
+) -> cuda::Result<(cuda::HostPin, u64)> {
+    let engine = Engine::get(device)?;
+    let _ctx = CtxGuard::enter(engine.ctx)?;
+    // SAFETY: this function's own contract.
+    let pin = unsafe { cuda::pin_mapped(ptr, len) }?;
+    // SAFETY: `pin` registered `ptr` just above, in this context. A refusal drops it.
+    let at = unsafe { cuda::mapped_pointer(ptr) }?;
+    Ok((pin, at))
+}
+
+/// `device`'s `CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM`, as its driver reports it.
+pub(super) fn host_pointer_attribute(device: i32) -> cuda::Result<i32> {
+    cuda::attribute(cuda::device_at(device)?, cuda::ATTR_HOST_POINTER_FOR_REGISTERED_MEM)
+}
+
 fn interrupted(copy: usize) -> Error {
     Error { copy, source: io::Error::new(io::ErrorKind::Interrupted, "native read canceled") }
 }

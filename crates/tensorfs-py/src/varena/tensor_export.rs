@@ -121,7 +121,8 @@ unsafe extern "C" fn capsule_delete<T>(capsule: *mut ffi::PyObject) {
     }
 }
 
-/// DLPack's device kind for a CUDA device's memory.
+/// DLPack's device kinds: host memory, and a CUDA device's.
+pub(super) const CPU: i32 = 1;
 pub(super) const CUDA: i32 = 2;
 
 /// A DLPack capsule of a tensor of `shape` at `pointer`, of `kind` on `device`. Its consumer's

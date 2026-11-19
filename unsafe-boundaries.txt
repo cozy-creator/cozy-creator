@@ -35,6 +35,7 @@ crates/tensorfs-py/src/resident_decode.rs
 crates/tensorfs-py/src/store.rs
 crates/tensorfs-py/src/tensors.rs
 crates/tensorfs-py/src/varena/continuation.rs
+crates/tensorfs-py/src/varena/host_cache.rs
 crates/tensorfs-py/src/varena/mod.rs
 crates/tensorfs-py/src/varena/pages.rs
 crates/tensorfs-py/src/varena/phase.rs

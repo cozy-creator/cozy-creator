@@ -35,6 +35,28 @@ pub unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Result<cu
     unsafe { device::register(device, ptr, len) }
 }
 
+/// `[ptr, ptr + len)` registered with this device's context and mapped for it, with the address
+/// the device reads it at: a kernel may read and write it in place.
+///
+/// # Safety
+/// As `register`, and nothing reaches the range through the device once the guard is released.
+#[cfg(feature = "cuda")]
+pub unsafe fn register_mapped(
+    device: i32,
+    ptr: *mut u8,
+    len: usize,
+) -> cuda::Result<(cuda::HostPin, u64)> {
+    // SAFETY: this function's own contract.
+    unsafe { device::register_mapped(device, ptr, len) }
+}
+
+/// What `device` reports for reading registered host memory at the host's own address
+/// (`CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM`): non-zero where it can.
+#[cfg(feature = "cuda")]
+pub fn host_pointer_attribute(device: i32) -> cuda::Result<i32> {
+    device::host_pointer_attribute(device)
+}
+
 /// `len` bytes of object `obj` from `off`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectRange {
