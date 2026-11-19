@@ -9,10 +9,11 @@
 // cl-1182 (Paul, 11-17, after taking qwen-image's tool for qwen-image-2's: "oh my bad, I used qwen image 1 instead of 2.1. We should
 // probably call it 'qwen image 1' to avoid confusion like I just did"): Tools lists Qwen Image 1 and Qwen Image 2.1, and so does a box's tool
 // line and `cozy explain`; Qwen Image 1's box offers 1, 1.7 or 2 MP, 1.7 by default. Kept on paper and dark.
-// Its boxes are made as the page posts them (create drops and drags its own): a video, a Text box and a Qwen Image 2.1 box.
+// Its boxes are made as the page posts them (create drops and drags its own): a picture, a video, a sound, a Text box and a Qwen Image
+// 2.1 box, the five create has made by then, so `<` is offered each kind.
 const { mkdirSync } = require('fs');
 const { join } = require('path');
-const { test, expect, themed, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4 } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
 const { carry, rows } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -58,8 +59,10 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
     await again();
   };
 
-  // The boxes create makes by hand, made as the page posts them: a video, a Text box, and a Qwen Image 2.1 box.
-  const names = { video: 'take', text: 'text', tool: 'image_1' };
+  // The boxes create makes by hand, made as the page posts them: a picture, a video, a sound, a Text box, and a Qwen Image 2.1 box.
+  const names = { picture: 'coast', video: 'take', sound: 'sea', text: 'text', tool: 'image_1' };
+  await project.import(png(150), { name: names.picture, at: { x: 0, y: 480 } });
+  await project.import(wav(), { name: names.sound, at: { x: 420, y: 480 } });
   await project.import(MP4, { name: names.video, at: { x: 0, y: 0 } });
   // As Tools › Text posts one (place.ts): no words yet.
   await project.add({ name: names.text, kind: 'text', fields: { text: '', node_kind: 'text' }, at: { x: 420, y: 0 } });
