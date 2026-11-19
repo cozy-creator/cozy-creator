@@ -7,8 +7,9 @@ The package's own constructors a few channels wide, as the three checkpoints its
   int8 lanes build on): the DiT with its AdaLN as exact tables of the rows the 6 steps read (`TabledTransformer`,
   `model.table_keys`), `vae_encoder` float32, and `vae_decoder` bf16 but for the modules Diffusers keeps float32. The
   decoder paints each latent token's patch one colour (`_flat_patches`), so a picture's blocks read its latents.
-- MiniMax-H3's text encoder, `minimaxai/minimax-h3`'s `text_encoder` component: the release's config (minimax-h3's
-  `model-config.json`, its `cozy_h3` truncation included) at 64 wide, Qwen3-VL's processor under `processor/`.
+- MiniMax-H3's text encoder, a lone `text_encoder` component as the encoder's release is: the release's config
+  (minimax-h3's `model-config.json`, its `cozy_h3` truncation included) at 64 wide, Qwen3-VL's processor under
+  `processor/`. Keyed by its slot's name, so it is published under whichever encoder the package defaults to (se-160).
 - MiniMax-H3-Image-PE as uploaded: a Qwen3.5 VLM's Transformers folder with stand-ins for MiniMax's prompts under
   `prompt/`, in the released shape (the T2I task a `str.format` template).
 
@@ -32,7 +33,6 @@ from cell import Cell, Json, defined, module, packages, save, size
 from tiny import _shared
 
 MODEL = "minimaxai/minimax-h3-image@0.1.1"
-TEXT_ENCODER = "minimaxai/minimax-h3@1.0.0-rc.8"
 EXPANDER = "minimaxai/minimax-h3-image-pe@0.1.0"
 #: The text encoder's width, which the DiT's context embedder reads.
 TEXT_WIDTH = 64
@@ -155,7 +155,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _write(h3, "text_encoder", conditioning, text, 4,
            assets={f"processor/{path.name}": path.read_bytes() for path in sorted(processor.iterdir()) if path.is_file()})
     torch.manual_seed(1)
-    return {MODEL: image.commit().id, TEXT_ENCODER: h3.commit().id, EXPANDER: _expander(root / "expander")}
+    return {MODEL: image.commit().id, "text_encoder": h3.commit().id, EXPANDER: _expander(root / "expander")}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:

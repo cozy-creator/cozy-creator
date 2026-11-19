@@ -32,6 +32,7 @@ mkdir -p "$seed"
 log() { echo "$(date -u +%H:%M:%SZ) isolated Hub: $*"; }
 cozy() { "$cozy_bin" "$@"; }
 J() { jq -e "$@" > /dev/null; }
+. "$here/standins.sh"
 if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
   export E2E_SEED_COHORT=$seed/cohort.json
   cohort_args=(--cohort "$COZY_TEST_SEED_SDK" --origin "$COZY_TEST_HUB_ORIGIN")
@@ -230,19 +231,6 @@ final_model() {
   rm -f "$seed/final-model.safetensors"
 }
 
-# mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
-# published, as an admin mirrors an author's model.
-mirror() {
-  local name=${2//\//-} commit
-  cozy --json model upload "$1" "$2" --lane "$3" --mirror "$5" --on local -y "${@:6}" > "$seed/upload-$name.json" 2>&1 \
-    || { echo "uploading $2 failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; return 1; }
-  commit=$(python3 "$here/model-details.py" "$2" | jq -r '.checkpoints[0].checkpoint // empty')
-  [ -n "$commit" ] || { echo "$2 has no commit after its upload" >&2; return 1; }
-  cozy --json model publish "$2" "$4" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
-    || { echo "publishing $2 $4 failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; return 1; }
-  log "published $2@$4 ($3, $commit)"
-}
-
 # standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family (none
 # when empty) and triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected; $LANE its
 # lane, else f16.
@@ -259,52 +247,6 @@ standin_lora() {
   [ -n "$family" ] || return 0
   cozy --json lora edit "$lora" --family "$family" "$@" > "$seed/edit-${lora##*/}.json" 2>&1 \
     || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; return 1; }
-}
-
-# standin_defaults <package dir>: each slot default of its functions, internal and needs-ruled ones too (its interface as cozy
-# describes it, as release-gate/defaults.sh reads it), of which this Hub holds no release, published as 1 MiB of random weights:
-# production holds each public, and this Hub refuses a package whose default isn't (th-412). Every slot is a model's.
-standin_defaults() {
-  local described=$seed/describe-${1##*/}.json defaults r
-  cozy --json --full run "$1" --describe > "$described" 2> "$described.err" \
-    && defaults=$(jq -r '[.interface.entrypoints[].models[]?.default // empty] | unique | join(" ")' "$described") \
-    || { echo "describing ${1##*/} for its defaults failed: $(tail -c 600 "$described") $(tail -c 300 "$described.err")" >&2; return 1; }
-  for r in $defaults; do
-    [ "$(cozy --json model show "$r" 2> /dev/null | jq -r '.error.kind // empty' 2> /dev/null)" = not_found ] || continue
-    [ -f "$seed/standin.safetensors" ] || random_weights "$seed/standin.safetensors" 1 standin
-    mirror "$seed/standin.safetensors" "${r%@*}" bf16 "${r#*@}" https://github.com/cozy-creator/cozy-creator/tree/master/e2e \
-      --source-format as-is > /dev/null || return 1
-    log "published $r, a stand-in for ${1##*/}'s default"
-  done
-  rm -f "$seed/standin.safetensors"
-}
-
-# random_weights <file> <MiB> [part]: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
-# With `part`, its metadata names it: a config the Runtime constructs from.
-random_weights() {
-  python3 -I - "$1" "$2" "${3:-}" <<'PY'
-import json, os, struct, sys
-path, mib, part = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-FINITE = bytes(b & 0xBF for b in range(256))  # a high byte without its exponent's top bit: no Inf or NaN
-size, tensors = 64 << 20, -(-int(sys.argv[2]) // 64)
-header, offset = {}, 0
-for i in range(tensors):
-    n = min(size, (mib << 20) - offset)
-    header[f"w.{i}"] = {"dtype": "F16", "shape": [n // 2], "data_offsets": [offset, offset + n]}
-    offset += n
-if part:
-    header["__metadata__"] = {"part": part}
-raw = json.dumps(header).encode()
-raw += b" " * (-len(raw) % 8)
-with open(path, "wb") as out:
-    out.write(struct.pack("<Q", len(raw)) + raw)
-    left = offset
-    while left:
-        chunk = bytearray(os.urandom(min(left, 8 << 20)))
-        chunk[1::2] = chunk[1::2].translate(FINITE)
-        out.write(chunk)
-        left -= len(chunk)
-PY
 }
 
 # part_weights <file> <part> <seed> <n>: one F32 tensor `w` of n seeded values, its metadata `part` and `size`: a component's
@@ -426,7 +368,7 @@ seed_packages() {
 }
 
 # CPU's cells run through the installed candidate, signed in as this Hub's admin: each package's tiny models are mirrored
-# here under its default refs and its functions run on the local machine (cpu/real.py).
+# here under its default refs, every other default a stand-in, and its functions run on the local machine (cpu/real.py).
 if [ "$suite" = cpu ]; then
   project=$seed/project
   mkdir -p "$project"
@@ -448,18 +390,20 @@ if [ "$suite" = cpu ]; then
   [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
     || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
   (cd "$project" && cozy --json new --unencrypted . > /dev/null)
-  if [ -n "$dependencies" ]; then
-    # First the tiny builds this shard's cells read, at their releases (run.sh --mirror): a dependency's default one of them
-    # builds is that build, and any other a stand-in (publish), before the dependency publishes (th-412).
-    GITHUB_STEP_SUMMARY='' bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" --mirror > "$seed/cpu-mirror.log" 2>&1 \
-      || { echo "the cpu suite's tiny builds weren't published: $(grep '^FAIL' "$seed/cpu-mirror.log" | head -3)" >&2; exit 1; }
-    sed -n 's/^PASS \([^ ]*\) - mirror\/\([^ ]*\) .*/\2 (\1'"'"'s tiny build)/p' "$seed/cpu-mirror.log" | while read -r line; do log "published $line"; done
-    for dependency in $dependencies; do
-      publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
-    done
-  fi
+  # Models first (th-412), as production holds them: the tiny builds this shard's cells read, at their releases (run.sh
+  # --mirror); then a stand-in for every other default those packages declare (a call resolves each of its function's
+  # defaults, needed or not); then the dependencies that default to them. A package the first pass fails is its cells' to report.
+  GITHUB_STEP_SUMMARY='' bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" --mirror > "$seed/cpu-mirror.log" 2>&1 || true
+  sed -n 's/^PASS \([^ ]*\) - mirror\/\([^ ]*\) .*/\2 (\1'"'"'s tiny build)/p' "$seed/cpu-mirror.log" | while read -r line; do log "published $line"; done
+  grep '^FAIL' "$seed/cpu-mirror.log" | while read -r line; do log "tiny builds: $line"; done || true
+  for p in $(sed -n 's/^PASS \([^ ]*\) - tiny-weights .*/\1/p' "$seed/cpu-mirror.log"); do
+    (cd "$project" && standin_defaults "$packages/$p") || log "stand-ins: $p's other defaults weren't all stood in for"
+  done
+  for dependency in $dependencies; do
+    publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
+  done
   log "the cpu suite starts against its owned Hub with the installed candidate"
-  exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" ${dependencies:+--mirrored}
+  exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project" --mirrored
 fi
 
 if [ "$suite" = imports ]; then

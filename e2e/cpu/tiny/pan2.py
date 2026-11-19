@@ -18,7 +18,7 @@ from cell import Cell, Json, module, save
 from tiny import _shared, qwen3
 from tiny._video import video
 
-REF, REASONER = "ifm/pan2@0.2.0", "qwen/qwen3.5-9b@0.2.0"
+REF = "ifm/pan2@0.2.0"
 #: pan2's `text_encoder` slot default (se-160): the same tiny checkpoint, whose encoder it reads.
 TEXT_ENCODER = "pottokao/moss-image-text-encoder-heretic-pan2@0.1.0"
 _CAPTION = json.dumps({"video_style": "A fixed tabletop shot.", "lighting": "Daylight.",
@@ -83,7 +83,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "text_encoder": ["transformers", "Qwen3_5TextModel"], "vae": ["diffusers", "AutoencoderKLWan"],
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"], "tokenizer": ["transformers", "Qwen2Tokenizer"],
     }))
-    return {REF: out, TEXT_ENCODER: out, REASONER: qwen3.dense(root / "reasoner")}
+    # The reasoner keyed by its slot's name: bound under whichever Qwen3.5 the package defaults to (se-160).
+    return {REF: out, TEXT_ENCODER: out, "reasoner": qwen3.dense(root / "reasoner")}
 
 
 def _instructions(text: str, *keys: str) -> dict[str, Json]:
