@@ -22,15 +22,17 @@ RT=$(wheel_from "$OUT/wheels/runtime" "$(param runtime)") TF=$(wheel_from "$OUT/
 say "wheels: ${RT##*/}, ${TF##*/}"
 COUNT=$(jq length <<<"$MODELS")
 [ "$COUNT" -gt 0 ] || fail "no models"
-REFS=()
+REFS=() MISSING=()
 for i in $(seq 0 $((COUNT - 1))); do
   m=$(jq -r ".[$i].model" <<<"$MODELS") lane=$(jq -r ".[$i].lane" <<<"$MODELS")
-  cozy --json model show "$m" > "$OUT/show-$i.json" 2> "$OUT/show-$i.err" || fail "model show $m: $(tail -c 300 "$OUT/show-$i.err")"
+  if ! cozy --json model show "$m" > "$OUT/show-$i.json" 2> "$OUT/show-$i.err"; then
+    MISSING+=("$m: $(tail -c 200 "$OUT/show-$i.err")"); continue
+  fi
   say "$m: lanes $(jq -r '[.lanes[] | "\(.lane) \(.checkpoint)"] | join(", ")' "$OUT/show-$i.json")"
   ck=$(jq -r --arg l "$lane" 'first(.lanes[] | select(.lane == $l) | .checkpoint) // empty' "$OUT/show-$i.json")
-  [ -n "$ck" ] || fail "$m has no $lane lane"
-  REFS+=("${m%@*}@$ck|$lane")
+  if [ -n "$ck" ]; then REFS+=("${m%@*}@$ck|$lane"); else MISSING+=("$m has no $lane lane"); fi
 done
+[ "${#MISSING[@]}" = 0 ] || fail "$(printf '%s; ' "${MISSING[@]}")"
 quote "$(param need_s 2400)"
 rent
 step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$RT" --tensorfs "$TF" -y || fail "the update"
