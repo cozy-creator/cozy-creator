@@ -1,0 +1,1 @@
+An admit short of disk whose reclaim ended idle executors collects once after it, no longer polling every 200 ms for up to 10 s (`HOLDS_WAIT`): the reclaim returns only once those executors' processes exited (`end_idle_executor`, cl-1076), so their holds are already gone (xs-220, hack audit tensord #2).

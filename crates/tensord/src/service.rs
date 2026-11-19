@@ -665,7 +665,7 @@ impl Service {
             tracing::info!("the disk is short of {}: no executor let go of a model ({} free without one; executors {})",
                 crate::reclaim::size(need), crate::reclaim::size(can), busy.join(", "));
         }
-        // What a busy executor let go leaves the store's holds once it closes them.
+        // What a busy executor let go leaves the store's holds once it closes them. Polled: the Runtime's `release` gets no reply (cl-1308).
         let deadline = std::time::Instant::now() + RELEASE_WAIT;
         while !waits.is_empty() && std::time::Instant::now() < deadline {
             let Ok(room) = store.room() else { break };

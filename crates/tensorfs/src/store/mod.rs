@@ -262,8 +262,9 @@ impl Store {
     }
 
     /// Frees the machine's own garbage before this handle (and its clones) evicts a model:
-    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short; true when it ended processes
-    /// whose holds go as they exit. Set once.
+    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short; true when it let go of anything. It
+    /// returns once what it let go has left this store's holds (a process it ended has exited), so the admit collects once
+    /// after it, never waiting on its own. Set once.
     pub fn on_short(&self, reclaim: impl Fn(u64) -> bool + Send + Sync + 'static) {
         let _ = self.reclaim.set(Reclaim(Box::new(reclaim)));
     }
