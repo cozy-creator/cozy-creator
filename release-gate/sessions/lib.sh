@@ -65,6 +65,19 @@ runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 # handle <ndjson>: what names the run or job its events tell of from any folder: a run's KEY-N (cl-987), a job's id (cl-1028: no
 # project's run, it has no name or number of a person's). A line may lead with the runner's clock.
 handle() { sed 's/^[0-9.]* {/{/' "$1" 2>/dev/null | grep '^{' | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id end' 2>/dev/null | head -1; }
+# unpin: before a pod of this session ends, every run of its project still queued or running is cancelled by name and seen
+# ended (up to 2 min): the CLI following one would take its next attempt to another machine of the account (cl-1316: 44610448156's
+# PRO-7, pinned `--on sisbell`, went on to another session's pod). $OUT/ending tells the session to start no run after it.
+unpin() {
+  touch "$OUT/ending"
+  [ -d "${RUN_PROJECT:-}" ] || return 0
+  ( cd "$RUN_PROJECT" || exit 0
+    live() { timeout 60 cozy run ls --limit 0 --json < /dev/null 2> /dev/null | jq -r '.runs[]? | select(.status == "queued" or .status == "in_progress") | .name // .id'; }
+    for n in $(live); do cozy run cancel "$n" -y < /dev/null >> "$OUT/unpin.txt" 2>&1; say "unpin: cancelled $n"; done
+    tries=0
+    while [ -n "$(live)" ] && [ "$tries" -lt 12 ]; do sleep 10; tries=$((tries + 1)); done
+    [ -z "$(live)" ] || say "unpin: still live: $(live | paste -sd' ')" )
+}
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
   # From here a signal is noted, not obeyed: nothing the session started (the deadline watcher, a helper) or a cancel stops
@@ -74,6 +87,7 @@ finish() {
   for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
   if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
+  [ "${#RIDS[@]}" = 0 ] || unpin
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -243,7 +257,7 @@ step() {
 # prints) is ended once what the Hub bills for them would reach $CAP by the next look and an end: what each has cost so far, the
 # providers' if that's more, and each live one at the price an hour it's locked at. Read from the Hub every GUARD_STEP s, never from a
 # quote. No read for GUARD_BLIND s ends them too. Nothing else in the account is touched: other sessions' pods are in the same listing.
-GUARD_STEP=20 GUARD_END_S=120 GUARD_BLIND=300 GUARD_ALSO=''
+GUARD_STEP=20 GUARD_END_S=240 GUARD_BLIND=300 GUARD_ALSO=''  # the end's margin holds `unpin`'s 2 min
 guard() {
   [ -z "$WD" ] && [ -z "$ON" ] || return 0
   ( blind=0
@@ -265,6 +279,7 @@ guard() {
         why="no read of what the Hub bills for ${blind}s"
       fi
       echo "$(date -u +%T) GUARD: $why, ending $(jq -r 'join(" ")' <<<"$ids")" >> "$R"
+      unpin
       jq -r '.[]' <<<"$ids" | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
       exit 0
     done ) 9>&- & WD=$!

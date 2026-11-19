@@ -324,6 +324,7 @@ for k in "${names[@]}"; do
   # run_s: the cell's run is cancelled once it has run this long, so a stalled cell leaves the pod to the next ones
   bound=$(jq -r '.run_s // empty' <<<"$c") CW=''
   [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || { say "$k: past run_s ${bound}s: cancelling $n"; cd "$RUN_PROJECT" && cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
+  [ ! -e "$OUT/ending" ] || fail "$k: the pod is ending (lib.sh unpin): no run starts on it"
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$CW" ] || kill "$CW" 2> /dev/null
   [ -z "$PW" ] || kill "$PW" 2> /dev/null
