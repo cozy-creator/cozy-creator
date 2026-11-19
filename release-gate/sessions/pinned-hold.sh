@@ -3,7 +3,7 @@
 # session holds (900 s) for `gh run cancel` to kill its step before its trap: pod-session.yaml's always() cleanup must stop the
 # run's follower, cancel the run (machines.sh `unpin_runs`) and end the pod. Nothing here ends anything.
 . "$(dirname "$0")/lib.sh"
-quote 1500
+quote 600
 rent
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd)
 (cd "$RUN_PROJECT" && exec cozy --json run "$W/wait" seconds:=900 --on "$NAME") > "$OUT/held.ndjson" 2> "$OUT/held.err" &
