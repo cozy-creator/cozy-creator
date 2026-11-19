@@ -111,7 +111,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     }
     // What's read of the Hub later is told as `tools.changed`.
     crate::hub::checkpoints::families(api, &hub, &mut tools);
-    Ok(Json(Tools { tools, ratios: tool::STANDARD_RATIOS.map(str::to_owned).to_vec() }))
+    Ok(Json(Tools { tools }))
 }
 
 /// Your changes to the list: yours, not a project's, kept in `state.db`.

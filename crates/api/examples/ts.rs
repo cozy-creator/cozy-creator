@@ -1,6 +1,6 @@
 //! The page's types: the records of Calcifer's API the page reads and sends, and each type they name, once, as
-//! ts-rs declares them. `scripts/web-types.sh` writes them to web/app/src/api/calcifer.ts and checks that the file
-//! holds them. A JSON value is `unknown`: the page reads it as it finds it.
+//! ts-rs declares them, then the constants the page and Calcifer share. `scripts/web-types.sh` writes them to
+//! web/app/src/api/calcifer.ts and checks that the file holds them. A JSON value is `unknown`: the page reads it as it finds it.
 #![deny(unreachable_pub)]
 use std::{
     any::TypeId,
@@ -160,4 +160,7 @@ fn main() {
         if index > 0 { println!(); }
         for line in decl.lines() { println!("{}", line.trim_end()); }
     }
+    let ratios = serde_json::to_string(&tool::STANDARD_RATIOS).expect("strings");
+    println!("\n/** Film and media's own ratios, the more common first: what a shape is said as (`tool::STANDARD_RATIOS`). */");
+    println!("export const STANDARD_RATIOS: readonly string[] = {ratios}");
 }

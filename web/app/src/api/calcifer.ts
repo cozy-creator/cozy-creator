@@ -3799,11 +3799,7 @@ detail: string, };
 /**
  * `GET /v1/tools`: the same for every machine, and told changed on `/v1/events` (`tools.changed`).
  */
-export type Tools = { tools: Array<Tool>,
-/**
- * Film and media's own aspect ratios (`STANDARD_RATIOS`), what a shape is said as: the page's one list of them.
- */
-ratios: Array<string>, };
+export type Tools = { tools: Array<Tool>, };
 
 /**
  * One track's clips as they read now.
@@ -4099,3 +4095,6 @@ export type Warning = { code: string, message: string, };
  * `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
  */
 export type When = { field: string, values?: Array<JsonValue>, };
+
+/** Film and media's own ratios, the more common first: what a shape is said as (`tool::STANDARD_RATIOS`). */
+export const STANDARD_RATIOS: readonly string[] = ["16:9","9:16","1:1","4:3","3:4","4:5","5:4","3:2","2:3","21:9","9:21","2:1","1:2","2.39:1","1.85:1","1.90:1","1.43:1","1.37:1","1.66:1"]

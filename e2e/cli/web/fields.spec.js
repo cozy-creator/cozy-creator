@@ -13,7 +13,7 @@
 const { test, expect, themed, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
-const { mkdirSync, writeFileSync } = require('fs');
+const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 
 /** The one line an open picker tab says once its choices settle (cl-1258 §7): never two, and "Available LoRAs" only over a LoRA to add.
@@ -42,6 +42,8 @@ const DRAW = fixtureTool('draw.py/draw');
 // A slot with no model family (its `weights`, defaulting to BiRefNet): the picker lists its default alone (cl-1258).
 const WEIGHTED = fixtureTool('weighted.py/weighted');
 const RUN_MS = 120_000;
+// The standard ratios as the page holds them: Calcifer's own list, written into its types (`STANDARD_RATIOS`).
+const STANDARD = JSON.parse(readFileSync(join(__dirname, '../../../web/app/src/api/calcifer.ts'), 'utf8').match(/^export const STANDARD_RATIOS: readonly string\[\] = (\[.*\])$/m)?.[1] ?? '[]');
 const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
 
 /** Every control of the open box that isn't one of its tool's fields: each `[data-field]` by its first part, each control outside a group's
@@ -68,9 +70,7 @@ test('fields', async ({ page, project, api, cli, guards }) => {
   // its default's card and is told there is none, and the browser logs each 404 itself.
   guards.allow(/status of 404\b.*\/v1\/models\//);
   const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
-  // The standard ratios, Calcifer's one list of them, as the page names shapes by them.
-  const STANDARD = (await api.get('/v1/tools')).ratios ?? [];
-  expect(STANDARD, 'Calcifer lists the standard ratios with its tools').toHaveLength(19);
+  expect(STANDARD, "the page's standard ratios").toHaveLength(19);
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && (tool.models?.length || tool.model));
   expect(qwen, 'the Hub lists Qwen Image 2 with its models').toBeTruthy();
   await project.import(MP4, { name: 'walk', at: { x: 0, y: 0 } });
