@@ -1,6 +1,6 @@
 import { Texture, VideoSource } from "pixi.js"
 import type { Client } from "../../api/client"
-import { THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
+import { heldPreview, THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
 
 export type MediaSource =
   | { kind: "thumb"; sha256: string }
@@ -26,7 +26,6 @@ const MIB = 1024 * 1024
 const BUDGET_BYTES = 768 * MIB
 const UNPINNED_BYTES = 64 * MIB
 const LATENT_MS = 8000
-const PREVIEW_TRIES = 4
 
 interface Entry {
   key: string
@@ -98,8 +97,6 @@ export class Media {
   private landed = new Set<Entry>()
   private landing?: ReturnType<typeof setTimeout>
   private soon?: ReturnType<typeof setTimeout>
-  /** A video preview that failed every try, by digest, until when it isn't asked for again. */
-  private unpreviewable = new Map<string, number>()
 
   constructor(private o: { client: Client; project: string; changed(): void }) {}
 
@@ -157,11 +154,12 @@ export class Media {
     }
   }
 
-  /** A video's hover preview, silent and looping, made by Calcifer as its file landed: the texture appears with its first decoded frame. */
+  /** A video's hover preview, silent and looping, made by Calcifer as its file landed: the texture appears with its first decoded frame. One
+   *  asked for before it's made waits for it (`heldPreview`). */
   video(sha256: string, onChange: () => void): VideoHandle {
     const element = document.createElement("video")
     Object.assign(element, { muted: true, loop: true, playsInline: true, disablePictureInPicture: true, preload: "auto" })
-    let texture: Texture | undefined, frame = 0, tries = 0, stopped = false, retry: ReturnType<typeof setTimeout> | undefined
+    let texture: Texture | undefined, frame = 0, stopped = false
     // Its bytes in the page's memory while it's held: looping, it holds no connection (cl-1215).
     let bytes: { release(): void } | undefined
     // Each decoded frame where the browser says so (requestVideoFrameCallback), else each animation frame while it's held.
@@ -178,27 +176,23 @@ export class Media {
       this.tell(onChange)
       next()
     }
-    const load = async () => {
-      if (stopped || (this.unpreviewable.get(sha256) ?? 0) > Date.now()) return
-      const path = this.o.client.preview(this.o.project, sha256)
-      const held = await this.o.client.transport.media(tries ? `${path}&try=${tries}` : path).catch(() => undefined)
-      if (stopped || !held) return held?.release()
+    const asking = heldPreview(this.o.client.transport, this.o.project, sha256, this.o.client.preview(this.o.project, sha256), (held) => {
       bytes?.release()
       bytes = held
       element.src = held.url
       next()
       if (this.visible) element.play().catch(() => {})
-    }
+    })
     element.addEventListener("error", () => {
       if (stopped || element.error?.code === MediaError.MEDIA_ERR_NETWORK) return
-      // Made on its first ask, or its file still arriving: asked again while it's held, then not for a while.
-      if (++tries < PREVIEW_TRIES) retry = setTimeout(() => void load(), 1000 * 2 ** tries)
-      else this.unpreviewable.set(sha256, Date.now() + 30_000)
+      bytes?.release()
+      bytes = undefined
+      asking.failed()
     })
     const control = {
       stop: () => {
         stopped = true
-        clearTimeout(retry)
+        asking.stop()
         if (framed) element.cancelVideoFrameCallback(frame)
         else cancelAnimationFrame(frame)
         element.pause()
@@ -214,7 +208,6 @@ export class Media {
       resume: () => { if (element.src) element.play().catch(() => {}) },
     }
     this.videos.add(control)
-    void load()
     return { get texture() { return texture }, release: control.stop }
   }
 
