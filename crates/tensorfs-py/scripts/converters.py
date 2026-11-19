@@ -1523,7 +1523,7 @@ def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
         loaded.append((module, dict(state)))
 
     with torch.device("meta"):
-        unet = UNet2DConditionModel.from_config(unet_config)
+        unet = UNet2DConditionModel.from_config(unet_config)  # type: ignore[no-untyped-call]  # diffusers' from_config is untyped
     torch.nn.Module.load_state_dict = capture  # type: ignore[method-assign,assignment]  # the loads are what this reads
     try:
         projection = unet._convert_ip_adapter_image_proj_to_diffusers(parts["image_proj"], low_cpu_mem_usage=False)
@@ -1549,7 +1549,7 @@ def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
     site_rows: list[TableRow] = [(owner[v.untyped_storage().data_ptr()].removeprefix("ip_adapter."),)
                                  for _, state in sites for v in state.values()]
     assert sorted(site_rows) == sorted((k,) for k in parts["ip_adapter"]), "every ip_adapter weight is one processor's"
-    p = projection
+    p: Any = projection  # type: ignore[explicit-any]  # diffusers' modules type their attributes Tensor | Module
     config = {"_class_name": type(p).__name__, "embed_dims": p.proj_in.in_features, "output_dims": p.proj_out.out_features,
               "hidden_dims": p.latents.shape[2], "depth": len(p.layers), "dim_head": 64, "heads": p.layers[0].attn.heads,
               "num_queries": p.latents.shape[1], "ffn_ratio": p.layers[0].ff[1].net[0].proj.out_features // p.latents.shape[2]}
