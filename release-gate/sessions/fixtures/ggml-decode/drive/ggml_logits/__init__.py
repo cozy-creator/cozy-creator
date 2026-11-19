@@ -5,7 +5,8 @@
   MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
 - `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls.
 - `opening_kernel`: cr-342's cell through the Runtime's bench (cozy-runtime#2322), in this environment, which holds
-  the Transformers it builds its small model with."""
+  the Transformers it builds its small model with.
+- `first_tokens`: a lane's first 32 greedy tokens, a machine's first request on it (cozy-runtime#2344)."""
 
 import json
 import time
@@ -132,6 +133,15 @@ def _head(net: torch.nn.Module) -> dict[str, object]:
         return {"module": type(out).__name__, "rows": int(out.out_features), "bytes": held}
     except Exception as e:  # noqa: BLE001  # a head of another shape tells what it is, and the timing goes on
         return {"unread": f"{type(e).__name__}: {e}"[:200]}
+
+
+@app.entrypoint(accelerator=True)
+def first_tokens(ctx: Context, model: VisionLM) -> Agreement:
+    """`PROMPT`'s first 32 greedy tokens: a fresh machine's first request on a lane (cozy-runtime#2344's cell)."""
+    net = model.pipe.components["model"]
+    ids = torch.tensor([model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]])
+    _, made = _timed(net, ids, 32)
+    return Agreement(json.dumps({"tokens": made}))
 
 
 @app.entrypoint(accelerator=True)

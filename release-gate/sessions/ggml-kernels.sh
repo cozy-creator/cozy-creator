@@ -12,7 +12,7 @@
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
 # (3600); built (a pod-session run that built llama.cpp on a runner: below); skus and quoted (preflight.sh pick_offer); the
 # ride-along's decode, make, model and tree; opening_red and opening_green (Runtime wheel sources for cr-342's cell); red,
-# red_rule and red_models (a PR's cell without its fix: below).
+# red_rule and red_models (a PR's cell without its fix: below); first and first_red (cozy-runtime#2344's cell: below).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -23,6 +23,9 @@ TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$T
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 RED=$(param red '')
 [ -z "$RED" ] || { RED_WHEEL=$(wheel_from "$OUT/wheels/red" "$RED") && [ -n "$RED_WHEEL" ]; } || fail "red: no Runtime wheel from $RED"
+FIRST=$(param first '')
+[ -z "$FIRST" ] || { FIRST_RED=$(wheel_from "$OUT/wheels/first-red" "$(param first_red '')") && [ -n "$FIRST_RED" ]; } ||
+  fail "first needs first_red, a Runtime wheel source"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · $MODELS"
 # The ride-along (optional): `decode` lanes (label=org/name@sha256:…) and `make` lanes (comma-separated recipe lanes of the
 # packages checkout `tree`'s qwen3, each quantized on the pod from `model` or, written `lane=org/name@sha256:…`, from that
@@ -74,7 +77,7 @@ DFIX=$HERE/fixtures/ggml-decode
 . "$DFIX/preflight.sh"
 drive_check "$FIX/drive" ggml_drive
 drive_lock "$FIX/drive"
-if [ -n "$DECODE$MAKE" ]; then
+if [ -n "$DECODE$MAKE$FIRST" ]; then
   for entry in ${MAKE//,/ }; do
     from=$MODEL; [[ $entry != *=* ]] || from=${entry#*=}
     [[ $from == */*@sha256:* ]] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] ||
@@ -112,9 +115,54 @@ took=$( (cd "$RUN_PROJECT" && cozy --json --full run watch "$(runno runtime-vers
 want=${RUNTIME##*/cozy_runtime-}; want=${want%%-cp*}
 [ "$took" = "$want" ] || fail "the drive's environment imports cozy-runtime ${took:-nothing}, not the candidate $want"
 say "the drive's environment imports cozy-runtime $took: the candidate"
-if [ -n "$DECODE$MAKE" ]; then
+if [ -n "$DECODE$MAKE$FIRST" ]; then
   pod_install stage-decode "$DFIX/drive"
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
+fi
+
+# cozy-runtime#2344's cell, before anything else decodes on the pod: a machine's first request on a ggml lane compiles
+# nothing. The escaped bug: ggml's token-table lookup JIT-compiled `_blocks_kernel` inside a fresh machine's first
+# request (44599741328). `first` (label=org/name@sha256:…) is pulled; `first_red` (the Runtime before the decode cores'
+# set) goes on and its first request must record a `triton compile:` row in request_path.blocking (it reproduces);
+# then the candidate's first request, and once the pod's log holds the set's verdict a second, which launches through
+# it: neither may record a compile, and each makes red's tokens.
+if [ -n "$FIRST" ]; then
+  ref=${FIRST#*=}
+  step pull-first model install "$ref" --on "$NAME" || fail "pull $ref"
+  first() {
+    if ! step "first-$1" run "$DFIX/drive/first_tokens" --model "model=$ref" --on "$NAME"; then
+      FIRST_BAD=1; say "FAILED: first request ($1): $(grep -m1 -E '^Run .* failed|^error' "$OUT/first-$1.txt" | cut -c1-300)"
+      return 1
+    fi
+    on_candidates "first-$1"
+    n=$(runno "first-$1"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/first-$1.json" 2> /dev/null
+    jq -r '[.. | objects | select(.name? == "request_path.blocking") | "\(.value) \(.fields.ms // "")ms"] | join("; ")' \
+      "$OUT/first-$1.json" > "$OUT/first-$1.blocking"
+    jq -r '.result.detail // "{}"' "$OUT/first-$1.json" | jq -c '.tokens' > "$OUT/first-$1.tokens"
+    say "first request ($1): blocking [$(cut -c1-300 "$OUT/first-$1.blocking")] · tokens $(cut -c1-80 "$OUT/first-$1.tokens")"
+  }
+  step first-runtime-red machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$FIRST_RED" -y || fail "the pod's Runtime (first_red)"
+  if first red && ! grep -q 'triton compile:' "$OUT/first-red.blocking"; then
+    FIRST_BAD=1; say "FAILED: first request (red): no compile recorded, so the cell reproduces nothing"
+  fi
+  step first-candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate back on the pod"
+  for arm in candidate served; do
+    if [ "$arm" = served ]; then
+      # The set's verdict, in the executors' own stderr logs on the pod (`kernel_ready.verified`'s line).
+      verdict=''
+      for _ in $(seq 20); do
+        verdict=$(there "grep -h -m1 -E 'cozy-decode-cores (verified|refused)' \$(find / -xdev -name stderr.log -path '*executors*' 2> /dev/null) 2> /dev/null | head -1" 120 < /dev/null) &&
+          [ -n "$verdict" ] && break
+        sleep 30
+      done
+      say "the decode cores' set: ${verdict:-no verdict in the executor logs in 10 min}"
+      [[ $verdict == *verified* ]] || { FIRST_BAD=1; continue; }
+    fi
+    first "$arm" || continue
+    ! grep -q 'triton compile:' "$OUT/first-$arm.blocking" || { FIRST_BAD=1; say "FAILED: first request ($arm) compiled in the request"; }
+    cmp -s "$OUT/first-$arm.tokens" "$OUT/first-red.tokens" || { FIRST_BAD=1; say "FAILED: first request ($arm): tokens unlike red's"; }
+  done
+  [ -n "${FIRST_BAD:-}" ] || say "PASS: cozy-runtime#2344's cell: red compiled in its first request, the candidate compiled nothing, same tokens"
 fi
 
 # quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
@@ -289,11 +337,13 @@ PY
   [ -z "${RED_BAD:-}" ] || say "FAILED: red: its cell reproduced nothing, or its bench failed (lines above)"
 fi
 [ -z "${OPEN_BAD:-}" ] || say "FAILED: cr-342's opening_kernel cell (lines above)"
-[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}${RED_BAD:-}" ] || fail "a ride-along lane, batch-shapes, opening_kernel or red failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
+[ -z "${FIRST_BAD:-}" ] || say "FAILED: cozy-runtime#2344's first-request cell (lines above)"
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}${RED_BAD:-}${FIRST_BAD:-}" ] || fail "a ride-along lane, batch-shapes, opening_kernel, red or the first request failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
 [ -z "${ORDER_BAD:-}" ] || fail "batch-shapes: a raced read on the default stream unlike its settled one"
 [ -z "${OPEN_BAD:-}" ] || fail "cr-342's opening_kernel cell"
 [ -z "${RED_BAD:-}" ] || fail "red: its cell reproduced nothing, or its bench failed"
+[ -z "${FIRST_BAD:-}" ] || fail "cozy-runtime#2344's first-request cell"
 say "PASS: llama.cpp's kernels in our Runtime at stock llama.cpp's speed on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
