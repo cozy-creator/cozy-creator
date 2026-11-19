@@ -14,6 +14,9 @@ layer, a fused gate and up split in two. Each row is quantized alone, so ours co
 `ssm_out` is `out_proj` with its columns reordered, which moves elements between blocks: ours is checked to be ggml-ref/1
 of `out_proj` as stored, and ggml-ref/1 of those columns reordered against llama's. A tensor that differs is also judged
 against ggml-ref/1 of the stored source read again here (`ours_is_ref`, `llama_is_ref`), naming the side that left it.
+Each lane's tensors are also decoded, ours and llama's, by llama.cpp's own gguf-py (`gguf.quants.dequantize`), and
+must be equal everywhere (`decoded_*`). A `told:<label>` lane (an earlier write, `also`) is judged on
+its decoded values alone; its bytes are told.
 One JSON line per check; exit 1 on any difference.
 """
 
@@ -28,7 +31,8 @@ from collections.abc import Iterator
 
 import numpy as np
 import tensorfs
-from gguf import GGUFReader
+from gguf import GGMLQuantizationType, GGUFReader
+from gguf.quants import dequantize
 from tensorfs import raw
 
 TYPES = {"Q8_0": ("q8_0", 32), "Q4_K": ("q4_k", 256), "Q5_K": ("q5_k", 256), "Q6_K": ("q6_k", 256),
@@ -170,6 +174,10 @@ def main() -> int:
             out.append(encoded.parts["blocks"].tobytes())
         return b"".join(out)
 
+    def decoded(name: str, data: bytes) -> np.ndarray:
+        """Block bytes' values as llama.cpp's own gguf-py decodes them (`gguf.quants.dequantize`)."""
+        return dequantize(np.frombuffer(data, np.uint8), GGMLQuantizationType[name.upper()]).ravel()
+
     def differs(tensor: str, name: str, got: bytes, want: bytes) -> dict[str, object] | None:
         if got == want:
             return None
@@ -180,6 +188,8 @@ def main() -> int:
 
     for spec in specs:
         label, rest = spec.split("=", 1)
+        told = label.startswith("told:")
+        label = label.removeprefix("told:")
         pure = label.startswith("pure:")
         if pure:
             path, tensors, ref_ = rest, None, None
@@ -190,6 +200,7 @@ def main() -> int:
         seen_keys: set[str] = set()
         counts: dict[str, int] = {}
         bad: list[dict[str, object]] = []
+        compared, unequal = 0, []  # decoded
         for t in gguf.tensors:
             kind = t.tensor_type.name
             if kind in FLOAT:
@@ -224,6 +235,9 @@ def main() -> int:
                         bad.append({"tensor": t.name, "key": pieces[0][0], "ours": "not ggml-ref/1 of the source"})
                         continue
                     got = ref(name, block, values(pieces, True))
+                compared += 1
+                if not np.array_equal(decoded(name, got), decoded(name, want)):
+                    unequal.append(t.name)
                 if found := differs(t.name, name, got, want):
                     # Which side left the source, for the first few that differ (a re-encode of a 285 MB expert stack
                     # takes minutes): ggml-ref/1 of the source as stored here, read now, against both. Ours alone off it
@@ -243,10 +257,11 @@ def main() -> int:
                                   "identical": sum(counts.values()) - len(bad), "differ": bad[:20]}  # fmt: skip
         if tensors is not None:
             encoded = {k for k, meta in tensors.items() if meta.encoding is not None}
-            row |= {"ref": ref_, "ours_not_llamas": sorted(encoded - seen_keys)[:20]}
-            failed += bool(row["ours_not_llamas"])
+            row |= {"ref": ref_, "ours_not_llamas": sorted(encoded - seen_keys)[:20], "told": told,
+                    "decoded_compared": compared, "decoded_equal": compared - len(unequal), "decoded_differ": unequal[:20]}  # fmt: skip
+            failed += bool(row["ours_not_llamas"]) or bool(unequal)
         say(**row)
-        failed += bool(bad) or not counts
+        failed += (bool(bad) and not told) or not counts
     return 1 if failed else 0
 
 

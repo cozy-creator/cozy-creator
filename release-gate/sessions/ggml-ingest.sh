@@ -122,13 +122,13 @@ judge() {  # judge <check>: compare.py on it, its lines into the report
   case $1 in
     source) ;;
     pure:*) arg="$1=/w/pure-${1#pure:}.gguf" ;;
-    *) arg="$1=${REF[$1]}:/w/${TYPE[$1]:-${1^^}}.gguf" ;;
+    *) arg="${TYPE[$1]:+told:}$1=${REF[$1]}:/w/${TYPE[$1]:-${1^^}}.gguf" ;;  # an `also` lane: judged on its decoded values
   esac
   there "PYTHONPATH=/w/src/gguf-py /w/py/bin/python /w/compare.py /w/hf /var/lib/tensorfs $MODEL $arg" 7200 \
     < /dev/null > "$OUT/compare-${1/:/-}.jsonl" 2> "$OUT/compare-${1/:/-}.err"; code=$?
   sed 's/^/    /' "$OUT/compare-${1/:/-}.jsonl" | tee -a "$OUT/compare.jsonl" >> "$R"
   [ "$code" = 0 ] || { tail -c 1500 "$OUT/compare-${1/:/-}.err" | tee -a "$R"; say "FAILED: $1 differs from llama.cpp's"; BAD+=("$1"); }
-  [ "$code" != 0 ] || say "$1: byte for byte llama.cpp's"
+  [ "$code" != 0 ] || say "$1: ${TYPE[$1]:+decoded equal to llama.cpp's (bytes told above)}${TYPE[$1]:-byte for byte llama.cpp's}"
 }
 installed=''
 while [ "${#checks[@]}" -gt 0 ]; do
