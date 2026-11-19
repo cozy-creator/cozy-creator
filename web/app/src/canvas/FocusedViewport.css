@@ -90,9 +90,6 @@
   position: relative;
 }
 .card.focus-card {
-  position: relative !important;
-  inset: auto !important;
-  width: 100% !important;
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
@@ -105,9 +102,6 @@
   /* -source, not the shorthand's none: the build's minifier empties that, and the rule is dropped. */
   border-image-source: none;
   box-shadow: none;
-  transform: none !important;
-  translate: none !important;
-  scale: 1 !important;
   --here: 1;
 }
 .focus-card > .head,
@@ -297,7 +291,7 @@ body:has(.focus-viewport) .zoom {
   position: relative;
   left: auto;
   top: auto;
-  width: 100% !important;
+  width: 100%;
   /* As tall as its row, which fits its fields up to the footer's room; past that its fields scroll. */
   align-self: stretch;
   min-height: 0;
