@@ -10,11 +10,12 @@ h3_group h3-u2-short 100 prompt="<$NAME> $MOTION" seed:=$((R + 353)) duration_s:
 h3_group h3-u2-warm 100 prompt="<$NAME> $SCENE" seed:=$((R + 355)) duration_s:=5
 # A model the caller chose, fetched from the Hub during the call: its run carries a capability, so GPU 0's invoke holds a
 # token, and the group's `run` hands it to GPU 1 (cl-935: runs 47352, 47366 and 47432 failed group_broken, credential_at_seam).
-# cr-348 C, a degree key's second group call: h3-u2-short's request on another seed has its keys (each sharded stage's first
-# sharded call's tensor shapes), and each stage runs at the degree its machine's record gives: one GPU where an earlier run of
-# the key recorded its time at two (warm), else two again (a time measured cold, a kernel building or weights read from disk,
-# is not recorded). After h3-u2-warm, so a key it shares makes this its third call and leaves h3-u2-warm at two GPUs.
-h3_group h3-u2-again 100 prompt="<$NAME> $MOTION" seed:=$((R + 362)) duration_s:=5
+# cr-348 C, a degree key's second group call: h3-u2-short's request, a word longer and on another seed, has its keys (each
+# sharded stage's first sharded call: its video's exact shape, its other tensors, H3's packed text rows among them, to the
+# next power of two), and each stage runs at the degree its machine's record gives: two until a warm time at two is recorded
+# (a time measured cold, a kernel building or weights read from disk, is not), then one GPU until one is, then the faster.
+# After h3-u2-warm, so a key it shares makes this its third call and leaves h3-u2-warm at two GPUs.
+h3_group h3-u2-again 100 prompt="<$NAME> $MOTION Slowly." seed:=$((R + 362)) duration_s:=5
 h3_again() {
   [ -f h3-u2-short.json ] && [ -f h3-u2-again.json ] || return 0
   local got records=(h3-u2-short.json)
