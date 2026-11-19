@@ -592,8 +592,13 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
             .map(|(name, held)| (name.clone(), held.checkpoint.clone(), held.bytes, held.header.clone()))
             .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (String::new(), held.id.clone(), held.bytes, held.header.clone()))),
         (None, release) => {
+            // A named release as its machine resolves it, its newest fix (cl-1281: H3 edit's `style_transfer@0.1.0` was quoted as
+            // 0.1.0, which no machine pulls, while its machine held the 0.1.1 it resolves to, 692,932,748 B to fetch for none).
             let release = match release {
-                Some(version) => card.releases.iter().find(|held| &held.version == version),
+                Some(version) => {
+                    let version = crate::hub::checkpoints::newest_fix(version, &card);
+                    card.releases.iter().find(|held| held.version == version)
+                }
                 None => api::release::newest_listed(&card.releases, |held| &held.version),
             };
             release

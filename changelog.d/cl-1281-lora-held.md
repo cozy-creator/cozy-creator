@@ -1,0 +1,1 @@
+A quote names a slot's model at the release its machine resolves it to, its newest fix (`alissonerdx/minimax-h3-style-transfer@0.1.0` is 0.1.1), so a LoRA the machine already holds is no longer counted as still to download, and placement no longer prefers a machine that lacks it.

@@ -215,8 +215,8 @@ fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Opt
 }
 
 /// The release a named one resolves to: the newest public one of its series after it, as TensorD resolves it
-/// (`api::release::newest_fix`).
-fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
+/// (`api::release::newest_fix`). What a quote reads of a slot's model too (`project::fit`), so it names what its machine holds.
+pub(crate) fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
     let public = card.releases.iter().filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public).map(|held| held.version.as_str());
     api::release::newest_fix(release, public).unwrap_or(release)
 }
