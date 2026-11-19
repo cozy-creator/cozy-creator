@@ -29,6 +29,11 @@ use crate::format::ObjectRef;
 /// Bytes per read or write call into the volume: each call is progress.
 pub(crate) const STEP: usize = 8 << 20;
 
+/// Objects looked at in one step of `VolumeOrigin::holds`, how long a step may take, and the most `VolumeOrigin::document` reads.
+const LOOK: usize = 256;
+const STALL: Duration = Duration::from_secs(30);
+const DOCUMENT: u64 = 64 << 20;
+
 /// A directory in the static-origin layout, read before the origin and filled from fetches.
 #[derive(Clone)]
 pub struct VolumeOrigin(Arc<Inner>);
@@ -78,8 +83,40 @@ impl VolumeOrigin {
     }
 
     /// No abandoned operation is still out.
-    pub(crate) fn answering(&self) -> bool {
+    pub fn answering(&self) -> bool {
         self.0.abandoned.load(Ordering::Acquire) == 0
+    }
+
+    /// Which of `objects` it holds, by each one's file and its length: a look for an estimate, which trusts no byte of it. A
+    /// batch at a time, each given up on as a read is; None once one was.
+    pub async fn holds(&self, objects: &[ObjectRef]) -> Option<Vec<bool>> {
+        let mut held = Vec::with_capacity(objects.len());
+        for batch in objects.chunks(LOOK) {
+            if !self.answering() {
+                return None;
+            }
+            let (volume, batch) = (self.clone(), batch.to_vec());
+            let look = move || -> Vec<bool> {
+                batch.iter().map(|object| fs::symlink_metadata(volume.blob(object)).is_ok_and(|m| m.is_file() && m.len() == object.length)).collect()
+            };
+            held.extend(blocking(Some(self), look, tokio::time::sleep(STALL)).await?);
+        }
+        Some(held)
+    }
+
+    /// The object `sha256` names, a tree or a header, when it holds it whole and it hashes to its name: read for an estimate
+    /// (cl-1282). None once the read was given up on.
+    pub async fn document(&self, sha256: &str) -> Option<Option<Vec<u8>>> {
+        if !self.answering() {
+            return None;
+        }
+        let (path, sha256) = (self.blob(&ObjectRef { sha256: sha256.to_owned(), length: 0 }), sha256.to_owned());
+        let read = move || {
+            let mut bytes = vec![];
+            fs::File::open(&path).ok()?.take(DOCUMENT + 1).read_to_end(&mut bytes).ok()?;
+            (bytes.len() as u64 <= DOCUMENT && ObjectRef::of(&bytes).sha256 == sha256).then_some(bytes)
+        };
+        blocking(Some(self), read, tokio::time::sleep(STALL)).await
     }
 
     /// Its last use is now.

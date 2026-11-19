@@ -553,6 +553,7 @@ components:
         tree: {type: string, description: '`sha256:<hex>` of its tree, as a Hub card names the checkpoint.'}
         bytes: {type: integer, format: int64, minimum: 0, description: Its closure's bytes.}
         held_bytes: {type: integer, format: int64, minimum: 0, description: Of them, those held.}
+        drive_bytes: {type: integer, format: int64, minimum: 0, description: "Of those not held, the ones its machine's NFS drive holds (cl-1282)."}
     CheckpointRef:
       type: object
       description: 'A weights output''s commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.'
@@ -1302,6 +1303,7 @@ components:
         gpu_waits: {type: boolean, description: "It runs on its CPU alone while its GPU work waits to begin: all its work is still ahead of it."}
         models: {type: array, items: {type: string}, description: "The repositories it waits to download, its calls' included."}
         bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come, its calls' included."}
+        drive_left: {type: integer, format: int64, minimum: 0, description: "Of them, those its machine's NFS drive holds (cl-1282)."}
         own: {type: boolean, description: "The caller sent it (cl-1193)."}
         client: {type: string, description: "The computer that sent it, as it named itself (the `cozy-client` header); absent: unnamed since this machine started (cl-1193)."}
         stage: {type: string, description: "Its latest progress' stage; absent for an encrypted project's run."}
@@ -1417,6 +1419,7 @@ components:
           items: {$ref: '#/components/schemas/Resident'}
           description: "Idle executors' loaded models: a job of them loads nothing."
         link_bytes_per_s: {type: number, description: "Weights' arrival, bytes a second, once 1 GiB came; 0 before."}
+        drive_bytes_per_s: {type: number, description: "What its downloads read off its datacenter's NFS drive, bytes a second, once 1 GiB came; 0 before; absent: it has no drive (cl-1282)."}
         serving_gpus: {type: integer, format: int32, minimum: 0, description: The most GPUs side by side in service.}
         nvlink: {type: boolean, description: Its GPUs talk over NVLink.}
         ahead:

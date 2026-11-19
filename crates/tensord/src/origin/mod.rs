@@ -7,17 +7,18 @@
 mod hub;
 
 use std::{
+    collections::HashMap,
     future::Future,
     io,
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use tensorfs::{
     err::{refuse, Code, Refusal, Result},
     fetch::{Client, Config, Fetcher, Landed, Origin, Progress, Pulled, SourcePolicy, VolumeOrigin, Want},
-    format::ObjectRef,
+    format::{Header, ObjectRef, Tree},
     store::Store,
 };
 
@@ -112,6 +113,33 @@ pub(crate) struct Machine {
     runtime: Arc<tokio::runtime::Runtime>,
     volume: Option<VolumeOrigin>,
     fetchers: Mutex<Vec<(Key, Arc<Fetcher>)>>,
+    near: Mutex<Near>,
+}
+
+/// What the datacenter volume holds of what was asked (cl-1282): objects by sha256 (`Machine::near`) and headers by id
+/// (`Machine::header`), None while being looked at. Each as when first looked at since the store last evicted: what the store
+/// evicts may be on the volume by now, written there from here.
+#[derive(Default)]
+struct Near {
+    since: Option<SystemTime>,
+    objects: HashMap<String, Option<bool>>,
+    headers: HashMap<String, Option<Option<Arc<(ObjectRef, Header)>>>>,
+    asked: (Vec<ObjectRef>, Vec<String>),
+    looking: bool,
+}
+
+/// Checkpoint `id`'s header as `volume` holds it: `id` names it, or a tree that names it. None: given up on; Some(None): not there.
+async fn drive_header(volume: &VolumeOrigin, id: &str) -> Option<Option<Arc<(ObjectRef, Header)>>> {
+    let Some(bytes) = volume.document(id.strip_prefix("sha256:").unwrap_or(id)).await? else { return Some(None) };
+    let named = Tree::from_json(&bytes).ok().and_then(|tree| tree.header().ok().map(|(_, header)| header.clone()));
+    let (header, bytes) = match named {
+        Some(header) => match volume.document(&header.sha256).await? {
+            Some(bytes) => (header, bytes),
+            None => return Some(None),
+        },
+        None => (ObjectRef::of(&bytes), bytes),
+    };
+    Some(Header::from_cbor(&bytes).ok().map(|parsed| Arc::new((header, parsed))))
 }
 
 impl Machine {
@@ -119,7 +147,7 @@ impl Machine {
     pub(crate) fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
         let runtime = tensorfs::fetch::runtime().map_err(io::Error::other)?;
         let volume = volume.and_then(|path| VolumeOrigin::mounted(path, VOLUME_TTL));
-        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default() }))
+        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default(), near: Mutex::default() }))
     }
 
     pub(crate) fn store(&self) -> &Arc<Store> {
@@ -156,6 +184,98 @@ impl Machine {
             (0, Duration::ZERO),
             |(bytes, time), stats| (bytes + stats.received, time + stats.receiving),
         )
+    }
+
+    /// The bytes every fetcher read off the datacenter volume into the store, and the time any of them was coming. None: no volume.
+    pub(crate) fn volume_read(&self) -> Option<(u64, Duration)> {
+        self.volume.as_ref()?;
+        Some(self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
+            (0, Duration::ZERO),
+            |(bytes, time), stats| (bytes + stats.volume_read, time + stats.volume_reading),
+        ))
+    }
+
+    /// Of `absent`, objects the store lacks, the bytes the datacenter volume holds (cl-1282): a fetch reads them there, not from
+    /// their origin. Answered from what it has looked at; the rest is looked at behind this answer (`look`). Nothing waits on the
+    /// volume here.
+    pub(crate) fn near(self: &Arc<Self>, absent: &[ObjectRef]) -> u64 {
+        let Some(mut near) = self.looked() else { return 0 };
+        let bytes = absent.iter().filter(|object| near.objects.get(&object.sha256) == Some(&Some(true))).map(|object| object.length).sum();
+        for object in absent {
+            if !near.objects.contains_key(&object.sha256) {
+                near.objects.insert(object.sha256.clone(), None);
+                near.asked.0.push(object.clone());
+            }
+        }
+        self.look(near);
+        bytes
+    }
+
+    /// Checkpoint `id`'s header, gone from the store, as the datacenter volume holds it (cl-1282): what the volume holds of a
+    /// checkpoint a function read here can then be said after a restart. Looked at behind, as `near`.
+    pub(crate) fn header(self: &Arc<Self>, id: &str) -> Option<Arc<(ObjectRef, Header)>> {
+        let mut near = self.looked()?;
+        let known = match near.headers.get(id) {
+            Some(known) => known.clone().flatten(),
+            None => {
+                near.headers.insert(id.to_owned(), None);
+                near.asked.1.push(id.to_owned());
+                None
+            }
+        };
+        self.look(near);
+        known
+    }
+
+    /// What the volume was seen to hold, none of it from before the store last evicted. None: no volume answers.
+    fn looked(&self) -> Option<std::sync::MutexGuard<'_, Near>> {
+        self.volume.as_ref().filter(|volume| volume.answering())?;
+        let mut near = self.near.lock().unwrap();
+        let evicted = self.store.evicted_at();
+        if near.since != evicted {
+            *near = Near { since: evicted, looking: near.looking, ..Near::default() };
+        }
+        Some(near)
+    }
+
+    /// What was asked, looked at on the volume until nothing is, then Status told once. A look given up on forgets what it asked.
+    fn look(self: &Arc<Self>, mut near: std::sync::MutexGuard<'_, Near>) {
+        let Some(volume) = self.volume.clone() else { return };
+        if near.looking || (near.asked.0.is_empty() && near.asked.1.is_empty()) {
+            return;
+        }
+        near.looking = true;
+        drop(near);
+        let machine = self.clone();
+        self.runtime.spawn(async move {
+            loop {
+                let (objects, ids) = {
+                    let mut near = machine.near.lock().unwrap();
+                    if near.asked.0.is_empty() && near.asked.1.is_empty() {
+                        near.looking = false;
+                        break;
+                    }
+                    std::mem::take(&mut near.asked)
+                };
+                let held = volume.holds(&objects).await;
+                let mut headers = vec![];
+                for id in ids.iter().filter(|_| held.is_some()) {
+                    headers.push(drive_header(&volume, id).await);
+                }
+                let mut near = machine.near.lock().unwrap();
+                let gone = held.is_none() || headers.len() < ids.len() || headers.iter().any(Option::is_none);
+                near.objects.extend(objects.into_iter().map(|object| object.sha256).zip(held.unwrap_or_default().into_iter().map(Some)));
+                near.headers.extend(ids.into_iter().zip(headers).filter_map(|(id, header)| Some((id, Some(header?)))));
+                if gone {
+                    near.objects.retain(|_, held| held.is_some());
+                    near.headers.retain(|_, header| header.is_some());
+                    (near.asked, near.looking) = (Default::default(), false);
+                    break;
+                }
+            }
+            crate::held_models::changed();
+            crate::activity::status_changed();
+        });
     }
 
     fn of(&self, remote: &Remote) -> Result<Arc<Fetcher>> {

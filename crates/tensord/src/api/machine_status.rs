@@ -199,6 +199,7 @@ struct Held {
     queue: Vec<v1::Queued>,
     times: Vec<v1::Timed>,
     link: f64,
+    drive: Option<f64>,
     serving: u32,
     nvlink: bool,
     /// The caller's lists' runs (`ahead`), never among `runs`: their states, and their downloads in its activity.
@@ -227,12 +228,11 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             })
             .collect();
         let mut times = service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?;
+        // Its NFS drive's downloader, which says what the drive holds of what the store lacks (cl-1282); none without one.
+        let machine = service.publisher().map(|publisher| publisher.machine().clone());
         // What each function's newest run here read, and of it what isn't here now (cl-967).
         for (function, read) in service.engine.function_reads().map_err(problem)? {
-            let missing = crate::access::missing(&service.engine.store, &read);
-            let components = (crate::access::parts(&service.engine.store, &read).into_iter())
-                .map(|(name, bytes, missing)| v1::ReadComponent { name, bytes, missing })
-                .collect();
+            let said = crate::access::said(&service.engine.store, &read, machine.as_ref());
             let at = match times.iter().position(|timed| timed.function == function) {
                 Some(at) => at,
                 None => {
@@ -240,12 +240,13 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
                     times.len() - 1
                 }
             };
-            times[at].reads.push(v1::Read { model: read.model, checkpoint: read.checkpoint, bytes: read.bytes, missing, components });
+            times[at].reads.push(said);
         }
         Ok(Held {
             queue,
             times,
             link: crate::estimate::link(service),
+            drive: crate::estimate::drive(service),
             serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
             ahead: {
@@ -257,7 +258,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,
-            models: crate::held_models::listing(&store),
+            models: crate::held_models::listing(&store, machine.as_ref()),
             memory: runs.memory(),
             lost: runs.lost(),
             out: runs.out_of_service(),
@@ -315,7 +316,7 @@ fn host() -> &'static (String, u64) {
 }
 
 fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) -> v1::StatusFrame {
-    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, mut ahead } = held;
+    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, drive, serving, nvlink, mut ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
     let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own.id == id));
@@ -410,6 +411,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
         times: Some(times),
         resident,
         link_bytes_per_s: link,
+        drive_bytes_per_s: drive,
         serving_gpus: serving,
         nvlink,
         ahead,

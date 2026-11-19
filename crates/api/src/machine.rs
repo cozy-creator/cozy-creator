@@ -1407,6 +1407,10 @@ pub struct StatusFrame {
     pub resident: Vec<Resident>,
     /// Weights' arrival, bytes a second, once 1 GiB came; 0 before.
     pub link_bytes_per_s: f64,
+    /// What its downloads read off its datacenter's NFS drive, which they read before their origin (cl-1282), bytes a second, once
+    /// 1 GiB came; 0 before. None: it has no drive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drive_bytes_per_s: Option<f64>,
     /// The most GPUs side by side in service: the widest a root runs at.
     pub serving_gpus: u32,
     /// Its GPUs talk over NVLink.
@@ -1481,6 +1485,9 @@ pub struct Queued {
     pub models: Vec<String>,
     /// Its weights' bytes still to come, its calls' included.
     pub bytes_left: u64,
+    /// Of them, those its machine's NFS drive holds (cl-1282).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub drive_left: u64,
     /// The caller sent it (cl-1193).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub own: bool,
@@ -1522,6 +1529,9 @@ pub struct Read {
     pub checkpoint: String,
     pub bytes: u64,
     pub missing: u64,
+    /// Of `missing`, those its machine's NFS drive holds (cl-1282).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub drive: u64,
     /// Each component, as runs of the function read it (cl-1104): two boxes of one function may read different ones of a checkpoint,
     /// and a quote of each counts its own (`ModelRef::components`). None: its header isn't here.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1535,16 +1545,20 @@ pub struct ReadComponent {
     pub name: String,
     pub bytes: u64,
     pub missing: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub drive: u64,
 }
 
 impl Read {
-    /// Of what it names, the bytes of `components` and of them those missing; None when it doesn't name each of them. None asked: all.
-    pub fn of(&self, components: &[String]) -> Option<(u64, u64)> {
+    /// Of what it names, the bytes of `components`, of them those missing, and of those the ones on its machine's NFS drive; None
+    /// when it doesn't name each of them. None asked: all.
+    pub fn of(&self, components: &[String]) -> Option<(u64, u64, u64)> {
         if components.is_empty() || self.components.is_empty() {
-            return Some((self.bytes, self.missing));
+            return Some((self.bytes, self.missing, self.drive));
         }
         let parts: Vec<&ReadComponent> = self.components.iter().filter(|part| components.contains(&part.name)).collect();
-        (parts.len() == components.len()).then(|| (parts.iter().map(|part| part.bytes).sum(), parts.iter().map(|part| part.missing).sum()))
+        let sum = |of: fn(&ReadComponent) -> u64| parts.iter().map(|part| of(part)).sum();
+        (parts.len() == components.len()).then(|| (sum(|part| part.bytes), sum(|part| part.missing), sum(|part| part.drive)))
     }
 }
 
@@ -1775,6 +1789,9 @@ pub struct Checkpoint {
     /// Its closure's bytes, and of them those held.
     pub bytes: u64,
     pub held_bytes: u64,
+    /// Of those not held, the ones its machine's NFS drive holds (cl-1282).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub drive_bytes: u64,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.
