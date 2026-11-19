@@ -4,14 +4,14 @@
 # `regenerate.WINDOW_ROWS`), never from the room on the card.
 # Two pods of one SKU booted together, one uncapped and one with its GPU at `cap` from the start: each packages_refs tree in
 # `trees` runs one Upscale request (`res` of the plate's first `seconds`) on both. A machine's call memo answers a request it has
-# served whatever its cap, so each cap gets a machine that has never served it. Per tree: the `h3 regenerate` line's layout (windows, latent frames) and the output's bytes
-# under both caps. SAME: one layout and identical bytes; DIFFERENT otherwise, with whether the decoded frames and sound match and
-# the PSNR between them. The session passes when each tree says what `expect` asks (default SAME): a tree whose layout follows the
-# card is red, one whose layout is the request's is green.
+# served whatever its cap, so each cap gets a machine that has never served it. Per tree: the `h3 regenerate` line's layout
+# (windows, latent frames) under both caps, SAME or DIFFERENT, with the outputs' bytes and PSNR said beside it (two cards: bytes
+# also measure GPU nondeterminism). The session passes when each tree says what `expect` asks (default SAME; a SAME tree must
+# also finish under both caps): a tree whose layout follows the card is red, one whose layout is the request's is green.
 # The plate: `source` (default Tears of Steel, CC BY 3.0 Blender Foundation, 4K) from `start` s, center-cropped to 7:4, H3's
 # 1344x768 at 24 fps with its sound, a box of the session's project. Before renting, at $0: each tree's layout from the
 # Runtime's own `author/_split.py` (none: the card's), its Triton sets, and each tree locked and installed on this runner's
-# local machine through cozy. Every run names its machine. The pod ends after the last run; the verdicts follow.
+# local machine through cozy. Every run names its machine; each pod ends once its runs are in; the verdicts follow.
 # params: runtime, tensorfs (wheels, https://…#sha256=<hex>: every run must run on them), trees ("rc fix": packages_refs
 # names, in order), expect ({"<tree>": "same"|"different"}), res (1080), seconds (15), cap (6GiB), source, start (25), prompt,
 # need_s (2100, both pods). (`cap` the dollar cap is lib.sh's CAP; this one is the GPU's.)
@@ -106,7 +106,9 @@ wait "$A"; wait "$B"
 for r in "${RIDS[@]}"; do gone "$r" || end_pod "$r"; done
 column -t -s $'\t' "$OUT/cells.tsv" | tee -a "$R"
 
-# Each tree's verdict: one layout and the same bytes under both caps.
+# Each tree's verdict: the layout its `h3 regenerate` line logs (windows x latent frames) under both caps. The outputs' bytes and
+# their decoded frames' PSNR are said beside it: the two runs sit on two cards, so bytes also measure card-to-card GPU
+# nondeterminism, which the layout rule doesn't govern (Paul 11-06: determinism desirable, not required).
 # frames <file>: its decoded video and audio, hashed (ab.sh's): one file's container stamps aside.
 frames() { ffmpeg -nostdin -v error -i "$1" -map 0 -f framemd5 - 2> /dev/null | grep -v '^#' | md5sum | cut -c1-16; }
 bad=0
@@ -114,27 +116,25 @@ for t in $TREES; do
   a=$(awk -F'\t' -v k="$t-off" '$1 == k' "$OUT/cells.tsv") b=$(awk -F'\t' -v k="$t-$GCAP" '$1 == k' "$OUT/cells.tsv")
   sa=$(cut -f5 <<< "$a") wa=$(cut -f6 <<< "$a") fa=$(cut -f7 <<< "$a") da=$(cut -f8 <<< "$a")
   sb=$(cut -f5 <<< "$b") wb=$(cut -f6 <<< "$b") fb=$(cut -f7 <<< "$b") db=$(cut -f8 <<< "$b")
-  why=''
-  if [ "${sa:-}" != completed ] || [ "${sb:-}" != completed ]; then
-    why="a run did not complete (uncapped ${sa:-none}, at $GCAP ${sb:-none})"
-    [ -z "${wa:-}" ] || [ -z "${wb:-}" ] || [ "$wa x $fa" = "$wb x $fb" ] || why="$why; layouts ${wa}x$fa uncapped, ${wb}x$fb at $GCAP"
-    v=DIFFERENT
-  elif [ "$wa x $fa" != "$wb x $fb" ]; then
-    v=DIFFERENT why="layouts ${wa}x$fa uncapped, ${wb}x$fb at $GCAP"
-  elif [ -n "$da" ] && [ "$da" = "$db" ]; then
-    v=SAME why="layout ${wa}x$fa under both, identical bytes ($da)"
-  elif [ -s "$OUT/media/$t-off.mp4" ] && [ -s "$OUT/media/$t-$GCAP.mp4" ] &&
-       [ "$(frames "$OUT/media/$t-off.mp4")" = "$(frames "$OUT/media/$t-$GCAP.mp4")" ]; then
-    v=DIFFERENT why="layout ${wa}x$fa under both, identical decoded frames and sound, but the files' bytes differ ($da / $db)"
+  if [ -z "${wa:-}" ] || [ -z "${wb:-}" ]; then
+    v=NONE why="no layout logged (uncapped ${sa:-none}, at $GCAP ${sb:-none})"
+  elif [ "$wa x $fa" = "$wb x $fb" ]; then
+    v=SAME why="${wa}x$fa under both"
   else
-    v=DIFFERENT why="layout ${wa}x$fa under both, but the frames differ"
+    v=DIFFERENT why="${wa}x$fa uncapped, ${wb}x$fb at $GCAP"
   fi
-  if [ "$v" = DIFFERENT ] && [ -s "$OUT/media/$t-off.mp4" ] && [ -s "$OUT/media/$t-$GCAP.mp4" ]; then
-    why="$why; PSNR $(ffmpeg -nostdin -i "$OUT/media/$t-off.mp4" -i "$OUT/media/$t-$GCAP.mp4" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1)"
+  why="$why; runs uncapped ${sa:-none}, at $GCAP ${sb:-none}"
+  if [ -s "$OUT/media/$t-off.mp4" ] && [ -s "$OUT/media/$t-$GCAP.mp4" ]; then
+    if [ -n "$da" ] && [ "$da" = "$db" ]; then why="$why; identical bytes ($da)"
+    elif [ "$(frames "$OUT/media/$t-off.mp4")" = "$(frames "$OUT/media/$t-$GCAP.mp4")" ]; then why="$why; bytes differ, decoded frames and sound identical"
+    else why="$why; bytes differ, frames differ"; fi
+    why="$why, PSNR $(ffmpeg -nostdin -i "$OUT/media/$t-off.mp4" -i "$OUT/media/$t-$GCAP.mp4" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1)"
   fi
   want=$(jq -r --arg t "$t" '.[$t] // "same"' <<< "$EXPECT" | tr a-z A-Z)
-  say "VERDICT $t: $v ($why); expected $want"
+  say "VERDICT $t: layout $v ($why); expected $want"
   [ "$v" = "$want" ] || bad=$((bad + 1))
+  # A tree expected to keep one layout must also finish under both caps (every model runs at 6 GiB).
+  [ "$want" != SAME ] || { [ "${sa:-}" = completed ] && [ "${sb:-}" = completed ]; } || { say "$t did not complete under both caps"; bad=$((bad + 1)); }
 done
 [ "$bad" = 0 ] || fail "$bad trees not as expected"
 exit "$RC"
