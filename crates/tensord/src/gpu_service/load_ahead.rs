@@ -101,12 +101,6 @@ impl Item {
     }
 }
 
-/// Its executor shares the GPU through varena's ledger (TensorFS 0.21 on): one older than that sizes itself by what is free, and a
-/// call of it ends every idle executor first (`room_outside_ledger`), which a guess never does.
-fn ledgered(held: &HeldGeneration) -> bool {
-    held.record.dependencies.iter().find(|dependency| dependency.name == "tensorfs").is_none_or(|tensorfs| in_ledger(&tensorfs.version))
-}
-
 fn gib(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1e9)
 }
@@ -361,9 +355,6 @@ impl Pool {
     /// `item` loaded now, or why not and whether that's the GPU being in use.
     fn try_load(self: &Arc<Self>, engine: &Arc<Engine>, item: &Arc<Item>, listed: &BTreeSet<String>) -> Result<(), (String, bool)> {
         let plan = &item.predicted.plan;
-        if !ledgered(&item.predicted.held) {
-            return Err(("its package's TensorFS predates varena's GPU ledger".into(), false));
-        }
         let absent = merged(plan.slots.iter().filter(|slot| !slot.on_demand)).into_iter()
             .any(|selected| !crate::access::whole(&self.store, &selected.manifest, &selected.components));
         if absent {
