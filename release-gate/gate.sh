@@ -240,6 +240,11 @@ REAL_CLI=$(type -P "$CLI" || echo "$CLI")
 cat > "$OUT/cozy-gate" <<EOF
 #!/bin/bash
 args=("\$@") up= td=
+# Proof only (#4078), never merged: the gate's first order answers as 44499695629's did, its own output replayed byte for byte
+# (rent.out / rent.err from that gate's artifact); every later call is the real cozy's.
+if [ "\${1:-} \${2:-} \${3:-}" = "--json machine rent" ] && [ ! -e "$OUT/replayed-44499695629" ]; then
+  : > "$OUT/replayed-44499695629"; cat "$HERE/proof/rent-44499695629.out"; cat "$HERE/proof/rent-44499695629.err" >&2; exit 1
+fi
 for ((i = 0; i < \${#args[@]}; i++)); do
   [ "\${args[i]}" = machine ] && [ "\${args[i+1]:-}" = update ] && up=1
   [[ \${args[i]} != --tensord* ]] || td=1

@@ -1,0 +1,3 @@
+{"quote":{"sku":"rtx-4090","gpus":1,"usd_micros_per_hour":1513000,"container_disk_gb":150,"provider":"runpod","datacenter":"EUR-IS-2","why":null,"alternatives":[]}}
+{"type":"rental.accepted","rental_id":"pr-5fa9043cb1931e64f9bd","name":"rent-2ef20f67","placeholder":"Renting an RTX 4090…","sku":"rtx-4090","gpus":1,"replay":false}
+{"error":{"kind":"unavailable","code":"rental_ended","message":"rent-2ef20f67: ended without a machine, nothing bills (no rtx-4090 x1 at the 1.513 USD per hour agreed came free: 9 on a provider whose balance is short; above it the cheapest costs 1.536 USD per hour (waited 3m22s))","next":["cozy machine rent rtx-4090"]}}
