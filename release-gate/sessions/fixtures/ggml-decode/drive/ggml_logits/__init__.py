@@ -5,6 +5,7 @@
   MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
 - `rows`, `routes`: the engine-routes session's calls that `qwen3/ask` can't make."""
 
+import hashlib
 import json
 import time
 from collections.abc import Callable
@@ -340,6 +341,9 @@ def _bucket(model: VisionLM, launcher: bool) -> Agreement:
              "same_as_alone": next((t for t, (x, y) in enumerate(zip(made[i], alone[i])) if x != y), None)}
             for i, p in enumerate(prompts)
         ]  # fmt: skip
+        # Every token made, as one digest: launched and replayed runs of the same rows compare by it.
+        rows[f"{mode}_digest"] = hashlib.sha256(json.dumps([made, alone]).encode()).hexdigest()[:16]
+        rows[f"{mode}_launched"] = bool(decoder.launcher)  # whether the decoder still launches after these calls
     return Agreement(json.dumps(rows))
 
 
