@@ -12,7 +12,7 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, timedList, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, optionWord, timedList, totalOf, WANTED } from "./controls"
 import { Answer, Spread, Thumb, useWords } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
@@ -828,10 +828,9 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under its frame (what it's written in is in the frame, InFrame); its tool and Models & LoRAs are beneath the
- *  node (ToolLine). In Focus (`focused`), the same for a picture and a video (cl-938): Render, then every field at once, nothing under
- *  More or Advanced (cl-934). Elsewhere what isn't on the face is under More. What's only a thing to set is grouped, named. */
-export function AssetEdit({ name, view, editing, focused = false, actions, children }: { name: string; view: ElementView; editing: boolean; focused?: boolean; actions: ReactNode; children?: ReactNode }) {
+/** What a box asks and holds in Focus, under its frame (what it's written in is in the frame, InFrame), the same for a picture and a video
+ *  (cl-938): every field at once, nothing under More or Advanced (cl-934). What's only a thing to set is grouped, named. */
+export function AssetEdit({ name, view, editing, children }: { name: string; view: ElementView; editing: boolean; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
@@ -840,57 +839,23 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const first = mainText(fields)
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => !inFrame.includes(field) && field.type !== "timeline" && field.type !== "shape")
-  const faced = !editing ? [] : focused ? rest : rest.filter((field) => field.field === "megapixels" || onFace(field, store.valueOf(name, field.field)))
+  const faced = editing ? rest : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
-  const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
   const parameters = [...faced.filter(small), ...expert.filter(small)]
-  const open = store.showsMore(name)
   const row = (field: ToolField) => {
     const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
-    return focused && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
+    return field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
   }
   const cell = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />
-  const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
   const shown = faced.filter((field) => !small(field))
-  const behind = !focused && (plainFolded.length > 0 || beyond.length > 0)
-  const render = (
-    <div className="row actions">
-      {behind && <button type="button" className="more-toggle canvas-control" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
-      {actions}
-    </div>
-  )
-  const lines = editing && shown.length > 0 && <div className="edit-shown">{shown.map(row)}</div>
-  const grouped = parameters.length > 0 && <div className="edit-parameters">{parameters.map(cell)}</div>
-  if (focused) {
-    return (
-      <div className="edit-face focused">
-        {render}
-        {lines}
-        {grouped}
-        {held}
-        {children}
-      </div>
-    )
-  }
   return (
-    <div className="edit-face">
-      {lines}
-      {expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
-      {grouped}
-      {behind ? (
-        open && (
-          <div className="edit-more">
-            {plainFolded.map(row)}
-            {held}
-            {children}
-          </div>
-        )
-      ) : (
-        children
-      )}
-      {render}
+    <div className="edit-face focused">
+      {editing && shown.length > 0 && <div className="edit-shown">{shown.map(row)}</div>}
+      {parameters.length > 0 && <div className="edit-parameters">{parameters.map(cell)}</div>}
+      {beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
+      {children}
     </div>
   )
 }

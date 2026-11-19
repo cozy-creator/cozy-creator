@@ -74,9 +74,6 @@ export const empty = (value: unknown) => value === undefined || value === null |
 /** Unset, or set to just what it would be unset. */
 export const atDefault = (field: ToolField, value: unknown) => empty(value) || JSON.stringify(value) === JSON.stringify(field.default)
 
-/** On the face: prompts, groups, what's required, and a filled slot. Everything else is under More. */
-export const onFace = (field: ToolField, value: unknown) => field.type === "prompt" || field.type === "group" || field.type === "timeline" || Boolean(field.required) || (field.type === "slot" && !empty(value))
-
 /** A row of a list group as it starts: its members' defaults, and as many rows as each of its own lists must have. */
 export function newRow(group: ToolField): Row {
   return Object.fromEntries(

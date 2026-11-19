@@ -8,7 +8,7 @@ import type { CanvasStore, ElementNode } from "../CanvasStore"
 import { fieldsOf, shapeNear } from "../controls"
 import type { Box } from "../graph"
 import { ratioWords } from "../ratios"
-import { aspectOf, bodyBox, bodyWidth, NARROWEST, reshapes, watched } from "../shown"
+import { aspectOf, bodyBox, bodyWidth, LOWEST, NARROWEST, reshapes, watched, WIDEST } from "../shown"
 import type { Board } from "./Board"
 import type { Camera } from "./Camera"
 import type { StageProps } from "./Stage"
@@ -47,9 +47,6 @@ const TAP = 4
 const DRAG = 3
 const DOUBLE_MS = 500
 const DOUBLE_PX = 16
-/** A pulled box's bounds, as the card's own corner had them. */
-const WIDEST = 1600
-const LOWEST = 90
 
 type Point = { x: number; y: number }
 type Press =

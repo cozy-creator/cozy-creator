@@ -37,7 +37,7 @@ const MOST = 8
  *  of its own, its pixels are drawn as they are (`pixels`: its own size).
  *  `zooms` false: a player that's its own control (an Edit's cut, cl-957) is only fitted. `full`: it plays, and goes full screen (cl-1080),
  *  letterboxed on black at its own aspect, what's `under` it over its bottom. */
-export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = true, full: plays = !zooms, under, children }: { enabled: boolean; aspect: number; pixels?: { width: number; height: number }; fitted?: boolean; zooms?: boolean; full?: boolean; under?: ReactNode; children: ReactNode }) {
+export function FocusFrame({ aspect, pixels, fitted = true, zooms = true, full: plays = !zooms, under, children }: { aspect: number; pixels?: { width: number; height: number }; fitted?: boolean; zooms?: boolean; full?: boolean; under?: ReactNode; children: ReactNode }) {
   const zoomable = fitted && zooms
   const store = useCanvasStore()
   const element = useRef<HTMLDivElement>(null)
@@ -121,19 +121,18 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
     reset()
   }, [reset])
   useLayoutEffect(() => {
-    if (!enabled || !element.current) return
+    if (!element.current) return
     const held = element.current
     const measure = () => setRoom((was) => was.width === held.clientWidth && was.height === held.clientHeight ? was : { width: held.clientWidth, height: held.clientHeight })
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(held)
     return () => observer.disconnect()
-  }, [enabled])
+  }, [])
   useLayoutEffect(() => {
-    if (enabled && !resizing.current) setCamera((was) => { const next = bound(was); return was.x === next.x && was.y === next.y && was.scale === next.scale ? was : next })
-  }, [enabled, width, height, room.width, room.height, bound])
+    if (!resizing.current) setCamera((was) => { const next = bound(was); return was.x === next.x && was.y === next.y && was.scale === next.scale ? was : next })
+  }, [width, height, room.width, room.height, bound])
   useLayoutEffect(() => {
-    if (!enabled) return
     const by = (direction: number) => { if (zoomable) zoom(direction > 0 ? 1.25 : 0.8, true) }
     const to = (scale: number) => { if (zoomable) zoom(scale) }
     store.focusZoomBy = by
@@ -144,9 +143,9 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
       if (store.focusZoomTo === to) store.focusZoomTo = undefined
       if (store.focusFit === reset) store.focusFit = undefined
     }
-  }, [enabled, zoomable, store, zoom, reset])
+  }, [zoomable, store, zoom, reset])
   useLayoutEffect(() => {
-    if (!enabled || !zoomable || !element.current) return
+    if (!zoomable || !element.current) return
     const held = element.current
     const wheel = (event: WheelEvent) => {
       // Its own controls: the wheel there is theirs, not the frame's. A video and an orbit are what's looked at, so they zoom.
@@ -160,9 +159,9 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
     }
     held.addEventListener("wheel", wheel, { passive: false })
     return () => held.removeEventListener("wheel", wheel)
-  }, [enabled, zoomable, zoom])
+  }, [zoomable, zoom])
   // F toggles full screen, but in a field of words; Esc leaves it, and only it (cl-1080).
-  const offering = enabled && player && offered
+  const offering = player && offered
   useEffect(() => {
     if (!offering) return
     const key = (event: KeyboardEvent) => {
@@ -200,7 +199,6 @@ export function FocusFrame({ enabled, aspect, pixels, fitted = true, zooms = tru
       setResting(false)
     }
   }, [full])
-  if (!enabled) return <>{children}</>
   const end = (event: PointerEvent<HTMLDivElement>) => {
     if (dragging.current?.id !== event.pointerId) return
     dragging.current = null

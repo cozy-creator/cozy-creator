@@ -6,7 +6,7 @@ import { ratioWords } from "../ratios"
 import { faceOf as runFace, faceSettles, short, type Face } from "../RunFace"
 import { orbitOf } from "../Orbit"
 import { type NodeState, viewState } from "../StateDot"
-import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
+import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, sentPictures, shownOf, toolName, valueIn, valuesOf } from "../shown"
 import { streamedWords } from "../streamed"
 import { clock, lineAt, mentionsIn } from "../text"
 
@@ -158,20 +158,8 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     const asked = said && typeof said === "object" && !Array.isArray(said) ? (said as { text?: unknown }).text : said
     // A known run's own input is authoritative. Until its full read arrives, another edit cannot stand in for what it was sent.
     if (run) { words = typeof asked === "string" ? asked : ""; at = control?.field }
-    const files = new Set<string>()
-    let specified = false
-    const visit = (value: unknown) => {
-      if (Array.isArray(value)) { value.forEach(visit); return }
-      if (!value || typeof value !== "object") return
-      const held = (value as { references?: unknown }).references
-      if (Array.isArray(held)) {
-        specified = true
-        for (const item of held as ({ type?: unknown; file?: unknown } | null)[]) if ((item?.type === "image" || item?.type === "video") && typeof item.file === "string" && /^(sha256:)?[0-9a-f]{64}$/i.test(item.file)) files.add(item.file)
-      }
-      Object.values(value).forEach(visit)
-    }
-    visit(input)
-    if (specified) references.push(...[...files].map((sha256) => ({ sha256, kind: "image" })))
+    const sent = sentPictures(input)
+    if (sent) references.push(...sent.map((sha256) => ({ sha256, kind: "image" })))
     else if (words) references.push(...store.mentionedPictures(name, mentionsIn(words)).map((picture) => ({ sha256: picture.sha256, kind: "image", shape: picture.shape })))
   }
   const arriving = shown?.absent && run?.status === "completed" && run.output.some((item) => !item.stays && !item.checkpoint && !item.url)
