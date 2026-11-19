@@ -151,6 +151,11 @@ say "host: $(pod 'echo "$(nproc) cores, $(awk "/^MemTotal/ {printf \"%.0f\", \$2
 . "$(dirname "$0")/gpu-reader.sh"
 # The pod's own logs leave with it.
 before_end() {
+  # A run left pinned to a pod that ends is lost to its owner (cl-1316): each one still queued or running is canceled first.
+  local clock r
+  if [ -n "$NAME" ] && clock=$(run_clock "$NAME"); then
+    for r in ${clock#* }; do [ "$r" = "${clock%% *}" ] || { cozy run cancel "$r" > /dev/null 2>&1; say "canceled $r before $NAME ends"; }; done
+  fi
   readings 8 || say "the pod's GPU readings were not fetched before it ended"
   timeout 300 cozy machine logs "$NAME" -n 0 > "$OUT/tensord-end.log" 2>&1
   timeout 120 cozy machine logs "$NAME" memory -n 0 > "$OUT/memory-end.log" 2>&1
