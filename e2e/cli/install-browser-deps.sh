@@ -16,25 +16,31 @@ CONFIG
 # up on "Network is unreachable" (44041520735, 43997435909); every fetch, the lists' and install-deps' alike, retried.
 as_apt() { sudo env APT_CONFIG="$apt_root/apt.conf" "$@"; }
 
-# The package lists, from the first mirror that answers: each tried 5 times with backoff, said as it goes. apt-get update
-# exits 0 when a list fails to download, so its "Failed to fetch" is what counts.
+# The packages, from the first mirror that serves both their lists and their files: each fetch tried 5 times with backoff, said as
+# it goes, and a mirror that then fails a file goes to the next (release e2e 44431308176: mirrors.kernel.org's lists came, then
+# its files' mirrors.edge.kernel.org didn't connect). apt-get update exits 0 when a list fails to download, so its "Failed to
+# fetch" is what counts.
 mirrors=(https://mirrors.kernel.org/ubuntu http://archive.ubuntu.com/ubuntu)
-listed=
+installed=
 for mirror in "${mirrors[@]}"; do
   printf 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s %s main universe\n' \
     "$mirror" noble "$mirror" noble-updates "$mirror" noble-security > "$apt_root/noble.list"
+  listed=
   for attempt in 1 2 3 4 5; do
     [ "$attempt" = 1 ] || { echo "apt-get update: attempt $attempt of 5 on ${mirror#*//} in $((2 ** (attempt - 1))) s" >&2; sleep $((2 ** (attempt - 1))); }
     if as_apt apt-get update > "$apt_root/update.log" 2>&1 && ! grep -qE '^(W: Failed to fetch|E: )' "$apt_root/update.log"; then
-      listed=$mirror; break 2
+      listed=1; break
     fi
     grep -E '^(W: Failed to fetch|E: )' "$apt_root/update.log" | head -1 >&2 || true
   done
+  [ -n "$listed" ] || continue
+  # Running only install-deps as root preserves APT_CONFIG through Playwright's apt subprocess.
+  # The browser download remains the ordinary runner's separate `install firefox` command.
+  # Mesa's software GL and a virtual display: a runner has no GPU, and Firefox makes no WebGL context (the canvas, cl-991) headless or with no GL.
+  if as_apt "$(command -v node)" "$pw/node_modules/playwright-core/cli.js" install-deps firefox \
+    && as_apt apt-get install -y --no-install-recommends libavcodec-extra libegl1 libegl-mesa0 libgl1-mesa-dri libglx-mesa0 libgbm1 xvfb; then
+    installed=1; break
+  fi
+  echo "browser packages: ${mirror#*//} listed them but a file didn't come; the next mirror" >&2
 done
-[ -n "$listed" ] || { echo "apt mirror unreachable: ${mirrors[*]#*//}, 5 attempts each (the runner's network, not a cell)" >&2; exit 1; }
-
-# Running only install-deps as root preserves APT_CONFIG through Playwright's apt subprocess.
-# The browser download remains the ordinary runner's separate `install firefox` command.
-as_apt "$(command -v node)" "$pw/node_modules/playwright-core/cli.js" install-deps firefox
-# Mesa's software GL and a virtual display: a runner has no GPU, and Firefox makes no WebGL context (the canvas, cl-991) headless or with no GL.
-as_apt apt-get install -y --no-install-recommends libavcodec-extra libegl1 libegl-mesa0 libgl1-mesa-dri libglx-mesa0 libgbm1 xvfb
+[ -n "$installed" ] || { echo "apt mirror unreachable: ${mirrors[*]#*//}, 5 attempts each (the runner's network, not a cell)" >&2; exit 1; }
