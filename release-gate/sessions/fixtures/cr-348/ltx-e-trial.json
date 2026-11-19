@@ -1,6 +1,6 @@
 {
  "gpus": 2,
- "need_s": 1000,
+ "need_s": 700,
  "order": "one-way",
  "compare": [],
  "max_failures": 2,
