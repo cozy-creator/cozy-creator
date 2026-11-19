@@ -5,8 +5,8 @@
 # One rental: each packages_refs tree in `trees` runs one Upscale request (`res` of the plate's first `seconds`) uncapped,
 # then again with the GPU at `cap`; each arm starts from no derived state (lib.sh `derived_state`: no memo answers the second
 # run, which is the same request). Per tree: the `h3 regenerate` line's layout (windows, latent frames) and the output's bytes
-# under both caps. SAME: one layout and identical bytes (else identical decoded frames and sound); DIFFERENT otherwise, with the PSNR
-# between them. The session passes when each tree says what `expect` asks (default SAME): a tree whose layout follows the
+# under both caps. SAME: one layout and identical bytes; DIFFERENT otherwise, with whether the decoded frames and sound match and
+# the PSNR between them. The session passes when each tree says what `expect` asks (default SAME): a tree whose layout follows the
 # card is red, one whose layout is the request's is green.
 # The plate: `source` (default Tears of Steel, CC BY 3.0 Blender Foundation, 4K) from `start` s, center-cropped to 7:4, H3's
 # 1344x768 at 24 fps with its sound, a box of the session's project. Before renting, at $0: each tree's layout from the
@@ -122,7 +122,7 @@ for t in $TREES; do
     v=SAME why="layout ${wa}x$fa under both, identical bytes ($da)"
   elif [ -s "$OUT/media/$t-off.mp4" ] && [ -s "$OUT/media/$t-$GCAP.mp4" ] &&
        [ "$(frames "$OUT/media/$t-off.mp4")" = "$(frames "$OUT/media/$t-$GCAP.mp4")" ]; then
-    v=SAME why="layout ${wa}x$fa under both, identical decoded frames and sound (the files' bytes differ)"
+    v=DIFFERENT why="layout ${wa}x$fa under both, identical decoded frames and sound, but the files' bytes differ ($da / $db)"
   else
     v=DIFFERENT why="layout ${wa}x$fa under both, but the frames differ"
   fi
