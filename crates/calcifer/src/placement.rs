@@ -371,15 +371,19 @@ pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
     }
 }
 
-/// The machine `picture` pictures as an estimate reads it (`needs::Card`), for a job of `models`: its first GPU and its memory, the GPUs
-/// side by side in service, and with none, its host's memory. A machine says nothing of its CPU, nor which lane it picks.
-pub(crate) fn card(picture: &Picture) -> ::needs::Card {
+/// The machine `picture` pictures as an estimate reads it (`needs::Card`), for a job of `models`: its first GPU and the memory a run
+/// may use of it, as its quote reads them (`api::estimate::Machine`); the GPUs side by side in service; with none, its host's memory;
+/// and what the job runs there (`runs_of`). A machine says nothing of its CPU.
+pub(crate) fn card(picture: &Picture, models: &[v1::ModelRef]) -> ::needs::Card {
     let frame = &picture.frame;
-    let gpu = frame.gpus.first();
+    let runs = api::estimate::runs_of(models);
     ::needs::Card {
-        gpu: gpu.map(|gpu| gpu.name.clone()).unwrap_or_default(),
+        gpu: frame.gpus.first().map(|gpu| gpu.name.clone()).unwrap_or_default(),
         gpus: frame.serving_gpus,
-        memory_bytes: gpu.map_or(frame.memory_bytes, |gpu| gpu.memory_bytes),
+        memory_bytes: if frame.gpus.is_empty() { frame.memory_bytes } else { api::estimate::card_memory(frame) },
+        lane: runs.lane.to_owned(),
+        model: runs.model.to_owned(),
+        picked: runs.picked,
         ..Default::default()
     }
 }
@@ -387,7 +391,7 @@ pub(crate) fn card(picture: &Picture) -> ::needs::Card {
 /// `ask` timed on `picture`'s machine by its function's own formula (`cost`, cl-1286), where it declares one.
 pub(crate) fn formula(ask: &mut v1::EstimateJob, cost: Option<&::needs::Cost>, picture: &Picture) {
     if let Some(cost) = cost.filter(|cost| cost.timed()) {
-        let estimated = cost.on(&ask.function, &card(picture), &picture.references);
+        let estimated = cost.on(&ask.function, &card(picture, &ask.models), &picture.references);
         (ask.formula_ms, ask.formula_basis) = (estimated.ms, estimated.ms.map(|_| estimated.basis));
     }
 }

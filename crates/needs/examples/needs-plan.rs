@@ -1,7 +1,8 @@
 //! `needs-plan <interface.json> <package>/<function> [<benchmarks.json> <card.json>]`, a request on stdin: the function's plan of it
 //! as Calcifer and TensorD make it (cl-1286): what its rules need, its size and, with its package's rows and a card
-//! (`{"gpu": "NVIDIA GeForce RTX 4090", "gpus": 1, "memory_bytes": 25757220864}`, any field left out), what it costs there; and
-//! the interface's estimate faults, as cozy refuses a package for them.
+//! (`{"gpu": "NVIDIA GeForce RTX 4090", "gpus": 1, "memory_bytes": 25757220864, "lane": "int8-convrot"}`, any field left out; no
+//! `gpu`, a machine without one), what it costs there and the row that stands on; and the interface's estimate faults, as cozy
+//! refuses a package for them.
 use std::io::Read as _;
 
 use serde_json::{Value, json};
@@ -36,12 +37,18 @@ fn main() {
         let text = |name: &str| card[name].as_str().unwrap_or_default().to_owned();
         let count = |name: &str| card[name].as_u64().unwrap_or(0);
         let card = needs::Card {
-            gpu: text("gpu"), gpus: count("gpus") as u32, memory_bytes: count("memory_bytes"), lane: text("lane"), cpu: text("cpu"),
-            cores: count("cores") as u32, threads: count("threads") as u32,
+            gpu: text("gpu"), gpus: count("gpus") as u32, memory_bytes: count("memory_bytes"), lane: text("lane"), model: text("model"),
+            picked: card["picked"].as_bool().unwrap_or(false), cpu: text("cpu"), cores: count("cores") as u32, threads: count("threads") as u32,
         };
         let mut references = api::estimate::References::default();
         references.add(package, &rows);
         let estimated = plan.cost.on(function, &card, &references);
+        // The row it stands on, as the platform's estimate picks it (`References::estimate`), for a formula and the default alike.
+        let picked = references.estimate(function, &card.gpu, card.memory_bytes, &plan.cost.size, card.runs(), true);
+        said["row"] = json!(picked.map(|pick| json!({
+            "gpu": pick.row.gpu, "lane": pick.row.lane, "request": pick.row.request, "warm_ms": pick.row.warm_ms, "budget_bytes": pick.row.budget_bytes,
+            "scale": pick.scale, "default_ms": pick.ms, "basis": pick.basis,
+        })));
         said["estimate"] = json!({
             "ms": estimated.ms, "cold_ms": estimated.cold_ms, "peak_device_bytes": estimated.peak_device_bytes,
             "peak_host_bytes": estimated.peak_host_bytes, "basis": estimated.basis, "declared": estimated.declared,

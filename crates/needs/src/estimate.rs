@@ -4,19 +4,20 @@
 //! its size variables (`size`: a name to a CEL expression over `request`, a number) and any of `OUTPUTS` (a CEL expression over
 //! `request`, `size` and `machine`, a number). The expressions call three helpers, and nothing else of their own:
 //! - `measured(machine)`, `measured(machine, "function")`: the function's own benchmark row for this machine (another function of its
-//!   package, named): `warm_ms`, `cold_ms`, `peak_device_bytes`, `peak_host_bytes`, `budget_bytes`, `request` (its size), `gpu`,
-//!   `lane` and `scale` (`Row`). No value where nothing measured relates to the machine; `measured(machine, "function", {…})`, that
-//!   map instead: a placeholder until a row of it exists.
+//!   package, named), the one the platform's own estimate reads (`References::estimate`): `warm_ms`, `cold_ms`, `peak_device_bytes`,
+//!   `peak_host_bytes`, `budget_bytes`, `request` (its size), `gpu`, `lane` and `scale` (`row`). No value where nothing measured
+//!   relates to the machine; `measured(machine, "function", {…})`, that map instead: a placeholder until a row of it exists.
 //! - `pow(x, y)`: x to the power y.
 //! - `sum(list)`: its numbers added; `min(x, y, …)`, `max(x, y, …)`: the least and the greatest.
 //!
 //! One evaluation of a request on a machine gives its size and its outputs. A function that declares no `ms` is timed by the platform's
-//! own default, its nearest row scaled (`References::time`); one that declares no `size` is sized by `JobSize::of`'s guess.
+//! own default from the same row (`References::estimate`); one that declares no `size` is sized by `JobSize::of`'s guess. On a machine
+//! with no GPU a formula's time counts only where it read a CPU row: one that reads none is no time there.
 
 use std::collections::HashMap;
 
 use api::{
-    estimate::{is_card, reference_key, Benchmark, References},
+    estimate::{Pick, References, Runs},
     interface::Struct,
     machine::{Basis, JobSize},
 };
@@ -65,8 +66,11 @@ pub struct Card {
     pub gpus: u32,
     /// One GPU's memory; with no GPU, the host's.
     pub memory_bytes: u64,
-    /// The lane its call runs at (`int8-convrot`); empty: unknown.
+    /// What its call runs there (`api::estimate::Runs`): its main slot's lane (`int8-convrot`; empty: unknown), and its model where
+    /// that was picked over the slot's default.
     pub lane: String,
+    pub model: String,
+    pub picked: bool,
     /// Its processor as its OS names it, its physical cores and its threads.
     pub cpu: String,
     pub cores: u32,
@@ -74,6 +78,10 @@ pub struct Card {
 }
 
 impl Card {
+    pub fn runs(&self) -> Runs<'_> {
+        Runs { lane: &self.lane, model: &self.model, picked: self.picked }
+    }
+
     fn value(&self) -> Value {
         json!({"gpu": self.gpu, "gpus": f64::from(self.gpus), "memory_bytes": self.memory_bytes as f64, "lane": self.lane,
             "cpu": self.cpu, "cores": f64::from(self.cores), "threads": f64::from(self.threads)})
@@ -92,7 +100,8 @@ pub struct Estimated {
     pub cold_ms: Option<f64>,
     pub peak_device_bytes: Option<f64>,
     pub peak_host_bytes: Option<f64>,
-    /// `Reference`: the card's own row; `Scaled`: another card's, or a budgeted one's; `None`: no row relates to the card.
+    /// As `References::estimate`'s row: `Reference`, the card's own (a CPU row with no GPU); `Scaled`, another card's; `None`: no row
+    /// relates to the card. A formula that reads none stands on its author (`Reference`), on a machine with a GPU only.
     pub basis: Basis,
     /// It is the function's own formula's, not the platform's default.
     pub declared: bool,
@@ -165,33 +174,35 @@ impl Cost {
     }
 
     /// What it costs on `card`, its function (`[org/]package/function`, as `References` keys it) timed by its rows in `references`: its
-    /// declared outputs; with no `ms` declared, the platform's default time (`References::time`) and its nearest row's peaks.
+    /// declared outputs; with no `ms` declared, the platform's default (`References::estimate`), a warm call's; and its row's peaks and
+    /// first call where it declares none.
     pub fn on(&self, function: &str, card: &Card, references: &References) -> Estimated {
         on(&self.declared, function, &self.request, &self.size, card, references)
     }
 }
 
 fn on(declared: &Declared, function: &str, request: &Value, size: &JobSize, card: &Card, references: &References) -> Estimated {
-    let own = row(references, function, card, size);
-    let mut rows = HashMap::from([(String::new(), own.clone())]);
+    let pick = |function: &str| references.estimate(function, &card.gpu, card.memory_bytes, size, card.runs(), true);
+    let own = pick(function);
+    let mut rows = HashMap::from([(String::new(), own)]);
     let package = function.rsplit_once('/').map_or("", |(package, _)| package);
     for (_, expression) in &declared.outputs {
         for other in crate::measured_names(expression).into_iter().filter(|other| !other.is_empty()) {
             let key = format!("{package}/{other}");
-            rows.entry(other).or_insert_with(|| row(references, &key, card, size));
+            rows.entry(other).or_insert_with(|| pick(&key));
         }
     }
     // A formula's time stands on the least sure of the rows it reads: a card's own, else scaled; one that reads none, on its author.
     let read = declared.output("ms").map(crate::measured_names).unwrap_or_default();
     // A row a formula reads with a placeholder may be absent: it then stands on the rows it does read. One read without a placeholder
     // and absent gives no time at all (below).
-    let present: Vec<Basis> = read.iter().filter_map(|name| rows.get(name).cloned().flatten().map(|row| row.basis)).collect();
+    let present: Vec<Basis> = read.iter().filter_map(|name| rows.get(name).copied().flatten().map(|pick| pick.basis)).collect();
     let basis = match (read.is_empty(), present.iter().max_by_key(|basis| matches!(basis, Basis::Scaled))) {
         (true, _) => Basis::Reference,
         (false, Some(basis)) => *basis,
         (false, None) => Basis::None,
     };
-    let context = context(request, Some((size, card)), rows.iter().map(|(name, row)| (name.clone(), row.as_ref().map(Row::value))).collect());
+    let context = context(request, Some((size, card)), rows.iter().map(|(name, pick)| (name.clone(), pick.as_ref().map(row))).collect());
     let mut estimated = Estimated { basis, declared: declared.output("ms").is_some(), ..Estimated::default() };
     for name in OUTPUTS {
         let Some(expression) = declared.output(name) else { continue };
@@ -201,16 +212,20 @@ fn on(declared: &Declared, function: &str, request: &Value, size: &JobSize, card
             Err(why) => estimated.unanswered.push((name.to_owned(), why)),
         }
     }
-    if !estimated.declared {
-        let time = references.time(function, &card.gpu, size);
-        estimated.ms = time.map(|(ms, _)| ms);
-        estimated.basis = time.map_or(Basis::None, |(_, basis)| basis);
+    // No GPU: only a CPU row says it runs without one (cl-1279's `no_gpu`), so a time that read none is no time there.
+    if estimated.declared && card.gpu.is_empty() && present.is_empty() && estimated.ms.is_some() {
+        estimated.ms = None;
+        estimated.unanswered.push(("ms".to_owned(), "this machine has no GPU, and it reads no CPU row".to_owned()));
     }
-    if let Some(row) = own.filter(|_| !estimated.declared || estimated.ms.is_some()) {
-        let scaled = |ms: Option<u64>| ms.map(|ms| ms as f64 * row.scale);
-        estimated.cold_ms = estimated.cold_ms.or(scaled(row.row.cold_ms));
-        estimated.peak_device_bytes = estimated.peak_device_bytes.or(row.row.peak_device_bytes.map(|b| b as f64));
-        estimated.peak_host_bytes = estimated.peak_host_bytes.or(row.row.peak_host_bytes.map(|b| b as f64));
+    if !estimated.declared {
+        estimated.ms = own.map(|pick| pick.ms);
+        estimated.basis = own.map_or(Basis::None, |pick| pick.basis);
+    }
+    if let Some(pick) = own.filter(|_| estimated.ms.is_some()) {
+        let cold = pick.row.cold_ms.map(|cold| cold as f64 / pick.row.warm_ms.max(1) as f64);
+        estimated.cold_ms = estimated.cold_ms.or(estimated.ms.zip(cold).map(|(ms, cold)| ms * cold.max(1.0)));
+        estimated.peak_device_bytes = estimated.peak_device_bytes.or(pick.row.peak_device_bytes.map(|b| b as f64));
+        estimated.peak_host_bytes = estimated.peak_host_bytes.or(pick.row.peak_host_bytes.map(|b| b as f64));
     }
     if estimated.ms.is_none() {
         estimated.basis = Basis::None;
@@ -227,100 +242,25 @@ fn slot<'e>(estimated: &'e mut Estimated, name: &str) -> &'e mut Option<f64> {
     }
 }
 
-/// A benchmark row as `measured(…)` gives it: its times times `scale`, how much longer this card takes than the row's.
-#[derive(Clone, Debug)]
-struct Row {
-    row: Benchmark,
-    scale: f64,
-    basis: Basis,
-}
-
-impl Row {
-    fn value(&self) -> Value {
-        let mut held = Map::new();
-        held.insert("warm_ms".into(), json!(self.row.warm_ms as f64 * self.scale));
-        let mut put = |name: &str, n: Option<f64>| {
-            if let Some(n) = n {
-                held.insert(name.into(), json!(n));
-            }
-        };
-        put("cold_ms", self.row.cold_ms.map(|ms| ms as f64 * self.scale));
-        put("peak_device_bytes", self.row.peak_device_bytes.map(|b| b as f64));
-        put("peak_host_bytes", self.row.peak_host_bytes.map(|b| b as f64));
-        put("budget_bytes", self.row.budget_bytes.map(|b| b as f64));
-        put("scale", Some(self.scale));
-        held.insert("request".into(), json!(self.row.request.values));
-        held.insert("gpu".into(), json!(self.row.gpu));
-        held.insert("lane".into(), json!(self.row.lane));
-        Value::Object(held)
-    }
-}
-
-/// `measured(machine)`: `function`'s row for `card`. With a GPU: of its one-GPU rows measured on no memory budget at the card's lane
-/// (else at none named, else any), the one nearest `size` on this card; with none of this card, the nearest on the card most like it,
-/// its times scaled by how the two compare (`References::factor`). Where that row's peak is over the card's memory, its rows measured
-/// under the budget nearest at or below that memory (else the smallest) instead, as the card runs it: memory over a card's lengthens
-/// its time, never refuses it (Paul: every model runs in 6 GB). With no GPU, its CPU row (`gpus` 0) nearest `size`. None: no row
-/// relates to the card.
-fn row(references: &References, function: &str, card: &Card, size: &JobSize) -> Option<Row> {
-    let rows: &[Benchmark] = references.rows.get(&reference_key(function)).map_or(&[], Vec::as_slice);
-    if card.gpu.is_empty() {
-        return nearest(at_lane(rows.iter().filter(|row| row.gpus == 0).collect(), &card.lane), size)
-            .map(|row| Row { row: row.clone(), scale: 1.0, basis: Basis::Reference });
-    }
-    let on_card = |rows: Vec<&Benchmark>| -> Option<Row> {
-        let rows = at_lane(rows, &card.lane);
-        let own: Vec<&Benchmark> = rows.iter().copied().filter(|row| is_card(&card.gpu, &row.gpu)).collect();
-        if let Some(row) = nearest(own, size) {
-            return Some(Row { row: row.clone(), scale: 1.0, basis: Basis::Reference });
+/// `pick`'s row as `measured(…)` gives it: its times times its `scale`, how much longer this card takes than the row's.
+fn row(pick: &Pick) -> Value {
+    let (row, scale) = (pick.row, pick.scale);
+    let mut held = Map::new();
+    held.insert("warm_ms".into(), json!(row.warm_ms as f64 * scale));
+    let mut put = |name: &str, n: Option<f64>| {
+        if let Some(n) = n {
+            held.insert(name.into(), json!(n));
         }
-        let mut cards: Vec<&str> = rows.iter().map(|row| row.gpu.as_str()).collect();
-        cards.sort_unstable();
-        cards.dedup();
-        let (other, scale) = (cards.into_iter())
-            .filter_map(|other| Some((other, references.factor(other, &card.gpu, function)?)))
-            .min_by(|a, b| a.1.ln().abs().total_cmp(&b.1.ln().abs()))?;
-        let row = nearest(rows.into_iter().filter(|row| row.gpu == other).collect(), size)?;
-        Some(Row { row: row.clone(), scale, basis: Basis::Scaled })
     };
-    let one: Vec<&Benchmark> = rows.iter().filter(|row| row.gpus == 1).collect();
-    let uncapped = on_card(one.iter().copied().filter(|row| row.budget_bytes.is_none()).collect());
-    let over = |row: &Row| row.row.peak_device_bytes.is_some_and(|peak| card.memory_bytes > 0 && peak > card.memory_bytes);
-    if uncapped.as_ref().is_some_and(|row| !over(row)) {
-        return uncapped;
-    }
-    let mut budgets: Vec<u64> = one.iter().filter_map(|row| row.budget_bytes).collect();
-    budgets.sort_unstable();
-    budgets.dedup();
-    let budget = (budgets.iter().rev().find(|budget| **budget <= card.memory_bytes)).or(budgets.first());
-    match budget.and_then(|budget| on_card(one.iter().copied().filter(|row| row.budget_bytes == Some(*budget)).collect())) {
-        Some(squeezed) => Some(Row { basis: Basis::Scaled, ..squeezed }),
-        None => uncapped,
-    }
-}
-
-/// Of `rows`, those at `lane`; else those that name none; else, with no lane known, all.
-fn at_lane<'r>(rows: Vec<&'r Benchmark>, lane: &str) -> Vec<&'r Benchmark> {
-    let of = |lane: &str| rows.iter().copied().filter(|row| row.lane == lane).collect::<Vec<_>>();
-    match (of(lane), lane.is_empty()) {
-        (named, _) if !named.is_empty() => named,
-        (_, false) => of(""),
-        (_, true) => rows,
-    }
-}
-
-/// Of `rows`, the one whose size is most like `size`: the fewest switches apart (a shared variable 0 on one side only: Qwen Image 2's
-/// rewrite off or on), then the fewest pictures, then the least apart by their shared variables.
-fn nearest<'r>(rows: Vec<&'r Benchmark>, size: &JobSize) -> Option<&'r Benchmark> {
-    let refs = size.refs.unwrap_or(0);
-    let switched = |row: &Benchmark| {
-        (size.values.iter()).filter(|(name, n)| row.request.get(name).is_some_and(|m| (**n == 0.0) != (m == 0.0))).count()
-    };
-    let unlike = |row: &Benchmark| (switched(row), row.request.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.request).ln().abs());
-    rows.into_iter().min_by(|a, b| {
-        let (a, b) = (unlike(a), unlike(b));
-        a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2))
-    })
+    put("cold_ms", row.cold_ms.map(|ms| ms as f64 * scale));
+    put("peak_device_bytes", row.peak_device_bytes.map(|b| b as f64));
+    put("peak_host_bytes", row.peak_host_bytes.map(|b| b as f64));
+    put("budget_bytes", row.budget_bytes.map(|b| b as f64));
+    put("scale", Some(scale));
+    held.insert("request".into(), json!(row.request.values));
+    held.insert("gpu".into(), json!(row.gpu));
+    held.insert("lane".into(), json!(row.lane));
+    Value::Object(held)
 }
 
 /// An estimate's context: `request`; with a machine, `size`, `machine` and `measured`'s rows by function (`""`: its own; none: nothing

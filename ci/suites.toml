@@ -174,7 +174,7 @@ queue = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/machines.rs", 
 prefetch = ["crates/calcifer/src/prefetch.rs", "crates/calcifer/src/project/guess.rs", "crates/calcifer/src/plan.rs",
   "crates/calcifer/src/placement.rs", "crates/api/src/estimate.rs", "crates/tensord/src/ahead.rs", "crates/tensord/src/origin/mod.rs", "e2e/cli/prefetch.sh",
   "e2e/cli/project/gpuless/**"]
-estimate = ["crates/needs/**", "crates/calcifer/src/placement.rs", "crates/tensord/src/runs.rs", "e2e/cli/estimate.sh",
+estimate = ["crates/needs/**", "crates/api/src/estimate.rs", "crates/calcifer/src/placement.rs", "crates/tensord/src/runs.rs", "e2e/cli/estimate.sh",
   "e2e/cli/estimate/**"]
 coming = ["crates/calcifer/src/coming.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/rentals.rs", "e2e/cli/coming.sh"]
 disk-room = ["crates/calcifer/src/placement.rs", "crates/calcifer/src/plan.rs", "crates/calcifer/src/project/mod.rs",

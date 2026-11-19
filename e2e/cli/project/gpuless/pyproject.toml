@@ -5,9 +5,9 @@ build-backend = "uv_build"
 [project]
 name = "e2e-gpuless"
 version = "0.1.0"
-description = "Two tools that each build a model, one timed without a GPU by its benchmarks.json: prefetch_gpuless's (cl-1279)"
+description = "Tools that each build a model, some timed without a GPU by benchmarks.json or a formula: prefetch_gpuless's (cl-1279, cl-1286)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.45", "msgspec>=0.19"]
+dependencies = ["cozy-runtime[media]>=0.49.0.dev0", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_gpuless:app"

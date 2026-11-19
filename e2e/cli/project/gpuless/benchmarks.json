@@ -1,3 +1,4 @@
 [
-  {"function": "measured", "gpus": 0, "cpu": "AMD EPYC 9V74 80-Core Processor", "cores": 2, "threads": 2, "request": {}, "lane": "bf16", "warm_ms": 4000, "cold_ms": 6000, "note": "the cell's own: a CPU row"}
+  {"function": "measured", "gpus": 0, "cpu": "AMD EPYC 9V74 80-Core Processor", "cores": 2, "threads": 2, "request": {}, "lane": "bf16", "warm_ms": 4000, "cold_ms": 6000, "note": "the cell's own: a CPU row"},
+  {"function": "formula", "gpus": 0, "cpu": "AMD EPYC 9V74 80-Core Processor", "cores": 2, "threads": 2, "request": {}, "lane": "bf16", "warm_ms": 4000, "cold_ms": 6000, "note": "the cell's own: a CPU row its formula reads"}
 ]

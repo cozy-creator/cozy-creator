@@ -7,10 +7,14 @@
 #     and none of its weights land here;
 #   - stand-g joins the project: a stand-in that says only its Status (e2e/cli/fakemachine.py), one RTX 4090, so whatever is sent
 #     there is refused. The waiting render goes there by itself (its run's POST in stand-g's log), and still nothing of it lands here.
+#   - With qwen-image-2 in `local` (cl-1286): Qwen is the checkout's, and its `estimate=` formula times it on stand-g from its rows
+#     there (`placed.formula_ms`, basis reference); its interface as cozy reads it is kept (qwen.describe.json) for `needs-plan`.
 # params:
-#   tree  the packages_refs checkout (default pk)
+#   tree   the packages_refs checkout (default pk)
+#   local  the checkout's packages this home takes, space-separated (default birefnet)
 . "$(dirname "$0")/lib.sh"
-TREE=$(param tree pk)
+TREE=$(param tree pk) LOCAL=$(param local birefnet)
+[[ $LOCAL =~ ^[a-z0-9\ -]+$ && $LOCAL == *birefnet* ]] || fail "local $LOCAL"
 logs() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
   cozy machine logs local tensord --since 3h -n 0 > "$OUT/tensord-local.log" 2>&1
@@ -22,8 +26,9 @@ for tool in jq ffmpeg python3 openssl curl; do command -v "$tool" > /dev/null ||
 SOURCE=$(cd "$PACKAGES/$TREE" 2> /dev/null && pwd) || fail "no packages_refs checkout $TREE"
 jq -e '[.[] | select(.function == "remove_background" and .gpus == 0)] | length == 1' "$SOURCE/birefnet/benchmarks.json" > /dev/null \
   || fail "the checkout's birefnet has no CPU row"
-# A dev home, birefnet from the checkout (load-ahead.sh's), every other package the Hub's.
-mkdir -p "$OUT/packages" && ln -sfn "$SOURCE/birefnet" "$OUT/packages/birefnet" || fail "no packages folder"
+# A dev home, `local` from the checkout (load-ahead.sh's), every other package the Hub's.
+mkdir -p "$OUT/packages" || fail "no packages folder"
+for pkg in $LOCAL; do ln -sfn "$SOURCE/$pkg" "$OUT/packages/$pkg" || fail "no $pkg in the checkout"; done
 SOURCE=$OUT/packages
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
@@ -40,7 +45,7 @@ for _ in $(seq 60); do
 done
 [ "$(jq -r '.status.phase // empty' "$OUT/local-before.json")" = ready ] || fail "local isn't ready"
 [ "$(jq '.status.gpus // [] | length' "$OUT/local-before.json")" = 0 ] || fail "local has a GPU: this session is for a computer with none"
-say "cozy $(cozy --version | awk '{print $2}'), birefnet from $TREE ($(git -C "$PACKAGES/$TREE" rev-parse --short HEAD 2> /dev/null)); this runner: $(nproc) CPUs, $(awk '/MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo) GiB RAM"
+say "cozy $(cozy --version | awk '{print $2}'), $LOCAL from $TREE ($(git -C "$PACKAGES/$TREE" rev-parse --short HEAD 2> /dev/null)); this runner: $(nproc) CPUs, $(awk '/MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo) GiB RAM"
 
 in_project() { (cd "$RUN_PROJECT" && cozy "$@"); }
 qwen_held() { cozy --json machine show local 2> /dev/null | jq -c '[.status.models[]? | select(.repository | test("qwen")) | .total_bytes] | add // 0'; }
@@ -115,6 +120,16 @@ for _ in $(seq 60); do went && break; sleep 2; done
 say "stand-g was asked: $(grep -oE '"(POST|PUT) [^ ]+' "$OUT/stand-g.log" | sort | uniq -c | tr -s ' ' | paste -sd ';')"
 say "q's job on the board: $(run_page board 2> /dev/null | jq -c '[.jobs[]? | select(.asset == "q")][-1] // {} | {state, machine, run, why}')"
 judge went "the waiting Qwen render went to stand-g by itself once it joined"
+if [[ " $LOCAL " == *" qwen-image-2 "* ]]; then
+  cozy --json --full run "$SOURCE/qwen-image-2/image" --describe > "$OUT/qwen.describe.json" 2> "$OUT/qwen.describe.err" || say "qwen describe: $(tail -c 300 "$OUT/qwen.describe.err")"
+  QRUN=$(run_page board 2> /dev/null | jq -r '[.jobs[]? | select(.asset == "q") | .run // empty][-1] // empty')
+  [ -n "$QRUN" ] && in_project --json --full run watch "$QRUN" --once > "$OUT/runs-q.json" 2>&1
+  say "q's run on stand-g: $(jq -c 'def s(a; b): if a != null and b != null then ((b - a) / 100 | round / 10) else null end;
+    {number, machine, placed: (.placed | if . then {machine, basis, formula_ms, size, finish_s: s(.quoted_at_ms; .finish_at_ms), prepare_s: (.prepare_ms / 1000)} else null end),
+     models: [.spec.models[]? | {model, lane, bytes}]}' "$OUT/runs-q.json" 2> /dev/null)"
+  judge 'jq -e ".placed.machine == \"stand-g\" and .placed.basis == \"reference\" and (.placed.formula_ms // 0) > 0" "$OUT/runs-q.json" > /dev/null 2>&1' \
+    "Qwen is quoted on stand-g by its own formula over its RTX 4090 rows (basis reference)"
+fi
 run_page cancel q > "$OUT/cancel-q.txt" 2>&1; kill "$QP" 2> /dev/null; wait "$QP" 2> /dev/null
 sleep 20
 judge '[ "$(qwen_held)" = "$QWEN0" ]' "still none of Qwen's weights landed here" "$QWEN0 bytes, then $(qwen_held)"
