@@ -967,6 +967,7 @@ impl Device {
     /// caller runs the reclaim order first, so idle weights and everything else of ours that can go does. With
     /// nothing left to give (`last`) the map proceeds and the driver pages what does not fit, unless host memory
     /// cannot hold it.
+    #[allow(dead_code)]
     fn admit_managed(&self, bytes: usize, last: bool) -> AllocationResult<()> {
         self.sample()?;
         let over = self.over(bytes);

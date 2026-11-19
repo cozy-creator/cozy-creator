@@ -22,6 +22,10 @@ pub(crate) struct Books {
     baseline: AtomicU64,
     rebinds: AtomicU64,
     rebound_bytes: AtomicU64,
+    /// W8: working memory placed in pinned host memory the card addresses, its most, and the allocations.
+    host_bytes: AtomicUsize,
+    host_peak: AtomicUsize,
+    host_allocs: AtomicU64,
     /// Freed blocks whose dead pages were dropped (and their bytes): their host pages go with them.
     discards: AtomicU64,
     discarded_bytes: AtomicU64,
@@ -42,6 +46,9 @@ pub(crate) struct PagedStats {
     pub(crate) rebound_bytes: u64,
     pub(crate) discards: u64,
     pub(crate) discarded_bytes: u64,
+    pub(crate) host_bytes: usize,
+    pub(crate) host_peak: usize,
+    pub(crate) host_allocs: u64,
 }
 
 impl Books {
@@ -94,6 +101,28 @@ impl Books {
         self.dropped.store(true, Ordering::Release);
     }
 
+    pub(crate) fn host_mapped(&self, bytes: usize) {
+        let now = self.host_bytes.fetch_add(bytes, Ordering::AcqRel) + bytes;
+        self.host_peak.fetch_max(now, Ordering::Relaxed);
+        self.host_allocs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn host_freed(&self, bytes: usize) {
+        self.host_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
+    /// W8: room for `bytes` of working memory in host memory: the machine's one host admission, else refused in one line.
+    pub(crate) fn host_takes(&self, device: i32, bytes: usize) -> bool {
+        match crate::host_admit(bytes as u64) {
+            None | Some(Ok(())) => true,
+            Some(Err(line)) => {
+                self.host_refusals.fetch_add(1, Ordering::Relaxed);
+                eprintln!("varena: GPU {device}: {bytes} bytes refused: {line}");
+                false
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn dropped(&self) -> bool {
         self.dropped.load(Ordering::Acquire)
@@ -111,6 +140,9 @@ impl Books {
             rebound_bytes: self.rebound_bytes.load(Ordering::Relaxed),
             discards: self.discards.load(Ordering::Relaxed),
             discarded_bytes: self.discarded_bytes.load(Ordering::Relaxed),
+            host_bytes: self.host_bytes.load(Ordering::Relaxed),
+            host_peak: self.host_peak.load(Ordering::Relaxed),
+            host_allocs: self.host_allocs.load(Ordering::Relaxed),
         }
     }
 

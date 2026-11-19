@@ -186,6 +186,9 @@ class WorkingStats(TypedDict):
     managed_rebound_bytes: int
     managed_discards: int
     managed_discarded_bytes: int
+    host_working_bytes: int
+    host_working_peak: int
+    host_working_allocs: int
 
 
 class SplitContext(TypedDict):

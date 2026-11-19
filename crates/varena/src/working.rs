@@ -169,6 +169,9 @@ pub struct WorkingStats {
     pub managed_rebound_bytes: u64,
     pub managed_discards: u64,
     pub managed_discarded_bytes: u64,
+    pub host_working_bytes: usize,
+    pub host_working_peak: usize,
+    pub host_working_allocs: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -216,7 +219,7 @@ impl Segment {
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, managed: false }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, managed: false, host: false }
     }
 
     fn backed(&self) -> bool {
@@ -294,6 +297,9 @@ struct Segment {
     // PROOF ONLY (var-030 section 8): one CUDA managed allocation at its own address, which the driver pages. Its
     // one chunk's handle is `MANAGED`; it goes whole (`cuMemFree`), and none of the reserved space is its.
     managed: bool,
+    // PROOF ONLY (var-030 section 8 W8): one pinned host allocation the card addresses directly; goes whole
+    // (`cuMemFreeHost`), takes no room on the card.
+    host: bool,
 }
 
 /// A managed segment's chunk "handle": there is none, its pages are the driver's to place.
@@ -1090,6 +1096,7 @@ impl Device {
 
     /// PROOF ONLY (var-030 section 8): an eager segment the driver pages. `last`: the reclaim order has nothing
     /// left to give for it, so it maps past the card (`Device::admit_managed`).
+    #[allow(dead_code)]
     fn map_managed(&self, state: &mut State, bytes: usize, class: usize, last: bool) -> crate::AllocationResult<u64> {
         self.admit_managed(bytes, last)?;
         let ptr = self.driver().alloc_managed(bytes)?;
@@ -1099,6 +1106,29 @@ impl Device {
         state.segments.insert(ptr, segment);
         self.working.fetch_add(bytes, Ordering::AcqRel);
         self.paged.mapped(bytes);
+        state.stats.mapped_bytes += bytes;
+        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+        if class > LARGE {
+            state.blocks.insert(ptr, Block::free(ptr, bytes));
+            state.list((None, bytes, None), ptr);
+        } else {
+            Self::slab(state, ptr, bytes, class);
+        }
+        Ok(ptr)
+    }
+
+    /// PROOF ONLY (var-030 section 8 W8): an eager segment in pinned host memory the card addresses directly, for an
+    /// allocation the whole reclaim order refused: every access crosses the link once, nothing migrates or faults.
+    fn map_host(&self, state: &mut State, bytes: usize, class: usize) -> crate::AllocationResult<u64> {
+        if !self.paged.host_takes(self.ordinal, bytes) {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        let ptr = self.driver().alloc_host(bytes)?;
+        let mut segment = Segment::new(bytes, class, None);
+        segment.host = true;
+        segment.chunks = vec![Chunk { offset: 0, bytes, handle: Some(MANAGED) }];
+        state.segments.insert(ptr, segment);
+        self.paged.host_mapped(bytes);
         state.stats.mapped_bytes += bytes;
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         if class > LARGE {
@@ -1349,6 +1379,14 @@ impl Device {
         let segment = state.segments.get_mut(&base).expect("owned segment");
         let chunk = segment.chunks[index];
         let Some(handle) = chunk.handle else { return Ok(0) };
+        if segment.host {
+            // The whole pinned allocation; it took no room on the card.
+            self.driver().free_host(base)?;
+            segment.chunks[index].handle = None;
+            self.paged.host_freed(chunk.bytes);
+            state.stats.mapped_bytes -= chunk.bytes;
+            return Ok(chunk.bytes);
+        }
         if segment.managed {
             // The whole allocation: its pages on the card and on host, and its address.
             self.driver().free_managed(base)?;
@@ -1460,7 +1498,7 @@ impl Device {
                 state.blocks.remove(&ptr);
             }
             let gone = state.segments.remove(&base).expect("owned segment");
-            if !gone.managed {
+            if !gone.managed && !gone.host {
                 Self::return_address(state, base, bytes + gone.guard);
             }
         }
@@ -1742,10 +1780,9 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                     // var-030 section 8 (proof): managed memory only for what would otherwise be refused, after the
                     // whole reclaim order; everything that fits is ordinary, today's path.
                     if managed && last {
-                        let base = owner.map_managed(&mut state, mapped, class, last)?;
-                        if class > LARGE {
-                            owner.rebind(base, mapped, stream);
-                        }
+                        // W8: in pinned host memory the card addresses, not managed memory (W2-W7: fault paging
+                        // thrashed, 40 TB for a cell 100-200 MB over, and met Xid 31 where it engaged).
+                        owner.map_host(&mut state, mapped, class)?;
                     } else {
                         owner.map(&mut state, mapped, None, class)?;
                     }
@@ -2583,6 +2620,9 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     stats.managed_rebound_bytes = paged.rebound_bytes;
     stats.managed_discards = paged.discards;
     stats.managed_discarded_bytes = paged.discarded_bytes;
+    stats.host_working_bytes = paged.host_bytes;
+    stats.host_working_peak = paged.host_peak;
+    stats.host_working_allocs = paged.host_allocs;
     Ok(stats)
 }
 

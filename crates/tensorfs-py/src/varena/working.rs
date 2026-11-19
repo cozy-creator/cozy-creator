@@ -483,6 +483,9 @@ fn _varena_working_stats(
         ("managed_rebound_bytes", stats.managed_rebound_bytes),
         ("managed_discards", stats.managed_discards),
         ("managed_discarded_bytes", stats.managed_discarded_bytes),
+        ("host_working_bytes", stats.host_working_bytes as u64),
+        ("host_working_peak", stats.host_working_peak as u64),
+        ("host_working_allocs", stats.host_working_allocs),
     ]
     .into())
 }

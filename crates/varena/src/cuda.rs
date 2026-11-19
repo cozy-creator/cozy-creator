@@ -75,6 +75,9 @@ type DiscardPrefetch = unsafe extern "system" fn(
     *mut Pointer, *mut usize, usize, *mut Location, *mut usize, usize, u64, Object,
 ) -> Status;
 type Discard = unsafe extern "system" fn(*mut Pointer, *mut usize, usize, u64, Object) -> Status;
+type HostAlloc = unsafe extern "system" fn(*mut *mut c_void, usize, c_uint) -> Status;
+type HostFree = unsafe extern "system" fn(*mut c_void) -> Status;
+type HostDevicePointer = unsafe extern "system" fn(*mut Pointer, *mut c_void, c_uint) -> Status;
 
 #[derive(Default)]
 pub(crate) struct Counters {
@@ -143,6 +146,9 @@ pub(crate) struct Driver {
     free_managed: Option<FreeManaged>,
     discard_prefetch: Option<DiscardPrefetch>,
     discard: Option<Discard>,
+    host_alloc: Option<HostAlloc>,
+    host_free: Option<HostFree>,
+    host_device_pointer: Option<HostDevicePointer>,
     paged_stream: OnceLock<usize>,
     pub(crate) granularity: usize,
 }
@@ -234,6 +240,9 @@ impl Driver {
             free_managed: optional!("cuMemFree_v2", FreeManaged),
             discard_prefetch: optional!("cuMemDiscardAndPrefetchBatchAsync", DiscardPrefetch),
             discard: optional!("cuMemDiscardBatchAsync", Discard),
+            host_alloc: optional!("cuMemHostAlloc", HostAlloc),
+            host_free: optional!("cuMemFreeHost", HostFree),
+            host_device_pointer: optional!("cuMemHostGetDevicePointer_v2", HostDevicePointer),
             paged_stream: OnceLock::new(),
             granularity: 0,
         };
@@ -504,6 +513,36 @@ impl Driver {
         // SAFETY: valid output pointer, CU_MEM_ATTACH_GLOBAL; the caller entered this driver's context.
         status("cuMemAllocManaged", self.timed(|| unsafe { call(&mut ptr, bytes, 1) }))?;
         Ok(ptr)
+    }
+
+    /// PROOF ONLY (var-030 section 8 W8): `bytes` of pinned host memory the card addresses directly (every access crosses
+    /// the link once: no fault, no migration), and its device address (the host address under unified addressing).
+    pub(crate) fn alloc_host(&self, bytes: usize) -> Result<u64> {
+        let (Some(alloc), Some(device)) = (self.host_alloc, self.host_device_pointer) else {
+            return Err(Error::Unsupported("cuMemHostAlloc".into()));
+        };
+        let mut host = std::ptr::null_mut();
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: valid output pointer; CU_MEMHOSTALLOC_PORTABLE | CU_MEMHOSTALLOC_DEVICEMAP; the caller entered the context.
+        status("cuMemHostAlloc", self.timed(|| unsafe { alloc(&mut host, bytes, 0x01 | 0x02) }))?;
+        let mut ptr = 0;
+        // SAFETY: `host` was just mapped for the device; flags 0.
+        if let Err(error) = status("cuMemHostGetDevicePointer", unsafe { device(&mut ptr, host, 0) }) {
+            if let Some(free) = self.host_free {
+                // SAFETY: the allocation just made, unused.
+                let _ = unsafe { free(host) };
+            }
+            return Err(error);
+        }
+        Ok(ptr)
+    }
+
+    /// A host allocation from `alloc_host`, by its device address (the host address under unified addressing).
+    pub(crate) fn free_host(&self, ptr: u64) -> Result<()> {
+        let call = self.host_free.ok_or_else(|| Error::Unsupported("cuMemFreeHost".into()))?;
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: only an owned host allocation with no work left on it reaches here.
+        status("cuMemFreeHost", self.timed(|| unsafe { call(ptr as *mut c_void) }))
     }
 
     /// A managed allocation's pages, on the card and on host, and its address.
