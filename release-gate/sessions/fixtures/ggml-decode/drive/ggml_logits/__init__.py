@@ -176,8 +176,10 @@ def _profile(decoder: object, ids: list[int]) -> dict[str, object]:
 def engine(ctx: Context, model: VisionLM) -> Agreement:
     """The engine's decoder (xs-213 phase 2, `cozy_runtime.engine.decoder`) on `PROMPT`: 512 greedy tokens, never
     stopping, drafted with the checkpoint's MTP head and plain. Each is timed warm (after the same call once, which records
-    its step): `s` is the call's wall time, prefill included; `decode_s` and `steps` the decode's. Its tokens against
-    today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ at, or their length."""
+    its step): `s` is the call's wall time, prefill included; `decode_s` and `steps` the decode's. Each mode runs on the
+    launcher's WHILE node and, as `<mode>-replayed`, with the host replaying the step's graph (the same step, the same
+    pod). Its tokens against today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ
+    at, or their length."""
     from cozy_runtime.engine.decoder import Decoder, Request
 
     net = model.pipe.components["model"]
@@ -194,8 +196,18 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
         if mode == "plain" and head is not None:
             del net.mtp
         try:
-            decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
             request = Request(prompts=[ids], max_new=512, stops=[])
+            replayed = decoders[f"{mode}-replayed"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False)
+            replayed(request)
+            torch.cuda.synchronize()
+            began = time.perf_counter()
+            again = replayed(request)
+            torch.cuda.synchronize()
+            rows[f"{mode}-replayed"] = {"s": round(time.perf_counter() - began, 3), "decode_s": round(again.decode_s, 3),
+                                        "steps": again.steps, "ms_step": round(1e3 * again.decode_s / max(again.steps, 1), 3),
+                                        "same_as_launched": None, "captured": again.captured}
+            replayed_tokens = again.tokens[0]
+            decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
             decoder(request)
             torch.cuda.synchronize()
             began = time.perf_counter()
@@ -219,8 +231,14 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             "ms_step": round(1e3 * made.decode_s / max(made.steps, 1), 3), "captured": made.captured, "notes": made.notes,
             "kept_a_step": round(sum(kept) / max(len(kept), 1), 3),
             "same_as_today": next((i for i, (x, y) in enumerate(zip(tokens, today)) if x != y), min(len(tokens), len(today))),
+            "launcher": getattr(decoder, "launcher", None),
         }
-    rows["profile"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
+        replayed_row = rows[f"{mode}-replayed"]
+        assert isinstance(replayed_row, dict)
+        replayed_row["same_as_launched"] = next((i for i, (x, y) in enumerate(zip(tokens, replayed_tokens)) if x != y),
+                                                min(len(tokens), len(replayed_tokens)))
+    rows["profile"] = _profile(decoders.get("drafted-replayed") or decoders["plain-replayed"], ids)
+    rows["profile_launched"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
     rows["forced"] = {"today": _forced(net, ids, today)}
     for mode in made_by:
         rows["forced"][mode] = _forced(net, ids, made_by[mode])

@@ -18,12 +18,15 @@
 # params: tree (required), lanes (required), tensorfs, runtime (required), capped (q8_0=6GiB; "" for none),
 #         llama (b12466; "" for none), gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (3600),
 #         only ("engine": each lane through the drive's `engine` (the engine's decoder against today's path on the same
-#         call), then stock llama.cpp; no comparison of lanes, no capped run; xs-213 phase 2).
+#         call), then stock llama.cpp; no comparison of lanes, no capped run; xs-213 phase 2),
+#         cases ("": varena drive cases (suites/varena/drive `core`, as kv-tiers.sh runs them) first, on the same pod;
+#         engine-step is the engine's step on a small random Qwen3.5 against Transformers, several rows a bucket).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
 TREE=$(param tree '') LANES=$(param lanes '') CAPPED=$(param capped q8_0=6GiB) LLAMA=$(param llama b12466) ONLY=$(param only '')
-GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf')
+GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf') CASES=$(param cases '')
+VARENA=$(cd "$HERE/../suites/varena/drive" && pwd)
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 read -ra lanes <<<"$LANES"
@@ -37,6 +40,7 @@ kernels "$SOURCE/qwen3"
 . "$FIX/preflight.sh"
 drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
 drive_lock "$FIX/drive"
+[ -z "$CASES" ] || { drive_check "$VARENA" varena_drive; drive_lock "$VARENA"; }
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$(param seconds 3600)"
@@ -90,6 +94,15 @@ lane() {
   jq -r '.result.texts[0] // ""' "$OUT/caption-$label.json" > "$OUT/caption-$label.txt"
   say "caption $label: $(head -c 400 "$OUT/caption-$label.txt")"
 }
+if [ -n "$CASES" ]; then
+  pod_install stage-varena "$VARENA"
+  for c in $CASES; do
+    step "$c" run "$VARENA/core" "case=$c" --on "$NAME" || { tail -c 3000 "$OUT/$c.txt" | tee -a "$R"; FAILED+=("$c"); continue; }
+    on_candidates "$c"
+    n=$(runno "$c"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail' > "$OUT/$c-case.json"
+    say "$c: $(jq -c '.rows[0] | del(.case)' "$OUT/$c-case.json" 2> /dev/null | cut -c1-3000)"
+  done
+fi
 first=${lanes[0]}; reflabel=${first%%=*} refref=${first#*=}
 lane "$reflabel" "$refref" || fail "the reference $reflabel"
 for pair in "${lanes[@]:1}"; do
