@@ -105,7 +105,7 @@ pub(super) struct PyCacheOwner {
     owner: Deferred<Arc<varena::CacheOwner>>,
 }
 
-fn create_owner(
+pub(super) fn create_owner(
     py: Python<'_>,
     device: i32,
     callback: &Bound<'_, PyAny>,
