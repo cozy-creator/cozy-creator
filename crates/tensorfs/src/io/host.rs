@@ -28,7 +28,7 @@ struct Seg {
 }
 
 /// One read: segments of one file in file order, within one request (or one host range).
-struct Piece {
+struct Span {
     file: Option<usize>,
     segs: Range<usize>,
 }
@@ -60,7 +60,7 @@ pub(super) unsafe fn fill(
         .ok_or_else(|| invalid(0, "read request alignment overflows"))?;
     let mut index: HashMap<*const File, usize> = HashMap::new();
     let mut files: Vec<&File> = Vec::new();
-    let (mut segs, mut pieces) = (Vec::<Seg>::new(), Vec::<Piece>::new());
+    let (mut segs, mut pieces) = (Vec::<Seg>::new(), Vec::<Span>::new());
     for (i, c) in copies.iter().enumerate() {
         let Dst::Host { ptr, len } = c.dst else { unreachable!("host copies only") };
         let (file, offset) = match c.src {
@@ -94,7 +94,7 @@ pub(super) unsafe fn fill(
             segs.push(Seg { copy: i, offset: at, len: (next - at) as usize, dst: ptr as usize + (at - offset) as usize });
             match joins {
                 true => pieces.last_mut().unwrap().segs.end += 1,
-                false => pieces.push(Piece { file, segs: segs.len() - 1..segs.len() }),
+                false => pieces.push(Span { file, segs: segs.len() - 1..segs.len() }),
             }
             at = next;
         }
@@ -173,6 +173,25 @@ pub(super) unsafe fn fill(
 
 fn invalid(copy: usize, detail: &str) -> Error {
     Error { copy, source: io::Error::new(io::ErrorKind::InvalidInput, detail) }
+}
+
+/// How a staged piece's bytes were read: past the page cache or through it, and of the former how
+/// many went through `bounce`.
+pub(super) struct Piece {
+    pub direct: bool,
+    pub bounced: u64,
+}
+
+/// `dst.len()` bytes of `file` at `at` in one read: through `direct` (an O_DIRECT description of
+/// it) when given, else through the page cache. The device engine's staged piece, read whole.
+pub(super) fn read_piece(file: &File, direct: Option<&File>, at: u64, dst: &mut [u8], bounce: &mut Bounce) -> io::Result<Piece> {
+    let Some(d) = direct else {
+        read_exact_at(file, dst, at)?;
+        return Ok(Piece { direct: false, bounced: 0 });
+    };
+    let tally = Tally::default();
+    direct_piece(d, at, dst, bounce, &tally)?;
+    Ok(Piece { direct: true, bounced: tally.bounced.into_inner() })
 }
 
 /// `dst.len()` bytes at `at` past the page cache: the aligned middle straight into `dst` when
