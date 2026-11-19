@@ -70,6 +70,55 @@ def _fake_ptr(self: torch.Tensor) -> int:
 
 FakeTensor.data_ptr = _fake_ptr  # type: ignore[method-assign]
 
+# Python indexing takes a device guard for its tensor's device, which a CPU-only torch has no CUDA one for: the index runs on a
+# meta stand-in of the same geometry, and the fake takes its result as a view (basic) or a new tensor of its shape (advanced).
+from torch._subclasses.fake_tensor import unset_fake_temporarily  # noqa: E402
+
+_GETITEM = torch.Tensor.__getitem__
+_SETITEM = torch.Tensor.__setitem__
+
+
+def _shadow(t: torch.Tensor) -> torch.Tensor:
+    numel = max(t.untyped_storage().nbytes() // t.element_size(), t.storage_offset() + 1)
+    return torch.empty(numel, dtype=t.dtype, device="meta").as_strided(t.shape, t.stride(), t.storage_offset())
+
+
+def _meta_index(index: object) -> object:
+    if isinstance(index, tuple):
+        return tuple(_meta_index(i) for i in index)
+    if isinstance(index, list):
+        return [_meta_index(i) for i in index]
+    if isinstance(index, torch.Tensor):
+        return torch.empty(index.shape, dtype=index.dtype, device="meta")
+    return index
+
+
+def _fake_getitem(self: torch.Tensor, index: object) -> torch.Tensor:
+    if self.device.type != "cuda":
+        return _GETITEM(self, index)
+    with unset_fake_temporarily():
+        base = _shadow(self)
+        found = _GETITEM(base, _meta_index(index))
+        view = found.untyped_storage()._cdata == base.untyped_storage()._cdata
+        shape, stride, offset = tuple(found.shape), tuple(found.stride()), found.storage_offset()
+    if view:
+        return self.as_strided(shape, stride, offset)
+    return torch.empty(shape, dtype=self.dtype, device=self.device)
+
+
+def _fake_setitem(self: torch.Tensor, index: object, value: object) -> None:
+    if self.device.type != "cuda":
+        return _SETITEM(self, index, value)
+    target = _fake_getitem(self, index)
+    if isinstance(value, torch.Tensor):
+        target.copy_(value)
+    else:
+        target.fill_(value)
+
+
+FakeTensor.__getitem__ = _fake_getitem  # type: ignore[method-assign]
+FakeTensor.__setitem__ = _fake_setitem  # type: ignore[method-assign]
+
 
 # ------------------------------------------------------------------------------- the tracker
 class Site:
