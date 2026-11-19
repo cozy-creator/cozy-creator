@@ -187,9 +187,10 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     net = model.pipe.components["model"]
     ids = model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]
     rows: dict[str, object] = {"prompt_tokens": len(ids), "gpu": torch.cuda.get_device_name()}
-    _timed(net, torch.tensor([ids]), 512)
+    cold, _ = _timed(net, torch.tensor([ids]), 512)  # the executor's first call: today's path as a user's first waits
     seconds, today = _timed(net, torch.tensor([ids]), 512)
-    rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1)}
+    rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1),
+                     "cold_s": round(cold, 3)}
     head = getattr(net, "mtp", None)
     sampled: dict[str, list[int]] = {}
     made_by: dict[str, list[int]] = {}
@@ -199,9 +200,12 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             del net.mtp
         try:
             request = Request(prompts=[ids], max_new=512, stops=[])
+            began = time.perf_counter()
             replayed = decoders[f"{mode}-replayed"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False)
             replayed(request)
             torch.cuda.synchronize()
+            if mode == "drafted" or head is None:  # the engine's first call: its kernels compiled, its step captured
+                rows["engine_cold_s"] = round(time.perf_counter() - began, 3)
             began = time.perf_counter()
             again = replayed(request)
             torch.cuda.synchronize()
