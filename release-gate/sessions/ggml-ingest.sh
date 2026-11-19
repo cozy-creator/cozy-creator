@@ -128,7 +128,8 @@ judge() {  # judge <check>: compare.py on it, its lines into the report
     < /dev/null > "$OUT/compare-${1/:/-}.jsonl" 2> "$OUT/compare-${1/:/-}.err"; code=$?
   sed 's/^/    /' "$OUT/compare-${1/:/-}.jsonl" | tee -a "$OUT/compare.jsonl" >> "$R"
   [ "$code" = 0 ] || { tail -c 1500 "$OUT/compare-${1/:/-}.err" | tee -a "$R"; say "FAILED: $1 differs from llama.cpp's"; BAD+=("$1"); }
-  [ "$code" != 0 ] || say "$1: ${TYPE[$1]:+decoded equal to llama.cpp's (bytes told above)}${TYPE[$1]:-byte for byte llama.cpp's}"
+  # No apostrophe inside these expansions: in a double-quoted ${…:+…} bash takes one as a quote (every line read empty).
+  [ "$code" != 0 ] || say "$1: ${TYPE[$1]:+decoded equal to llama.cpp (bytes told above)}${TYPE[$1]:-byte for byte the same as llama.cpp}"
 }
 installed=''
 while [ "${#checks[@]}" -gt 0 ]; do
