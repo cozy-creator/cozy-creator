@@ -1,10 +1,10 @@
 # row-reads (tfs-303): row ranges of real checkpoints' weights, one per TensorFS lane, on one rental, against whole reads.
-# Through `cozy run` (fixtures/row-reads/rows.py), as a package reads them: `Checkpoint.read_rows` into host outs, each part
-# byte for byte, alone and batched. Then, on the checkpoint that run read, TensorFS's side as root with the executor
-# environment's Python (fixtures/row-reads-internals), as io-fault.sh: the contract refuses a package `import tensorfs` and
-# a CUDA out (torch's `__dlpack__(stream=)`: own_stream). There: CUDA outs on the caller's stream and on none, each encoded
-# range's decode, read speed, and a varena Source of a block of real tensors with the largest encoded tensor across a page
-# window, from the store and from its kept page.
+# Through `cozy run` (fixtures/row-reads/rows.py), as a package reads them: `Checkpoint.read_rows` into host outs and CUDA
+# outs (on the caller's stream, and with none given, each behind pending work on the caller's stream), each part byte for
+# byte, alone and batched, and the largest tensor's read speed against its whole read. Then, on the checkpoint that run
+# read, the varena Source no package can reach, as root with the executor environment's Python (fixtures/row-reads-internals,
+# as io-fault.sh): a block of real tensors with the largest encoded tensor across a page window, from the store and from its
+# kept page.
 # Each model's lane is resolved to its checkpoint before renting (`cozy model show`), so a missing lane costs nothing.
 # params:
 #   tensorfs    the TensorFS under test: artifact:<dev-build run>/<wheel artifact> or an https wheel (required)
@@ -70,6 +70,7 @@ for r in "${REFS[@]}"; do
   say "$label ran TensorFS $ran, Runtime $(jq -r .runtime "$OUT/$label.report.json")"
   [ "$ran" = "$WANT" ] || { say "FAIL $label: run $n ran TensorFS $ran, not $WANT"; RC=1; }
   jq -r '.lines[]' "$OUT/$label.report.json" | while read -r line; do say "$label $line"; done
+  say "$label speed: $(jq -c .speed "$OUT/$label.report.json")"
   [ "$(jq -r .failed "$OUT/$label.report.json")" = false ] || RC=1
   # TensorFS's half, on the checkpoint that run read, in the machine's store the run named.
   home=$(jq -r '.tensorfs_home // empty' "$OUT/$label.report.json") id=$(jq -r .checkpoint "$OUT/$label.report.json")
@@ -77,7 +78,7 @@ for r in "${REFS[@]}"; do
   if [ -z "$home" ] || [[ $PY != /var/lib/cozy/* ]]; then
     say "FAIL $label internals: no store (TENSORFS_HOME '$home') or executor environment ('$PY')"; RC=1; continue
   fi
-  T=600 pod "TENSORFS_HOME='$home' $PY /tmp/row-internals.py '$id' $((SEED + k)) $PER '$ref'" < /dev/null > "$OUT/$label.internals.out" 2> "$OUT/$label.internals.err"
+  T=600 pod "TENSORFS_HOME='$home' $PY /tmp/row-internals.py '$id' '$ref'" < /dev/null > "$OUT/$label.internals.out" 2> "$OUT/$label.internals.err"
   tail -n 1 "$OUT/$label.internals.out" > "$OUT/$label.internals.json"
   if ! jq -e . "$OUT/$label.internals.json" > /dev/null 2>&1; then
     say "FAIL $label internals: no report: $(tail -c 900 "$OUT/$label.internals.err" | tr '\n' ' ')"; RC=1; continue
@@ -86,7 +87,6 @@ for r in "${REFS[@]}"; do
   say "$label internals ran TensorFS $ran ($PY), opened $(jq -r .opened "$OUT/$label.internals.json") from $home"
   [ "$ran" = "$WANT" ] || { say "FAIL $label internals ran TensorFS $ran, not $WANT"; RC=1; }
   jq -r '.lines[]' "$OUT/$label.internals.json" | while read -r line; do say "$label $line"; done
-  say "$label speed: $(jq -c .speed "$OUT/$label.internals.json")"
   say "$label block: $(jq -c .block "$OUT/$label.internals.json")"
   [ "$(jq -r .failed "$OUT/$label.internals.json")" = false ] || RC=1
 done
