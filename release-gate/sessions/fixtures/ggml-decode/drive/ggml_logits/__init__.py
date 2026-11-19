@@ -222,13 +222,18 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
                                            "steps": plain_ops.steps,
                                            "ms_step": round(1e3 * plain_ops.decode_s / max(plain_ops.steps, 1), 3)}
                 made_by["drafted-unfused"] = plain_ops.tokens[0]
-            decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
-            decoder(request)
-            torch.cuda.synchronize()
-            began = time.perf_counter()
-            made = decoder(request)
-            torch.cuda.synchronize()
-            seconds = time.perf_counter() - began
+            try:  # the launcher's arm: a failure is told and the replayed arms stand
+                decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
+                decoder(request)
+                torch.cuda.synchronize()
+                began = time.perf_counter()
+                made = decoder(request)
+                torch.cuda.synchronize()
+                seconds = time.perf_counter() - began
+            except Exception as exc:
+                rows[mode] = {"error": f"{type(exc).__name__}: {exc}"[:600]}
+                decoders.pop(mode, None)
+                continue
         finally:
             if head is not None:
                 net.mtp = head
@@ -253,7 +258,8 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
         replayed_row["same_as_launched"] = next((i for i, (x, y) in enumerate(zip(tokens, replayed_tokens)) if x != y),
                                                 min(len(tokens), len(replayed_tokens)))
     rows["profile"] = _profile(decoders.get("drafted-replayed") or decoders["plain-replayed"], ids)
-    rows["profile_launched"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
+    if "drafted" in decoders or "plain" in decoders:
+        rows["profile_launched"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
     if "drafted-unfused" in decoders:
         rows["profile_unfused"] = _profile(decoders["drafted-unfused"], ids)
     rows["forced"] = {"today": _forced(net, ids, today)}
