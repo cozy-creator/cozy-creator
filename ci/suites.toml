@@ -152,7 +152,7 @@ runs = ["crates/cli/src/run/**", "crates/calcifer/src/runs/**", "crates/calcifer
   "crates/calcifer/src/reports.rs", "crates/calcifer/src/play.rs", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/execution.rs",
   "crates/tensord/src/seam.rs", "crates/tensord/src/access.rs", "crates/executor-api/**", "crates/tensorfs/**", "crates/varena*/**",
   "web/app/src/panels/runs/stages.json", "e2e/cli/previews.sh", "e2e/cli/reports.sh", "e2e/cli/llm.sh", "e2e/cli/control.sh",
-  "e2e/cli/stages.py"]
+  "e2e/cli/stages.py", "e2e/cli/sampler/**"]
 executors = ["crates/tensord/src/machine/**", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/process.rs",
   "crates/tensord/src/stop.rs", "crates/calcifer/src/machines.rs", "crates/calcifer/src/machine_client.rs",
   "crates/calcifer/src/update.rs", "crates/cli/src/update.rs", "e2e/cli/lifetime.sh", "e2e/cli/released.sh", "e2e/cli/installed.sh"]

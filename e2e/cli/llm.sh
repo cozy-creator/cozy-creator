@@ -102,3 +102,29 @@ echo "cli-words: $said: $(jq -r .text "$OUT/cli-words.json" | head -c 200)"
 J '.chunks >= 3 and .first_s < .end_s - 2' "$OUT/cli-words.json" \
   || check "cli-words: its words came only at its end ($said): $(jq -r .text "$OUT/cli-words.json" | head -c 300)"
 }
+
+# cr-346 (Paul, 11-18: "our runtime needs to support this for sure. Any sort of drafting / top-k 20 we need to support"; and models
+# run as their authors built them): `lm.generate` picks each token as vLLM 0.19.1 does, penalties before top-k. e2e/cli/sampler decodes
+# the real Qwen3.5 0.8B on this computer's CPU through `cozy run`: Qwen-Image-2.1's t2i enhancer settings (presence 1.5, top-k 20,
+# top-p 0.95) at seeds 7 and 8, a top-k that binds at every step on long prose at seeds 1-4 (`order-*`: top-k 5, presence 1.5), and
+# every setting (`knobs`). Each
+# step's token is scored against vLLM's own sampler functions on the logits the Runtime saw, with its noise. Each claim fails on its own:
+# a token off vLLM's draw (the order), a call that can't decode (the knobs), the Runtime's kept set not vLLM's (the shared sampler), and
+# the `order-*` calls must reach a step where the RC's order (top-k before the penalty) draws another token, or they prove nothing.
+llm_sampling() {
+[ -n "$LOCAL" ] || return 0
+step "lm.generate samples as vLLM does: penalties, then temperature, min-p, top-k and top-p (cr-346)"
+local said bad f=$OUT/llm-order.json
+cell llm-order "$here/sampler/order" --model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0 || return 0
+said=$(jq -c '[.result.calls[] | {name, seed, steps, mismatches, first_mismatch, kept_equal, old_kept_differs, old_draw_differs,
+  kept_mean, error}]' "$f")
+echo "llm-order: $said"
+bad=$(jq -c '[.result.calls[] | select(.error == "" and .mismatches != 0) | {name, steps, mismatches, first_mismatch}]' "$f")
+[ "$bad" = '[]' ] || check "llm-order: tokens off vLLM's draw from their logits (the order): $bad"
+bad=$(jq -c '[.result.calls[] | select(.error != "" or .steps <= 20) | {name, steps, error}]' "$f")
+[ "$bad" = '[]' ] || check "llm-order: a call did not decode (the settings): $bad"
+bad=$(jq -c '[.result.calls[] | select(.error == "" and .kept_equal != .steps) | {name, steps, kept_equal}]' "$f")
+[ "$bad" = '[]' ] || check "llm-order: the Runtime's kept tokens are not vLLM's at every step (cozy_runtime.sampling): $bad"
+J '.result.calls | length == 7 and ([.[] | select(.name | startswith("order-")) | .old_draw_differs] | add > 0)' "$f" \
+  || check "llm-order: the RC's order never draws another token in the order calls, so they show nothing: $said"
+}
