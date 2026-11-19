@@ -3,7 +3,8 @@
 # by this runner's Calcifer. Each arm has a project of its own; TensorD is restarted first and the store's page cache dropped
 # (`evict`: the weights stay on disk, as on a machine whose RAM went to other work).
 #   free    this build: a Qwen box `q` alone, its GPU free: loaded ahead as before (`loaded`), its render's first step loads nothing.
-#   before  the RC's TensorD (`before`): an SDXL box `p` loaded ahead, then `q`, which the GPU can't take beside it (`ready`); q rendered.
+#   before  the RC's TensorD (`before`): an SDXL box `p` loaded ahead, another program holding `hold_gb` of the GPU (a free 4090
+#           fits q beside p alone, by 0.23 GB: 44636453479), then `q`, which the GPU can't take beside them (`ready`); q rendered.
 #   after   this build: the same; q's executor and models are built at level ram beside p, and its weights read into RAM (`built`,
 #           all its bytes in the page cache) before its render.
 #   back    this build: as `after` up to q `built` with its weights in RAM; a program then takes the host's free memory a while,
@@ -16,9 +17,10 @@
 #   tool, other  the boxes' tools (default qwen-image-2/image, sdxl/generate)
 #   wait_s   how long a box may take to reach its stage (default 600)
 #   arms     which arms run, in this order (default "free before after back")
+#   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
 . "$(dirname "$0")/lib.sh"
 ARMS=" $(param arms 'free before after back') "
-TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
+HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
@@ -34,8 +36,31 @@ RENT_ARGS=--ssh
 quote "$(param need_s 3600)"
 rent
 pod() { timeout "${T:-300}" cozy machine ssh "$NAME" -- "$1" < /dev/null 2>> "$OUT/ssh.err"; }
-# py <script> [args]: a Python script on the pod, sent whole.
-py() { local s; s=$(base64 -w0 <<<"$1"); shift; pod "echo $s | base64 -d > /tmp/stage-ahead.py && python3 /tmp/stage-ahead.py $*"; }
+# py [-p python] <script> [args]: a Python script on the pod, sent whole, each in a file of its own.
+py() {
+  local bin=python3 s f; [ "$1" != -p ] || { bin=$2; shift 2; }
+  s=$(base64 -w0 <<<"$1"); f=/tmp/stage-ahead-$(md5sum <<<"$1" | cut -c1-8).py; shift
+  pod "echo $s | base64 -d > $f && $bin $f $*"
+}
+# hold / unhold: another program holds HOLD_GB of the GPU (torch, in a machine's environment) until unheld.
+HOLD='import os, sys, time, torch
+x = torch.empty(int(float(sys.argv[1]) * 1e9), dtype=torch.uint8, device="cuda")
+x.fill_(1)
+torch.cuda.synchronize()
+open("/tmp/stage-ahead-hold", "w").close()
+while os.path.exists("/tmp/stage-ahead-hold"):
+    time.sleep(0.2)'
+HOLDER=''
+hold() {
+  local env t=0
+  env=$(T=60 pod "ls -t /var/lib/cozy/tensord/generations/*/env/bin/python | head -1" | tail -1)
+  T=7200 py -p "$env" "$HOLD" "$HOLD_GB" > "$OUT/hold-$1.txt" 2>&1 & HOLDER=$!; BG="$BG $HOLDER"
+  until T=30 pod "test -f /tmp/stage-ahead-hold" > /dev/null 2>&1; do
+    sleep 2; t=$((t + 2)); [ "$t" -lt 120 ] || fail "$1: the other program never held the GPU: $(tail -c 300 "$OUT/hold-$1.txt")"
+  done
+  say "$1: another program holds $HOLD_GB GB of the GPU: $(pod "nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader")"
+}
+unhold() { [ -z "$HOLDER" ] || { pod "rm -f /tmp/stage-ahead-hold" > /dev/null; wait "$HOLDER" 2> /dev/null; HOLDER=''; }; }
 meminfo() { pod "grep -E '^(MemTotal|MemFree|MemAvailable|Cached):' /proc/meminfo | awk '{printf \"%s %.1f GiB \", \$1, \$2 / 1048576}'"; }
 # The store's page cache dropped (as derived-state.sh does): its files stay on disk.
 EVICT='import os
@@ -57,6 +82,7 @@ runs() {
 # tensord <bin> <version> <arm>: the pod's TensorD is <bin>, restarted (every executor ends; the disk stays).
 tensord() {
   close
+  unhold
   step "tensord-$3" machine update "$NAME" --tensord "$1" -y || fail "$3: the pod refused TensorD $2"
   step "restart-$3" machine update "$NAME" --mode dedicated -y || fail "$3: the restart"
   [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$3: $NAME isn't ready after its restart"
@@ -162,6 +188,7 @@ staged() {
   run_page add p --tool "$OTHER" --fields "$(P_FIELDS "$4")" > "$OUT/box-$1-p.json" 2>&1 || fail "$1: p: $(tail -c 300 "$OUT/box-$1-p.json")"
   until_item -none loaded "$1"
   P_ID=$ID
+  hold "$1"
   run_page add q --tool "$TOOL" --fields "$(Q_FIELDS "$(($4 + 1))")" > "$OUT/box-$1-q.json" 2>&1 || fail "$1: q: $(tail -c 300 "$OUT/box-$1-q.json")"
 }
 if arm before; then
@@ -219,7 +246,7 @@ say "back: the program ended ($(cat "$OUT/hog.txt")): q $(item "$Q_ID" stage), $
 [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "back: $NAME isn't ready after the program"
 [ "$(item "$Q_ID" stage)" = built ] || fail_if "back: q's executor didn't keep it built through the program ($(item "$Q_ID" stage))"
 fi
-close; kill $BG 2> /dev/null; BG=''
+close; unhold; kill $BG 2> /dev/null; BG=''
 collect
 
 grep -aE "stage ahead|load ahead|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
