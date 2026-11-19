@@ -21,8 +21,8 @@
     "--gpus=1"
    ],
    "update": {
-    "runtime": "44609708070",
-    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3432+g6337ebcf-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "runtime": "44620062951",
+    "tensorfs": "artifact:44607246583/tensorfs-wheel-95831c3365ff24b4d32d916f37cf368490ba810b",
     "tensord": true,
     "gpu_memory_limit": "off"
    },
