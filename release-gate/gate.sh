@@ -692,7 +692,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # contract refuses fails here by name, whatever its cells do (22 of 25 were refused from 0.43.1 to 0.45.0, unseen: xs-174).
 # Judged by its package lines (`ok   <suite>/<package>:`, `FAIL <suite>/<package>:`), each package's own verdict.
 if [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
+  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} --out interfaces "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
   gate_refused=$(grep -E '^FAIL [^ :]+/[^ :]+:' gate-packages.txt | cut -c1-160 | paste -sd';')
   gate_read=$(grep -cE '^ok   [^ :]+/[^ :]+:' gate-packages.txt)
   if [ -z "$gate_refused" ] && [ "$gate_read" = "${#GATE_PKGS[@]}" ]; then
@@ -744,6 +744,14 @@ verdict=${PIPESTATUS[0]}
 # The benchmark ledger (ledger.py): a row per package run into ledger.jsonl, each with its cell's verdict (what
 # --skip-unchanged stands on), appended to the tracker's benchmarks/ where this machine can push (CI: the
 # TRACKER_LEDGER_KEY deploy key). A suite that caps VRAM itself leaves its rows' cap unsaid: the records do not carry it.
+# Each --packages package a cell ran, described on the machine's Runtime (interfaces.sh: no GPU, seconds a package), so a row's
+# shape takes the function's own defaults for what its request left out (ledger.py defaults).
+if [ -n "$PKGS" ]; then
+  ran=$(jq -r 'objects | .target // empty' ./*.json 2> /dev/null | sed -n 's#^local/\([^/@]*\)/.*#\1#p' | sort -u)
+  dirs=(); for p in $ran; do [ -f "$PKGS/$p/pyproject.toml" ] && [ ! -f "interfaces/$p.json" ] && dirs+=("$PKGS/$p"); done
+  [ ${#dirs[@]} = 0 ] || "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} --packages "$PKGS" --out interfaces "${dirs[@]}" \
+    > interfaces.log 2>&1 || log "ledger: not every package described for its defaults: $(grep -E '^FAIL' interfaces.log | head -3 | paste -sd';')"
+fi
 ledger_cap=off
 for s in ${SUITES//,/ }; do ! grep -qs -- --gpu-memory-limit "$HERE/suites/$s/cells.sh" || ledger_cap=; done
 { python3 -I "$HERE/ledger.py" rows "$OUT" --sku "$SKU" --source "$([ "$SUITES" = bench ] && echo bench || echo gate)" ${PKGS:+--packages "$PKGS"} \
