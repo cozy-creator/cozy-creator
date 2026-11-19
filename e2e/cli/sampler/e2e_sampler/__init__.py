@@ -34,8 +34,14 @@ CALLS: list[tuple[str, str, dict[str, float], int]] = [
     *((f"order-{seed}", STORY, ORDER, seed) for seed in (1, 2, 3, 4)),
     ("knobs", PROMPT, KNOBS, 7),
 ]
-#: `drafted`'s settings: greedy with a penalty, then each of `order`'s.
-DRAFTED = [{"temperature": 0.0, "presence_penalty": 1.5}, RECIPE, ORDER, KNOBS]
+#: `drafted`'s settings: greedy without and with a penalty, then each of `order`'s.
+DRAFTED: list[tuple[str, dict[str, float]]] = [
+    ("greedy", {"temperature": 0.0}), ("greedy-presence", {"temperature": 0.0, "presence_penalty": 1.5}),
+    ("recipe", RECIPE), ("order", ORDER), ("knobs", KNOBS),
+]
+#: A split between drafted and undrafted at a margin at least this wide (logits; z + Gumbel when sampled) is a clear choice
+#: decided two ways, a bug; a narrower one is a near tie the verify pass's rounding may turn (the coordinator, 11-19).
+CLEAR = 0.5
 
 
 
@@ -281,17 +287,28 @@ class Drafted(msgspec.Struct):
     prompt: str = PROMPT
     max_tokens: int = 256
     seed: int = 7
+    #: a label for the arm (its Runtime), so a second arm's call is no repeat of the first's
+    arm: str = ""
 
 
 class Pair(msgspec.Struct):
+    name: str
     settings: dict[str, float]
     plain: int
     drafted: int
     #: the drafted call's tokens are the undrafted one's
     same: bool
     first_difference: int
+    #: at the first difference: the undrafted token's lead over the drafted one's, from a teacher-forced eager forward over
+    #: the shared prefix through vLLM's own penalties (z + Gumbel when sampled); which of them that forward picks
+    margin: float
+    teacher_picks: str
+    #: each call's engine: graphs recorded, replays, eager steps, graphs that draft
+    plain_engine: dict[str, int]
+    drafted_engine: dict[str, int]
     plain_text: str
     drafted_text: str
+    error: str = ""
 
 
 class Pairs(msgspec.Struct):
@@ -300,12 +317,46 @@ class Pairs(msgspec.Struct):
     head: bool
     #: the Runtime that ran it
     runtime: str
+    arm: str
+
+
+def engine_facts(hf: torch.nn.Module) -> dict[str, int]:
+    """What the call's engine did, read before it is released: its graphs, replays and eager steps, and how many of its
+    graphs draft (`lm._Key`'s third entry)."""
+    facts = lm._graph_snapshot(hf)[0]
+    engine = lm._ENGINES.get(hf)
+    drafting = sum(1 for key in engine.graphs if key[2]) if engine is not None else 0
+    return {"graphs": int(facts.get("active_graphs", 0)), "replays": int(facts.get("replays", 0)),
+            "eager": int(facts.get("eager_steps", 0)), "drafting_graphs": drafting}
+
+
+def split_margin(hf: torch.nn.Module, prompt: torch.Tensor, prefix: list[int], a: int, b: int, settings: dict[str, float],
+                 seed: int) -> tuple[float, str]:
+    """How far apart tokens `a` (undrafted) and `b` (drafted) are after `prefix`: a fresh eager forward over the prompt and
+    prefix, its last logits through vLLM's penalties (and temperature, min-p, top-k and top-p and the Runtime's noise when
+    sampled); `a`'s score less `b`'s, and which that forward picks."""
+    ids = torch.cat([prompt, torch.tensor(prefix, dtype=torch.long)])[None].to(hf.device)
+    with torch.inference_mode():
+        logits = hf(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False).logits[:, -1].float().cpu()
+    vocab = int(logits.shape[-1])
+    if settings.get("temperature", 0.0) > 0:
+        scores = vllm_order(logits, prompt.cpu(), prefix, settings) + gumbel(seed, len(prefix), vocab)
+    else:
+        scores = logits.clone()
+        one = lambda v: torch.tensor([float(v)])  # noqa: E731
+        made = torch.tensor([prefix or [vocab]], dtype=torch.long)
+        p, f, r = (settings.get(k, d) for k, d in (("presence_penalty", 0.0), ("frequency_penalty", 0.0),
+                                                     ("repetition_penalty", 1.0)))
+        scores = apply_penalties(scores, prompt.cpu()[None], made, one(p), one(f), one(r))
+    pick = int(scores.argmax())
+    said = "undrafted" if pick == a else "drafted" if pick == b else f"neither ({pick})"
+    return float(scores[0, a] - scores[0, b]), said
 
 
 @app.entrypoint(defaults={"model": DRAFTING})
 def drafted(payload: Drafted, model: VisionLM) -> Pairs:
     """Each setting decoded twice at one seed: without the model's draft head (a fresh engine, the head set aside), then
-    with it. Their tokens must be the same; the run's notes say which call drafted and that its steps replayed graphs."""
+    with it. Where their tokens split, the margin there says whether it was a near tie (`CLEAR`)."""
     processor = model.processor
     tokenizer = processor.tokenizer  # type: ignore[attr-defined]
     tokenizer.padding_side = "left"
@@ -315,32 +366,40 @@ def drafted(payload: Drafted, model: VisionLM) -> Pairs:
         tokenize=False, add_generation_prompt=True, enable_thinking=False,
     )
     inputs = processor(text=[chat], return_tensors="pt").to(hf.device)  # type: ignore[operator]
+    prompt = inputs["input_ids"][0].cpu()
     stops = [t for t in (tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id) if t is not None]
     head = lm.HEADS.get(hf)
 
-    def decode(settings: dict[str, float]) -> list[int]:
+    def decode(settings: dict[str, float]) -> tuple[list[int], dict[str, int]]:
         knobs = {k: int(v) if k == "top_k" else v for k, v in settings.items()}
         made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0],
                            seed=payload.seed, **knobs)[0].tolist()
         end = next((i for i, t in enumerate(made) if t in stops), len(made) - 1)
-        return made[: end + 1]
+        return made[: end + 1], engine_facts(hf)
 
     pairs: list[Pair] = []
-    for settings in DRAFTED:
+    for name, settings in DRAFTED:
         lm.release(hf)
         lm.HEADS.pop(hf, None)
         try:
-            plain = decode(settings)
-        finally:
+            plain, plain_engine = decode(settings)
             lm.release(hf)
+        except TypeError as exc:  # a Runtime that takes fewer settings
+            pairs.append(Pair(name, settings, 0, 0, False, -1, 0.0, "", {}, {}, "", "", error=f"{type(exc).__name__}: {exc}"))
+            continue
+        finally:
             if head is not None:
                 lm.HEADS[hf] = head
-        drafts = decode(settings)
+        drafts, drafted_engine = decode(settings)
+        lm.release(hf)
         first = next((i for i, (a, b) in enumerate(zip(plain, drafts, strict=False)) if a != b), -1)
-        if first < 0 and len(plain) != len(drafts):
+        margin, picks = 0.0, ""
+        if first >= 0:
+            margin, picks = split_margin(hf, prompt, plain[:first], plain[first], drafts[first], settings, payload.seed)
+        elif len(plain) != len(drafts):
             first = min(len(plain), len(drafts))
         pairs.append(Pair(
-            settings, len(plain), len(drafts), plain == drafts, first,
+            name, settings, len(plain), len(drafts), plain == drafts, first, margin, picks, plain_engine, drafted_engine,
             str(tokenizer.decode(plain, skip_special_tokens=True)), str(tokenizer.decode(drafts, skip_special_tokens=True)),
         ))  # fmt: skip
-    return Pairs(pairs, head is not None, metadata.version("cozy-runtime"))
+    return Pairs(pairs, head is not None, metadata.version("cozy-runtime"), payload.arm)
