@@ -171,6 +171,20 @@ pub fn cached_pages(file: &File, off: u64, len: u64) -> Option<(u64, u64)> {
     }
 }
 
+/// `cached_pages` for each of `ranges` of one file, asked together: on overlayfs, whose files report
+/// no pages of their own, one mapping of their span and one `mincore(2)`, not one of each a range.
+pub fn cached_pages_each(file: &File, ranges: &[(u64, u64)]) -> Vec<Option<(u64, u64)>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::cached_pages_each(file, ranges)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        vec![None; ranges.len()]
+    }
+}
+
 /// The OS's page size.
 pub fn page_size() -> u64 {
     #[cfg(target_os = "linux")]
@@ -291,12 +305,35 @@ mod linux {
         rustix::fs::fstatfs(file).is_ok_and(|fs| fs.f_type as i64 == OVERLAYFS_SUPER_MAGIC)
     }
 
+    pub(super) fn cached_pages_each(file: &File, ranges: &[(u64, u64)]) -> Vec<Option<(u64, u64)>> {
+        let (Some(from), Some(to)) = (ranges.iter().map(|r| r.0).min(), ranges.iter().map(|r| r.0 + r.1).max()) else {
+            return Vec::new();
+        };
+        if !overlay(file) {
+            return ranges.iter().map(|&(off, len)| cached_pages(file, off, len)).collect();
+        }
+        let page = page_size();
+        let start = from - from % page;
+        let Some(core) = residency(file, start, (to - start) as usize, page) else {
+            return vec![None; ranges.len()];
+        };
+        ranges.iter().map(|&(off, len)| {
+            let (first, end) = ((off / page - start / page) as usize, ((off + len).div_ceil(page) - start / page) as usize);
+            let held = core.get(first..end.min(core.len())).map_or(0, |pages| pages.iter().filter(|b| *b & 1 == 1).count());
+            Some((held as u64, (end - first) as u64))
+        }).collect()
+    }
+
     /// The pages of `[off, off+len)` in core, by `mincore(2)` over a mapping (never faults).
     fn resident(file: &File, off: u64, len: u64, page: u64) -> Option<u64> {
         let start = off - off % page;
-        let n = (off + len - start) as usize;
+        residency(file, start, (off + len - start) as usize, page).map(|pages| pages.iter().filter(|b| *b & 1 == 1).count() as u64)
+    }
+
+    /// `mincore(2)`'s vector for `n` bytes of `file` from `start` (page aligned), over a mapping.
+    fn residency(file: &File, start: u64, n: usize, page: u64) -> Option<Vec<u8>> {
         if n == 0 {
-            return Some(0);
+            return Some(Vec::new());
         }
         // SAFETY: a read-only shared mapping of our descriptor, unmapped below.
         let p = unsafe {
@@ -317,6 +354,6 @@ mod linux {
         let ok = unsafe { libc::mincore(p, n, pages.as_mut_ptr()) } == 0;
         // SAFETY: unmaps the mapping made above, which nothing else references.
         unsafe { libc::munmap(p, n) };
-        ok.then(|| pages.iter().filter(|b| *b & 1 == 1).count() as u64)
+        ok.then_some(pages)
     }
 }

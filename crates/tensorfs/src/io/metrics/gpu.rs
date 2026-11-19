@@ -37,11 +37,17 @@ pub(crate) fn h2d(device: i32) -> Option<(f64, u32)> {
     Some((gbps, streams))
 }
 
-/// A GPU's ceiling key: its UUID and the driver.
+/// A GPU's ceiling key: its UUID and the driver. Made once a process: every copy run asks it.
 pub(super) fn h2d_key(device: i32) -> Option<String> {
+    static KEYS: std::sync::Mutex<std::collections::BTreeMap<i32, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    if let Some(key) = KEYS.lock().unwrap_or_else(|e| e.into_inner()).get(&device) {
+        return Some(key.clone());
+    }
     let dev = cuda::device_at(device).ok()?;
     let driver = std::fs::read_to_string("/sys/module/nvidia/version").unwrap_or_default();
-    Some(format!("h2d {} {}", cuda::uuid(dev).ok()?, driver.trim()))
+    let key = format!("h2d {} {}", cuda::uuid(dev).ok()?, driver.trim());
+    KEYS.lock().unwrap_or_else(|e| e.into_inner()).insert(device, key.clone());
+    Some(key)
 }
 
 struct PrimaryContext(i32);

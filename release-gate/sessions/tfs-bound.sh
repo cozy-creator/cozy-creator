@@ -69,14 +69,20 @@ record() {
 }
 # ckids <label>: the checkpoints its run read, comma-joined.
 ckids() { jq -r '[.measurements.models[]?.manifest // empty] | unique | join(",")' "$OUT/$1.json" 2> /dev/null; }
+# Each request its own seed (the call memo answers a repeated one: such a run reads nothing), in this shell, not a subshell.
 seed=$((RANDOM * 7))
-qimg() { seed=$((seed + 1)); jq -n --argjson s "$seed" '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: $s}' > "$OUT/qimg-$seed.json"; echo "$OUT/qimg-$seed.json"; }
-sdxl() { seed=$((seed + 1)); jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' > "$OUT/sdxl-$seed.json"; echo "$OUT/sdxl-$seed.json"; }
-h3() { seed=$((seed + 1)); jq -n --argjson s "$seed" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below."},
-  beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' > "$OUT/h3-$seed.json"; echo "$OUT/h3-$seed.json"; }
-run_qimg() { step "$1" run "$SOURCE/qwen-image-2/generate" --input "$(qimg)" --on "$NAME"; record "$1"; }
-run_sdxl() { step "$1" run "$SOURCE/sdxl/generate" --input "$(sdxl)" --on "$NAME"; record "$1"; }
-run_h3() { step "$1" run "$SOURCE/minimax-h3/generate" --input "$(h3)" --on "$NAME"; record "$1"; }
+ask() {
+  seed=$((seed + 1))
+  case $1 in
+    qimg) jq -n --argjson s "$seed" '{prompt: {text: "a lighthouse keeper'"'"'s desk at dawn, watercolor"}, megapixels: 1, prompt_upsampling: false, seed: $s}' ;;
+    sdxl) jq -n --argjson s "$seed" '{prompt: "a lighthouse keeper'"'"'s desk at dawn, watercolor", megapixels: 1.0, aspect_ratio: "1:1", steps: 20, seed: $s}' ;;
+    h3) jq -n --argjson s "$seed" '{summary: {references: [], text: "A lighthouse on a rocky point at dusk, waves breaking below."},
+      beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' ;;
+  esac > "$OUT/$2.req.json"
+}
+run_qimg() { ask qimg "$1"; step "$1" run "$SOURCE/qwen-image-2/generate" --input "$OUT/$1.req.json" --on "$NAME"; record "$1"; }
+run_sdxl() { ask sdxl "$1"; step "$1" run "$SOURCE/sdxl/generate" --input "$OUT/$1.req.json" --on "$NAME"; record "$1"; }
+run_h3() { ask h3 "$1"; step "$1" run "$SOURCE/minimax-h3/generate" --input "$OUT/$1.req.json" --on "$NAME"; record "$1"; }
 # fresh: every executor on the pod ends, so the next run starts a new one and the card is free.
 fresh() { say "fresh: $(T=60 pod "python3 /tmp/lm.py end" < /dev/null 2>&1 | tail -1)"; }
 # load <label> <arm> <env> <args…>: load.py on the pod with the arm's TensorFS, its JSON as <label>.json.
@@ -96,7 +102,11 @@ load() {
 run_qimg qimg-first; QCK=$(ckids qimg-first)
 run_sdxl sdxl-first
 HCK=''
-if [ "$H3" = true ]; then run_h3 h3-first; HCK=$(ckids h3-first); fi
+if [ "$H3" = true ]; then
+  run_h3 h3-first
+  # H3's record is its parent call's: its checkpoints are the pod's minimax-h3 downloads, the largest first.
+  HCK=$(cozy model ls --on "$NAME" --json 2> /dev/null | jq -r '[.models[] | select(.model | test("minimax-h3")) | select(.model | test("lora") | not)] | sort_by(-.bytes) | map(.checkpoint) | reduce .[] as $c ([]; if index([$c]) then . else . + [$c] end) | join(",")')
+fi
 say "checkpoints: qwen-image-2 ${QCK:-none}, h3 ${HCK:-none}"
 [ -n "$QCK" ] || fail "qimg-first named no checkpoint"
 PY=$(T=60 pod "ls -t /var/lib/cozy/tensord/generations/*/env/bin/python | head -1" < /dev/null 2> /dev/null | tail -1)
@@ -120,7 +130,7 @@ for a in "${names[@]}"; do
     say "$a: $(cozy machine show "$NAME" --json | jq -r '"TensorFS \(.status.tensorfs)"')"
   fi
   fresh
-  load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae
+  load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae 2 alone
   if [ -n "$HCK" ]; then
     load "$a-h3-fill" "$a" '' fill "$HCK" transformer 3
     load "$a-h3-paged" "$a" '' paged "$HCK" transformer 3
@@ -135,7 +145,7 @@ for a in "${names[@]}"; do
     [ -n "$env" ] && [ -n "$HCK" ] || continue
     i=$((i + 1)); load "$a-paged-sweep-$i" "$a" "$env" paged "$HCK" transformer 3
   done < <(jq -r --arg a "$a" '.[] | select(.name == $a) | (.paged_sweep // [])[] | to_entries | map("\(.key)=\(.value)") | join(" ")' <<<"$ARMS")
-  if [ "$(jq -r --arg a "$a" '.[] | select(.name == $a) | .runs // true' <<<"$ARMS")" = true ]; then
+  if [ "$(jq -r --arg a "$a" '.[] | select(.name == $a) | if has("runs") then .runs else true end' <<<"$ARMS")" = true ]; then
     fresh; load "$a-evict" "$a" '' evict "${ALLCK//,/ }"
     run_qimg "$a-qimg-cold"
     fresh; run_qimg "$a-qimg-warm"
