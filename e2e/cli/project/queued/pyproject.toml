@@ -7,7 +7,7 @@ name = "e2e-queued"
 version = "0.1.0"
 description = "A shot that reads BiRefNet's weights, timed by its benchmarks as H3's generate: the queue quote cell's (cl-1107)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+dependencies = ["cozy-runtime>=0.49.0.dev0,<0.50", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_queued:app"
