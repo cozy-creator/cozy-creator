@@ -1,5 +1,5 @@
 {
-  "need_s": 18000,
+  "need_s": 19000,
   "max_failures": 8,
   "order": "one-way",
   "floor_mb_s": 100,
