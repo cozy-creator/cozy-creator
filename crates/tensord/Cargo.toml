@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
-platform = { workspace = true, features = ["fetch"] }
+platform = { workspace = true, features = ["fetch", "sqlite"] }
 getrandom.workspace = true
 api = { workspace = true, features = ["hub"] }
 executor-api.workspace = true

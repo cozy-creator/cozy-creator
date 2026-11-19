@@ -977,6 +977,19 @@ fn owed_said(root: &FsPath) -> Option<String> {
     OWED_SAID.lock().expect("owed said").remove(root)
 }
 
+/// What `root`'s last lock says of another program holding this computer's project index open, once (`Store::empty_wal`).
+static INDEX_SAID: LazyLock<Mutex<BTreeMap<PathBuf, String>>> = LazyLock::new(Mutex::default);
+fn index_said(root: &FsPath) -> Option<String> {
+    INDEX_SAID.lock().expect("index said").remove(root)
+}
+
+/// What a close said for an answer that no one asked for (a deadline's lock, Calcifer's stop) goes: a later answer of the
+/// project's never says it.
+fn unsaid(root: &FsPath) {
+    owed_said(root);
+    index_said(root);
+}
+
 fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
     // Under the project's turn and before anything is revoked: a run that still writes into it (one `drain_saves` didn't see
     // start) holds it (cl-1060).
@@ -1041,7 +1054,9 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
             }
             // Locked, nothing of it stays here but its folder (cl-984): not its id, code or keys, so its KEY-N is unknown here (cl-987).
             if !converting {
-                api.calcifer.store().project_locked(&keybag.info().project_id, root).map_err(|e| error("vault_index", e.to_string()))?;
+                if let Some(line) = api.calcifer.store().project_locked(&keybag.info().project_id, root).map_err(|e| error("vault_index", e.to_string()))? {
+                    INDEX_SAID.lock().expect("index said").insert(root.to_owned(), line);
+                }
             }
         }
     }
@@ -1119,6 +1134,8 @@ pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
         drain_saves(api, &root, false, || {})?;
         let transition = exclusive(&root)?;
         close(api, &root, &transition)?;
+        // No answer carries what this close says (logged as it was said): never the project's next one.
+        unsaid(&root);
     }
     Ok(())
 }
@@ -1316,6 +1333,8 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
         Ok(_) => { DUE.lock().expect("vault deadlines").remove(root); }
         Err(failure) => idle_lock_failed(root, &failure),
     }
+    // No answer carries what a deadline's lock says (logged as it was said): never the project's next one.
+    unsaid(root);
 }
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
@@ -1342,7 +1361,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
                 say(root, "activity op", || "its idle clock restarts on a page's activity".into());
             }
         }
-        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
+        return Ok(VaultChanged { vault: status(root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None });
     }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
@@ -1384,7 +1403,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             if ended.is_empty() { return Err(busy); }
             holds(root, RUNS);
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None });
         }
     }
     // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
@@ -1406,7 +1425,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         Err(busy) if settling && busy.code == "project_busy" => {
             holds(root, RUNS);
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
+            return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None });
         }
         Err(error) => return Err(error),
     };
@@ -1417,7 +1436,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if settling && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None } },
+            Err(busy) if settling && busy.code == "project_busy" => break { holds(root, RUNS); VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None, index: None } },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
@@ -1604,7 +1623,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![], owed: owed_said(root) })
+    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![], owed: owed_said(root), index: index_said(root) })
 }
 
 /// What holds an unlocked vault open: why, whether its end stirs the vault clock (one that doesn't is looked at again shortly), and how

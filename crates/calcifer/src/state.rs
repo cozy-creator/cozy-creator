@@ -293,8 +293,8 @@ impl Store {
             }
             Ok(())
         })?;
-        // A reader's snapshot keeps the old pages a moment: emptied by the next write that empties it, never a refused listing.
-        if let Err(e) = self.empty_wal() { tracing::warn!("state.db: {e}"); }
+        // A reader's snapshot keeps the old pages a moment: emptied by the next write, never a refused listing.
+        self.empty_wal();
         Ok(())
     }
 
@@ -442,7 +442,8 @@ impl Store {
     /// A locked encrypted project keeps only where it is here (cl-984): an opaque handle and its folder, so a list offers Unlock.
     /// Its id, code and anything else go, their pages overwritten and the WAL emptied; unlocking opens it, which registers it again
     /// from its own project.db. The handle keys its row and never leaves Calcifer: the list says its keybag's id and code (cl-1171).
-    pub(crate) fn project_locked(&self, id: &str, path: &Path) -> Result<()> {
+    /// What the lock tells a person when another program holds the index open (`empty_wal`).
+    pub(crate) fn project_locked(&self, id: &str, path: &Path) -> Result<Option<String>> {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).expect("the OS gives random bytes");
         let handle = format!("locked-{}", hex::encode(bytes));
@@ -458,7 +459,7 @@ impl Store {
             tx.execute("INSERT INTO projects (id, path, code, used_at_ms) VALUES (?1, ?2, '', ?3)", params![handle, path, used])?;
             Ok(())
         })?;
-        self.empty_wal()
+        Ok(self.empty_wal())
     }
 
     /// A machine's clean-up a lock owes (cl-1064): the lock couldn't reach `machine`, so what it held of the project at `folder`,
@@ -486,18 +487,8 @@ impl Store {
             tx.execute("DELETE FROM machine_owed WHERE machine = ?1 AND view = ?2", params![machine, view.to_string_lossy()])?;
             Ok(())
         })?;
-        self.empty_wal()
-    }
-
-    /// The WAL checkpointed into state.db and emptied, retried while a reader holds an older snapshot: no deleted row's page outlives
-    /// this there.
-    fn empty_wal(&self) -> Result<()> {
-        for _ in 0..40 {
-            let busy: i64 = self.read(|conn| Ok(conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?))?;
-            if busy == 0 { return Ok(()); }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        Err(StoreError::Protected("a reader holds the index's older pages of a project it let go".into()))
+        self.empty_wal();
+        Ok(())
     }
 
     /// Whether each project is being walked, which the next start walks again.

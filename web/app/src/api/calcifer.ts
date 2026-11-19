@@ -3870,7 +3870,12 @@ deferred?: Array<string>,
 /**
  * What a lock says when this computer's machine didn't answer it (cl-1064): its clean-up runs when it next answers.
  */
-owed?: string | null, };
+owed?: string | null,
+/**
+ * What a lock says when another program holds this computer's project index open: the project's id stays in the index's
+ * write log until that program closes (xs-220).
+ */
+index?: string | null, };
 
 /**
  * A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.

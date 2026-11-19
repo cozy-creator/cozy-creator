@@ -63,6 +63,7 @@ parse "$@"
 . "$(dirname "$0")/llm.sh"
 . "$(dirname "$0")/hubdown.sh"
 . "$(dirname "$0")/overhead.sh"
+. "$(dirname "$0")/walheld.sh"
 . "$(dirname "$0")/grants.sh"
 . "$(dirname "$0")/heldmemo.sh"
 
@@ -1040,8 +1041,11 @@ case $SHARD in
     vault_reattach
     vault_unstarted
     lock_hung
+    wal_held
     logs
   " ;;
+  # A lock while a reader outside TensorD holds the machine journal says so (xs-220), alone. Named projectvault-* for its driver.
+  projectvault-wal) parts="wal_held logs" ;;
   # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
   projectvault-reattach) parts="vault_reattach logs" ;;
   # A run its machine hasn't begun never holds a vault past its maximum (cl-1082), alone.

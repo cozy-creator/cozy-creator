@@ -18,6 +18,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 sigstore-verify = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
@@ -36,6 +37,8 @@ seams = ["dep:getrandom", "dep:hex", "dep:libc", "dep:libloading", "dep:nvml-wra
 allocator = ["seams", "dep:libmimalloc-sys"]
 # Fetched archives: a cozy release verified (`release`) and members unpacked (`tools::unpack`).
 fetch = ["seams", "dep:flate2", "dep:serde_json", "dep:sigstore-verify", "dep:tar", "dep:zip"]
+# A SQLite store's WAL emptied once rows go (`durable::wal`): TensorD's journal and Calcifer's state.db.
+sqlite = ["seams", "dep:rusqlite"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }

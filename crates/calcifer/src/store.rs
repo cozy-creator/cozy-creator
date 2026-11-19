@@ -587,10 +587,15 @@ pub(crate) struct Store {
     writer: Mutex<Connection>,
     readers: Readers,
     durable: Durable,
+    /// state.db's own path: who holds its WAL open is asked of it (`empty_wal`).
+    path: std::path::PathBuf,
 }
 
 /// How many reads go on at once: a slow one (a scan on a cold, busy disk) holds up only itself (cl-1010).
 const READERS: usize = 8;
+
+/// state.db's WAL, emptied once a deletion takes what must leave no trace (cl-984, cl-1031).
+static WAL: platform::durable::wal::Wal = platform::durable::wal::Wal::new("state.db");
 
 /// The store's read connections. WAL lets each read while the writer commits.
 struct Readers {
@@ -608,6 +613,15 @@ impl Readers {
             Ok(reader)
         }).collect::<Result<_>>()?;
         Ok(Self { idle: Mutex::new(conns), returned: std::sync::Condvar::new() })
+    }
+
+    /// Every reader, once none reads: held, no read starts until they're let go.
+    fn all(&self) -> std::sync::MutexGuard<'_, Vec<Connection>> {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        while idle.len() < READERS {
+            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
+        }
+        idle
     }
 
     /// An idle reader, waited for while every one reads.
@@ -2051,10 +2065,13 @@ impl Store {
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
         if wal { checkpoint_beside(&mut writer, path)?; }
+        // What an earlier run owed its WAL (a reader outside Calcifer held a deletion's pages) goes now, before any read here.
+        WAL.empty(&writer);
         Ok(Self {
             writer: Mutex::new(writer),
             readers,
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
+            path: path.to_path_buf(),
         })
     }
 
@@ -2148,6 +2165,23 @@ impl Store {
         }
     }
 
+    /// The WAL emptied once a deletion took what must leave no trace (cl-984, cl-1031): on a reader's connection, every reader
+    /// held so none reads meanwhile. A reader outside Calcifer that holds an older snapshot, or a write in flight, leaves it owed,
+    /// said once, and the next write empties it (`write`), or the next start. When another program holds it, what a person is
+    /// told: what still holds the deleted rows' pages, and until when.
+    pub(crate) fn empty_wal(&self) -> Option<String> {
+        let readers = self.readers.all();
+        let emptied = readers.first().is_none_or(|reader| WAL.empty(reader));
+        drop(readers);
+        if emptied {
+            return None;
+        }
+        // Only a holder the OS names: with none (or off Linux), the emptying may wait on a write of Calcifer's own, which retries it.
+        let (pid, name) = platform::durable::wal::holder(&self.path)?;
+        let who = if name.is_empty() { format!(" (pid {pid})") } else { format!(" ({name}, pid {pid})") };
+        Some(format!("another program{who} has this computer's project index open, so the project's id stays in the index's write log until that program closes"))
+    }
+
     /// One transaction, durable when it returns. Its flush can wait seconds on a busy disk's
     /// write-back: on a multi-thread runtime the worker says so first, so its other tasks (the
     /// API's among them) move on. The flush runs outside the writer lock: others commit meanwhile.
@@ -2167,6 +2201,11 @@ impl Store {
                 (value, self.durable.committed())
             };
             self.durable.wait(commit)?;
+            // An emptying the WAL owes is tried now the writer let go (`empty_wal`): by the first write after it became owed, then
+            // at most once a second.
+            if WAL.retry() {
+                self.empty_wal();
+            }
             Ok(value)
         };
         match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
