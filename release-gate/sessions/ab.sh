@@ -203,6 +203,9 @@ for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socke
             raw = b"".join(struct.pack("<I", int(host[i:i + 8], 16)) for i in range(0, len(host), 8))
             print(f"{socket.inet_ntop(family, raw)}:{int(port, 16)} {owners.get(f[9], chr(63))}")'
 listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
+# PROOF ONLY (se-176): the container's memory, its cgroup's peak since boot and now and the host's available, each minute
+# while a cell runs (host.tsv) and after each cell.
+hostmem() { timeout 60 cozy machine ssh "$NAME" 'echo "cgroup_peak $(cat /sys/fs/cgroup/memory.peak 2> /dev/null || echo -) cgroup_now $(cat /sys/fs/cgroup/memory.current 2> /dev/null || echo -) available_kb $(awk "/^MemAvailable/ {print \$2}" /proc/meminfo) total_kb $(awk "/^MemTotal/ {print \$2}" /proc/meminfo)"' < /dev/null 2> /dev/null | grep -E '^cgroup_peak' | tail -1; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
     # Every 5 min the pod's own GPU readings (gpu-pod.log: a stalled cell's other holder is named there); each minute its listeners,
@@ -210,6 +213,7 @@ echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunre
     # 42 minutes at 0 B left none to read (cl-1189).
     [ $((p % 20)) != 10 ] || readings
     [ $((p++ % 4)) != 0 ] || { k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"
+      [ -z "$k" ] || echo "$(date -u +%T) $k $(hostmem)" >> "$OUT/host.tsv"
       [ -z "$NAME" ] || { timeout 60 cozy machine logs "$NAME" -n 0 > "$OUT/tensord-now.log.next" 2>&1 && mv "$OUT/tensord-now.log.next" "$OUT/tensord-now.log"; }; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
@@ -342,6 +346,7 @@ for k in "${names[@]}"; do
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
+  say "$k host memory after: $(hostmem)"
   say "$k has/needs/extras: $(jq -c '[.measurements.weights?, (.calls[]? | select(.measurements.weights? != null) | {(.function // "call"): .measurements.weights})] | map(select(. != null))' "$OUT/$k.json" 2>/dev/null)"
   # until_idle {region, step_s, max}: while this request's record says the idle queue hadn't reached `region` before it
   # (`graphs.<region>.idle.queued` > 0), wait step_s more and ask again with the next seed (`<cell>-w<i>`), up to max
