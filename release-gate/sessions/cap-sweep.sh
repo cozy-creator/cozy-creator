@@ -22,10 +22,18 @@
 #   need_s     the session's seconds from its start, which the cap in USD must buy (3600), at most 19800: a hosted job
 #              ends at 6 h with nothing kept
 #   stall_s    how long a run's progress may stand before the pod's GPU and disk are read (1800)
+#   twin_s     an uncapped twin's time cap (2400)
+#   provider   the GPU provider the rental is ordered from (runpod or vast; empty: the Hub's choice)
+#   quiet_s    lib.sh's quiet window; set it above stall_s, which judges a quiet run here by the pod's GPU and disk
 #   file       a JSON file in this checkout holding all of these (lib.sh)
+# A cell that completed under the cap runs once more uncapped on the same pod (`<cell>-uncapped`, another seed) unless its
+# `twin` is false: what the cap costs in time. Every record must name the Runtime and TensorFS the pod was moved to: a cell
+# that ran another pair measured nothing, and the session stops there (so would every cell after it).
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree '') CAPV=$(param cap 6GiB) RW=$(param runtime '') TW=$(param tensorfs '') CELLS=$(param cells '[]')
-STALL=$(param stall_s 1800) NEED=$(param need_s 3600)
+STALL=$(param stall_s 1800) NEED=$(param need_s 3600) PROVIDER=$(param provider '')
+[[ $PROVIDER =~ ^(|runpod|vast)$ ]] || fail "provider $PROVIDER"
+[ "$QUIET_S" -gt "$STALL" ] || fail "quiet_s $QUIET_S: lib.sh's step would end a quiet run before stall_s $STALL judges it"
 [[ $CAPV =~ ^[0-9]+[MG]iB$ ]] || fail "cap $CAPV"
 [[ $STALL =~ ^[0-9]+$ && $NEED =~ ^[0-9]+$ ]] || fail "stall_s $STALL, need_s $NEED"
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: a hosted job ends at 6 h with nothing kept; split the session"
@@ -95,7 +103,7 @@ printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-RENT_ARGS=--ssh
+RENT_ARGS="--ssh${PROVIDER:+ --provider $PROVIDER}"
 quote "$NEED"
 rent
 jq -e '.status.gpus | length == 1' "$OUT/show.json" > /dev/null || fail "not one GPU"
@@ -260,7 +268,7 @@ publish() {
 ran=0 completed=0 failed=0 unfinished=0 skipped=0 LOST=''
 # run <cell> <name> <budget>: the cell's request once under <budget> (the cap, or `off` for its uncapped twin), as <name>.
 run() {
-  local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i
+  local k=$1 name=$2 budget=$3 c target most limit left N st smi steps total='' ex='' peak='' memo='' throttled='' stood='' why='' verdict code i sw
   local -a args
   c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
   mapfile -t args < <(jq -r '.args[]' <<< "$c")
@@ -313,10 +321,17 @@ run() {
       | ($r.phases.steady_s // $r.phases.step1_s) as $s | (($p.b | tonumber) - ($p.a | tonumber)) as $n
       | if $s and $n > 0 then "\($n) steps of this stage left at \($s) s each: about \($n * $s | floor) s more" else "no step rate in its record" end' 2> /dev/null); $why"
   fi
+  # The pair its executor ran (none in a record that never started one) must be the one the pod was moved to.
+  sw=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(type == "object") | .software // empty
+    | "Runtime \(.runtime // "?") · TensorFS \(.tensorfs // "?")") | unique | join(", ")' "$OUT/$name.json" 2> /dev/null)
+  if [ -n "$sw" ] && [ "$sw" != "Runtime $rt · TensorFS $tfs" ]; then
+    verdict=VOID why="it ran $sw, not Runtime $rt · TensorFS $tfs; $why"
+    LOST="$name ran $sw, not the builds under test (Runtime $rt · TensorFS $tfs)"
+  fi
   [ "$budget" = off ] || ENDED[$k]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
-  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
+  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | memoized ${memo:-?} | throttled ${throttled:-?} | ${sw:-no software in its record} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
   publish "$name" "$verdict" "$why"
   if [ "$st" = completed ] && jq -e --arg k "{out:$name|" 'any(.[].args[]; contains($k))' <<< "$CELLS" > /dev/null; then
     (cd "$RUN_PROJECT" && cozy run watch "$N" --once -o "$OUT/$name.out") > /dev/null 2>&1
@@ -334,12 +349,12 @@ for k in "${names[@]}"; do
   if [ -n "$why" ]; then say "CELL $k | NOT RUN: $why"; skipped=$((skipped + 1)); continue; fi
   run "$k" "$k" "$CAPV"
 done
-# The uncapped twins, on the same pod after one restart: each cell that failed under the cap (a capacity failure passes
-# here and shows what the request wants), and each marked `twin` (no uncapped time of its function is recorded).
+# The uncapped twins, on the same pod after one restart: each cell that completed under the cap, unless its `twin` is false
+# (an uncapped time of that request on this code is already in the ledger).
 twins=()
 for k in "${names[@]}"; do
-  [ -n "${ENDED[$k]:-}" ] || continue
-  if [ "${ENDED[$k]}" = failed ] || [ "$(jq -r --arg k "$k" 'map(select(.name == $k)) | first | .twin // false' <<< "$CELLS")" = true ]; then twins+=("$k"); fi
+  [ "${ENDED[$k]:-}" = completed ] || continue
+  [ "$(jq -r --arg k "$k" 'map(select(.name == $k)) | first | .twin // true' <<< "$CELLS")" = false ] || twins+=("$k")
 done
 if [ "${#twins[@]}" -gt 0 ] && [ -z "$LOST" ] && [ $(( END_AT - $(date +%s) )) -gt 900 ]; then
   step uncap machine update "$NAME" --gpu-memory-limit off -y || say "lifting the cap: $(tail -c 300 "$OUT/uncap.txt")"

@@ -1,0 +1,53 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
+ "need_s": 10800,
+ "twin_s": 1500,
+ "stall_s": 1800,
+ "quiet_s": 10800,
+ "floor_mb_s": 25,
+ "provider": "runpod",
+ "cells": [
+  {
+   "name": "h3-up-2160p-15s",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip15}",
+    "to=2160p",
+    "strength:=0.909",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+   ],
+   "max_s": 3600
+  },
+  {
+   "name": "h3-up-2160p-5s",
+   "target": "minimax-h3/upscale",
+   "args": [
+    "--file",
+    "video={clip5}",
+    "to=2160p",
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+   ],
+   "max_s": 2400,
+   "unless": "h3-up-2160p-15s"
+  },
+  {
+   "name": "h3-edit-hardest",
+   "target": "minimax-h3/edit",
+   "args": [
+    "--file",
+    "plate={clip15}",
+    "edit=character_swap",
+    "summary=<Hero> stands in the scene.",
+    "references:=[{\"name\":\"Hero\",\"image\":\"{pic1}\"}]",
+    "beats:=[{\"description\":\"<Hero> replaces the subject and follows its motion.\",\"duration\":15}]",
+    "quality=full",
+    "seed:=30007"
+   ],
+   "max_s": 3000
+  }
+ ]
+}

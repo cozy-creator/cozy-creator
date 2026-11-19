@@ -1,0 +1,80 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
+ "need_s": 9000,
+ "twin_s": 900,
+ "stall_s": 1800,
+ "quiet_s": 10800,
+ "floor_mb_s": 25,
+ "provider": "runpod",
+ "cells": [
+  {
+   "name": "ltx-hardest",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "duration_s:=20",
+    "resolution=1080p",
+    "--file",
+    "first_frame={pic1}",
+    "seed:=30010"
+   ],
+   "max_s": 1800
+  },
+  {
+   "name": "ltx-default",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "seed:=30011"
+   ],
+   "max_s": 1200,
+   "unless": "ltx-hardest"
+  },
+  {
+   "name": "ltx-720p-5s",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "resolution=720p",
+    "seed:=30012"
+   ],
+   "max_s": 1200,
+   "unless": "ltx-default"
+  },
+  {
+   "name": "ltx-i2v-5s",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+    "--file",
+    "first_frame={pic1}",
+    "seed:=30070"
+   ],
+   "max_s": 1200
+  },
+  {
+   "name": "pan2-5s",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
+    "duration:=5",
+    "seed:=30013"
+   ],
+   "max_s": 2400
+  },
+  {
+   "name": "pan2-hardest",
+   "target": "pan2/generate",
+   "args": [
+    "instructions=<Start>. A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left, stops at the centre and looks around. One continuous wide shot.",
+    "references:=[{\"name\":\"Start\",\"image\":\"{pic1}\"}]",
+    "duration:=20",
+    "seed:=30009"
+   ],
+   "max_s": 1500
+  }
+ ]
+}

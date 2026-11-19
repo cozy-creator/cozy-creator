@@ -1,0 +1,35 @@
+{
+ "tree": "rc",
+ "cap": "6GiB",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
+ "need_s": 9000,
+ "twin_s": 1800,
+ "stall_s": 1800,
+ "quiet_s": 10800,
+ "floor_mb_s": 25,
+ "provider": "runpod",
+ "cells": [
+  {
+   "name": "hunyuan-turbo-hardest",
+   "target": "hunyuan-image-3/generate_turbo",
+   "args": [
+    "prompt=<P1>, <P2>, <P3> together on the rocks below the lighthouse",
+    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"}]",
+    "prompt_upsampling:=true",
+    "seed:=30020"
+   ],
+   "max_s": 2700
+  },
+  {
+   "name": "hunyuan-turbo-default",
+   "target": "hunyuan-image-3/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, a paper banner overhead reads \"WELCOME\"",
+    "seed:=30021"
+   ],
+   "max_s": 3300,
+   "unless": "hunyuan-turbo-hardest"
+  }
+ ]
+}
