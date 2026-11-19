@@ -47,8 +47,9 @@
 #              and 65,000-character prompt, and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
-#              "pod_sh" (optional: {"during", "after"}, each a root shell on the pod over `cozy machine ssh`: `during` each 5 s
-#              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to 15 min), into <cell>-pod-after.log);
+#              "pod_sh" (optional: {"during", "after", "after_s"}, each a root shell on the pod over `cozy machine ssh`: `during` each 5 s
+#              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to `after_s` seconds, 900
+#              by default), into <cell>-pod-after.log);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -92,6 +93,7 @@ mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS")
   [[ $k =~ ^[A-Za-z0-9_-]+$ ]] && [ "$(jq --arg k "$k" 'map(select(.name==$k)) | length' <<<"$CELLS")" = 1 ] || fail "cell names must be unique words: $k"
+  [[ $(jq -r '.pod_sh.after_s // 900' <<<"$c") =~ ^[1-9][0-9]*$ ]] || fail "cell $k: pod_sh.after_s is seconds"
   if [ -z "$(jq -r '.tree // empty' <<<"$c")" ]; then say "cell $k: published $(jq -r .target <<<"$c") $(jq -r '.args | join(" ")' <<<"$c")"; continue; fi
   t=$PACKAGES/$(jq -r .tree <<<"$c")/$(jq -r .target <<<"$c")
   [ -d "${t%/*}" ] || fail "cell $k: no ${t#$PACKAGES/}"
@@ -319,7 +321,7 @@ for k in "${names[@]}"; do
   [ -z "$during" ] || { ( while :; do echo "== $(date -u +%T.%3N)"; pod_sh "$during"; sleep 5; done ) >> "$OUT/$k-pod-during.log" 2>&1 & PW=$!; }
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$PW" ] || kill "$PW" 2> /dev/null
-  [ -z "$after" ] || pod_sh "$after" 900 > "$OUT/$k-pod-after.log" 2>&1
+  [ -z "$after" ] || pod_sh "$after" "$(jq -r '.pod_sh.after_s // 900' <<<"$c")" > "$OUT/$k-pod-after.log" 2>&1
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
