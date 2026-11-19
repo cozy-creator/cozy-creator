@@ -2,25 +2,25 @@
 # pod with its datacenter's NFS drive is quoted for a model's download, against what it took, by tier. One rental asked of RunPod
 # (its Hub then ranks a datacenter with a drive first), from a dev home, every step through this runner's cozy; the pod runs the
 # session's TensorD. A box of `tool`, whose model is `model`, rendered on the pod alone:
-#   1. cold:  on the fresh pod, no page showing the project; then `measure` installed. What came from the Hub is written to the drive
-#             behind them, and the session waits for that.
-#   2. drive: the pod's service restarted and `model` and `measure` uninstalled, so its store holds neither and its drive both.
-#             `measure` is installed again, off the drive: a restart forgets the drive's rate, and 1 GiB read measures it again.
-#             Then rendered on another seed, so its quote times the drive's bytes at the rate measured.
+#   1. cold:  on the fresh pod, no page showing the project. What came from the Hub is written to the drive behind the run, and the
+#             session waits for that.
+#   2. drive: the pod's service restarted and `model` uninstalled, so its store holds none of it and its drive all of it. A restart
+#             forgets the drive's rate: `model` installed off the drive (its lane as step 1 read it, no executor loading it) measures it
+#             again, and is uninstalled. Then rendered on another seed: its quote times the drive's bytes at the rate measured.
 #   3. ahead: uninstalled again, then a page shows the project: the box's guess is made ready on the pod, its row's bytes sampled;
 #             then rendered.
 # Each render says its quote (`placed`), what its run waited for (`measurements.weights`), what the pod says of itself
-# (`cozy machine show`) and what TensorFS landed by tier (the pod's `landed` lines since the step began). It judges none of the
-# numbers: it fails when the pod mounted no drive, or a step does.
+# (`cozy machine show`: its disk and what its store holds of the model; not its link's or drive's rate, nor what the drive holds,
+# which reach only Calcifer's quote) and what TensorFS landed by tier (the pod's `landed` lines since the step began). It judges
+# none of the numbers: it fails when the pod mounted no drive, or a step does.
 # The $0 pre-flight also says what each of `candidates` costs on RunPod. params:
 #   tool, fields   the box (default sdxl/generate, a prompt); model, its repository (default stabilityai/sdxl)
-#   measure        a model of at least 1 GiB the box doesn't read (default xinsir/controlnet-union-sdxl-promax, SDXL's ControlNet)
 #   candidates     SKUs priced in the pre-flight, space-separated
 #   datacenters    those the quote may name, space-separated, or nothing is ordered (default: the six with a standard drive on 11-09,
 #                  xs-041; empty: any)
 #   need_s         the seconds the cap must buy (default 1800)
 . "$(dirname "$0")/lib.sh"
-TOOL=$(param tool sdxl/generate) MODEL=$(param model stabilityai/sdxl) MEASURE=$(param measure xinsir/controlnet-union-sdxl-promax)
+TOOL=$(param tool sdxl/generate) MODEL=$(param model stabilityai/sdxl)
 FIELDS=$(param fields '{"prompt": "a brass compass on a walnut desk", "seed": 1282}')
 V=$(cozy --version | awk '{print $2}')
 [[ $V == *-dev* ]] || fail "cozy $V is no RC build: dispatch with cozy=<a dev-build run id>"
@@ -59,12 +59,11 @@ ours start
 (cd "$RUN_PROJECT" && cozy machine use "$NAME") > "$OUT/use.txt" 2>&1 || fail "machine use $NAME: $(tail -c 300 "$OUT/use.txt")"
 run_page add draw --tool "$TOOL" --fields "$FIELDS" > "$OUT/box.json" 2>&1 || fail "the box: $(tail -c 300 "$OUT/box.json")"
 
-# pod <file>: what the pod says of itself now; said: its link and drive rates, disk, and what its store and drive hold of the model.
+# pod <file>: what the pod says of itself now; said: its disk, what its store holds of the model, and its downloads.
 pod() {
   cozy machine show "$NAME" --json > "$1" 2> /dev/null || true
-  jq -c --arg m "$MODEL" '{link_bytes_per_s: .status.link_bytes_per_s, drive_bytes_per_s: .status.drive_bytes_per_s, free: .status.disk.free_bytes,
-    model: [.status.models[]? | select(.repository == $m) | .checkpoints[]? | {lane, bytes, held_bytes, drive_bytes, complete}],
-    reads: [.status.times[]?.reads[]? | select(.model == $m) | {bytes, missing, drive}],
+  jq -c --arg m "$MODEL" '{free: .status.disk_free_bytes, nfs_drive: .rental.nfs_drive,
+    model: [.status.models[]? | select(.repository == $m) | {total_bytes, checkpoints: [.checkpoints[]? | {lane, complete}]}],
     downloads: [.status.activity[]? | select(.kind == "download") | {subject, bytes_done, bytes_total, bytes_here, bytes_per_s}]}' "$1" 2> /dev/null
 }
 # landed <step> <since, Unix s>: what TensorFS landed on the pod since then, by tier, from its log's window.
@@ -125,29 +124,23 @@ absent() {
   run_page set draw --fields "{\"seed\": $2}" > "$OUT/$1-seed.txt" 2>&1 || fail "$1: seed: $(tail -c 300 "$OUT/$1-seed.txt")"
 }
 
-say "step 1: cold, no page showing the project; then $MEASURE installed"
+say "step 1: cold, no page showing the project"
 render cold
-from=$(date +%s)
-step cold-measure model install "$MEASURE" --on "$NAME" || fail "cold: $MEASURE not installed: $(tail -c 300 "$OUT/cold-measure.txt")"
-landed cold-measure "$from"
-# What the Hub sent is written to the drive behind them, two objects at a time (about 65 MB/s, xs-041).
-hub=$(awk '/^cold(-measure)?: tier Origin:/ {n += $6} END {print n + 0}' "$R")
+LANE=$(jq -r --arg m "$MODEL" '[.status.models[]? | select(.repository == $m) | .checkpoints[]? | select(.complete) | .lane] | first // empty' "$OUT/cold-after.json")
+# What the Hub sent is written to the drive behind the run, two objects at a time (about 65 MB/s, xs-041).
+hub=$(awk '/^cold: tier Origin:/ {n += $6} END {print n + 0}' "$R")
 wait_s=$(( hub / 40000000 + 30 )); [ "$wait_s" -le 600 ] || wait_s=600
 say "the Hub sent $hub bytes: ${wait_s} s for them to reach the drive"
 sleep "$wait_s"
 
-say "step 2: drive, the model and $MEASURE on the pod's drive and neither in its store"
+say "step 2: drive, the model on the pod's drive and none of it in its store"
 absent drive 1283
-step drive-unmeasure model uninstall "$MEASURE" --on "$NAME" || fail "drive: uninstall $MEASURE"
 from=$(date +%s)
-step drive-measure model install "$MEASURE" --on "$NAME" || fail "drive: $MEASURE not installed again: $(tail -c 300 "$OUT/drive-measure.txt")"
+step drive-measure model install "$MODEL" ${LANE:+--lane "$LANE"} --on "$NAME" || fail "drive: $MODEL not installed off the drive: $(tail -c 300 "$OUT/drive-measure.txt")"
 landed drive-measure "$from"
-# What the drive holds of the model, as the pod says it, before draw is quoted: the pod looks behind its Status.
-for _ in $(seq 30); do
-  pod "$OUT/drive-look.json" > /dev/null
-  jq -e --arg m "$MODEL" '[.status.times[]?.reads[]? | select(.model == $m) | .drive // 0] | add // 0 | . > 0' "$OUT/drive-look.json" > /dev/null && break
-  sleep 2
-done
+step drive-unmeasure model uninstall "$MODEL" --on "$NAME" || fail "drive: uninstall $MODEL again"
+# The pod looks at what its drive holds of what its store lacks behind its Status; Calcifer's quote reads the frame it sends.
+sleep 15
 render drive
 
 say "step 3: ahead, a page shows the project"
