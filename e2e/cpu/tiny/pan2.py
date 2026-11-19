@@ -100,4 +100,8 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "first-frame",
      "payload": {**_SMALL, "instructions": _instructions(_OPENING, "opening"), "aspect_ratio": "16:9", "guidance": 2.5},
      "files": {"instructions.references.0.file": _shared.picture("opening", 96, 64)}, "check": video(1248, 704, 25)},
+    # PAN2's agent skill as the rewriter (xs-222): the tiny reasoner's replies fail its caption checks, the first and the
+    # correction, so the video renders the instructions as written, with a warning: `text`'s video.
+    {"entry": "generate", "name": "upsampled", "payload": {**_SMALL, "prompt_upsampling": True},
+     "models": {"generate.models.reasoner": REASONER}, "same_as": "generate/text", "check": video(1248, 704, 25)},
 ]
