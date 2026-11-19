@@ -294,8 +294,10 @@ guard() {
 unpin() {
   local m; m=$(cozy --json machine show "$1" < /dev/null 2> /dev/null | jq -r '.name // empty' 2> /dev/null)
   [ -n "$m" ] || return 0
-  timeout 60 cozy --json run ls --all --on "$m" < /dev/null 2> /dev/null | jq -r '.runs[]? | select(.status == "queued" or .status == "in_progress") | .id' |
-    while read -r id; do cozy run cancel "$id" -y < /dev/null >> "$OUT/end.txt" 2>&1 && say "canceled $id on $m before it ends"; done
+  # Asked from the session's project, as `run ls` lists runs (control-plane.sh, gpuless-render.sh).
+  (cd "$RUN_PROJECT" && timeout 60 cozy --json run ls --all --limit 0 --on "$m" < /dev/null) > "$OUT/unpin-$m.json" 2>&1
+  jq -r '.runs[]? | select(.status == "queued" or .status == "in_progress") | .id' "$OUT/unpin-$m.json" 2> /dev/null |
+    while read -r id; do (cd "$RUN_PROJECT" && cozy run cancel "$id" -y < /dev/null) >> "$OUT/end.txt" 2>&1 && say "canceled $id on $m before it ends"; done
 }
 
 # billed <rental id>: what the Hub bills for it, and what its provider does, from the account's rentals of the last day.
