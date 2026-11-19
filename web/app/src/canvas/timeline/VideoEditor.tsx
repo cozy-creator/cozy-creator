@@ -620,7 +620,7 @@ export function VideoEditor({ name, settings }: { name: string; settings?: React
   const pulled = trim ? layout.placed[trim.index] : undefined
   return (
     <>
-      <FocusFrame enabled aspect={aspect} zooms={false} under={<Transport playback={preview} frames={layout.frames} fps={fps} />}>
+      <FocusFrame aspect={aspect} zooms={false} under={<Transport playback={preview} frames={layout.frames} fps={fps} />}>
         <div className="tl-player" style={{ aspectRatio: aspect }} tabIndex={-1} onKeyDown={key}>
           <Monitor preview={preview} layout={layout} empty={!clips.length} />
           {asset?.rendering != null && (

@@ -120,6 +120,30 @@ export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind 
 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
+/** No box is wider, nor taller, than this; a pulled shape is no lower. */
+export const WIDEST = 1600
+export const LOWEST = 90
+
+/** The pictures and videos a run was sent, by their files, from every prompt it was sent (binder.rs `prompt`: a Shot's summary and its
+ *  beats alike), each once: none when no prompt says anything of them. */
+export function sentPictures(input: unknown): string[] | undefined {
+  const found = new Set<string>()
+  let said = false
+  const walk = (value: unknown) => {
+    if (Array.isArray(value)) return value.forEach(walk)
+    if (!value || typeof value !== "object") return
+    const references = (value as { references?: unknown }).references
+    if (Array.isArray(references)) {
+      said = true
+      for (const reference of references as ({ type?: unknown; file?: unknown } | null)[]) {
+        if ((reference?.type === "image" || reference?.type === "video") && typeof reference.file === "string" && /^(sha256:)?[0-9a-f]{64}$/i.test(reference.file)) found.add(reference.file)
+      }
+    }
+    Object.values(value).forEach(walk)
+  }
+  walk(input)
+  return said ? [...found] : undefined
+}
 
 export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 

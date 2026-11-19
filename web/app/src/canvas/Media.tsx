@@ -16,7 +16,7 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { tabShown, useSignal } from "../ui/signal"
-import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
+import { aspectOf, faceOf, hexOf, makes, makingRun, sentPictures, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { streamedWords } from "./streamed"
@@ -731,27 +731,6 @@ export function Spread({ pictures, cardWidth, className }: { pictures: SpreadPic
       ))}
     </div>
   )
-}
-
-/** The pictures and videos a run was sent, by their files, from every prompt it was sent (binder.rs `prompt`: a Shot's summary and its
- *  beats alike), each once: none when no prompt says anything of them. */
-function sentPictures(input: unknown): string[] | undefined {
-  const found = new Set<string>()
-  let said = false
-  const walk = (value: unknown) => {
-    if (Array.isArray(value)) return value.forEach(walk)
-    if (!value || typeof value !== "object") return
-    const references = (value as { references?: unknown }).references
-    if (Array.isArray(references)) {
-      said = true
-      for (const reference of references as ({ type?: unknown; file?: unknown } | null)[]) {
-        if ((reference?.type === "image" || reference?.type === "video") && typeof reference.file === "string" && /^(sha256:)?[0-9a-f]{64}$/i.test(reference.file)) found.add(reference.file)
-      }
-    }
-    Object.values(value).forEach(walk)
-  }
-  walk(input)
-  return said ? [...found] : undefined
 }
 
 /** An image or a video being made, at rest (cl-940; cl-947 for a video's summary, Paul 11-12): the pictures its run reads, full-bleed,

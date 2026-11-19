@@ -929,9 +929,7 @@ function Canvas({
   const nodeDrag = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragging(event, nodes), [dragging])
   const nodeDragStop = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
 
-  // Far out, a card shows its picture, its name and little else.
   const band = useCameraValue((view) => bandOf(view.zoom))
-  useLayoutEffect(() => store.far.set(band === 2), [store, band])
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
   const unzoom = useCameraValue((view) => 2 ** -Math.ceil(Math.log2(view.zoom || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])

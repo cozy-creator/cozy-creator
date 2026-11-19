@@ -331,8 +331,6 @@ export class CanvasStore {
   focusZoomBy?: (direction: number) => void
   focusZoomTo?: (scale: number) => void
   focusFit?: () => void
-  /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
-  readonly far = signal(false)
   /** Its boxes drawn once. What hangs on each, the line under it, its meter and its corner, comes the paint after: none of them takes room
    *  in it, and the frame a project opens in is its boxes alone (cl-982). */
   readonly drawn = signal(false)
