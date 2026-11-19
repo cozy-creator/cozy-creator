@@ -56,7 +56,7 @@ latest_store=$(su_store)
 [ -n "$latest_store" ] && [ -n "$cand_store" ] || { check "forward update: no store version: the Latest's ${latest_store:-none}, the candidate's ${cand_store:-none}"; return 1; }
 SU_STORE=''
 [ "$latest_store" -ge "$cand_store" ] || SU_STORE="the Latest $latest reads Calcifer's store to version $latest_store, the candidate's is $cand_store"
-mkdir -p "$P" && in_project "$P" --json new --unencrypted > "$OUT/fw-new.json" 2>&1 || { check "forward update: cozy $latest's cozy new: $(tail -c 300 "$OUT/fw-new.json")"; return 1; }
+mkdir -p "$P" && in_project "$P" --json new --unencrypted . > "$OUT/fw-new.json" 2>&1 || { check "forward update: cozy $latest's cozy new: $(tail -c 300 "$OUT/fw-new.json")"; return 1; }
 RUN_PROJECT=$P cell fw-before "$E2E_NEXT/echo" text=before || return 1
 id=$(run_get "$OUT" fw-before .id)
 
@@ -303,7 +303,7 @@ jq -e --arg m "${latest%.*}." '.status.version | startswith($m)' "$OUT/machine.j
 
 # A run of it, in a project of the Latest's: it completes, local moved to a Runtime that runs it.
 local P=$OUT/selfupdate-project
-mkdir -p "$P" && in_project "$P" --json new --unencrypted > "$OUT/su-new.json" 2>&1 || { check "self update: cozy new: $(tail -c 300 "$OUT/su-new.json")"; return; }
+mkdir -p "$P" && in_project "$P" --json new --unencrypted . > "$OUT/su-new.json" 2>&1 || { check "self update: cozy new: $(tail -c 300 "$OUT/su-new.json")"; return; }
 RUN_PROJECT=$P cell su-run "$E2E_NEXT/echo" text=updated || true
 machine_ready
 local runtime; runtime=$(jq -r .status.runtime "$OUT/machine.json")

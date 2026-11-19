@@ -246,7 +246,7 @@ vault_no_fuse() (
   printf '%s\n' 'synthetic no-fuse passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
   cozy --json new "$work/p" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" || code=$?
   [ "$code" != 0 ] && jq -e --arg i "$install" '.error.code == "vault_dependency_missing" and .error.kind == "conflict"
-      and (.error.message | contains($i)) and ((.error.next | index($i)) != null) and ((.error.next | index("cozy new --unencrypted")) != null)' "$work/new.json" > /dev/null \
+      and (.error.message | contains($i)) and ((.error.next | index($i)) != null) and ((.error.next | index("cozy new --unencrypted <directory>")) != null)' "$work/new.json" > /dev/null \
     || check "no FUSE: cozy new --passphrase-file: exit $code, not the refusal naming \`$install\`: $(head -c 500 "$work/new.json") $(tail -c 200 "$work/new.err")"
   # The page's ask, as the page sends it: a typed 409, never a 503.
   holder=$HOME/.cozy/calcifer/calcifer.lock.holder

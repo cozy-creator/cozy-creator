@@ -576,7 +576,7 @@ for file in project.yaml project.lock project.canvas.yaml project.db.new; do
   if (cd "$old" && cozy --json status) > "$old/status.json" 2> "$old/status.err"; then check "$file alone is a project"; fi
   grep -q not_in_a_project "$old/status.json" "$old/status.err" || check "$file alone: status says $(tail -c 300 "$old/status.err"), not that it's no project"
   if [ "$file" != project.db.new ]; then
-    (cd "$old" && cozy --json new --unencrypted) > "$old/new.json" 2> "$old/new.err" || check "$file beside: cozy new: $(tail -c 300 "$old/new.err")"
+    (cd "$old" && cozy --json new --unencrypted .) > "$old/new.json" 2> "$old/new.err" || check "$file beside: cozy new: $(tail -c 300 "$old/new.err")"
     J '.created == true' "$old/new.json" || check "$file beside: cozy new made no project: $(cat "$old/new.json")"
     (cd "$old" && cozy --json status) > /dev/null 2> "$old/status-new.err" || check "$file beside: the new project: $(tail -c 300 "$old/status-new.err")"
   fi

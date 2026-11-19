@@ -1827,7 +1827,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     } else {
         if !open.passphrase.as_ref().is_some_and(|pass| !pass.is_empty() && pass.len() <= 4096) {
             return Err(Refusal(Error::new(Kind::Usage, "vault_credential", "New projects are locked with a passphrase. Give one, or choose to make the project without a lock.")
-                .next("cozy new --passphrase-file <file>").next("cozy new --unencrypted")));
+                .next("cozy new <directory> --passphrase-file <file>").next("cozy new --unencrypted <directory>")));
         }
         if key.is_some() {
             return Err(Refusal(Error::new(Kind::Usage, "vault_idempotency", "A locked project can't be made with an Idempotency-Key, because its recovery secret must never be stored for a retry.")));
@@ -1956,8 +1956,7 @@ fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Op
     let Some(passphrase) = passphrase else { return made_new(api, dir, name, starter).map(|dir| (dir, None)); };
     refuse_encrypted_parent(dir)?;
     if std::fs::read_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?.next().is_some() {
-        return Err(Error::new(Kind::Conflict, "project_not_empty", format!("{} isn't empty. A locked project has to start in an empty folder. Nothing in it was changed.", dir.display()))
-            .next("cozy new <new-directory>").next("cozy new --unencrypted"));
+        return Err(api::calcifer::project::folder_not_empty(dir));
     }
     let canonical = platform::durable::canonical(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
@@ -2012,10 +2011,10 @@ fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
             }
         }
     }
-    if source { return Err(Error::new(Kind::NotFound, "project_not_found", "This source isn't inside a project.").next("cozy new")); }
+    if source { return Err(Error::new(Kind::NotFound, "project_not_found", "This source isn't inside a project.").next("cozy new <directory>")); }
     Err(Error::new(Kind::NotFound, "project_not_found", format!("{} isn't in a project: there's no {} in it or in any folder above it.", path.display(), db::DB))
         .remedy("Run this from a project's folder, or make a new project.")
-        .next("cozy new"))
+        .next("cozy new <directory>"))
 }
 
 /// Project `id` used now, which the index lists by (cl-1096): written off the caller's path, as a write waits on whatever holds the

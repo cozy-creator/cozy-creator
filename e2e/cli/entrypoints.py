@@ -175,6 +175,10 @@ def main() -> None:
         run("local port option", ["open", "--port", "8818", "--help"])
         run("bash completion", ["completion", "bash"])
 
+        assert "Usage: cozy new [OPTIONS] <DIRECTORY>" in run("new help", ["new", "--help"]).stdout
+        omitted = json.loads(run("new requires a directory", ["--json", "new"], code=2).stdout)["error"]
+        assert omitted["code"] == "usage" and "<DIRECTORY>" in omitted["message"], omitted
+        assert not list(empty.iterdir()), "bare new wrote to its working directory"
         missing_credential = case / "encrypted without credential"
         refused = json.loads(run("new requires secure input", ["--json", "new", str(missing_credential)], code=2).stdout)
         assert refused["error"]["code"] == "vault_credential"
@@ -186,16 +190,24 @@ def main() -> None:
         assert created["created"] is True, "new did not report creating the project"
         assert re.fullmatch(r"[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{9}", created["code"])
         assert re.search(r"[A-Z]", created["code"]), "project code has no letter"
-        again = json.loads(run("new existing project", ["--json", "new"], project).stdout)
+        again = json.loads(run("new existing project", ["--json", "new", "."], project).stdout)
         assert again["created"] is False and again["id"] == created["id"], "repeating new replaced project identity"
         assert again["code"] == created["code"], "repeating new replaced public project code"
-        friendly = run("friendly existing project", ["new"], project).stdout
+        friendly = run("friendly existing project", ["new", "."], project).stdout
         assert "Project not created." in friendly and created["code"] in friendly
         existing_directory = case / "existing directory"
         existing_directory.mkdir(exist_ok=True)
-        initialized = json.loads(run("new current directory", ["--json", "new", "--unencrypted"], existing_directory).stdout)
+        unrelated_file = existing_directory / "README.txt"
+        unrelated_file.write_text("keep me", encoding="utf-8")
+        nonempty = json.loads(run("encrypted new refuses a non-empty directory", ["--json", "new", "."], existing_directory, code=1).stdout)["error"]
+        assert nonempty["code"] == "project_not_empty", nonempty
+        assert list(existing_directory.iterdir()) == [unrelated_file]
+        initialized = json.loads(run("new in a non-empty current directory", ["--json", "new", "--unencrypted", "."], existing_directory).stdout)
         assert Path(initialized["path"]).resolve() == existing_directory
         assert initialized["created"] is True
+        assert unrelated_file.read_text(encoding="utf-8") == "keep me"
+        relative = json.loads(run("new relative path", ["--json", "new", "--unencrypted", "nested/film"], case).stdout)
+        assert relative["created"] is True and Path(relative["path"]).resolve() == case / "nested" / "film"
         # cl-980: `cozy new` and the page's New are one create, Calcifer's `POST /v1/projects {path}`: what the CLI made is in the index
         # the page lists, and a create by name alone, the page's old second way, is gone.
         holder = json.loads((Path.home() / ".cozy" / "calcifer" / "calcifer.lock.holder").read_text())

@@ -403,7 +403,7 @@ if [ "$suite" = cpu ]; then
   [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
   [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
     || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
-  (cd "$project" && cozy --json new --unencrypted > /dev/null)
+  (cd "$project" && cozy --json new --unencrypted . > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
 fi
@@ -413,7 +413,7 @@ if [ "$suite" = imports ]; then
   staged=$seed/import-packages report=$seed/imports-fixture.json
   python3 "$here/imports/fixture.py" prepare --source "$packages" --staged "$staged" --report "$report"
   mkdir -p "$seed/project"
-  (cd "$seed/project" && cozy --json new --unencrypted > /dev/null)
+  (cd "$seed/project" && cozy --json new --unencrypted . > /dev/null)
   # Calcifer's private lock operation and its uv must trust the fixture during regeneration too.
   sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt
   sudo update-ca-certificates > "$seed/imports-ca.log" 2>&1
@@ -451,7 +451,7 @@ fi
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
-  cd "$seed/project" && cozy --json new --unencrypted > /dev/null
+  cd "$seed/project" && cozy --json new --unencrypted . > /dev/null
   # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
   tools=$seed/minimax-h3-tools
   rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"

@@ -1364,7 +1364,7 @@ impl Folder {
     }
 
     pub(crate) fn not_a_project(dir: &Path) -> Error {
-        Error::new(Kind::NotFound, "project_not_found", format!("{} has no {}, so it isn't a project.", dir.display(), db::DB)).next("cozy new")
+        Error::new(Kind::NotFound, "project_not_found", format!("{} has no {}, so it isn't a project.", dir.display(), db::DB)).next("cozy new <directory>")
     }
 
     fn id(&self) -> usize {

@@ -109,7 +109,8 @@ cozy open
 cozy status
 ```
 
-`cozy new [directory]` creates a project explicitly. `cozy open`, `cozy run` and `cozy status` use an existing project for the current directory.
+`cozy new <directory>` accepts a relative or absolute path. Use `.` for the current directory.
+`cozy open`, `cozy run` and `cozy status` use an existing project for the current directory.
 
 Use the browser for asset import, creation, field edits, rendering, approval, history and undo. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
 
@@ -179,7 +180,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Runs
 
-`cozy run` uses the existing project for the current directory. Create a project explicitly with `cozy new [directory]` before running it. `cozy open` prints that project's authenticated local URL for asset editing in the browser.
+`cozy run` uses the existing project for the current directory. Create a project with `cozy new <directory>` before running it. `cozy open` prints that project's authenticated local URL for asset editing in the browser.
 
 - **Outputs** land in `files/` by hash, listed as the run's, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and approving that file for `kyogre` in the browser makes it what `kyogre` holds.
@@ -188,5 +189,5 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 ## Storage
 
 A project is its native CRDT `project.db`. A folder without one is not a project, whatever else it holds (an old
-`project.yaml` or `project.lock` too): `cozy new --unencrypted` makes one there and leaves the other files as they are; an
-encrypted project starts in an empty folder.
+`project.yaml` or `project.lock` too). From that folder, `cozy new --unencrypted .` makes one there and leaves the other files as they are.
+An encrypted project starts in an empty folder.

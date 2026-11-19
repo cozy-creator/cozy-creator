@@ -21,7 +21,7 @@ import tempfile
 import urllib.request
 
 NOTICE = ("You're not in a project folder, so this opens Cozy Creator, where you can pick one. "
-          "To open a project directly, run cozy open in its folder, or create one with cozy new.")
+          "To open a project directly, run cozy open in its folder, or create one with cozy new <directory>.")
 
 
 def main() -> None:
@@ -75,7 +75,7 @@ def main() -> None:
         assert page.status == 200 and page.headers.get_content_type() == "text/html", f"{root}: {page.status} {page.headers}"
 
     document = json.loads(cozy("open-json", "--json", "open").stdout)
-    assert document == {"url": root, "note": {"code": "not_in_a_project", "message": NOTICE, "next": ["cozy new"]}}, f"--json open: {document}"
+    assert document == {"url": root, "note": {"code": "not_in_a_project", "message": NOTICE, "next": ["cozy new <directory>"]}}, f"--json open: {document}"
     assert opened() == ["--incognito", root], f"--json open started a browser: {opened()}"
 
     # Headless or over SSH: no browser with a private window, so it prints the root URL, the notice and why nothing opened. Linux only: a

@@ -1,5 +1,5 @@
 //! Current-directory project lookup and explicit project creation.
-use std::{io::IsTerminal as _, path::PathBuf, process::ExitCode};
+use std::{io::{ErrorKind, IsTerminal as _}, path::PathBuf, process::ExitCode};
 
 use api::{
     calcifer::project::{Open, Opened, State},
@@ -83,8 +83,8 @@ pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
 fn not_in_a_project(directory: &str) -> Error {
     let name = std::path::Path::new(directory).file_name().and_then(|name| name.to_str()).unwrap_or(directory);
     Error::new(Kind::Usage, "not_in_a_project", format!("{name:?} is not a Cozy project."))
-        .remedy("Navigate to a project directory, or create one with cozy new.")
-        .next("cozy new")
+        .remedy("Navigate to a project directory, or create one with cozy new <directory>.")
+        .next("cozy new <directory>")
 }
 
 /// Show or change the current project's key (cl-987): its runs are `KEY-N`, `SE-5`, named so from any folder.
@@ -113,13 +113,13 @@ pub(crate) async fn key(ctx: &Context, args: KeyArgs) -> Result<ExitCode, Error>
     Ok(ExitCode::SUCCESS)
 }
 
-/// Create a project in the directory named, or in the current directory.
+/// Create a project at the given path.
 #[derive(clap::Args, Debug)]
 pub(crate) struct New {
-    /// The project directory, created when it does not exist.
-    #[arg(default_value = ".", value_hint = clap::ValueHint::DirPath)]
+    /// Project directory, relative to the current directory or absolute. Use . for the current directory.
+    #[arg(value_hint = clap::ValueHint::DirPath)]
     directory: PathBuf,
-    /// Explicitly create ordinary local storage without encryption.
+    /// Create without encryption, allowing an existing directory with files.
     #[arg(long, conflicts_with_all = ["passphrase_file", "recovery_out"])]
     unencrypted: bool,
     /// Read the new passphrase from a file or - for stdin instead of a local terminal prompt.
@@ -139,11 +139,19 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "address"]);
         Some(client.get::<api::calcifer::project::Address>(&path).await?)
     } else { None };
-    let client = ctx.calcifer().await?;
     let passphrase = if args.unencrypted || existing.is_some() { None } else {
+        match std::fs::read_dir(&directory) {
+            Ok(mut entries) => {
+                if entries.next().is_some() {
+                    return Err(api::calcifer::project::folder_not_empty(&directory));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::new(Kind::Unavailable, "project_io", format!("Could not read {}: {error}", directory.display()))),
+        }
         if args.passphrase_file.is_none() && !std::io::stdin().is_terminal() {
             return Err(Error::new(Kind::Usage, "vault_credential", "new projects are encrypted; a noninteractive caller must supply a passphrase file or explicitly choose unencrypted storage")
-                .next("cozy new --passphrase-file <file>").next("cozy new --unencrypted"));
+                .next("cozy new <directory> --passphrase-file <file>").next("cozy new --unencrypted <directory>"));
         }
         if let Some(output) = &args.recovery_out {
             if output.exists() { return Err(Error::new(Kind::Conflict, "vault_recovery_exists", "the recovery output file already exists; choose a new path")); }
@@ -153,6 +161,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Some(vault::credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?)
     };
+    let client = ctx.calcifer().await?;
     let creating = (!args.unencrypted && existing.is_none()).then(|| {
         let meter = crate::progress::Transfer::stderr(ctx.term.stderr, "Creating encrypted project");
         meter.finalizing("Preparing encrypted storage");

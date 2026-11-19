@@ -762,7 +762,7 @@ step "the CLI in a folder Calcifer can't see"
 # The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
 local src=$OUT/unseen seen=$OUT/unseen-seen image=ubuntu:24.04 size name n hex
 rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen/project"
-(cd "$seen/project" && cozy --json new --unencrypted) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
+(cd "$seen/project" && cozy --json new --unencrypted .) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
 for name in still other; do
@@ -2164,7 +2164,7 @@ mkdir -p "$out/folder"
 began=$(date +%s%3N)
 (cd "$out/folder" && cozy run "$here/weightless/reverse" text=outside) > "$out/run.txt" 2>&1 || code=$?
 [ "$code" = 2 ] && grep -qxF "error[not_in_a_project]: Run this from inside a project folder, or create a project first." "$out/run.txt" \
-  && [ "$(grep -cxF 'next: cozy new' "$out/run.txt")" = 1 ] && ! grep -qE '^(hint|cause):' "$out/run.txt" \
+  && [ "$(grep -cxF 'next: cozy new <directory>' "$out/run.txt")" = 1 ] && ! grep -qE '^(hint|cause):' "$out/run.txt" \
   || check "outside: cozy run outside a project said (exit $code): $(head -c 400 "$out/run.txt")"
 addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock")
 code=$(curl -sS -o "$out/post.json" -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \

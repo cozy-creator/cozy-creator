@@ -42,7 +42,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     if ctx.json {
         let mut document = json!({ "url": url });
         if project.is_none() {
-            document["note"] = json!({ "code": "not_in_a_project", "message": OUTSIDE, "next": ["cozy new"] });
+            document["note"] = json!({ "code": "not_in_a_project", "message": OUTSIDE, "next": ["cozy new <directory>"] });
         }
         output::document(ctx, &document);
         return Ok(ExitCode::SUCCESS);
@@ -63,7 +63,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 /// Paul, 11-17: "we should tell the user 'you are not in a project folder, please navigate to one or create one using cozy new' but we
 /// should also open the webui anyway, because they can select between different projects in it anyway" (cl-1179).
-const OUTSIDE: &str = "You're not in a project folder, so this opens Cozy Creator, where you can pick one. To open a project directly, run cozy open in its folder, or create one with cozy new.";
+const OUTSIDE: &str = "You're not in a project folder, so this opens Cozy Creator, where you can pick one. To open a project directly, run cozy open in its folder, or create one with cozy new <directory>.";
 
 /// The project here, None outside any: then the page opens at its start.
 async fn here(ctx: &Context) -> Result<Option<Address>, Error> {
