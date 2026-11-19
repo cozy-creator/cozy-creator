@@ -7,9 +7,10 @@ row ranges with `Checkpoint.read_rows` into host outs (plain buffers, DLPack arr
 on none), alone and batched, one part without the others, each equal byte for byte to the same rows of a whole read
 (`Tensors.read`), the rows told apart from the part's stored shape here, not from TensorFS's cut; each encoded range decoded
 alone (`raw.decode_into`, the CPU reference) equal to the same rows of the whole decode. Then the largest tensor: its read
-speed whole (`Tensors.read_into` per part), as one `read_rows` of every row and as eight windows, and a varena Source's
-`read_rows` of those windows from the store and from its kept page, each reader's bytes checked into zeroed outs.
-`seed` makes each call its own: no memo answers it."""
+speed whole (`Tensors.read_into` per part), as one `read_rows` of every row and as eight windows. Then a varena Source of a
+block of real tensors, as the Runtime places one, with the largest encoded tensor's largest part across one of its page's
+registered windows (`WINDOW`, `varena/pages.rs`): every tensor's rows and that tensor's windows by `Source.read_rows`, from
+the store and from its kept page, each reader's bytes checked into zeroed outs. `seed` makes each call its own."""
 
 import json
 import math
@@ -27,6 +28,9 @@ from tensorfs.varena import _runtime as varena
 
 app = App()
 WINDOWS = 8
+#: a kept page is registered with CUDA in runs of this many bytes, and no DMA may span two (`WINDOW`, varena/pages.rs)
+PAGE_WINDOW = 64 << 20
+ALIGN = 256
 LOGICAL = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32}
 
 
@@ -195,6 +199,13 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
         lines.append(f"batched: {len(batch_host)} tensors in one read_rows, host and CUDA, on the caller's stream and on none")
     if largest is not None:
         report["speed"] = speed(ck, largest, stream, fail)
+        every = [c for found in candidates.values() for c in found]
+        report["block"] = blk = block(ck, every, stream, fail)
+        verdict = "FAIL" if any(line.startswith("FAIL block") for line in lines) else "PASS"
+        lines.append(f"{verdict} block: {blk['tensors']} tensors, {blk['bytes']} bytes, {blk['target']} "
+                     f"({blk['scheme']}) #{blk['part']} at {blk['part_at']} across a {blk['window']}-byte page window, "
+                     f"{blk.get('windows_across', 0)} of its windows across it; served {blk.get('store', {}).get('served')} "
+                     f"from the store, {blk.get('page', {}).get('served')} from its kept page (page, store)")
     for scheme, row in sorted(report["schemes"].items()):
         # A scheme none of whose tensors cut was not checked: no verdict of it.
         verdict = "FAIL" if any(line.startswith(f"FAIL {scheme} ") for line in lines) else "PASS" if row["checked"] else "UNCUT"
@@ -205,9 +216,8 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
 
 
 def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
-    """The largest tensor's read speed, warm (its bytes in the page cache), into CUDA: whole, one read of every row, eight
-    windows, and a varena Source's windows from its kept page against from the store. Each reader's windows are checked
-    against the whole read and zeroed before the next reader writes them."""
+    """The largest tensor's read speed, warm (its bytes in the page cache), into CUDA: whole, one read of every row and eight
+    windows, the windows checked against the whole read."""
     size, cname, key, meta, cut = largest
     tensors = ck.components[cname].tensors
     stored = raw.parts(ck, cname, key)
@@ -250,31 +260,113 @@ def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
         s = timed(f)
         found[label] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2)}
     landed("windows")
-    # A varena Source of this tensor's parts, as the Runtime makes one for a block: from the store, then its kept page.
+    return found
+
+
+def whole_of(ck, cname: str, key: str, meta) -> dict[str, bytes]:
+    """Each part's bytes, by role (`""`: a plain tensor's data), from a whole read."""
+    read = ck.components[cname].tensors.read(key, decode=False)
+    return {"": read.tobytes()} if meta.encoding is None else {r: a.tobytes() for r, a in read.parts.items()}
+
+
+def block(ck, every: list, stream: int, fail: Callable[[str], None]) -> dict:
+    """A varena Source of a block of real tensors at aligned offsets, as the Runtime places one, with the largest encoded
+    tensor's largest part across one of its page's windows: every tensor's rows in one read (host, then CUDA) and that
+    tensor's windows one read each, from the store, then from its kept page. Each reader's bytes are checked into zeroed
+    outs, and every byte must come from where it should: all from the store, then all from the page."""
+    up = lambda n: -(-n // ALIGN) * ALIGN  # noqa: E731
+    encoded = [c for c in every if c[3].encoding is not None] or every
+    target = max(encoded, key=lambda c: max(p.length for p in raw.parts(ck, c[1], c[2]).values()))
+    _, tc, tk, tmeta, tcut = target
+    tparts = sorted(raw.parts(ck, tc, tk).items(), key=lambda rp: rp[1].length, reverse=True)
+    big_role, big = tparts[0][0], tparts[0][1].length
+    aim = (PAGE_WINDOW - big // 2) // ALIGN * ALIGN
+    placed, parts, offset = [], [], 0
+
+    def place(c, items) -> None:
+        nonlocal offset
+        for role, p in items:
+            parts.append((f"{c[1]}/{c[2]}#{role or 'value'}", offset, p.length))
+            offset += up(p.length)
+        placed.append(c)
+
+    # Other tensors before it, the largest that fit first, so its largest part starts about half its length short of a window.
+    for c in sorted((c for c in every if c is not target), key=lambda c: c[0], reverse=True):
+        items = list(raw.parts(ck, c[1], c[2]).items())
+        if offset + sum(up(p.length) for _, p in items) <= aim:
+            place(c, items)
+    at = offset
+    place(target, tparts)
+    found = {"tensors": len(placed), "bytes": offset, "target": f"{tc}/{tk}", "scheme": scheme_of(tmeta),
+             "part": big_role or "value", "part_at": [at, at + big], "window": PAGE_WINDOW}
+    if not at < PAGE_WINDOW < at + big:
+        fail(f"block: {tc}/{tk}#{big_role} at {at}..{at + big} lies inside one page window (too few tensors before it)")
+    stored = {id(c): raw.parts(ck, c[1], c[2]) for c in placed}
+    known = {id(c): whole_of(ck, c[1], c[2], c[3]) for c in placed}
+    host = [(c[1], c[2], 0, c[4].count, {r: np.zeros(n, np.uint8) for r, n in c[4].nbytes(0, c[4].count).items()}) for c in placed]
+    gpu = [(c[1], c[2], 0, c[4].count, {r: torch.zeros(n, dtype=torch.uint8, device="cuda")
+                                        for r, n in c[4].nbytes(0, c[4].count).items()}) for c in placed]
+    per = -(-tcut.count // WINDOWS)
+    step = -(-per // tcut.tile) * tcut.tile
+    bounds = [(a, min(tcut.count, a + step)) for a in range(0, tcut.count, step)]
+    wins = [(tc, tk, a, b, {r: torch.zeros(n, dtype=torch.uint8, device="cuda") for r, n in tcut.nbytes(a, b).items()})
+            for a, b in bounds]
+    tile_bytes = tcut.tile_bytes[big_role]
+    found["windows_across"] = sum(at + (a // tcut.tile) * tile_bytes < PAGE_WINDOW < at + (a // tcut.tile) * tile_bytes
+                                  + tcut.nbytes(a, b)[big_role] for a, b in bounds) if tile_bytes else 0
+    total = sum(n for reads in (host, gpu, wins) for _, _, _, _, outs in reads for n in (o.nbytes for o in outs.values()))
+    by_id = {(c[1], c[2]): c for c in placed}
+
+    def landed(label: str, readers: tuple = (host, gpu, wins), check: bool = True) -> None:
+        torch.cuda.synchronize()
+        for reads in readers:
+            for cname, key, a, b, outs in reads:
+                c = by_id[(cname, key)]
+                for role, out in outs.items():
+                    got = out.tobytes() if isinstance(out, np.ndarray) else out.cpu().numpy().tobytes()
+                    want = expected(stored[id(c)][role], known[id(c)][role], c[4].count, c[4].tile, a, b)
+                    if check and got != want:
+                        fail(f"block from {label}: {cname}/{key}#{role} rows {a}..{b}: bytes differ from the whole read's")
+                    out.fill(0) if isinstance(out, np.ndarray) else out.zero_()
+        torch.cuda.synchronize()
+
+    def read_all(source) -> tuple[int, int]:
+        page = store = 0
+        for reads, s in ((host, None), (gpu, stream)):
+            got = source.read_rows(reads, stream=s)
+            page, store = page + got[0], store + got[1]
+        for one in wins:
+            got = source.read_rows([one], stream=stream)
+            page, store = page + got[0], store + got[1]
+        return page, store
+
+    def timings(label: str, source) -> dict:
+        s_all = timed(lambda: source.read_rows(gpu, stream=stream))
+        s_win = timed(lambda: [source.read_rows([one], stream=stream) for one in wins])
+        landed(f"{label}, timed", (gpu, wins))
+        return {"all_rows_s": round(s_all, 4), "all_rows_gb_s": round(offset / s_all / 1e9, 2),
+                "target_windows_s": round(s_win, 4)}
+
     try:
+        found["checkpoint"] = timings("the checkpoint", ck)
         pages = varena.Pages(torch.cuda.current_device())
-        offset, parts = 0, []
-        for role, p in stored.items():
-            parts.append((f"{cname}/{key}#{role or 'value'}", offset, p.length))
-            offset += -(-p.length // 256) * 256
-        source = varena.Source(pages, "row-reads", 0, offset, checkpoint=ck, parts=parts, page=f"row-reads:{ck.id}:{key}")
-        served = each(source.read_rows)
-        landed("source store")
-        s = timed(lambda: each(source.read_rows))
-        found["source_store"] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2), "served": served}
-        landed("source store")
+        source = varena.Source(pages, "row-reads", 0, offset, checkpoint=ck, parts=parts, page=f"row-reads:{ck.id}:block")
+        served = read_all(source)
+        landed("the store")
+        if served != (0, total):
+            fail(f"block before its page is kept: served {served} (page, store), not (0, {total})")
+        found["store"] = {"served": served, **timings("the store", source)}
         pages.read_ahead([source])
         until = time.monotonic() + 120
-        while time.monotonic() < until and source.read_rows(read_windows[:1], stream=stream)[0] == 0:
+        while time.monotonic() < until and source.read_rows(wins[:1], stream=stream)[0] == 0:
             time.sleep(0.2)
-        served = each(source.read_rows)
-        landed("source page" if served[0] else "source store")
-        if served[0] == 0:
-            found["source_page"] = "its page was not kept in 120 s"
-        else:
-            s = timed(lambda: each(source.read_rows))
-            found["source_page"] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2), "served": served}
-            landed("source page")
-    except Exception as error:  # a tier this process could not make is reported, not the check's failure
-        found["source_error"] = f"{type(error).__name__}: {error}"[:300]
+        landed("", check=False)
+        served = read_all(source)
+        landed("its kept page")
+        if served != (total, 0):
+            fail(f"block from its kept page: served {served} (page, store), not ({total}, 0)")
+        found["page"] = {"served": served, **timings("its kept page", source)}
+        pages.forget("row-reads")
+    except Exception as error:
+        fail(f"block: {type(error).__name__}: {error}"[:400])
     return found

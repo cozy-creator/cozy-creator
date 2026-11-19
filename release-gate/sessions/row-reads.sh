@@ -1,6 +1,7 @@
 # row-reads (tfs-303): row ranges of real checkpoints' weights, one per TensorFS lane, read with `Checkpoint.read_rows` and a
 # varena Source's `read_rows` on one rental, against whole reads (fixtures/row-reads/rows.py): each part byte for byte, each
-# encoded range's decode, host and CUDA outs, alone and batched, and the largest tensor's read speed against its whole read.
+# encoded range's decode, host and CUDA outs, alone and batched, the largest tensor's read speed against its whole read, and a
+# varena Source of a block of real tensors with the largest encoded tensor across a page window, from the store and its kept page.
 # Each model's lane is resolved to its checkpoint before renting (`cozy model show`), so a missing lane costs nothing.
 # params:
 #   tensorfs    the TensorFS under test: artifact:<dev-build run>/<wheel artifact> or an https wheel (required)
@@ -57,6 +58,7 @@ for r in "${REFS[@]}"; do
   [ "$memo" = false ] || { say "FAIL $label: run $n was answered from the call memo"; RC=1; continue; }
   jq -r '.lines[]' "$OUT/$label.report.json" | while read -r line; do say "$label $line"; done
   say "$label speed: $(jq -c .speed "$OUT/$label.report.json")"
+  say "$label block: $(jq -c .block "$OUT/$label.report.json")"
   [ "$(jq -r .failed "$OUT/$label.report.json")" = false ] || RC=1
 done
 { echo "## row-reads on $NAME ($SKU)"; grep -E ' rows-[0-9]+-' "$R" | sed 's/^/- /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
