@@ -1,8 +1,8 @@
 {
   "tree": "rc",
   "cap": "6GiB",
-  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
-  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
+  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2390%2Bg7020b11a-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=12a4039273d67a92e2b02e97d388704a33df99daf69be77da0bfe31af91245d3",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3526%2Bg0a23cc51-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=7681e07339d82bd8095235b4de48fc9ec51a4541da8a9a38e7523db020333978",
   "need_s": 3300,
   "twin_s": 300,
   "stall_s": 1800,
