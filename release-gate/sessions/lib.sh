@@ -33,6 +33,9 @@ fi
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
 [[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
+# The quiet window (`quiet_s`, 60 or more): a step with no output that long is judged stuck (`step`).
+QUIET_S=$(param quiet_s 900)
+[[ $QUIET_S =~ ^[0-9]+$ ]] && [ "$QUIET_S" -ge 60 ] || fail "quiet_s $QUIET_S"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 # A Runtime or TensorFS a session is asked for by version is the build of its own tag (tag_built), checked at $0.
@@ -218,6 +221,7 @@ step() {
   local kinds=''
   if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
   (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow='' left='' was=''
+  local look=$((QUIET_S / 2 / 30 * 30)) window="$((QUIET_S / 60)) min"; [ $((QUIET_S % 60)) = 0 ] || window="$QUIET_S s"
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1))
     if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
@@ -233,13 +237,13 @@ step() {
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; was=''; fi
     # Quiet is not stuck (a run fails only on evidence of a hang): `model install` prints nothing while it saves
     # (44272502858 killed a 105 GiB pull at 72 GiB), so bytes moving on the pod decide: what is left to download, or its
-    # free disk, against a look 7.5 min into the quiet, then each 15 min.
-    if [ -n "$NAME" ] && { [ "$still" -ge 900 ] || { [ "$still" = 450 ] && [ -z "$was" ]; }; }; then
+    # free disk, against a look half the window (QUIET_S) into the quiet, then each window.
+    if [ -n "$NAME" ] && { [ "$still" -ge "$QUIET_S" ] || { [ "$still" = "$look" ] && [ -z "$was" ]; }; }; then
       left=$(cozy machine show "$NAME" 2> /dev/null | grep -oE '[0-9.]+ [KMGT]?i?B of [^ ]+ to download|^disk free .*' | paste -sd' ')
-      if [ "$still" = 450 ]; then was=$left
-      elif [ -n "$left" ] && [ "$left" != "$was" ]; then say "$n: quiet 15 min, and its pod moved ($was, now $left)"; still=0; was=$left; fi
+      if [ "$still" = "$look" ]; then was=$left
+      elif [ -n "$left" ] && [ "$left" != "$was" ]; then say "$n: quiet $window, and its pod moved ($was, now $left)"; still=0; was=$left; fi
     fi
-    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min${was:+, the pod still at $was}"; return 124; }
+    [ "$still" -lt "$QUIET_S" ] || { kill "$p"; say "$n: no output for $window${was:+, the pod still at $was}"; return 124; }
   done
   [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
   wait "$p"; local c=$?
