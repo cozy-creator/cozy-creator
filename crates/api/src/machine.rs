@@ -1160,6 +1160,9 @@ pub struct ModelRef {
     /// benchmark rows are read at this lane (cl-1279).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub lane: String,
+    /// It was chosen over its slot's default (a box's model, `--model`): rows naming no model, the default's, don't time it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub picked: bool,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.

@@ -649,25 +649,26 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
         .collect();
     // Each slot it may wait for, by its card's checkpoint, with the slot's choice and components: the cards read together, as are the
     // headers below (cl-1123: read one after another, a package's first guess in a fresh project took up to 2.75 s, 44199938129).
-    let mut asked: Vec<(&str, &Slot, &String, Option<String>)> = vec![];
+    let mut asked: Vec<(&str, &Slot, &String, Option<String>, bool)> = vec![];
     for path in wanted.needed.iter().chain(wanted.either.iter().flatten()) {
         let Some(slot) = slots.get(path.as_str()).filter(|_| !asked.iter().any(|(held, ..)| *held == path.as_str())) else { continue };
         let param = Weights::param(slot);
         let Some(written) = on_box.get(param).or(slot.default.as_ref()) else { continue };
+        let picked = slot.default.as_deref().map(repository) != Some(repository(written));
         let lane = (placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)))
             .map(|(_, lane, _)| lane.clone())
             .or_else(|| slot.lane.clone());
-        asked.push((path.as_str(), *slot, written, lane));
+        asked.push((path.as_str(), *slot, written, lane, picked));
     }
-    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane)| checkpoint(api, hub, written, lane.as_deref())))).await;
-    let held: HashMap<&str, (Lane, String, Vec<String>)> = (asked.into_iter().zip(cards))
-        .filter_map(|((path, slot, written, _), card)| Some((path, (card?, written.clone(), slot.fetched_components()))))
+    let cards = crate::stages::stage("cards", futures_util::future::join_all(asked.iter().map(|(_, _, written, lane, _)| checkpoint(api, hub, written, lane.as_deref())))).await;
+    let held: HashMap<&str, (Lane, String, Vec<String>, bool)> = (asked.into_iter().zip(cards))
+        .filter_map(|((path, slot, written, _, picked), card)| Some((path, (card?, written.clone(), slot.fetched_components(), picked))))
         .collect();
-    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components)| (lane.checkpoint.clone(), components.clone())));
-    let lanes: Vec<(&Lane, &String, Vec<String>)> = (resolved.needed.into_iter())
-        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _)| (lane, written, components)))
+    let resolved = ::needs::resolved(&wanted, |path| held.get(path).map(|(lane, _, components, _)| (lane.checkpoint.clone(), components.clone())));
+    let lanes: Vec<(&Lane, &String, Vec<String>, bool)> = (resolved.needed.into_iter())
+        .filter_map(|(checkpoint, components)| held.values().find(|(lane, ..)| lane.checkpoint == checkpoint).map(|(lane, written, _, picked)| (lane, written, components, *picked)))
         .collect();
-    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components)| async move {
+    let headers = crate::stages::stage("headers", futures_util::future::join_all(lanes.iter().map(|(lane, _, components, _)| async move {
         match &lane.header {
             Some(header) => crate::hub::headers::wanted(api, hub, header, components).await,
             None => None,
@@ -676,13 +677,13 @@ async fn held(api: &Api, hub: &str, package: &super::Package, function: &str, ma
     .await;
     let mut counted: HashSet<String> = HashSet::new();
     let mut models = vec![];
-    for ((lane, written, components), chunks) in lanes.into_iter().zip(headers) {
+    for ((lane, written, components, picked), chunks) in lanes.into_iter().zip(headers) {
         let checkpoint = lane.checkpoint.clone();
         let bytes = match chunks {
             Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
             None => lane.bytes,
         };
-        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components, lane: lane.name.clone() });
+        models.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0, components, lane: lane.name.clone(), picked });
     }
     models
 }

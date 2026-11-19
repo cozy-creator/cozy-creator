@@ -236,8 +236,8 @@ pub struct Benchmark {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
     pub request: JobSize,
-    /// The lane it ran at, as its run's record says (`int8-convrot`; a CPU row's, the CPU's), and its main slot's model
-    /// (`org/name@release`). Empty in rows from before they were recorded: those are read only where no row of the one asked is (`at`).
+    /// The lane it ran at, as its run's record says (`int8-convrot`; a CPU row's, the CPU's); empty: the card's default lane. Its
+    /// main slot's model (`org/name@release`) where that isn't the slot's default; empty: the default (`at`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub lane: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -526,38 +526,32 @@ pub fn is_card(gpu: &str, card: &str) -> bool {
         && !gpu.get(card.len()).is_some_and(|next| matches!(next.as_str(), "ti" | "super" | "d" | "laptop" | "mobile" | "max"))
 }
 
-/// What a call runs that its rows are read by (cl-1279): its main model's lane and model (`org/name`); each empty: unknown.
+/// What a call runs that its rows are read by (cl-1279): its main model's lane and model (`org/name`), each empty when unknown, and
+/// whether that model is its slot's default, whose rows name no model.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Runs<'a> {
     pub lane: &'a str,
     pub model: &'a str,
+    pub picked: bool,
 }
 
 /// What a job of `models` runs: its largest model's lane and model.
 pub fn runs_of(models: &[v1::ModelRef]) -> Runs<'_> {
     let main = models.iter().max_by_key(|model| model.bytes);
-    Runs { lane: main.map_or("", |model| model.lane.as_str()), model: main.map_or("", |model| model.model.as_str()) }
+    Runs { lane: main.map_or("", |model| model.lane.as_str()), model: main.map_or("", |model| model.model.as_str()), picked: main.is_some_and(|model| model.picked) }
 }
 
-/// Of `rows`, those of the model `runs` names (the coordinator, 11-18, Paul: "how long will X workload take with model Y on GPU G"),
-/// then of its lane ("each card will also use be using its optimal lane"): never another model's or lane's. Rows that name none, from
-/// before either was recorded, only where none of the one asked is; with it unknown, those, else all.
+/// Of `rows`, those of the model `runs` names (the coordinator, 11-18, Paul: "how long will X workload take with model Y on GPU G"), a
+/// row naming none being its slot's default's; then of its lane ("each card will also use be using its optimal lane"), a row naming
+/// none being the card's default lane's, which a run takes when none is pinned. Never another model's or lane's; with either unknown,
+/// all.
 fn at<'r>(rows: impl Iterator<Item = &'r Benchmark>, runs: Runs) -> Vec<&'r Benchmark> {
-    fn model(row: &Benchmark) -> &str {
-        row.model.split('@').next().unwrap_or_default()
-    }
-    fn lane(row: &Benchmark) -> &str {
-        &row.lane
-    }
-    fn named<'r>(rows: Vec<&'r Benchmark>, of: fn(&Benchmark) -> &str, asked: &str) -> Vec<&'r Benchmark> {
-        let with = |name: &str| rows.iter().copied().filter(|row| of(row) == name).collect::<Vec<_>>();
-        match (with(asked), asked.is_empty()) {
-            (named, _) if !named.is_empty() => named,
-            (_, false) => with(""),
-            (_, true) => rows,
-        }
-    }
-    named(named(rows.collect(), model, runs.model), lane, runs.lane)
+    let model = |row: &Benchmark| match row.model.split('@').next().unwrap_or_default() {
+        "" => !runs.picked,
+        named => named == runs.model,
+    };
+    let lane = |row: &Benchmark| row.lane.is_empty() || row.lane == runs.lane;
+    rows.filter(|row| runs.model.is_empty() || model(row)).filter(|row| runs.lane.is_empty() || lane(row)).collect()
 }
 
 /// Whether two machines' cards, as their drivers name them, are one card.
@@ -568,7 +562,8 @@ fn same_card(a: &str, b: &str) -> bool {
 /// Of `rows`, the one most like `size` with a `value`: the nearest pictures read, then the nearest size; and that value at `size`, each unit
 /// scaled by its own exponent (`exponents`): as `rows` measure it where they vary in it, else as all the function's rows (`of`)
 /// do, each card, lane, count of pictures and memory budget on its own (Paul 11-18: "we should be able to have more than one [variable]").
-fn nearest<'r>(rows: Vec<&'r Benchmark>, of: &[Benchmark], size: &JobSize, value: fn(&Benchmark) -> Option<f64>) -> Option<(&'r Benchmark, f64)> {
+fn nearest<'r>(rows: Vec<&'r Benchmark>, of: &[Benchmark], size: &JobSize, read: Read) -> Option<(&'r Benchmark, f64)> {
+    let Read { value, units } = read;
     let rows: Vec<&Benchmark> = rows.into_iter().filter(|row| value(row).is_some()).collect();
     let refs = size.refs.unwrap_or(0);
     let unlike = |row: &Benchmark| (row.request.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.request).ln().abs());
@@ -587,9 +582,17 @@ fn nearest<'r>(rows: Vec<&'r Benchmark>, of: &[Benchmark], size: &JobSize, value
     Some((row, scaled(&units(size), &units(&row.request), value(row)?, &k)))
 }
 
-/// A row's warm time, and its peak on its card: what `nearest` reads.
-const WARM: fn(&Benchmark) -> Option<f64> = |row| Some(row.warm_ms as f64);
-const PEAK: fn(&Benchmark) -> Option<f64> = |row| row.peak_device_bytes.map(|bytes| bytes as f64);
+/// What `nearest` reads of a row, and by which of its units it scales.
+#[derive(Clone, Copy)]
+struct Read {
+    value: fn(&Benchmark) -> Option<f64>,
+    units: fn(&JobSize) -> Vec<(String, f64)>,
+}
+
+/// A row's warm time, by every unit; its peak on its card by what is resident and live, never its steps (the reviewer, 11-18: a
+/// Turbo row asked at 40 steps was quoted five times the memory).
+const WARM: Read = Read { value: |row| Some(row.warm_ms as f64), units };
+const PEAK: Read = Read { value: |row| row.peak_device_bytes.map(|bytes| bytes as f64), units: |size| units(size).into_iter().filter(|(name, _)| name != "steps").collect() };
 
 /// `size`'s units by name, those it knows.
 fn units(size: &JobSize) -> Vec<(String, f64)> {
