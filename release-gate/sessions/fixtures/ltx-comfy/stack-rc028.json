@@ -1,0 +1,280 @@
+{
+ "gpus": 1,
+ "order": "abba",
+ "need_s": 4800,
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "t2v5-a1-0",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
+    "seed:=64901",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44501390165",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "download": [
+    [
+     "lightricks/ltx-2.5@0.2.0",
+     "--lane",
+     "int8"
+    ],
+    [
+     "briaai/fibo-2-edit-turbo@0.2.0",
+     "--lane",
+     "int8"
+    ],
+    [
+     "dreamfast/qwen3-vl-4b-heretic-fibo@0.1.0",
+     "--lane",
+     "int8"
+    ],
+    [
+     "llmfan46/qwen3.8-27b-uncensored-heretic-native-mtp-preserved@0.1.0",
+     "--lane",
+     "int8"
+    ]
+   ]
+  },
+  {
+   "name": "t2v5-a1-1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow., at dawn",
+    "seed:=164901",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "i2v5-a1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
+    "seed:=64903",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1",
+    "--file",
+    "first_frame={ref}/seed.jpg"
+   ]
+  },
+  {
+   "name": "fibo-a1",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=64905",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "q3-a1",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=50141",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "t2v5-b1-0",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
+    "seed:=64901",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44508137340",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "t2v5-b1-1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow., at dawn",
+    "seed:=164901",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "i2v5-b1",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
+    "seed:=64903",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1",
+    "--file",
+    "first_frame={ref}/seed.jpg"
+   ]
+  },
+  {
+   "name": "fibo-b1",
+   "tree": "pk",
+   "target": "fibo-2/generate_turbo",
+   "args": [
+    "prompt=A ceramic teapot on a sunlit kitchen table beside a bowl of lemons, soft morning light, shallow depth of field.",
+    "seed:=64905",
+    "prompt_upsampling:=false",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "q3-b1",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=50141",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "q3-b2",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=50142",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44508137340",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "q3-a2",
+   "tree": "pk",
+   "target": "qwen3/ask",
+   "args": [
+    "prompt=Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "max_tokens:=256",
+    "seed:=50142",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44501390165",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  },
+  {
+   "name": "t2v5-c6",
+   "tree": "pk",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow., in the rain",
+    "seed:=64907",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44508275188",
+    "tensorfs": "artifact:44506152509/tensorfs-wheel-648fc289faea7fc7ef4a13e2bd4e312bcea6dc4b",
+    "tensord": true,
+    "gpu_memory_limit": "6GiB"
+   }
+  }
+ ],
+ "compare": [
+  [
+   "t2v5-a1-0",
+   "t2v5-b1-0"
+  ],
+  [
+   "t2v5-a1-1",
+   "t2v5-b1-1"
+  ],
+  [
+   "i2v5-a1",
+   "i2v5-b1"
+  ],
+  [
+   "fibo-a1",
+   "fibo-b1"
+  ],
+  [
+   "q3-a1",
+   "q3-b1"
+  ],
+  [
+   "q3-b2",
+   "q3-a2"
+  ]
+ ]
+}
