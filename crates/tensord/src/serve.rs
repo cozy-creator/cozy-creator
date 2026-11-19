@@ -227,9 +227,7 @@ fn run_machine(
     // A tool that composes holds a CPU slot while it computes, and every run's output work takes one: one slot for every four cores.
     let cpu_slots = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1));
     let service = crate::service::Service::open(&engine, &generations, cpu_slots, store.clone())?;
-    // Its runs from before projects kept their own, at the first start of this version (cl-1003): no project's and none Calcifer keeps.
-    service.engine.cut_legacy(!rental, &logs, &store.root().join("logs"));
-    crate::objects::restore(&service.engine, &engine.join("writes"))?;
+    crate::objects::restore(&service.engine)?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
     store.on_short(move |incoming| reclaimer.upgrade().is_some_and(|service| service.reclaim_for(incoming)));
@@ -248,7 +246,7 @@ fn run_machine(
         true => crate::published::layer::Torch::Image(image_torch),
         false => crate::published::layer::Torch::Own { engine: engine.clone(), wanted: Default::default() },
     };
-    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch.clone());
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch.clone());
     boot.at("updates");
     let updates = crate::machine::update::Updates::open(
         paths.clone(),

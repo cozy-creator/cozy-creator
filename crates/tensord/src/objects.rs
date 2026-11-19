@@ -178,65 +178,8 @@ fn root(engine: &Engine, unused: Duration, room: u64) -> io::Result<()> {
     engine.reroot_objects(&keep)
 }
 
-/// The run objects' own store a machine before 0.23 kept (`objects/` beside the journal): what
-/// a hold kept (a run's output) and what the journal still needs move into the TensorFS store,
-/// by rename, each under its use before it moves. The rest goes: unheld objects, and uploads
-/// under way (`writes/`), which their senders still have. A move that fails leaves the folder
-/// as it is for the next start.
-fn upgrade(engine: &Engine, writes: &Path) {
-    #[derive(serde::Deserialize)]
-    struct Hold {
-        owner: String,
-        roots: Vec<ObjectRef>,
-    }
-    let old = engine.root.join("objects");
-    if !old.is_dir() {
-        return;
-    }
-    let store = &engine.store;
-    let moved = (|| -> io::Result<usize> {
-        let mut objects = engine.with_journal(|j| j.needed_objects(since(crate::reclaim::IDLE)))?;
-        for object in &objects {
-            storage::keep(store, object)?;
-        }
-        for entry in fs::read_dir(old.join("holds")).into_iter().flatten() {
-            let hold: Hold = serde_json::from_slice(&fs::read(entry?.path())?).map_err(io::Error::other)?;
-            store.used(&crate::trees::name(&hold.owner), &hold.roots).map_err(storage::io_error)?;
-            objects.extend(hold.roots);
-        }
-        engine.root_objects(&objects)?;
-        let mut moved = 0;
-        for object in &objects {
-            let from = old.join(&object.sha256[..2]).join(&object.sha256);
-            if !fs::metadata(&from).is_ok_and(|meta| meta.len() == object.length) {
-                continue; // moved by an earlier start, or gone before the update
-            }
-            let to = store.path(object).map_err(storage::io_error)?;
-            fs::create_dir_all(to.parent().expect("a blob has a shard"))?;
-            // Another filesystem: copied in through the store's own door, which checks it.
-            if store.holds(object) || fs::rename(&from, &to).is_err() {
-                storage::put(store, File::open(&from)?, Some(object))?;
-            }
-            moved += 1;
-        }
-        Ok(moved)
-    })();
-    match moved {
-        Ok(moved) => {
-            tracing::info!("moved {moved} run objects into the TensorFS store at {}; the old run object folder is removed", store.root().display());
-            let _ = fs::remove_dir_all(writes);
-            if let Err(error) = fs::remove_dir_all(&old) {
-                tracing::warn!("removing {}: {error}", old.display());
-            }
-        }
-        Err(error) => tracing::warn!("run objects stay in {} until the next start: moving them into the TensorFS store failed: {error}", old.display()),
-    }
-}
-
-/// At the machine's start, before anything is admitted: a machine updated from before 0.23 moves
-/// its run objects into the store (`upgrade`), and what must not be evicted is held (`root`).
-pub(crate) fn restore(engine: &Engine, writes: &Path) -> io::Result<()> {
-    upgrade(engine, writes);
+/// At the machine's start, before anything is admitted: what must not be evicted is held (`root`).
+pub(crate) fn restore(engine: &Engine) -> io::Result<()> {
     let _custody = engine.object_custody.lock().unwrap();
     root(engine, crate::reclaim::TTL, u64::MAX)
 }

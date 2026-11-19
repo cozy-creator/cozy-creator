@@ -58,7 +58,7 @@ pub(crate) struct PackageSdk {
 impl PackageSdk {
     /// The selected Runtime/TensorFS pair (an update's, else the image's); without a complete
     /// pair, none.
-    pub(crate) fn selected(wheels: &Path, staged: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
+    pub(crate) fn selected(wheels: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -80,7 +80,7 @@ impl PackageSdk {
             uv,
             python: "3.12".into(),
             runtime_build: match complete {
-                true => crate::machine::update::development_runtime(&wheels, staged),
+                true => crate::machine::update::development_runtime(&wheels),
                 false => String::new(),
             },
             find_links: complete.then_some(wheels),
