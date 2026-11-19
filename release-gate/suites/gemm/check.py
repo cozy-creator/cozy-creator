@@ -57,6 +57,12 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
             if bad:
                 fails.append(f"{shape.get('id')}: tiles whose output bits differ from the rule's: {', '.join(bad)}")
             for lane, rule in (shape.get('rules') or {}).items():
+                # The bench's `ordered:<type>` rows: a read on torch's default stream queued right after a call, unsynced,
+                # sees its output (xs-213, cozy-runtime#2309).
+                late = sorted(k for k, v in rule.items() if k.startswith('ordered') and v != 'true')
+                if late:
+                    fails.append(f"{shape.get('id')} {lane}: a read on the default stream right after a call misses its "
+                                 f"output: {', '.join(late)}")
                 for level in ('gemm', 'linear'):
                     pick = rule.get(level, '')
                     prefix = f'{lane}-{level}:'

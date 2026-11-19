@@ -25,10 +25,16 @@ def main() -> int:
     gbps, l2 = float(copy["gbps"]), int(copy["inventory"]["l2"])
     ours: dict[str, tuple[float, float, str]] = {}
     int8: dict[str, float] = {}
+    # The bench's `ordered:<type>` (f32 rows) and `ordered-linear:<type>` (bf16 rows) rows: a read on torch's default
+    # stream queued right after a call, unsynced, sees its output (cozy-runtime#2309). Any other value misses.
+    ordered: dict[str, str] = {}
     for path in benches:
         speed = json.loads(json.load(open(path))["detail"])
         for shape in speed["shapes"]:
             rules = shape["rules"].get("ggml", {})
+            for rule, said in rules.items():
+                if rule.startswith("ordered"):
+                    ordered[f"{shape['model']}-{shape['site']} {rule}"] = said
             for name, timed in shape["times"].items():
                 head, _, kind = name.partition(":")
                 if head.startswith("ggml-int8"):
@@ -62,8 +68,12 @@ def main() -> int:
             misses.append(f"{case}: {rate:.0f} GB/s, under 75% of copy {gbps:.0f}")
         rows.append({"case": case, "kernel": kernel, "llama_us": theirs[case], "ours_us": round(us, 2), "ratio": round(ratio, 4),
                      "leaf_us": round(leaf, 2), "gbps": round(rate, 1), "int8_us": round(mine, 2) if mine else None})
+    late = sorted(k for k, said in ordered.items() if said != "true")
+    misses += [f"{k}: a read on the default stream right after the call missed its output ({ordered[k]})" for k in late]
+    print(f"\nordered: {len(ordered) - len(late)} of {len(ordered)} rows true, over "
+          f"{len({k.split(' ')[0] for k in ordered})} shapes")
     print()
-    print(json.dumps({"copy_gbps": gbps, "rows": len(rows), "missed": misses}))
+    print(json.dumps({"copy_gbps": gbps, "rows": len(rows), "ordered": len(ordered), "ordered_late": len(late), "missed": misses}))
     return 1 if misses else 0
 
 
