@@ -678,6 +678,15 @@ fn _varena_working_pool_scratch(py: Python<'_>, device: i32, pool: (u64, u64), h
 }
 
 #[pyfunction]
+fn _varena_working_eager_blocks(py: Python<'_>, device: i32, ptrs: Vec<u64>) -> PyResult<Vec<u64>> {
+    py.detach(|| {
+        check()?;
+        varena::working::eager_blocks(device, &ptrs)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_library_workspaces(py: Python<'_>, device: i32, sizes: Vec<usize>) -> PyResult<()> {
     py.detach(|| varena::working::library_workspaces(device, sizes))
         .map_err(|e| super::raise(py, e))
@@ -974,6 +983,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_pool_short, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_close, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_scratch, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_eager_blocks, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_library_workspaces, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;
