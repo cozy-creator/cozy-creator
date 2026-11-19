@@ -1436,7 +1436,8 @@ macro_rules! journal_methods {
                 let rental = match row.machine.as_deref() { Some(name) => self.rental(tx, name)?, None => false };
                 let reason = outcome.reason.clone().unwrap_or_default();
                 let machine = row.machine.clone().unwrap_or_default();
-                let elsewhere = reason.code == "gpu_lost" && rental;
+                // A run asked on its machine (`--on`) is sent again there only, never placed elsewhere (cl-1316).
+                let elsewhere = reason.code == "gpu_lost" && rental && !row.pinned;
                 let whither = match elsewhere {
                     true => "to a rental with GPUs in service".to_owned(),
                     false => format!("to {machine}, on GPUs in service"),
@@ -3180,9 +3181,10 @@ fn retried(tx: &Transaction, id: &str, why: &str) -> Result<()> {
 
 /// Returns `row` to Calcifer's queue, its machine lost (cl-1132, Paul 11-17: "If that machine dies or disappears, it re-assigns that
 /// queued job to another machine"), saying `why` in its log. A call goes back to be placed wherever it finishes soonest
-/// (`Machines::place_unplaced`), never renting on its own; one its machine took, as its next attempt. Past its last attempt, or a
-/// machine's own job (an install, a warm set, an update: it was for that machine, and what asked for it places its work again), it
-/// fails in one line. One its asker canceled ends canceled.
+/// (`Machines::place_unplaced`), never renting on its own; one its machine took, as its next attempt. Past its last attempt, a
+/// machine's own job (an install, a warm set, an update: it was for that machine, and what asked for it places its work again), or a
+/// call its caller pinned to the machine (`--on <machine>`: it measures that machine, and another may be another session's: cl-1316),
+/// it fails in one line. One its asker canceled ends canceled.
 fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
     let id = row.id.as_str();
     if row.cancel_requested {
@@ -3198,6 +3200,13 @@ fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
         return lost(match taken {
             true => format!("{why}, so {run} stopped"),
             false => format!("{why} before it took {run}"),
+        });
+    }
+    if row.pinned {
+        let machine = row.machine.as_deref().unwrap_or("its machine");
+        return lost(match taken {
+            true => format!("{why}, so {run} stopped: it was asked on {machine} (--on), so it runs nowhere else"),
+            false => format!("{why} before it took {run}: it was asked on {machine} (--on), so it runs nowhere else"),
         });
     }
     if taken && row.attempt >= ATTEMPTS {
