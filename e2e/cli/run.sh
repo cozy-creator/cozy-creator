@@ -532,6 +532,7 @@ WEB_2=(
 WEB_3=(
   focus
   focus-original
+  tool-words
   create
   project-name
   takes

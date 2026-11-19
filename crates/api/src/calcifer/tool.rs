@@ -298,6 +298,11 @@ pub fn makes(callable: &Callable) -> Option<&str> {
     output_kind(callable).or_else(|| text_field(callable).map(|_| "text"))
 }
 
+/// A box's main text, where its words are written: its first prompt, else its first words (`str`), as the page's `mainText` finds it.
+pub fn main_text(fields: &[ToolField]) -> Option<&ToolField> {
+    fields.iter().find(|field| field.ty == FieldType::Prompt).or_else(|| fields.iter().find(|field| field.ty == FieldType::Words))
+}
+
 /// Where a box of a tool with `fields` reads a box of `kind`: its first required slot of that kind, else its first prompt. With `able`, only
 /// a prompt that takes that kind: words (`text`) any prompt takes, as a mention of them is them.
 pub fn reads_kind<'a>(fields: &'a [ToolField], kind: &str, able: bool) -> Option<&'a ToolField> {
