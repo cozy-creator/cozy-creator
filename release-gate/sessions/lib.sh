@@ -24,10 +24,12 @@ fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
 # `file`: PARAMS are a JSON file in this checkout (from its root), for a matrix past the dispatch input's 65,535 characters;
-# read before any other param, so lib.sh's own (floor_mb_s, runtime, tensorfs) come from it too.
+# read before any other param, so lib.sh's own (floor_mb_s, runtime, tensorfs) come from it too. The dispatch's other params
+# override the file's (one fixture, each card's own `need_s`).
 PF=$(param file '')
 if [ -n "$PF" ]; then
-  PF=$(dirname "${BASH_SOURCE[0]}")/../../$PF; jq -e 'type == "object"' "$PF" > /dev/null 2>&1 || fail "params file $PF"; PARAMS=$(cat "$PF")
+  PF=$(dirname "${BASH_SOURCE[0]}")/../../$PF; jq -e 'type == "object"' "$PF" > /dev/null 2>&1 || fail "params file $PF"
+  PARAMS=$(jq -c --argjson over "$PARAMS" '. + ($over | del(.file))' "$PF") || fail "params file $PF"
 fi
 # The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).

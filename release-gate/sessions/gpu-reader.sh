@@ -10,7 +10,7 @@ cat > /var/tmp/ab-gpu.sh << "EOS"
 while :; do
   t=$(date -u +%T)
   nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | while IFS=", " read -r pid mib; do
-    echo "$t pid $pid $mib MiB $(tr "\0" " " < "/proc/$pid/cmdline" 2> /dev/null | cut -c1-200)"
+    echo "$t pid $pid $mib MiB hwm $(awk "/^VmHWM/ {print \$2}" "/proc/$pid/status" 2> /dev/null) $(tr "\0" " " < "/proc/$pid/cmdline" 2> /dev/null | cut -c1-200)"
   done
   echo "$t card $(nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv,noheader,nounits | paste -sd";")"
   sleep 5

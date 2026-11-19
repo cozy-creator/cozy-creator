@@ -1,0 +1,94 @@
+{
+ "tree": "rc",
+ "cap": "off",
+ "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2390%2Bg7020b11a-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=12a4039273d67a92e2b02e97d388704a33df99daf69be77da0bfe31af91245d3",
+ "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3526%2Bg0a23cc51-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=7681e07339d82bd8095235b4de48fc9ec51a4541da8a9a38e7523db020333978",
+ "need_s": 3600,
+ "floor_mb_s": 25,
+ "stall_s": 900,
+ "quiet_s": 3600,
+ "push_each": false,
+ "benchmarks": [
+  "qwen-image-2",
+  "orbit"
+ ],
+ "cells": [
+  {
+   "name": "qi2-gen-cold",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=1",
+    "prompt_upsampling:=false",
+    "seed:=40001"
+   ],
+   "max_s": 900,
+   "restart": true
+  },
+  {
+   "name": "qi2-gen-warm",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=1",
+    "prompt_upsampling:=false",
+    "seed:=40002"
+   ],
+   "max_s": 900
+  },
+  {
+   "name": "qi2-turbo-cold",
+   "target": "qwen-image-2/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=1",
+    "prompt_upsampling:=false",
+    "seed:=40003"
+   ],
+   "max_s": 900,
+   "restart": true
+  },
+  {
+   "name": "qi2-turbo-warm",
+   "target": "qwen-image-2/generate_turbo",
+   "args": [
+    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
+    "megapixels:=1",
+    "prompt_upsampling:=false",
+    "seed:=40004"
+   ],
+   "max_s": 900
+  },
+  {
+   "name": "orbit-probe",
+   "target": "orbit/orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=40999"
+   ],
+   "max_s": 120
+  },
+  {
+   "name": "orbit-cold",
+   "target": "orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=40005"
+   ],
+   "max_s": 1500,
+   "restart": true
+  },
+  {
+   "name": "orbit-warm",
+   "target": "orbit",
+   "args": [
+    "instructions=<character>",
+    "references:=[{\"name\":\"character\",\"image\":\"{seed}\"}]",
+    "seed:=40006"
+   ],
+   "max_s": 1500
+  }
+ ]
+}
