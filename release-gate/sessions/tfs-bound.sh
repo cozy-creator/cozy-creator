@@ -121,8 +121,8 @@ for a in "${names[@]}"; do
   fresh
   load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae
   if [ -n "$HCK" ]; then
-    load "$a-h3-fill" "$a" '' fill "$HCK" transformer
-    load "$a-h3-paged" "$a" '' paged "$HCK" transformer
+    load "$a-h3-fill" "$a" '' fill "$HCK" transformer 3
+    load "$a-h3-paged" "$a" '' paged "$HCK" transformer 3
   fi
   i=0
   while read -r env; do
