@@ -3,8 +3,8 @@
  "tree": "pk",
  "record": "release-gate/sessions/fixtures/ltx-comfy/rc-ltx-4090.json",
  "update": {
-  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=77cf71a3db43435bab845d8c28d84486d54b9dd6c8d01fd4908192feea61f032",
-  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=ceba270bd4df7f9377852b3b3518d9073b1b5651096914a50eafa3fd19714e15",
+  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl",
   "tensord": true,
   "gpu_memory_limit": "off"
  },

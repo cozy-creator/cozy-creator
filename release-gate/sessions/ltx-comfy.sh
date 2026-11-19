@@ -46,6 +46,12 @@ AB=$(jq -c --arg tree "$TREE" --argjson update "$UPDATE" --argjson gpus "$GPUS" 
             + (if $c.picture then ["--file", "first_frame={ref}/seed.jpg"] else [] end))}]
   | .[0] += {update: $update, download: ([$cells[].lane] | unique | map(["lightricks/ltx-2.5@0.2.0", "--lane", .]))})}' --argjson cells "$REQS" <<<"$REQS") || fail "ab cells"
 echo "$AB" > "$OUT/ab-params.json"
+# ab fetches its update's wheels itself, after ComfyUI's pass on a billing pod: each is fetched here first, at $0.
+for kind in runtime tensorfs; do
+  src=$(jq -r --arg k "$kind" '.[$k] // empty' <<<"$UPDATE"); [ -n "$src" ] || continue
+  f=$(wheel_from "$OUT/wheels-check/$kind" "$src") && [ -n "$f" ] || fail "update $kind: no wheel from $src"
+  say "update $kind: ${f##*/}"
+done
 say "benchmarks $(git -C "$BENCH" rev-parse --short HEAD), packages $TREE $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD): $(jq -r 'map(.name) | join(", ")' <<<"$CELLS")"
 seal() {
   local key; key=$(openssl rand -hex 32)
