@@ -473,7 +473,8 @@ class Broker:
             if choice.get("ref") is not None:
                 raise Failed(f"a call to {export} names a model for {parameter}; this driver binds a slot's default")
             loras[f"{export}.models.{parameter}"] = [
-                (str(lora["ref"]), float(cast(float, lora.get("strength", 1.0))))
+                # No strength: its release's, which a tiny fixture's LoRA has none of: 1 (cozy-runtime #2295).
+                (str(lora["ref"]), 1.0 if lora.get("strength") is None else float(cast(float, lora["strength"])))
                 for lora in cast(list[dict[str, Json]], choice.get("lora") or [])]
         files = {path: (self.held[digest], self.types.get(digest, "")) for path, digest in digests(request) if digest in self.held}
         child = f"{self.request}-call-{index}"
@@ -677,10 +678,11 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         stacked = (loras or {}).get(slot["path"], [])
         if stacked:
-            missing = [lora for lora, _ in stacked if lora not in manifests]
+            # A LoRA by its ref, or by a held checkpoint a slot was bound to (`Weights.ref`, cl-1281).
+            missing = [lora for lora, _ in stacked if lora not in manifests and lora not in manifests.values()]
             if missing:
                 raise Failed(f"the fixture builds no LoRA {', '.join(missing)} for {slot['path']}")
-            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked], wanted)
+            manifest = compose(store, manifest, [(lora, manifests.get(lora, lora), strength) for lora, strength in stacked], wanted)
             ref = "+".join([ref, *(lora for lora, _ in stacked)])
         components = held(manifest, store)
         missing = [c for c in wanted if c not in components]
@@ -1298,9 +1300,13 @@ def main() -> int:
                 spool.mkdir(parents=True)
                 invoke: Invoke = {"cmd": "invoke", "request_id": request, "entrypoint": entry, "spool": str(spool),
                                   "construction": construction, "deadline_s": 1800, "inputs": granted}
-                if "sources" in cell:
-                    invoke |= {"sources": {k: manifests[ref] for k, ref in cell["sources"].items()},
-                               "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
+                # Each raw Weights slot the fixture builds (its default, or the cell's choice), as TensorD hands each one it
+                # holds (`gpu_service.rs`, `PlanSource`); one it builds none of goes unbound, as a slot its needs rule rules out.
+                sources = {slot["path"].rsplit(".", 1)[-1]: manifest for slot in row.get("models", [])
+                           if slot.get("weights") and (manifest := built(chosen, slot)) is not None}
+                sources |= {k: manifests[ref] for k, ref in cell.get("sources", {}).items()}
+                if sources or "sources" in cell:
+                    invoke |= {"sources": sources, "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
                 executor.items.clear()
                 # A client watches every attempt's previews: each `preview` line runs on the loop's real layout. A tiny
                 # fixture's latents have a few channels, not its VAE's: that alone is what such a line may say.

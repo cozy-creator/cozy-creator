@@ -291,14 +291,15 @@ def clip(frames: int) -> Callable[[Path], Path]:
     return make
 
 
-#: An edit's summary and two beats on a 5 s plate.
+#: An edit's summary and two beats on a 5 s plate, each beat opening with the edit LoRA's trigger as the page writes it
+#: (packages #1017: the package adds none). Its `vfx_edit` slot's LoRA is the one its rule picks; the other four go unbound.
 _EDIT: dict[str, Json] = {
     "edit": "vfx_edit", "summary": {"text": "A red fox crosses a winter field at dusk."}, "seed": 7, "quality": "full",
-    "beats": [{"duration": 2, "description": {"text": "a red fox runs across a snowy field"}},
-              {"duration": 3, "description": {"text": "the fox stops and looks back"}}],
+    "beats": [{"duration": 2, "description": {"text": "vfx_edit: a red fox runs across a snowy field"}},
+              {"duration": 3, "description": {"text": "vfx_edit: the fox stops and looks back"}}],
 }
 #: What H3 is told, in order, in the text the take's latents keep (`shot.upscale_prompt`): the summary, then each beat at
-#: its time on the plate's clock, the edit LoRA's trigger opening each.
+#: its time on the plate's clock.
 _EDIT_SAID = ("A red fox crosses a winter field at dusk.", "[Shot 1] vfx_edit: a red fox runs across a snowy field",
               "At 00:02.000, vfx_edit: the fox stops and looks back")
 
