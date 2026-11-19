@@ -17,6 +17,9 @@ function Picture({ id, sha256 }: { id: string; sha256: string }) {
   return image.src ? <img key={image.request} src={image.src} alt="" draggable={false} onLoad={image.onLoad} onError={image.onError} /> : null
 }
 
+/** Whether its file has a picture to show: an image's or a video's, as its field says it. A sound's or a box of words' has none to ask for. */
+const pictured = (field: string | null | undefined) => field === "image" || field === "video"
+
 function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolean }) {
   const { client } = useConnection()
   const to = useTo()
@@ -26,7 +29,7 @@ function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolea
   return (
     <li className={`assetrow ${asset.starred ? "starred" : ""}`} data-asset={asset.name} onContextMenu={saves ? menu.open : undefined}>
       <Link to={to(`assets/${encodeURIComponent(asset.name)}`)}>
-        <span className="asset-thumb">{asset.sha256 && asset.kind !== "audio" && !asset.absent && <Picture id={id} sha256={asset.sha256} />}</span>
+        <span className="asset-thumb">{asset.sha256 && pictured(asset.field) && !asset.absent && <Picture id={id} sha256={asset.sha256} />}</span>
         <StateDot state={nodeState(asset, { waiting, failureShown: !asset.pinned })} unseen={asset.unseen?.length ?? 0} noun={asset.noun} />
         <span className="nm">{asset.name}</span>
         <span className="sp" />

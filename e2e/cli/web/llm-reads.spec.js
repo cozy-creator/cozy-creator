@@ -7,7 +7,8 @@
 // `<` offers LLM boxes in any prompt, as words (SDXL's, beside the picture it reads since sdxl 0.15, se-175), and reply's prompt shows its
 // mention as a chip with no picture under it. The `<` list and reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark. A take's note
 // shows a picture of an image or a video only: an LLM's words land with none and no `/thumbs` asked of them (#4031 asked one of each, and
-// its 400s were console errors), a still lands with its own, and `/thumbs` refuses a text file at once.
+// its 400s were console errors), a still lands with its own, and `/thumbs` refuses a text file at once. The Assets drawer's rows ask the
+// same: a picture's row draws its thumbnail, and a box of words' asks none (it asked of every asset but a sound's).
 const { randomUUID } = require('crypto');
 const { mkdirSync } = require('fs');
 const { join } = require('path');
@@ -166,5 +167,22 @@ test('llm-reads', async ({ page, project, api }) => {
     const said = await asked.json().catch(() => null);
     expect.soft({ status: asked.status, code: said?.error?.code }, `a text file's thumbnail is refused at once: ${JSON.stringify(said)}`).toEqual({ status: 400, code: 'thumb_unsupported' });
     console.log(`llm-reads thumbs: ${asked.status} ${said?.error?.message}`);
+  });
+
+  await test.step("the Assets drawer: a picture's row draws its thumbnail, and a box of words' asks none", async () => {
+    const menu = page.locator('details.main-menu');
+    const drawer = page.locator('aside.drawer');
+    const before = thumbs.length;
+    if ((await menu.getAttribute('open')) === null) await menu.locator('summary').click();
+    await menu.locator('nav').getByRole('link', { name: 'Assets', exact: true }).click();
+    for (const name of ['answer', 'reply', 'fixed', 'coast', 'still']) await expect(drawer.locator(`.assetrow[data-asset="${name}"]`), `${name} is listed`).toBeVisible();
+    for (const name of ['coast', 'still']) {
+      const row = drawer.locator(`.assetrow[data-asset="${name}"] .asset-thumb img`);
+      await expect.poll(() => row.evaluate((img) => img.complete && img.naturalWidth > 0).catch(() => false), { message: `${name}'s row draws its thumbnail`, timeout: 60_000 }).toBe(true);
+    }
+    for (const name of ['answer', 'reply', 'fixed']) await expect.soft(drawer.locator(`.assetrow[data-asset="${name}"] .asset-thumb img`), `${name}'s row has no picture`).toHaveCount(0);
+    const shown = (await Promise.all(['answer', 'reply', 'fixed'].map((name) => project.asset(name)))).map((asset) => asset.sha256?.replace(/^sha256:/, '').toLowerCase()).filter(Boolean);
+    expect(shown.length, 'each box of words shows a file').toBe(3);
+    expect.soft(thumbs.slice(before).filter((at) => shown.some((hex) => at.includes(hex))), "no thumbnail asked of a box of words' row").toEqual([]);
   });
 });
