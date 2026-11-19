@@ -202,8 +202,8 @@ struct Block {
     life: Life,
     // None means all previous work is complete. Some(stream) permits ordered reuse only there.
     reusable_on: Option<u64>,
-    // A live eager block's (birth pass, site) in `escape`'s tally.
-    tally: Option<(u32, u32)>,
+    // A live eager block's (birth pass, site, cut leaf) in `escape`'s tally.
+    tally: Option<(u32, u32, u64)>,
     // In pinned host memory (`host`): it takes no room on the card and counts in nothing that judges it.
     host: bool,
 }

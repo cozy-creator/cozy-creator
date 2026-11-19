@@ -1,0 +1,1 @@
+TensorFS: a model forward is refused before it runs only when it could not fit with each cut site at its finest level. What a pass held at the coarser levels its sites chose with room to spare no longer counts as its need, so PAN2's capped decode is not refused after its first chunk (var-030, cr-350).
