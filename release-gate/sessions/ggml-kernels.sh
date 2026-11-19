@@ -11,7 +11,7 @@
 # as lib.sh `wheel_from` takes; the Runtime a native dev build carrying `_ggml`).
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
 # (3600); built (a pod-session run that built llama.cpp on a runner: below); skus and quoted (preflight.sh pick_offer); the
-# ride-along's decode, make, model and tree.
+# ride-along's decode, make, model and tree; opening_red and opening_green (Runtime wheel sources for cr-342's cell).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -180,6 +180,33 @@ if [ -n "$DECODE$MAKE" ]; then
     c=$(made "make-$lane"); [ -n "$c" ] || { RIDE_BAD=1; say "FAILED: quantize $lane made no checkpoint"; continue; }
     pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
+  # cr-342's cell (cozy-runtime#2322, `bench.lm_opening_kernel`): a cold decode whose first steps meet a kernel still
+  # building completes; the escaped bug: 'Building: attention cuda:0 sm89 sageattention' on a fresh 4090's first run, and
+  # 44424148955's 'Building: llama.cpp-ggml cuda:0'. Once on the candidate; then, each put on the pod in turn,
+  # `opening_red` (the RC before #2289, plus the cell: must fail `Building`) and `opening_green` (the RC with #2289, plus
+  # the cell: must pass). The candidate pair goes back on before the lanes.
+  opening() {
+    step "fresh-opening-$1" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD"
+    step "opening-$1" run "$DFIX/drive/opening_kernel" --on "$NAME" || return 1
+    on_candidates "opening-$1"
+    n=$(runno "opening-$1"); say "opening kernel ($1): $( (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""')"
+  }
+  opening candidate || { OPEN_BAD=1; say "FAILED: opening_kernel (candidate): $(grep -m1 -E '^Run .* failed|^error' "$OUT/opening-candidate.txt" | cut -c1-300)"; }
+  swapped=''
+  for arm in red green; do
+    src=$(param "opening_$arm" '') && [ -n "$src" ] || continue
+    wheel=$(wheel_from "$OUT/wheels/opening-$arm" "$src") && [ -n "$wheel" ] || fail "opening_$arm: no Runtime wheel from $src"
+    step "runtime-$arm" machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$wheel" -y || fail "the pod's Runtime (opening_$arm)"
+    swapped=1
+    if opening "$arm"; then
+      [ "$arm" = green ] || { OPEN_BAD=1; say "FAILED: opening_kernel (red): passed on the Runtime before #2289, so it reproduces nothing"; }
+    elif [ "$arm" = red ] && grep -q 'Building' "$OUT/opening-red.txt"; then
+      say "opening kernel (red): failed as the escaped bug did: $(grep -m1 'Building' "$OUT/opening-red.txt" | cut -c1-300)"
+    else
+      OPEN_BAD=1; say "FAILED: opening_kernel ($arm): $(grep -m1 -E '^Run .* failed|^error' "$OUT/opening-$arm.txt" | cut -c1-300)"
+    fi
+  done
+  [ -z "$swapped" ] || step candidate-back machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate pair back on the pod"
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
@@ -216,9 +243,11 @@ fi
 
 [ -z "${RIDE_BAD:-}" ] || say "FAILED: a ride-along lane (lines above)"
 [ -z "${ORDER_BAD:-}" ] || say "FAILED: batch-shapes: a raced read on the default stream unlike its settled one (lines above)"
-[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}" ] || fail "a ride-along lane or batch-shapes failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
+[ -z "${OPEN_BAD:-}" ] || say "FAILED: cr-342's opening_kernel cell (lines above)"
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}" ] || fail "a ride-along lane, batch-shapes or opening_kernel failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
 [ -z "${ORDER_BAD:-}" ] || fail "batch-shapes: a raced read on the default stream unlike its settled one"
+[ -z "${OPEN_BAD:-}" ] || fail "cr-342's opening_kernel cell"
 say "PASS: llama.cpp's kernels in our Runtime at stock llama.cpp's speed on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
