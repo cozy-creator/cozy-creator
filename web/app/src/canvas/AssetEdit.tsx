@@ -12,8 +12,8 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
-import { Answer, Ghosts, Spread, Thumb, useWords } from "./Media"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, timedList, totalOf, WANTED } from "./controls"
+import { Answer, Spread, Thumb, useWords } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { RenderTime } from "./RenderTime"
@@ -91,11 +91,8 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
 /** Words, or a prompt: chips for what it mentions, and what its tool can't use there struck through, never sent (cl-944). */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const store = useCanvasStore()
-  const beat = /^beats\.\d+\./.test(place)
-  // In the frame its pictures are the frame's (Backdrop); elsewhere a video's prompt carries its own behind it.
+  // In the frame its pictures are the frame's (Backdrop); elsewhere, small beside it.
   const inFrame = Boolean(useContext(Sections)) || Boolean(framed)
-  const references = !inFrame && view.asset?.kind === "video" && view.hereWords && field.type === "prompt" && (place === "summary" || beat)
-  const showLabel = !(references && beat && field.field === "description")
   const text = (
     <MentionText
       asset={name}
@@ -106,28 +103,24 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       placeholder={field.placeholder ?? undefined}
       missing={view.asset?.missing ?? []}
       focus={focus}
-      thumbs={!inFrame && !references}
+      thumbs={!inFrame}
       onDraft={bound.draft}
       onSave={bound.save}
       onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
     />
   )
-  const surface = references ? <div className="video-reference-field" data-video-reference={place}>
-    <Ghosts name={name} view={view} mentions={mentionsIn(said(bound.value))} />
-    {text}
-  </div> : text
   if (named)
     return (
       <div className="slide text-row">
-        {showLabel && <span className="ctl-name">{field.label}</span>}
-        <div className="text-box">{surface}</div>
+        <span className="ctl-name">{field.label}</span>
+        <div className="text-box">{text}</div>
       </div>
     )
-  if (!block) return surface
+  if (!block) return text
   return (
     <div className="field-block">
-      {showLabel && <span className="block-label">{field.label}</span>}
-      {surface}
+      <span className="block-label">{field.label}</span>
+      {text}
     </div>
   )
 }
@@ -495,7 +488,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const focused = useSignal(store.focusedName)
   const rows = fullRows(field, rowsIn(bound.value))
   const sections = useContext(Sections)
-  const accordion = Boolean(sections) || (view.asset?.kind === "video" && view.hereWords && field.field === "beats")
+  const accordion = Boolean(sections) || (view.asset?.kind === "video" && view.hereWords && timedList(field))
   const run = accordion && focused === name ? watched(view)?.run : undefined
   const live = view.run?.number === run ? view.run : undefined
   const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
@@ -737,7 +730,7 @@ export function framedOf(view: ElementView, fields: ToolField[]): ToolField[] {
   // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12, cl-933).
   if (!view.hereWords || (!view.asset?.tool && view.asset?.kind !== "text")) return []
   const first = mainText(fields) ?? fields.find((field) => field.type === "slot")
-  const rows = fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total) && field.members.some((member) => member.type === "prompt"))
+  const rows = fields.find((field) => timedList(field) && field.members?.some((member) => member.type === "prompt"))
   return [...(first ? [first] : []), ...(rows ? [rows] : [])]
 }
 

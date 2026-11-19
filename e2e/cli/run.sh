@@ -510,6 +510,7 @@ WEB_1=(
 )
 WEB_2=(
   fields
+  timed-list
   layout
   type
   live

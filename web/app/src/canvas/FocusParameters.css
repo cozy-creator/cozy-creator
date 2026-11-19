@@ -131,29 +131,6 @@
   margin: 0;
   font: var(--w-heading) 22px / 1.25 var(--sans);
 }
-/* A video's prompt outside the frame carries only its own image references. */
-.video-reference-field {
-  position: relative;
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--round);
-  background: var(--field);
-}
-.video-reference-field .ghosts {
-  opacity: .2;
-}
-.video-reference-field .ghosts img {
-  object-fit: contain;
-}
-.video-reference-field .mention-text {
-  position: relative;
-  z-index: 1;
-  border: 0;
-  background: transparent;
-  font-weight: 700;
-  color: var(--ink);
-}
 .beat.beat-accordion {
   display: block;
   padding: 0;
