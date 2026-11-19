@@ -60,11 +60,11 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
         Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
     };
-    // Once the context is up, the driver's room this process is expected to need (`expect`) must be
-    // free: Torch's runtime and first stream come next, where a refusal reaches nobody who could give
-    // room (run 31653: an idle H3 left under 700 MiB). Short of it, peers are asked for the rest; a
-    // refused context asks for what peers can give. The context's cost is measured as it comes up:
-    // what was free before it less what is free after. 3 GiB was asked of peers before, on any card.
+    // Once the context is up, about its cost again must be free: Torch's runtime and first stream come
+    // next, where a refusal reaches nobody who could give room (run 31653: an idle H3 left under
+    // 700 MiB). Short of it, peers are asked for the rest; a refused context asks for what peers can
+    // give. The context's cost is measured as it comes up: what was free before it less what is free
+    // after. 3 GiB was asked of peers before, on any card.
     let before = card_free(device);
     let mut last = false;
     loop {
@@ -73,8 +73,8 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             Err(Error::Cuda { code: 2, .. }) => Some(0),
             Ok(()) => card_free(device).and_then(|free| {
                 let context = before.map_or(0, |before| before.saturating_sub(free));
-                let room = came_up(device, Expected { uuid, context, set: None });
-                (free < room).then(|| room - free)
+                came_up(device, Expected { uuid, context, set: None });
+                (free < context).then(|| context - free)
             }),
             Err(_) => None,
         };
@@ -122,9 +122,9 @@ pub(crate) fn request_boundary(device: i32, begin: bool) {
     if let Some(service) = service(device) {
         if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }
     }
-    let room = expect(device, !begin);
+    let (room, own) = expect(device, !begin);
     if begin && let Ok(gpu) = crate::gpu(device) {
-        gpu.driver_room_began(room);
+        gpu.driver_room_began(room, own);
     }
 }
 
@@ -140,10 +140,10 @@ struct Expected {
 
 static EXPECTED: Mutex<BTreeMap<i32, Expected>> = Mutex::new(BTreeMap::new());
 
-/// This process is up on `device`, as `expected` read it the first time: the driver's room it needs.
-fn came_up(device: i32, expected: Expected) -> usize {
+/// This process is up on `device`, as `expected` read it the first time.
+fn came_up(device: i32, expected: Expected) {
     EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).entry(device).or_insert(expected);
-    expect(device, false)
+    expect(device, false);
 }
 
 /// A plan running model set `set` became active on `device`: its learned figure now applies.
@@ -155,19 +155,21 @@ pub(crate) fn plan_seen(device: i32, set: u64) {
     }
 }
 
-/// The driver's room every map leaves on `device` (`Device::driver_room`): the most a process running
-/// this model set on this card held outside its books (learned on this machine, kept across boots)
-/// less what this process holds there now, measured (by NVML, else read from the card); for a set
-/// this card never ran, its context's measured cost. Learned across every model set, a process
-/// inherited another's growth. A fixed 800 MiB was left before, 10-13% of an 8 GB card. `learn`: a
-/// request ended, and what this process holds outside its books joins what its set learned. Read as
-/// the process comes up, as a plan becomes active and at each request's boundaries.
-fn expect(device: i32, learn: bool) -> usize {
-    let Ok(gpu) = crate::gpu(device) else { return 0 };
+/// The driver's room every map leaves on `device` (`Device::driver_room`), and what this process holds
+/// outside its books now, measured (by NVML, else read from the card). The room is the most a process
+/// running this model set on this card held outside its books (learned on this machine, kept across
+/// boots), for a set this card never ran its context's measured cost, less what this process holds
+/// there now: its own context is in that already (s13: a cold set kept 267 MiB more beside 360 MiB
+/// it held). Learned across every model set, a process inherited another's growth. A fixed 800 MiB was
+/// left before, 10-13% of an 8 GB card. `learn`: a request ended, and what this process holds outside
+/// its books joins what its set learned. Read as the process comes up, as a plan becomes active and at
+/// each request's boundaries.
+fn expect(device: i32, learn: bool) -> (usize, usize) {
+    let Ok(gpu) = crate::gpu(device) else { return (0, 0) };
     let Some(Expected { uuid, context, set }) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
         .get(&device).copied()
     else {
-        return 0;
+        return (0, 0);
     };
     // Where NVML can't name this process (a container's nested PID namespace), what it holds outside its
     // books is read from the card: its context, and what lies outside its books now past the least it
@@ -181,9 +183,9 @@ fn expect(device: i32, learn: bool) -> usize {
         let _ = varena_ledger::held_out_of_books(&uuid, set, own as u64);
     }
     let most = set.and_then(|set| varena_ledger::out_of_books(&uuid, set));
-    let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
+    let room = most.map_or(context, |most| most as usize).saturating_sub(own);
     gpu.expect_driver(room, measured.unwrap_or(0), context, most.map_or(0, |most| most as usize));
-    room
+    (room, own)
 }
 
 fn nvml_device<'a>(nvml: &'a Nvml, b: &[u8; 16]) -> Option<nvml_wrapper::Device<'a>> {

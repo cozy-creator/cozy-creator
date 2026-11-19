@@ -254,6 +254,7 @@ impl PyDevice {
             ("out_of_books_bytes", stats.out_of_books_bytes as u64),
             ("driver_room_bytes", stats.driver_room_bytes as u64),
             ("driver_room_begin_bytes", stats.driver_room_begin_bytes as u64),
+            ("out_of_books_begin_bytes", stats.out_of_books_begin_bytes as u64),
             ("context_bytes", stats.context_bytes as u64),
             ("out_of_books_learned_bytes", stats.out_of_books_learned_bytes as u64),
         ] {
