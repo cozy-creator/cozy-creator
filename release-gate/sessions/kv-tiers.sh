@@ -17,7 +17,8 @@
 #                  the same rows in batches of 1 to 16 and in prefills of three sizes, through the leaf and as one launch.
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (wheel sources as lib.sh `wheel_from`
 # takes). Nothing here is judged against a bar: it reports, and fails only where a case does.
-# params: tensorfs, runtime (required), seconds (1500), cases ("kv-tiers batch-shapes"; also engine-step, engine-loop).
+# params: tensorfs, runtime (required), seconds (1500), cases ("kv-tiers batch-shapes"; also engine-step, engine-loop),
+#         skus and quoted (fixtures/ggml-decode/preflight.sh pick_offer: the cheapest of the cards offered now).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 DRIVE=$(cd "$HERE/../suites/varena/drive" && pwd)
@@ -28,8 +29,9 @@ say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version
 . "$HERE/fixtures/ggml-decode/preflight.sh"
 drive_check "$DRIVE" varena_drive
 drive_lock "$DRIVE"
+pick_offer
 quote "$(param seconds 1500)"
-rent
+offer_rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
 step candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the pod's TensorFS and Runtime"
 cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
