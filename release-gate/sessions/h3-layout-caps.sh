@@ -27,6 +27,7 @@ jq -e 'type == "object" and all(.[]; . == "same" or . == "different")' <<< "$EXP
 for tool in ffmpeg ffprobe curl jq unzip; do command -v "$tool" > /dev/null || fail "no $tool"; done
 for t in $TREES; do [ -f "$PACKAGES/$t/minimax-h3/minimax_h3/regenerate.py" ] || fail "no packages_refs checkout $t"; done
 RENT_ARGS=--ssh  # derived_state reads and clears the pod's derived state over its root shell
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 WORK=${RUNNER_TEMP:-$OUT/..}/h3-layout-caps; mkdir -p "$WORK" "$OUT/wheel" "$OUT/records" "$OUT/media"
 fetch_wheel() {
   local url=$1 f
