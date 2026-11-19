@@ -205,6 +205,9 @@ struct Block {
     reusable_on: Option<u64>,
     // A live eager block's (birth pass, site) in `escape`'s tally.
     tally: Option<(u32, u32)>,
+    // PROOF ONLY (var-030 section 8 W7): a free managed block whose dead pages were dropped: placed on the card again
+    // when taken.
+    dropped: bool,
 }
 
 impl Segment {
@@ -249,6 +252,7 @@ impl Block {
             life: Life::Ready,
             reusable_on: None,
             tally: None,
+            dropped: false,
         }
     }
 
@@ -1121,25 +1125,43 @@ impl Device {
         }
     }
 
-    /// PROOF ONLY (var-030 section 8): `bytes` at `ptr` of a managed segment were freed and hold nothing wanted. Unused
-    /// since W6: W3-W5 dropped them at free, and those builds met Xid 31 page faults where managed memory engaged.
-    #[allow(dead_code)]
-    fn discard_dead(&self, ptr: u64, bytes: usize, stream: u64) {
-        let Ok(_context) = self.driver().enter() else { return };
-        if let Ok(true) = self.driver().discard(ptr, bytes, stream as usize) {
-            self.paged.discarded(bytes);
+    /// PROOF ONLY (var-030 section 8 W7): while our bytes pass the card, the large free blocks of managed segments
+    /// whose every use has completed drop their dead pages (no eviction writes them out, their host pages go), and are
+    /// placed on the card again when taken. In reclaim's completed-work step, never at free (W3-W5 dropped them at free,
+    /// in one stream's order, and met Xid 31 page faults).
+    fn drop_completed(&self, state: &mut State) {
+        if !self.paged.on() || self.paged.bytes() == 0 || self.over(0) == 0 {
+            return;
+        }
+        let ranges: Vec<(u64, usize)> = state.blocks.iter()
+            .filter(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none() && block.waits.is_empty()
+                && block.capacity > LARGE && !block.dropped
+                && state.segments.get(&block.segment).is_some_and(|segment| segment.managed))
+            .map(|(ptr, block)| (*ptr, block.capacity))
+            .collect();
+        if let Ok(true) = self.driver().discard_completed(&ranges) {
+            for (ptr, bytes) in ranges {
+                if let Some(block) = state.blocks.get_mut(&ptr) {
+                    block.dropped = true;
+                }
+                self.paged.discarded(bytes);
+            }
         }
     }
 
     /// `rebind` for a block just taken from a free list, where it is a large one of a managed segment and our
     /// bytes pass the card.
-    fn rebind_taken(&self, state: &State, ptr: u64, stream: u64) {
-        if !self.paged.rebinds() || self.over(0) == 0 {
+    fn rebind_taken(&self, state: &mut State, ptr: u64, stream: u64) {
+        let Some(block) = state.blocks.get(&ptr) else { return };
+        if !self.paged.rebinds() || (self.over(0) == 0 && !block.dropped) {
             return;
         }
-        let Some(block) = state.blocks.get(&ptr) else { return };
-        if block.capacity > LARGE && state.segments.get(&block.segment).is_some_and(|segment| segment.managed) {
-            self.rebind(ptr, block.capacity, stream);
+        let (capacity, segment) = (block.capacity, block.segment);
+        if capacity > LARGE && state.segments.get(&segment).is_some_and(|segment| segment.managed) {
+            self.rebind(ptr, capacity, stream);
+            if let Some(block) = state.blocks.get_mut(&ptr) {
+                block.dropped = false;
+            }
         }
     }
 
@@ -1383,6 +1405,7 @@ impl Device {
         &self, state: &mut State, limit: usize, exclude: Option<PoolId>,
         preserve: &BTreeSet<u64>, maximum: usize,
     ) -> Result<usize> {
+        self.drop_completed(state);
         let mut released = 0usize;
         let mut candidates = Vec::new();
         let mut large = Vec::new();
@@ -1674,7 +1697,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         }
         if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool, || owner.over(exact) != 0) {
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
-            owner.rebind_taken(&state, ptr, stream);
+            owner.rebind_taken(&mut state, ptr, stream);
             return Ok(Device::activate(&mut state, ptr, bytes, escape::current(device)));
         }
         if let Some(id) = pool {
@@ -1709,7 +1732,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             // The room as last read: a map reads the driver again, and so does reclaim.
             let ptr = match Device::take(&mut state, class, bytes, stream, None, || owner.over(exact) != 0) {
                 Some(ptr) => {
-                    owner.rebind_taken(&state, ptr, stream);
+                    owner.rebind_taken(&mut state, ptr, stream);
                     ptr
                 }
                 None => {

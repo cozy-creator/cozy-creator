@@ -88,7 +88,6 @@ impl Books {
         self.rebound_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
     pub(crate) fn discarded(&self, bytes: usize) {
         self.discards.fetch_add(1, Ordering::Relaxed);
         self.discarded_bytes.fetch_add(bytes as u64, Ordering::Relaxed);

@@ -135,6 +135,7 @@ pub(crate) struct Driver {
     event_destroy: EventOp,
     is_capturing: IsCapturing,
     stream_query: EventOp,
+    stream_synchronize: EventOp,
     stream_wait_event: StreamWaitEvent,
     stream_context: StreamContext,
     memory_info: MemoryInfo,
@@ -225,6 +226,7 @@ impl Driver {
             event_destroy: symbol!("cuEventDestroy_v2", EventOp),
             is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
             stream_query: symbol!("cuStreamQuery", EventOp),
+            stream_synchronize: symbol!("cuStreamSynchronize", EventOp),
             stream_wait_event: symbol!("cuStreamWaitEvent", StreamWaitEvent),
             stream_context: symbol!("cuStreamGetCtx", StreamContext),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
@@ -531,7 +533,21 @@ impl Driver {
     /// PROOF ONLY (var-030 section 8): a managed range whose contents are dead, dropped in `stream`'s order: its
     /// pages leave the card and host memory with no copy, so an eviction never writes dead bytes out. False where
     /// the driver has no such call.
-    #[allow(dead_code)]
+    /// PROOF ONLY (var-030 section 8 W7): free managed ranges whose every use has completed, dropped on varena's own
+    /// stream and waited for, so no later use on any stream can meet a page mid-discard.
+    pub(crate) fn discard_completed(&self, ranges: &[(u64, usize)]) -> Result<bool> {
+        if self.discard.is_none() || ranges.is_empty() {
+            return Ok(false);
+        }
+        let stream = self.paged_stream()?;
+        for &(ptr, bytes) in ranges {
+            self.discard(ptr, bytes, stream)?;
+        }
+        // SAFETY: a live stream of ours in the entered context.
+        status("cuStreamSynchronize", unsafe { (self.stream_synchronize)(stream as Object) })?;
+        Ok(true)
+    }
+
     pub(crate) fn discard(&self, ptr: u64, bytes: usize, stream: usize) -> Result<bool> {
         let Some(call) = self.discard else { return Ok(false) };
         let stream = if stream != 0 { stream } else { self.paged_stream()? };
