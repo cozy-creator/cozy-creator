@@ -551,6 +551,7 @@ WEB_2=(
   playback
   steady-face
   rule-loras
+  unplaced
 )
 WEB_3=(
   focus
