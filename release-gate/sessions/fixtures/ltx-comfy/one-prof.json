@@ -3,8 +3,8 @@
  "tree": "pk",
  "record": "release-gate/sessions/fixtures/ltx-comfy/rc-ltx-4090.json",
  "update": {
-  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2346%2Bg051d106f-cp312-abi3-manylinux_2_28_x86_64.whl",
-  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3401%2Bg5c5b2539-cp311-abi3-manylinux_2_28_x86_64.whl",
+  "runtime": "44357005456",
+  "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
   "tensord": true,
   "gpu_memory_limit": "off"
  },
@@ -13,38 +13,37 @@
  "cells": [
   {
    "name": "l-ltx-5s",
-   "key": "ltx25_nodyn",
+   "key": "ltx25",
    "duration_s": 5,
    "gpus": 1,
    "prompt": "A red fox trots across a frozen river at first light, breath steaming; the camera tracks low beside it over cracked ice. Sound: wind over the ice, crunching snow, a distant crow.",
-   "seed": 64401
+   "seed": 64501
   },
   {
    "name": "l-ltx-i2v-5s",
-   "key": "ltx25_i2v_nodyn",
+   "key": "ltx25_i2v",
    "duration_s": 5,
    "gpus": 1,
    "picture": true,
    "prompt": "The scene comes alive: a slow push-in as light shifts across it and a soft breeze moves through. Sound: gentle wind, distant birdsong.",
-   "seed": 64403
-  },
-  {
-   "name": "c-ltx-5s-dyn",
-   "key": "ltx25",
-   "duration_s": 5,
-   "gpus": 1,
-   "cozy": false,
-   "prompt": "A lighthouse keeper repairs a brass lamp at dusk; the camera circles the lamp room as the beam starts to turn. Sound: wind against glass, a ticking clock.",
-   "seed": 64404
+   "seed": 64503
   },
   {
    "name": "p-ltx-5s",
-   "key": "ltx25_nodyn",
+   "key": "ltx25",
    "duration_s": 5,
    "gpus": 1,
    "tree": "prof",
    "prompt": "[profile] A koi pond beneath cherry blossoms; petals drift onto the water as the camera glides low over it. Sound: trickling water, soft birdsong.",
-   "seed": 64405
+   "seed": 64505
+  },
+  {
+   "name": "l-ltx-20s",
+   "key": "ltx25",
+   "duration_s": 20,
+   "gpus": 1,
+   "prompt": "A street violinist plays under neon rain in a narrow alley; the camera circles slowly as people with umbrellas hurry past and puddles ripple with each step. Sound: a slow violin melody, steady rain, distant traffic.",
+   "seed": 64502
   }
  ]
 }
