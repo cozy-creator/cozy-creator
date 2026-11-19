@@ -45,9 +45,15 @@ pub const EVENT_DISABLE_TIMING: c_uint = 0x2;
 pub(crate) const MEMHOSTREGISTER_PORTABLE: c_uint = 0x1;
 /// The range is mapped read-only (a sealed layout); the device only reads it.
 pub(crate) const MEMHOSTREGISTER_READ_ONLY: c_uint = 0x8;
+/// The range is also mapped for the device, whose address of it `cuMemHostGetDevicePointer` gives
+/// (`CU_MEMHOSTREGISTER_DEVICEMAP 0x02`, CUDA driver API types).
+pub(crate) const MEMHOSTREGISTER_DEVICEMAP: c_uint = 0x2;
 pub(crate) const MEMHOSTALLOC_PORTABLE: c_uint = 0x1;
 
 pub(crate) const ATTR_PCI_BUS_ID: c_int = 33;
+/// `CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM = 91`: "Device can access host
+/// registered memory at the same virtual address as the CPU."
+pub(crate) const ATTR_HOST_POINTER_FOR_REGISTERED_MEM: c_int = 91;
 pub(crate) const ATTR_PCI_DEVICE_ID: c_int = 34;
 pub(crate) const ATTR_PCI_DOMAIN_ID: c_int = 50;
 
@@ -158,6 +164,9 @@ pub struct Driver {
     pub memcpy_dtoh: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUresult,
     pub mem_host_register: unsafe extern "C" fn(*mut c_void, usize, c_uint) -> CUresult,
     pub mem_host_unregister: F<*mut c_void>,
+    /// Asked only of a device-mapped registration (`mapped_pointer`): a driver without it has none.
+    pub mem_host_get_device_pointer:
+        Option<unsafe extern "C" fn(*mut CUdeviceptr, *mut c_void, c_uint) -> CUresult>,
     pub mem_host_alloc: unsafe extern "C" fn(*mut *mut c_void, usize, c_uint) -> CUresult,
     pub mem_free_host: F<*mut c_void>,
     pub pointer_get_attribute: unsafe extern "C" fn(*mut c_void, c_int, CUdeviceptr) -> CUresult,
@@ -280,6 +289,10 @@ impl Driver {
             memcpy_dtoh: load!(lib, b"cuMemcpyDtoH_v2"),
             mem_host_register: load!(lib, b"cuMemHostRegister_v2"),
             mem_host_unregister: load!(lib, b"cuMemHostUnregister"),
+            // SAFETY: the field's type is the documented driver ABI for this name.
+            mem_host_get_device_pointer: unsafe { lib.get::<_>(b"cuMemHostGetDevicePointer_v2") }
+                .ok()
+                .map(|symbol| *symbol),
             mem_host_alloc: load!(lib, b"cuMemHostAlloc"),
             mem_free_host: load!(lib, b"cuMemFreeHost"),
             pointer_get_attribute: load!(lib, b"cuPointerGetAttribute"),
@@ -557,6 +570,47 @@ pub(crate) unsafe fn pin_region(ptr: *mut u8, len: usize, read_only: bool) -> Re
         ctx,
         owned: rc == SUCCESS,
     })
+}
+
+/// As `pin_region`, and mapped for the device (`MEMHOSTREGISTER_DEVICEMAP`): a kernel may read and
+/// write the range at `mapped_pointer`'s address. For the current context only. A range already
+/// registered is an error: that registration may not be a mapped one.
+///
+/// # Safety
+/// As `pin_region`, and nothing reaches the range through the device once the guard drops.
+pub(crate) unsafe fn pin_mapped(ptr: *mut u8, len: usize) -> Result<HostPin> {
+    let d = driver()?;
+    let mut ctx = std::ptr::null_mut();
+    // SAFETY: `ctx` is a writable out-pointer.
+    check("cuCtxGetCurrent", unsafe { (d.ctx_get_current)(&mut ctx) })?;
+    let rc = {
+        let _wait = tracing::trace_span!("tensorfs cuMemHostRegister (mapped)").entered();
+        // SAFETY: the caller lends `[ptr, ptr+len)` as live host memory for the registration's life (contract above).
+        unsafe { (d.mem_host_register)(ptr.cast(), len, MEMHOSTREGISTER_DEVICEMAP) }
+    };
+    check("cuMemHostRegister", rc)?;
+    Ok(HostPin {
+        ptr: ptr.cast(),
+        ctx,
+        owned: true,
+    })
+}
+
+/// The device's address, in the current context, of the mapped registration whose base is `ptr`.
+/// Where the device maps no host memory the driver says so here, not at the registration.
+///
+/// # Safety
+/// `ptr` is the base of a live registration made by `pin_mapped` in this context.
+pub(crate) unsafe fn mapped_pointer(ptr: *mut u8) -> Result<CUdeviceptr> {
+    let Some(get) = driver()?.mem_host_get_device_pointer else {
+        return Err(Error::CudaUnavailable(
+            "cuMemHostGetDevicePointer is not in this driver".into(),
+        ));
+    };
+    let mut at: CUdeviceptr = 0;
+    // SAFETY: `at` is a writable out-value; `ptr` is a registration's base (contract above).
+    check("cuMemHostGetDevicePointer", unsafe { get(&mut at, ptr.cast(), 0) })?;
+    Ok(at)
 }
 
 /// Whether the current context can copy directly from this page-locked host address.

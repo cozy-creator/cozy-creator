@@ -9,6 +9,8 @@ mod continuation;
 #[cfg(feature = "store")]
 mod host;
 #[cfg(feature = "store")]
+mod host_cache;
+#[cfg(feature = "store")]
 mod pages;
 #[cfg(feature = "store")]
 mod phase;
@@ -689,6 +691,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_fill, module)?)?;
     cache_owner::install(module)?;
     cache::install(module)?;
+    #[cfg(feature = "store")]
+    host_cache::install(module)?;
     working::install(module)?;
     tensor_export::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();

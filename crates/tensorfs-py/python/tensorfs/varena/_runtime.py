@@ -14,7 +14,16 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .. import _ext
-from ._facts import CacheOwnerFacts, CacheStats, DeviceStats, PagesStats, PhaseControllerFacts, PlanFacts
+from ._facts import (
+    CacheOwnerFacts,
+    CacheStats,
+    DeviceStats,
+    HostAddressing,
+    HostCacheStats,
+    PagesStats,
+    PhaseControllerFacts,
+    PlanFacts,
+)
 from .sources import dtype_descriptor
 
 if TYPE_CHECKING:
@@ -281,12 +290,89 @@ class Pages:
         native = self._native.staging(bytes)
         return None if native is None else Staging(native)
 
+    def cache(self, reserve: int) -> HostCache:
+        """A HostCache of `reserve` bytes of host address space for this GPU, nothing mapped.
+        Raises, in one line, where `host_addressing` says the device takes no mapped registration."""
+        return HostCache(self, reserve)
+
     def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
         """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
         return self._native.drain()
 
     def stats(self) -> PagesStats:
         return self._native.stats()
+
+
+def host_addressing(device: int) -> HostAddressing:
+    """What `device` answers about reading registered host memory in place: its attribute
+    (`CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM`), whether a page registered
+    with the device-map flag sits at its own address there, the driver's refusal where a call was
+    refused; `supported` (a device-mapped registration is taken: a HostCache exists, and a copy
+    from it may run inside a graph's conditional body), with `why` when it isn't; and `in_place`
+    (a kernel may also read it at its host addresses: `HostCache.tensor`)."""
+    return _ext._varena_host_cache_probe(device)
+
+
+class HostCache:
+    """Where an engine keeps the K/V a card can't hold: a reserved range of host address space
+    whose owner maps and unmaps whole windows (`granularity`). A mapped window is pinned host
+    memory registered for the device, so a copy from it is one transfer, inside a graph's
+    conditional body too; where `host_addressing` says `in_place`, a kernel also reads it at the
+    same address. Its bytes count against the GPU's host tier while mapped. `base` never changes.
+    Nothing is page-locked until a window is committed."""
+
+    def __init__(self, pages: Pages, reserve: int) -> None:
+        self._native = _ext._VarenaHostCache(pages._native, reserve)
+
+    @property
+    def base(self) -> int:
+        return self._native.base
+
+    @property
+    def granularity(self) -> int:
+        """The window size: every `commit` and `release` is whole windows at a window offset."""
+        return self._native.granularity
+
+    @property
+    def reserved_bytes(self) -> int:
+        return self._native.reserved_bytes
+
+    def commit(self, offset: int, bytes: int) -> bool:
+        """Map `bytes` at `offset`, none of it mapped before: all or none. False: the host has no
+        room for them now (the tier's rule), and nothing was mapped."""
+        return self._native.commit(offset, bytes)
+
+    def release(self, offset: int, bytes: int) -> None:
+        """Give `bytes` at `offset` back: mapped windows nothing queued after this call reads or
+        writes. It waits for the device's queued work."""
+        self._native.release(offset, bytes)
+
+    def tensor(self, dtype: str | torch.dtype, shape: Sequence[int], byte_offset: int = 0) -> Tensor:
+        """A CUDA tensor of `shape` at `byte_offset`, anywhere in the reservation, as the device
+        addresses it: a kernel given it reads host memory in place. Touch only mapped windows."""
+        return self._view(dtype, shape, byte_offset, host=False)
+
+    def host(self, dtype: str | torch.dtype, shape: Sequence[int], byte_offset: int = 0) -> Tensor:
+        """The same bytes as a host tensor: what a copy to the card reads from."""
+        return self._view(dtype, shape, byte_offset, host=True)
+
+    def _view(
+        self, dtype: str | torch.dtype, shape: Sequence[int], byte_offset: int, *, host: bool
+    ) -> Tensor:
+        from torch.utils.dlpack import from_dlpack
+
+        code, bits, _ = dtype_descriptor(dtype)
+        dims = [operator.index(value) for value in shape]
+        capsule = self._native.dlpack(code, bits, dims, operator.index(byte_offset), host)
+        view: Tensor = from_dlpack(capsule)
+        return view
+
+    def stats(self) -> HostCacheStats:
+        return self._native.stats()
+
+    def close(self) -> None:
+        """Refused while a window is mapped or a tensor of it is alive."""
+        self._native.close()
 
 
 class Staging:
