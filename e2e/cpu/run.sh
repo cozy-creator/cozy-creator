@@ -130,7 +130,7 @@ one() {
   # A package taking first-party packages from the Hub's index is read as an RC machine reads it from its checkout (xs-195):
   # those sources are its sibling folders, and it is locked so. One whose committed lock leaves such a sibling out, unpublished
   # (stage.py's unpublished.txt), is installed so too, as Calcifer installs it (cl-1211): that lock holds neither the sibling
-  # nor what it brings in (qwen-image-2 imports birefnet's model, xs-217).
+  # nor what it brings in (xs-217).
   local read=$PACKAGES/$p staged staging='' envpkg=$pkg
   if ! staged=$(uv run -q --no-project --with 'packaging>=24' python -I "$HERE/stage.py" "$PACKAGES" "$p" "$out/staged" "$RUNTIME" "$TENSORFS"); then
     staging="staging it from the checkout failed"

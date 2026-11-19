@@ -5,7 +5,7 @@ release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes
 `pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights. A second VAE,
 other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131). Parts of the same pipeline, each a
 model of its own (xs-192): its transformer with its scheduler, as a community fine-tune is published, and its text encoder
-with its processor. Its `matte` (se-154) is birefnet's own tiny BiRefNet (`tiny/birefnet.py`)."""
+with its processor."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from transformers import Qwen3_5ForConditionalGeneration, Qwen3VLForConditionalG
 
 from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
-from tiny import birefnet as _birefnet
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
@@ -135,7 +134,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _part(root / "qwen-image-2.1", root / "text-encoder", ("text_encoder", "processor"))
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
             ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix",
-            DIT: root / "dit", ENCODER_PART: root / "text-encoder", **_birefnet.models(root, store)}
+            DIT: root / "dit", ENCODER_PART: root / "text-encoder"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -145,6 +144,9 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 _FOX = _shared.picture("fox", 320, 256)
 #: 1 MP, the least Qwen-Image-2.1 serves, at its fixed 40 steps.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 1, "prompt_upsampling": False}
+#: The enhancer runs as upstream's, to its full token budget, which tiny weights spend whole (3-7 min a cell on CPU): only
+#: `generate/upsampled` (words) and `image/edit-upsampled` (an edit, the box's default path) take it; the other `image`
+#: cells test their bindings.
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -152,24 +154,26 @@ CELLS: list[Cell] = [
     {"entry": "generate", "name": "upsampled", "payload": {"prompt": _prompt("a red fox"), **_SMALL, "prompt_upsampling": True}},
     {"entry": "generate", "name": "edit", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
-    {"entry": "generate", "name": "edit-upsampled",
-     "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL, "prompt_upsampling": True,
-                 "creativity": "faithful"},
-     "files": {"prompt.references.0.file": _FOX}},
+    # The page's default path: the image tool, Turbo, with its own enhancer rule (`_BOX_NEEDS`) and upsampling on.
+    {"entry": "image", "name": "edit-upsampled",
+     "payload": {"instructions": _prompt("the fox in <fox> wears a hat", "fox"), "seed": 7, "megapixels": 1},
+     "files": {"instructions.references.0.file": _FOX}},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
-                                                  "megapixels": 1, "creativity": "creative"}},
+                                                  "megapixels": 1, "prompt_upsampling": False}},
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
      "check": size(1024, 1024)},
     {"entry": "generate_turbo", "name": "edit", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"), **_SMALL},
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7,
-                                                   "megapixels": 1}},
+                                                   "megapixels": 1, "prompt_upsampling": False}},
     # The `vae` slot bound to another VAE: the same latents as `image/turbo`, another decoder's picture (se-131).
-    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
+                                                 "prompt_upsampling": False},
      "models": {"image.models.vae": VAE}},
     # The `model` and `text_encoder` slots bound to models of those parts alone, the VAE the default's: the same weights as
     # `image/turbo`'s, composed at run time, so the same picture (xs-192).
-    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
+                                                   "prompt_upsampling": False},
      "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER_PART}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
