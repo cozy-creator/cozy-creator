@@ -1,0 +1,160 @@
+{
+ "gpus": 2,
+ "need_s": 1000,
+ "order": "one-way",
+ "compare": [],
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "e-g1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37101",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44609708070",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3432+g6337ebcf-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "e-g1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37102",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "e-g2-1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37103",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37104",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-3",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37105",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-4",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37106",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-5",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37107",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-6",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37108",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "e-g2-7",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37109",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  }
+ ]
+}
