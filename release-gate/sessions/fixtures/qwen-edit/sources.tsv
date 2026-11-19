@@ -1,2 +1,2 @@
-name	file	crop	still	made	sha256	url	license	author	source
-miyara	miyara.jpg	1,1,4128,5160	0.40,0.26,0.58,0.38	0.32,0.62,0.70,0.97	dab5c1f31b62494499830daebe1120d3ee135f539910da1791261296e2d0c3b7	https://upload.wikimedia.org/wikipedia/commons/9/98/Jocelyn_Miyara%2C_Creative_Commons.jpg	CC BY 4.0	Sara Jordan Photography	https://commons.wikimedia.org/wiki/File:Jocelyn_Miyara,_Creative_Commons.jpg
+name	file	crop	still	made	lands	sha256	url	license	author	source
+miyara	miyara.jpg	1,1,4128,5160	0.40,0.26,0.58,0.38	0.32,0.62,0.70,0.97	0.32,0.62,0.70,0.97;0.34,0.385,0.395,0.44+0.565,0.385,0.62,0.44;0.02,0.02,0.22,0.30+0.80,0.02,0.98,0.30	dab5c1f31b62494499830daebe1120d3ee135f539910da1791261296e2d0c3b7	https://upload.wikimedia.org/wikipedia/commons/9/98/Jocelyn_Miyara%2C_Creative_Commons.jpg	CC BY 4.0	Sara Jordan Photography	https://commons.wikimedia.org/wiki/File:Jocelyn_Miyara,_Creative_Commons.jpg
