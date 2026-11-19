@@ -144,10 +144,10 @@ impl Cost {
         let context = context(&request, None, HashMap::new());
         for (name, expression) in &declared.size {
             match number(expression, &context) {
-                Ok(n) if n > 0.0 => {
+                Ok(n) if n >= 0.0 => {
                     size.values.insert(name.clone(), n);
                 }
-                Ok(n) => size_unanswered.push((name.clone(), format!("it gives {n}, not a number above 0"))),
+                Ok(n) => size_unanswered.push((name.clone(), format!("it gives {n}, below 0"))),
                 Err(why) => size_unanswered.push((name.clone(), why)),
             }
         }
@@ -309,13 +309,17 @@ fn at_lane<'r>(rows: Vec<&'r Benchmark>, lane: &str) -> Vec<&'r Benchmark> {
     }
 }
 
-/// Of `rows`, the one whose size is most like `size`: the fewest pictures apart, then the least apart by their shared variables.
+/// Of `rows`, the one whose size is most like `size`: the fewest switches apart (a shared variable 0 on one side only: Qwen Image 2's
+/// rewrite off or on), then the fewest pictures, then the least apart by their shared variables.
 fn nearest<'r>(rows: Vec<&'r Benchmark>, size: &JobSize) -> Option<&'r Benchmark> {
     let refs = size.refs.unwrap_or(0);
-    let unlike = |row: &Benchmark| (row.request.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.request).ln().abs());
+    let switched = |row: &Benchmark| {
+        (size.values.iter()).filter(|(name, n)| row.request.get(name).is_some_and(|m| (**n == 0.0) != (m == 0.0))).count()
+    };
+    let unlike = |row: &Benchmark| (switched(row), row.request.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.request).ln().abs());
     rows.into_iter().min_by(|a, b| {
         let (a, b) = (unlike(a), unlike(b));
-        a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
+        a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2))
     })
 }
 

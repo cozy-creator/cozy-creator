@@ -1172,8 +1172,9 @@ pub struct ModelRef {
     pub picked: bool,
 }
 
-/// What a job makes, by the variables a function's time scales with: its function's own (`estimate.size`, cl-1286: `needs::size`),
-/// else those `of` guesses from its input. Each a number above 0; each unknown one is absent.
+/// What a job makes, by the variables a function's time scales with: its function's own (`estimate.size`, cl-1286: `needs::Cost`),
+/// else those `of` guesses from its input (each above 0). A declared one may be 0, a switch off, which no ratio scales by; each unknown
+/// one is absent.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct JobSize {
@@ -1240,9 +1241,9 @@ impl JobSize {
         JobSize { values: guessed.into_iter().filter_map(|(name, value)| Some((name.to_owned(), value?))).collect(), refs: None }
     }
 
-    /// How much longer `self` takes than `other`: the product of each variable both know.
+    /// How much longer `self` takes than `other`: the product of each variable both know above 0 (a switch off scales nothing).
     pub fn ratio(&self, other: &JobSize) -> f64 {
-        (self.values.iter()).filter_map(|(name, a)| Some((*a, other.get(name)?))).filter(|(_, b)| *b > 0.0).map(|(a, b)| a / b).product()
+        (self.values.iter()).filter_map(|(name, a)| Some((*a, other.get(name)?))).filter(|(a, b)| *a > 0.0 && *b > 0.0).map(|(a, b)| a / b).product()
     }
 }
 
