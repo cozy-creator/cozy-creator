@@ -51,10 +51,11 @@ const partFits = (model: FoundModel | ModelDetail | undefined, slot: PickerSlot)
   const part = PARTS.get(slot.param)
   return part ? tagsOf(model).includes(part) : !tagsOf(model).some((tag) => [...PARTS.values()].includes(tag))
 }
+// A slot takes LoRAs of its family, and a VAE takes none.
+const takesLoras = (slot: PickerSlot) => Boolean(slot.family) && slot.param !== "vae"
 const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
   if (!compatible(model, slot.family, "lora") || identityOf(model.model) === "alibaba-pai/qwen-image-2.1-fun-acc") return false
-  // A VAE takes no LoRA.
-  return slot.param !== "vae" && partFits(model, slot)
+  return takesLoras(slot) && partFits(model, slot)
 }
 export const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
   if (funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo") return false
@@ -219,10 +220,13 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
   const [limit, setLimit] = useState(50)
   const [tab, setTab] = useState<"models" | "loras">("models")
   const role = kind === "lora" || tab === "loras" ? "lora" : "model"
+  // The tab on screen asks the Hub only when it can list something: a slot with no family lists its default alone, and one that takes
+  // no LoRAs has none to find.
+  const asks = Boolean(slot.family) && (tab === "models" || takesLoras(slot))
   const { data, error, isPending } = useQuery({
     queryKey: ["models", "picker", slot.family, role, q, limit, showNsfw],
     queryFn: ({ signal }) => client.models(q, limit, signal, { family: slot.family ?? undefined, role, noTag: showNsfw ? undefined : NSFW }),
-    enabled: Boolean(slot.family), staleTime: 60_000,
+    enabled: asks, staleTime: 60_000,
   })
   const found: PickerModel[] = data?.models.filter((model) => model.family === slot.family && (showNsfw || !isNsfw(model.tags))) ?? []
   const listed = found.find((model) => model.model === identityOf(selected))
@@ -239,6 +243,16 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
   const selectedVisible = showNsfw || Boolean(selectedMeta && !isNsfw(selectedMeta.tags))
   const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
+  const others = alternatives.filter((model) => model.model !== identityOf(slot.default ?? ""))
+  // One line for the tab on screen, by what is known, never two (cl-1258): first why it can't list (yet), else what an empty list means.
+  const status: { text: string; warn?: boolean } | null = tab === "loras" && !takesLoras(slot) ? { text: "This slot takes no LoRAs." }
+    : asks && isPending ? { text: "Loading choices…" }
+    : asks && error ? { text: tab === "models" ? "Couldn't load models." : "Couldn't load LoRAs.", warn: true }
+    : slot.family && !kind ? { text: "Model compatibility is not available yet." }
+    : null
+  const empty = status ? null
+    : tab === "models" ? (slot.default || selected || malformed || others.length ? null : slot.family ? "No compatible models found." : "No other models fit this slot.")
+    : availableLoras.length ? null : adapters.length || legacy.length ? "No more compatible LoRAs found." : "No compatible LoRAs found."
   const clearBase = () => changeSlot(store, name, slot, ({ ref: _, ...rest }) => rest)
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
   // Added, its first trigger goes after the box's prompt, in the same step (cl-968, cl-1287).
@@ -254,12 +268,8 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
       <button type="button" aria-pressed={tab === "models"} onClick={() => { setTab("models"); setTyped(""); setLimit(50) }}>Models</button>
       <button type="button" aria-pressed={tab === "loras"} onClick={() => { setTab("loras"); setTyped(""); setLimit(50) }}>LoRAs</button>
     </div>
-    <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
-    {/* A slot with no family lists only its default: say so only when it has none either (cl-1258). */}
-    {!slot.family && !slot.default && <p className="muted">Compatible choices aren't available for this slot.</p>}
-    {slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
-    {Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
-    {error && <p className="warn">Couldn't load models.</p>}
+    <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!asks} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
+    {status && <p className={`${status.warn ? "warn" : "muted"} model-picker-note`}>{status.text}</p>}
     {tab === "models" ? <>
       <ul className="model-picker-choices" role="radiogroup" aria-label={`Base model for ${slot.slot}`}>
         <li><button type="button" role="radio" aria-checked={!selected && !malformed} disabled={!defaultVisible} onClick={clearBase}>
@@ -269,19 +279,20 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
         {selected && <li><button type="button" role="radio" aria-checked="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: selected }))}>
           <span>{selectedVisible ? modelChoiceLabel(selected) : selectedMeta ? "Selected model hidden" : "Selected model"}<small>{selectedValid ? "Selected" : selectionState.trim().replace(/^\(|\)$/g, "")}</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>}
-        {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" role="radio" aria-checked="false" onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: model.model }))}>
+        {others.map((model) => <li key={model.model}><button type="button" role="radio" aria-checked="false" onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: model.model }))}>
           <span>{modelChoiceLabel(model.model)}</span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>)}
       </ul>
+      {empty && <p className="muted model-picker-empty model-picker-note">{empty}</p>}
       {(selected || malformed) && <button type="button" className="tb model-picker-reset" title={slot.default ? "Use tool default" : "Remove base model"} onClick={clearBase}>{slot.default ? "Reset to default" : "Remove model"}</button>}
     </> : <>
       {adapters.length > 0 && <><h4>Added LoRAs</h4><AdapterList name={name} slot={slot} families={slot.family ? [slot.family] : []} adapters={adapters} /></>}
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
-      <h4>Available LoRAs</h4>
+      {availableLoras.length > 0 && <><h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
         {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => void addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
-      </ul>
-      {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
+      </ul></>}
+      {empty && <p className="muted model-picker-empty model-picker-note">{empty}</p>}
     </>}
     {Boolean(data?.older) && (limit < 100 ? <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>Show more choices</button> : <p className="muted">Refine the search to see more choices.</p>)}
   </section>

@@ -56,6 +56,7 @@
 .model-picker-model-row > label { flex: 1; }
 .model-picker-reset { flex: none; font-size: var(--small); }
 .model-picker-search { width: 100%; }
+.model-picker-search:disabled { opacity: 0.5; cursor: default; }
 .model-picker-tabs { display: flex; gap: 18px; }
 .model-picker-tabs button { border: 0; border-bottom: 2px solid transparent; background: none; padding: 6px 0; color: var(--mute); cursor: pointer; }
 .model-picker-tabs button[aria-pressed="true"] { border-bottom-color: var(--ember); color: var(--ink); }

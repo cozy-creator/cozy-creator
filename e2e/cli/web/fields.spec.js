@@ -4,7 +4,8 @@
 // controller goes off, saying why, keeps its value, and `cozy run` ignores it. An image slot refuses a video take carried onto it from its
 // box's column, saying why; the corner pulled to 1237:689 lands on 16:9. On H3, Models & LoRAs: its base model listed once, a LoRA added
 // with its trigger appended once and drawn, its strength kept as the model is replaced in place. Qwen Image 2's VAE slot lists the seeded
-// VAE. No control lacks a declared field.
+// VAE. Each picker tab says one line at most, by what it knows, and a slot that takes no LoRAs says so (cl-1258). No control lacks a
+// declared field.
 // A box says its shape as film and media say it (cl-983): a take the shape its render asked, whatever size its model rounded to
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
@@ -12,8 +13,27 @@
 const { test, expect, themed, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
-const { mkdirSync } = require('fs');
+const { mkdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
+
+/** The one line an open picker tab says once its choices settle (cl-1258 §7): never two, and "Available LoRAs" only over a LoRA to add.
+ *  '' when it says none. */
+const pickerLine = async (opened, label) => {
+  const notes = opened.locator('.model-picker-note');
+  await expect(notes.filter({ hasText: 'Loading choices…' }), `${label}: its choices settle`).toHaveCount(0, { timeout: 15_000 });
+  const said = await notes.allInnerTexts();
+  expect.soft(said.length, `${label}: one line at most, said ${JSON.stringify(said)}`).toBeLessThanOrEqual(1);
+  const offered = await opened.locator('.model-picker-lora-option').count();
+  await expect.soft(opened.getByRole('heading', { name: 'Available LoRAs', exact: true }), `${label}: "Available LoRAs" only over a LoRA to add`).toHaveCount(offered ? 1 : 0);
+  expect.soft(said, `${label}: no "no choices" line`).not.toContain("Compatible choices aren't available for this slot.");
+  return said[0] ?? '';
+};
+/** `slot`'s tab `name` (Models, LoRAs) open: the render that presses it draws its line too. */
+const openTab = async (opened, slot, name) => {
+  const tab = opened.getByRole('group', { name: `Choices for ${slot}`, exact: true }).getByRole('button', { name, exact: true });
+  await tab.click();
+  await expect(tab, `${slot}: ${name} open`).toHaveAttribute('aria-pressed', 'true');
+};
 
 const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
@@ -218,18 +238,47 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     const shots = join(process.env.OUT, 'web', 'fields');
     mkdirSync(shots, { recursive: true });
     await page.screenshot({ path: join(shots, 'qwen-model-picker.png') });
+    // Each tab's one line, as each slot's state has it (cl-1258 §7): a family slot's loaded tabs say nothing over what they list, or what an
+    // empty list means, or that its compatibility is unknown; a slot with no family (its search off) lists its default alone and takes no
+    // LoRAs. Kept with the shots.
+    const lines = {};
+    const fits = {
+      family: { Models: ['', 'No compatible models found.', 'Model compatibility is not available yet.'],
+        LoRAs: ['', 'No compatible LoRAs found.', 'No more compatible LoRAs found.', 'Model compatibility is not available yet.'] },
+      none: { Models: ['', 'No other models fit this slot.'], LoRAs: ['This slot takes no LoRAs.'] },
+    };
     for (const slot of ['expander_t2i', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
       const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
       await expect(opened, `${slot} opens`).toBeVisible();
       // Every slot lists what fits it, Turbo's LoRA too (cl-1066: no "only the default is verified").
-      await expect.soft(opened.getByRole('searchbox', { name: `Search models for ${slot}`, exact: true }), `${slot}: its choices, searchable`).toBeVisible();
+      const search = opened.getByRole('searchbox', { name: `Search models for ${slot}`, exact: true });
+      await expect.soft(search, `${slot}: its choices, searchable`).toBeVisible();
       await expect.soft(opened.getByText('Only the default Turbo LoRA is verified.'), `${slot}: no default-only notice`).toHaveCount(0);
+      const family = await search.isEnabled() ? 'family' : 'none';
+      lines[slot] = { family };
+      for (const tab of ['Models', 'LoRAs']) {
+        await openTab(opened, slot, tab);
+        lines[slot][tab] = await pickerLine(opened, `${slot} ${tab}`);
+        expect.soft(fits[family][tab], `${slot} ${tab}: a line of a slot with${family === 'none' ? ' no' : ''} family`).toContain(lines[slot][tab]);
+        await page.screenshot({ path: join(shots, `qwen-model-picker-${slot}-${tab.toLowerCase()}.png`) });
+      }
+      await openTab(opened, slot, 'Models');
       await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
     }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
     await page.screenshot({ path: join(shots, 'qwen-model-picker-vae.png') });
+    // A VAE takes no LoRA: its LoRAs tab says so alone, and asks the Hub for none.
+    const vae = picker.locator('section.model-picker-slot[data-model-slot="vae"]');
+    lines.vae = { Models: await pickerLine(vae, 'vae Models') };
+    await openTab(vae, 'vae', 'LoRAs');
+    lines.vae.LoRAs = await pickerLine(vae, 'vae LoRAs');
+    expect.soft(lines.vae.LoRAs, 'vae LoRAs: its one line').toBe('This slot takes no LoRAs.');
+    await expect.soft(vae.getByRole('searchbox', { name: 'Search models for vae', exact: true }), 'vae LoRAs: nothing to search').toBeDisabled();
+    await page.screenshot({ path: join(shots, 'qwen-model-picker-vae-loras.png') });
+    await openTab(vae, 'vae', 'Models');
+    writeFileSync(join(shots, 'qwen-model-picker-lines.json'), `${JSON.stringify(lines, null, 2)}\n`);
     await page.keyboard.press('Escape');
     await expect(picker, 'Escape closes it').toHaveCount(0);
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
@@ -260,8 +309,12 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     // No family: its search is off (ModelPicker.tsx), so this is the slot cl-1258 fixed.
     await expect(slot.getByRole('searchbox', { name: 'Search models for weights', exact: true }), 'weights: a slot with no family').toBeDisabled();
     await expect(slot.locator('.model-picker-choices [role="radio"]'), 'weights: its default, listed').toHaveCount(1);
-    await expect.soft(slot.getByText("Compatible choices aren't available for this slot."), "weights: no 'no choices' line over its default").toHaveCount(0);
+    expect.soft(await pickerLine(slot, 'weights Models'), 'weights Models: no line over its default').toBe('');
     await page.screenshot({ path: join(process.env.OUT, 'web', 'fields', 'no-family-slot.png') });
+    // Its LoRAs tab lists nothing it could take, and says so once (it was blank, cl-1258).
+    await openTab(slot, 'weights', 'LoRAs');
+    expect.soft(await pickerLine(slot, 'weights LoRAs'), 'weights LoRAs: its one line').toBe('This slot takes no LoRAs.');
+    await page.screenshot({ path: join(process.env.OUT, 'web', 'fields', 'no-family-slot-loras.png') });
     await page.keyboard.press('Escape');
     await expect(picker, 'Escape closes it').toHaveCount(0);
     await leave(page);
