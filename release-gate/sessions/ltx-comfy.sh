@@ -13,7 +13,9 @@
 #   cells      [{"name", "key" (ltx25, ltx25_i2v, ltx25_ms), "duration_s", "gpus", "picture" (true: first frame
 #              release-gate/ref/seed.jpg), "prompt", "seed"}]: each a cold request and a warm one (its prompt with
 #              ", at dawn" and seed + 100000), ComfyUI's and Cozy's the same; "comfy": false runs Cozy's alone (ComfyUI's
-#              4-GPU run would repeat its 2-GPU one: it splits nothing more); "lane" Cozy's lane (int8; bf16 beside ltx25_bf16)
+#              4-GPU run would repeat its 2-GPU one: it splits nothing more); "cozy": false ComfyUI's alone; "lane" Cozy's lane
+#              (int8; bf16 beside ltx25_bf16); "tree" its packages_refs checkout (the session's `tree`). A prompt with [profile]
+#              records denoise steps on both engines (ComfyUI: fixtures/ltx-comfy/ltxprof; Cozy: a tree with ltx-2.5's proof hook)
 #   stall_s    no ComfyUI progress for this long ends the session (1800)
 #   need_s     seconds the cap must buy (7200)
 . "$(dirname "$0")/lib.sh"
@@ -26,21 +28,24 @@ for f in suites/bench/comfy.py suites/bench/pod.sh suites/bench/vram.py suites/b
   [ -f "$RG/$f" ] || fail "no $f (pod-session.yaml's sparse checkout)"
 done
 [[ $GPUS =~ ^[1-8]$ && $TREE =~ ^[A-Za-z0-9_-]+$ ]] || fail "gpus or tree"
-[ -f "$PACKAGES/$TREE/ltx-2.5/pyproject.toml" ] || fail "no ltx-2.5 in packages_refs $TREE"
+for t in $TREE $(jq -r '.[].tree // empty' <<<"$CELLS"); do
+  [ -f "$PACKAGES/$t/ltx-2.5/pyproject.toml" ] || fail "no ltx-2.5 in packages_refs $t"
+done
 REC=$RG/../$REC
 jq -e '.measurements and .request.input.prompt' "$REC" > /dev/null 2>&1 || fail "record $REC: no measurements or prompt"
 jq -e 'type == "array" and length > 0 and all(.[]; (.name | test("^[a-z0-9-]+$")) and (.prompt | type == "string")
   and (.seed | type == "number") and (.duration_s | type == "number") and (.gpus | type == "number"))' <<<"$CELLS" > /dev/null || fail "cells"
 while read -r k; do grep -q "^\[models\.$k\]" "$BENCH/cells.toml" || fail "cells.toml has no model $k"; done < <(jq -r '.[].key' <<<"$CELLS")
 # The requests: cold, then warm, each cell's own.
-REQS=$(jq -c 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true), lane: (.lane // "int8"),
+REQS=$(jq -c --arg tree "$TREE" 'map({name, key, duration_s, gpus, picture: (.picture // false), comfy: (.comfy // true), cozy: (.cozy // true),
+  lane: (.lane // "int8"), tree: (.tree // $tree),
   requests: [{prompt, seed}, {prompt: (.prompt + ", at dawn"), seed: (.seed + 100000)}]})' <<<"$CELLS")
 PLAIN=${RUNNER_TEMP:-$OUT/..}/ltx-comfy-plain; rm -rf "$PLAIN"; mkdir -p "$PLAIN"
 jq -n --argjson cells "$REQS" --slurpfile rec "$REC" '[$cells[] | select(.comfy) | {cell: .name, key, tiers: ["cold", "w1"], requests,
   length: .duration_s, cap_gib: null, scout_s: null, gpus, exchange: "host", record: $rec[0]}]' > "$PLAIN/jobs.json" || fail "jobs"
 # Cozy's cells for ab: the same requests; the first updates the pod and installs the model, so no run fetches weights.
-AB=$(jq -c --arg tree "$TREE" --argjson update "$UPDATE" --argjson gpus "$GPUS" '{gpus: $gpus, cells: ([.[] | . as $c | range(0; 2) as $i
-  | {name: "\($c.name)-\($i)", tree: $tree, target: "ltx-2.5/generate",
+AB=$(jq -c --argjson update "$UPDATE" --argjson gpus "$GPUS" '{gpus: $gpus, cells: ([.[] | select(.cozy) | . as $c | range(0; 2) as $i
+  | {name: "\($c.name)-\($i)", tree: $c.tree, target: "ltx-2.5/generate",
      args: (["prompt=\($c.requests[$i].prompt)", "seed:=\($c.requests[$i].seed)", "duration_s:=\($c.duration_s)", "resolution=1080p",
              "aspect_ratio=16:9", "audio:=true", "--lane", $c.lane, "--gpus=\($c.gpus)"]
             + (if $c.picture then ["--file", "first_frame={ref}/seed.jpg"] else [] end))}]
@@ -80,6 +85,9 @@ tar -C "$BENCH" -cz --exclude .git --exclude results . | T=600 pod "rm -rf /var/
 { T=60 pod "cat > /var/tmp/bm/bench_comfy.py" < "$RG/suites/bench/comfy.py" && T=60 pod "cat > /var/tmp/bench-pod.sh" < "$RG/suites/bench/pod.sh" &&
   T=60 pod "cat > /var/tmp/bench-vram.py" < "$RG/suites/bench/vram.py" && T=60 pod "cat > /var/tmp/bm/jobs.json" < "$PLAIN/jobs.json"; } ||
   fail "copy comfy.py, pod.sh, vram.py and the jobs"
+# The profile hook (fixtures/ltx-comfy/ltxprof): ComfyUI's server records a [profile] request's sampling steps.
+tar -C "$RG/sessions/fixtures/ltx-comfy" -cz ltxprof | T=60 pod "rm -rf /var/tmp/ltxprof /var/tmp/ltx-prof && tar -xz -C /var/tmp" < /dev/null ||
+  { tar -C "$RG/sessions/fixtures/ltx-comfy" -cz ltxprof | T=60 pod "rm -rf /var/tmp/ltxprof /var/tmp/ltx-prof && tar -xz -C /var/tmp" || fail "copy the profile hook"; }
 # Every GPU each second (nvidia-smi: clocks, power and slowdown reasons, for the heat check) and host memory.
 T=60 pod "cat > /var/tmp/bm/mon.sh" <<'EOF' || fail "copy mon.sh"
 B=timestamp,index,memory.used,utilization.gpu,power.draw,power.limit,clocks.sm,clocks.max.sm,temperature.gpu
@@ -94,7 +102,7 @@ while :; do
 done
 EOF
 T=60 pod "cd /var/tmp/bm && { nvidia-smi; nvidia-smi -q -d PERFORMANCE,CLOCK,POWER,TEMPERATURE; free -b; nproc; grep -m1 'model name' /proc/cpuinfo; df -h /var/tmp; } > pod-facts.txt 2>&1;
-  setsid nohup sh mon.sh > /dev/null 2>&1 < /dev/null & setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > comfy.pid; sleep 2; test -s comfy.pid" \
+  setsid nohup sh mon.sh > /dev/null 2>&1 < /dev/null & PYTHONPATH=/var/tmp/ltxprof setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > comfy.pid; sleep 2; test -s comfy.pid" \
   < /dev/null || fail "start the runner on $NAME"
 say "ComfyUI's runner started on $NAME"
 pull() {  # the pod's logs and rows (with `all`, its videos), into PLAIN, sealed again
@@ -117,4 +125,10 @@ say "ComfyUI: $rows rows, sealed in comfyui.sealed"
 # ComfyUI's processes are gone (each job stops its server); the GPU logger keeps running for Cozy's turn.
 on_this ab "$AB"
 pull
+# The profiles: ComfyUI's sealed with its rows, Cozy's published.
+mkdir -p "$PLAIN/prof" "$OUT/prof"
+T=300 pod "cd /var/tmp/ltx-prof 2>/dev/null && tar -cf - comfy-* 2>/dev/null" < /dev/null 2> /dev/null | tar -xf - -C "$PLAIN/prof" 2> /dev/null
+T=300 pod "cd /var/tmp/ltx-prof 2>/dev/null && tar -cf - cozy-* 2>/dev/null" < /dev/null 2> /dev/null | tar -xf - -C "$OUT/prof" 2> /dev/null
+seal || say "seal failed: nothing new published"
+say "profiles: Cozy $(ls "$OUT/prof" | grep -c . ) files, ComfyUI $(ls "$PLAIN/prof" | grep -c . ) (sealed)"
 say "$([ "$RC" = 0 ] && echo PASS || echo FAIL): ComfyUI $rows rows (sealed), Cozy's records in ab/"
