@@ -35,32 +35,36 @@ arch_of() {
     *) return 1 ;;
   esac
 }
-ARCH=$(param arch '')
-if [ -z "$ARCH" ]; then
-  IFS=, read -ra cards <<<"$(param skus "$SKU")"
-  for s in "${cards[@]}"; do
-    a=$(arch_of "$s") || fail "arch: no target known for $s"
-    [ -z "$ARCH" ] || [ "$a" = "$ARCH" ] || fail "skus: $s is $a, not $ARCH (one target a session)"
-    ARCH=$a
-  done
-fi
-# `built`: a pod-session run whose report says a runner built this llama.cpp for this target (this tree's $0 pre-flight):
-# a rented dispatch naming it builds nothing again, so its quote comes minutes after the dispatch, not a build later
-# (44392328972 quoted 13 min in, at a price that had moved from the pre-flight's).
-BUILT=$(param built '')
-if [ -n "$BUILT" ]; then
-  gh run download "$BUILT" -R cozy-creator/cozy-creator -n "session-ggml-kernels-$BUILT" -D "$OUT/built" > /dev/null 2>&1
-  line=$(grep -m1 "llama.cpp $LLAMA builds for $ARCH on the runner" "$OUT/built/results.txt" 2> /dev/null) ||
-    fail "built: pod-session $BUILT's report has no llama.cpp $LLAMA build for $ARCH on a runner"
-  say "llama.cpp $LLAMA for $ARCH: built on a runner by pod-session $BUILT (${line#* }); not built again"
-  rm -rf "$OUT/built"
-elif ! W=$OUT/llama-check CUDA=$OUT/llama-check/cuda ARCH=$ARCH BUILD_ONLY=1 timeout 3600 bash "$FIX/pod.sh" "$LLAMA" "$LLAMA_SUM" \
-  > "$OUT/llama-check.out" 2>&1; then
-  tail -c 1500 "$OUT/llama-check/out/build.log" "$OUT/llama-check.out" 2> /dev/null | tee -a "$R"
-  fail "llama.cpp $LLAMA doesn't build for $ARCH on the runner"
-else
-  say "llama.cpp $LLAMA builds for $ARCH on the runner: $(tail -n 1 "$OUT/llama-check/out/pod.log")"
-  rm -rf "$OUT/llama-check"
+# kernels=0: the ride-along alone, on any card (no llama.cpp side, no GEMM bench: the 27B-on-24 GB bar).
+KERNELS=$(param kernels 1)
+if [ "$KERNELS" = 1 ]; then
+  ARCH=$(param arch '')
+  if [ -z "$ARCH" ]; then
+    IFS=, read -ra cards <<<"$(param skus "$SKU")"
+    for s in "${cards[@]}"; do
+      a=$(arch_of "$s") || fail "arch: no target known for $s"
+      [ -z "$ARCH" ] || [ "$a" = "$ARCH" ] || fail "skus: $s is $a, not $ARCH (one target a session)"
+      ARCH=$a
+    done
+  fi
+  # `built`: a pod-session run whose report says a runner built this llama.cpp for this target (this tree's $0 pre-flight):
+  # a rented dispatch naming it builds nothing again, so its quote comes minutes after the dispatch, not a build later
+  # (44392328972 quoted 13 min in, at a price that had moved from the pre-flight's).
+  BUILT=$(param built '')
+  if [ -n "$BUILT" ]; then
+    gh run download "$BUILT" -R cozy-creator/cozy-creator -n "session-ggml-kernels-$BUILT" -D "$OUT/built" > /dev/null 2>&1
+    line=$(grep -m1 "llama.cpp $LLAMA builds for $ARCH on the runner" "$OUT/built/results.txt" 2> /dev/null) ||
+      fail "built: pod-session $BUILT's report has no llama.cpp $LLAMA build for $ARCH on a runner"
+    say "llama.cpp $LLAMA for $ARCH: built on a runner by pod-session $BUILT (${line#* }); not built again"
+    rm -rf "$OUT/built"
+  elif ! W=$OUT/llama-check CUDA=$OUT/llama-check/cuda ARCH=$ARCH BUILD_ONLY=1 timeout 3600 bash "$FIX/pod.sh" "$LLAMA" "$LLAMA_SUM" \
+    > "$OUT/llama-check.out" 2>&1; then
+    tail -c 1500 "$OUT/llama-check/out/build.log" "$OUT/llama-check.out" 2> /dev/null | tee -a "$R"
+    fail "llama.cpp $LLAMA doesn't build for $ARCH on the runner"
+  else
+    say "llama.cpp $LLAMA builds for $ARCH on the runner: $(tail -n 1 "$OUT/llama-check/out/pod.log")"
+    rm -rf "$OUT/llama-check"
+  fi
 fi
 DECODE=$(param decode '') MAKE=$(param make '') MODEL=$(param model '') TREE=$(param tree '')
 DFIX=$HERE/fixtures/ggml-decode
@@ -102,48 +106,51 @@ if [ -n "$DECODE$MAKE" ]; then
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 fi
 
-# Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
-there "mkdir -p /w/out" < /dev/null || fail "ssh"
-there "cat > /w/pod.sh" < "$FIX/pod.sh" && there "cat > /w/shapes.py" < "$FIX/shapes.py" || fail "copy the fixtures to the pod"
-# Detached on the pod and polled, each poll its own short ssh: a dropped connection costs one poll, never the step
-# (44407508649, 44408751569: their one long ssh dropped in a Hub outage and each waited out its 5400 s).
-there "rm -f /w/out/pod.rc; setsid nohup bash -c 'bash /w/pod.sh $LLAMA $LLAMA_SUM > /w/out/pod.out 2>&1; echo \$? > /w/out/pod.rc' \
-  > /dev/null 2>&1 < /dev/null &" 60 < /dev/null || fail "start llama.cpp's side on the pod"
-until=$(($(date +%s) + 5400)) code=''
-while [ -z "$code" ] && [ "$(date +%s)" -lt "$until" ]; do
-  sleep 30; code=$(there "cat /w/out/pod.rc 2> /dev/null" 60 < /dev/null) || code=''
-done
-[ -n "$code" ] || code="no exit after 5400 s"
-there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
-[ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 3000 /w/out/build.log" < /dev/null | tee -a "$R"; fail "llama.cpp's side: exit $code"; }
-there "cat /w/out/llama-perf.txt" < /dev/null > "$OUT/llama-perf.txt"
-
-# Ours.
-step calibrate run "$FIX/drive/host_calibrate" --on "$NAME" || fail "host_calibrate"
-on_candidates calibrate
-n=$(runno calibrate); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/calibrate.json"
 benches=()
-IFS=, read -ra models <<<"$MODELS"
-for model in "${models[@]}"; do
-  # A failed bench is told and the session goes on: the ride-along's lanes never wait on the kernel table (44416217064).
-  if ! step "bench-$model" run "$FIX/drive/gemm_speed" lanes=ggml "shapes=$model" --on "$NAME"; then
-    say "FAILED: gemm_speed $model: $(grep -m1 -E '^Run .* failed|^error' "$OUT/bench-$model.txt" | cut -c1-300)"; continue
-  fi
-  n=$(runno "bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/bench-$model.json"
-  benches+=("$OUT/bench-$model.json")
-done
+if [ "$KERNELS" = 1 ]; then
+  # Theirs, on the pod's CPUs and then its GPU, while ours waits for it (one GPU: the two never time at once).
+  there "mkdir -p /w/out" < /dev/null || fail "ssh"
+  there "cat > /w/pod.sh" < "$FIX/pod.sh" && there "cat > /w/shapes.py" < "$FIX/shapes.py" || fail "copy the fixtures to the pod"
+  # Detached on the pod and polled, each poll its own short ssh: a dropped connection costs one poll, never the step
+  # (44407508649, 44408751569: their one long ssh dropped in a Hub outage and each waited out its 5400 s).
+  there "rm -f /w/out/pod.rc; setsid nohup bash -c 'bash /w/pod.sh $LLAMA $LLAMA_SUM > /w/out/pod.out 2>&1; echo \$? > /w/out/pod.rc' \
+    > /dev/null 2>&1 < /dev/null &" 60 < /dev/null || fail "start llama.cpp's side on the pod"
+  until=$(($(date +%s) + 5400)) code=''
+  while [ -z "$code" ] && [ "$(date +%s)" -lt "$until" ]; do
+    sleep 30; code=$(there "cat /w/out/pod.rc 2> /dev/null" 60 < /dev/null) || code=''
+  done
+  [ -n "$code" ] || code="no exit after 5400 s"
+  there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
+  [ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 3000 /w/out/build.log" < /dev/null | tee -a "$R"; fail "llama.cpp's side: exit $code"; }
+  there "cat /w/out/llama-perf.txt" < /dev/null > "$OUT/llama-perf.txt"
 
-# quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
-# reference is noted in quality.refs.
-quality() {
-  local n
-  if ! step "quality-$1" run "$DFIX/drive/quality" --model "model=$2" --on "$NAME"; then
-    say "quality $1: none ($(tail -n 2 "$OUT/quality-$1.txt" | tr '\n' ' ' | cut -c1-200))"; return 0
-  fi
-  n=$(runno "quality-$1")
-  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/quality-$1.json"
-  [[ $1 == bf16-* ]] || echo "${2%@*}@ $1 bf16-${2%@*}" | sed 's|bf16-[^ ]*/|bf16-|' >> "$OUT/quality.refs"
-}
+  # Ours.
+  step calibrate run "$FIX/drive/host_calibrate" --on "$NAME" || fail "host_calibrate"
+  on_candidates calibrate
+  n=$(runno calibrate); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/calibrate.json"
+  IFS=, read -ra models <<<"$MODELS"
+  for model in "${models[@]}"; do
+    # A failed bench is told and the session goes on: the ride-along's lanes never wait on the kernel table (44416217064).
+    if ! step "bench-$model" run "$FIX/drive/gemm_speed" lanes=ggml "shapes=$model" --on "$NAME"; then
+      say "FAILED: gemm_speed $model: $(grep -m1 -E '^Run .* failed|^error' "$OUT/bench-$model.txt" | cut -c1-300)"; continue
+    fi
+    n=$(runno "bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/bench-$model.json"
+    benches+=("$OUT/bench-$model.json")
+  done
+
+  # quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
+  # reference is noted in quality.refs.
+  quality() {
+    local n
+    if ! step "quality-$1" run "$DFIX/drive/quality" --model "model=$2" --on "$NAME"; then
+      say "quality $1: none ($(tail -n 2 "$OUT/quality-$1.txt" | tr '\n' ' ' | cut -c1-200))"; return 0
+    fi
+    n=$(runno "quality-$1")
+    (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""' > "$OUT/quality-$1.json"
+    [[ $1 == bf16-* ]] || echo "${2%@*}@ $1 bf16-${2%@*}" | sed 's|bf16-[^ ]*/|bf16-|' >> "$OUT/quality.refs"
+  }
+fi
+
 if [ -n "$DECODE$MAKE" ]; then
   read -ra pairs <<<"$DECODE"
   # Each lane's bf16 reference for `quality`: its model's bf16 commit (`refs`, space-separated org/name@sha256:…; `model`;
@@ -156,16 +163,16 @@ if [ -n "$DECODE$MAKE" ]; then
     [ -n "${pulled[$from]:-}" ] || { step "pull-from-$lane" model install "$from" --on "$NAME" || fail "pull $from"; pulled[$from]=1; }
     # A lane that can't be made is told and the others go on (44420479065: w4a8's upload met the Hub unreachable).
     if ! step "make-$lane" model quantize "$from" --lane "$lane" --package "$PACKAGES/$TREE/qwen3" --on "$NAME"; then
-      say "FAILED: quantize $lane: $(grep -m1 '^error' "$OUT/make-$lane.txt" | cut -c1-300)"; continue
+      RIDE_BAD=1; say "FAILED: quantize $lane: $(grep -m1 '^error' "$OUT/make-$lane.txt" | cut -c1-300)"; continue
     fi
-    c=$(made "make-$lane"); [ -n "$c" ] || { say "FAILED: quantize $lane made no checkpoint"; continue; }
+    c=$(made "make-$lane"); [ -n "$c" ] || { RIDE_BAD=1; say "FAILED: quantize $lane made no checkpoint"; continue; }
     pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
-    step "pull-$label" model install "$ref" --on "$NAME" || { say "FAILED: pull $label"; continue; }
-    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || { say "FAILED: speed $label"; continue; }
+    step "pull-$label" model install "$ref" --on "$NAME" || { RIDE_BAD=1; say "FAILED: pull $label"; continue; }
+    step "speed-$label" run "$DFIX/drive/decode" --model "model=$ref" --on "$NAME" || { RIDE_BAD=1; say "FAILED: speed $label"; continue; }
     on_candidates "speed-$label"
     n=$(runno "speed-$label"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/speed-$label.json" 2> /dev/null
     say "speed $label: $(jq -r '.result.detail // ""' "$OUT/speed-$label.json") · engine: $(grep -o 'tokens after [0-9]*: [^"]*' "$OUT/speed-$label.json" | head -1)"
@@ -190,6 +197,8 @@ if [ -n "$DECODE$MAKE" ]; then
   python3 "$DFIX/agreement.py" "$OUT" | tee -a "$R" "${GITHUB_STEP_SUMMARY:-/dev/null}"
 fi
 
+[ -z "${RIDE_BAD:-}" ] || say "FAILED: a ride-along lane (lines above)"
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}" ] || fail "a ride-along lane failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
