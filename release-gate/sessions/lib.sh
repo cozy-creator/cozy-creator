@@ -282,7 +282,14 @@ guard() {
         why="no read of what the Hub bills for ${blind}s"
       fi
       echo "$(date -u +%T) GUARD: $why, ending $(jq -r 'join(" ")' <<<"$ids")" >> "$R"
-      jq -r '.[]' <<<"$ids" | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
+      # A run still pinned to a pod that ends is placed again on another session's pod (cl-1316): each is canceled first.
+      jq -r '.[]' <<<"$ids" | while read -r r; do
+        m=$(cozy machine show "$r" --json 2> /dev/null | jq -r '.name // empty')
+        if [ -n "$m" ] && clock=$(run_clock "$m"); then
+          for x in ${clock#* }; do [ "$x" = "${clock%% *}" ] || cozy run cancel "$x" >> "$OUT/end.txt" 2>&1; done
+        fi
+        cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1
+      done
       exit 0
     done ) 9>&- & WD=$!
 }

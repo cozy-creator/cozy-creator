@@ -244,6 +244,11 @@ jobs:
           . creator/release-gate/machines.sh
           left=0
           for rid in $({ cat "$OUT/rental" 2> /dev/null; own; } | sort -u); do
+            # A run still pinned to it is placed again on another session's pod once it ends (cl-1316): canceled first.
+            m=$(cozy machine show "$rid" --json < /dev/null 2> /dev/null | jq -r '.name // empty')
+            if [ -n "$m" ] && clock=$(run_clock "$m"); then
+              for x in ${clock#* }; do [ "$x" = "${clock%% *}" ] || { cozy run cancel "$x" < /dev/null || true; echo "canceled $x on $m"; }; done
+            fi
             for _ in $(seq 1 30); do
               listed "$rid" || { echo "$rid is gone"; continue 2; }
               cozy machine end "$rid" -y < /dev/null || true; sleep 10
