@@ -31,7 +31,7 @@ use std::{
 mod model_folder;
 mod read;
 mod sent;
-pub(crate) use read::{actor_id, retention_owner, wordless_terminal, Log, OutputSnapshot};
+pub(crate) use read::{actor_id, Log, OutputSnapshot};
 pub(crate) use sent::{choices, identity, identity_value, resume, resume_private};
 
 pub(crate) enum Source {
@@ -98,8 +98,6 @@ pub(crate) struct Spec {
     pub application: String,
     /// The spec's identity (its access excluded): a resubmitted id must carry the same.
     pub digest: String,
-    /// The same request with a retired option in its historical digest.
-    pub legacy_digest: Option<String>,
     /// The spec as sent less its access, kept in the journal while it prepares so a restart
     /// prepares it again; empty for a child run.
     pub journaled: Vec<u8>,
@@ -457,10 +455,10 @@ impl Runs {
     }
 
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
-    pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str, legacy_digest: Option<&str>) -> Result<Option<Execution>, Refused> {
+    pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str) -> Result<Option<Execution>, Refused> {
         match self.service.engine.get_public(Some(actor), id) {
             Ok(run) if run.canceled_before_acceptance && run.state == crate::journal::State::Canceled => Ok(Some(run)),
-            Ok(run) if run.submission.as_ref().is_some_and(|s| s.invocation_digest == digest || Some(s.invocation_digest.as_str()) == legacy_digest) => Ok(Some(run)),
+            Ok(run) if run.submission.as_ref().is_some_and(|s| s.invocation_digest == digest) => Ok(Some(run)),
             Ok(_) => Err(refused("run_id_conflict", "this run id already names another run spec")),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
@@ -533,7 +531,7 @@ impl Runs {
     /// New run `id` as the journal takes it, and the objects it takes custody of, under the
     /// caller's custody guard; or the run the id already names with this spec.
     fn draft(&self, actor: &str, id: &str, spec: &Spec) -> Result<Drafted, Refused> {
-        if let Some(run) = self.existing(actor, id, &spec.digest, spec.legacy_digest.as_deref())? {
+        if let Some(run) = self.existing(actor, id, &spec.digest)? {
             return Ok(Drafted::Held(Box::new(run)));
         }
         if !spec.input.is_object() {
@@ -2073,7 +2071,7 @@ impl Runs {
         }
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         // A call the same attempt made already is its run: nothing prepares.
-        if let Some(existing) = self.existing(&actor, request, intent, None)? {
+        if let Some(existing) = self.existing(&actor, request, intent)? {
             return Ok(existing);
         }
         // Its caller's rule said this request doesn't call it (cl-1103), so nothing of it came ahead: that rule's miss.
@@ -2168,7 +2166,6 @@ impl Runs {
             owner: context.owner,
             application: application.into(),
             digest: digest.into(),
-            legacy_digest: None,
             journaled: vec![],
         };
         // Both demand and prefetch overlay the call's choices on the same inherited ones. One
