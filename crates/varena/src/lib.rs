@@ -724,7 +724,7 @@ pub struct Device {
     outside_floor: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
-    // The most weight bytes held for use at once this request.
+    // The most weight bytes held for use at once in this plan phase (`enter_plan_phase` resets it).
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
     requests: AtomicUsize,
@@ -1047,6 +1047,9 @@ impl Device {
     fn enter_plan_phase(&self, name: Option<&str>) -> Result<()> {
         let mut state = self.lock()?;
         let now = self.clock.load(Ordering::Relaxed);
+        // What an earlier phase held is not this one's to budget for (var-037: PAN2's prompt rewriter held
+        // 3.9 GiB of its streamed decode, and at 6 GiB its DiT then ran every site at the finest level).
+        self.held_peak.store(self.held.load(Ordering::Acquire), Ordering::Release);
         if let Some(ended) = state.plan_phase.take() {
             state.passes.insert(ended.name, ended.recurred);
         }
