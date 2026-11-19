@@ -1,8 +1,9 @@
 //! The one binder: a box's written fields, by its tool's types, as the call its function gets. The browser's Render and `cozy run`
 //! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions, and words as words: a Text
 //! box's (put in by `Doc::inline`) and a version of words' (its file's, xs-204), read as a picture's version is; a slot takes only what's
-//! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model. A mention its tool
-//! can't use where it's written is never sent: `unusable` is the one rule, and the page strikes it through with the same reason (cl-944).
+//! written in it; a box's pickup comes only from the gesture, a run's as it writes it. What's past a bound is clamped and said. It knows
+//! no model. A mention its tool can't use where it's written is never sent: `unusable` is the one rule, and the page strikes it through
+//! with the same reason (cl-944).
 use std::collections::BTreeSet;
 
 use api::{
@@ -52,7 +53,7 @@ pub(crate) struct Call<'a> {
     pub stand: &'a [Standing],
     /// Files kept by a machine that's gone: nothing reads them.
     pub gone: &'a BTreeSet<String>,
-    /// Pick up from here, the one way a pickup is filled.
+    /// Pick up from here, the one way a box's pickup is filled.
     pub pickup: Option<&'a Pickup>,
     /// A direct run's own named files, which its prompts' mentions read after the project's boxes.
     pub inline: &'a [Inline],
@@ -185,11 +186,17 @@ impl Binder<'_> {
         for field in &call.callable.request.fields {
             let at = field.name.as_str();
             if let Type::Pickup(members) = field.ty.plain() {
-                if call.fields.contains_key(at) {
+                let written = call.fields.get(at).filter(|written| !written.is_null());
+                let value = match (call.pickup, written) {
+                    (Some(pickup), _) => Some(self.pickup(field, members, &json!(pickup.take), pickup.out_frame, pickup.beats_from)?),
+                    // A run's own is its gesture, written: `pickup.take=<shot_1.3>` or a video file, and `pickup.out_frame=`.
+                    (None, Some(written)) if call.own.is_none() => Some(self.written_pickup(field, members, written)?),
+                    _ => None,
+                };
+                if written.is_some() && call.own.is_some() {
                     self.warn(format!("{}'s {at}: you can't type a pickup. Use Pick up from here instead.", call.name));
                 }
-                if let Some(pickup) = call.pickup {
-                    let value = self.pickup(field, members, pickup)?;
+                if let Some(value) = value {
                     self.bound.payload.insert(at.to_owned(), value);
                 }
                 continue;
@@ -250,6 +257,14 @@ impl Binder<'_> {
                 Some(named) => json!(named.file),
                 None => return Ok(None),
             },
+            // Written whole, as a run gives a file with the files beside it (`video=… video.latents=…`).
+            (Type::Media { kind, extras }, Value::Object(written)) => {
+                let file = written.get("file").unwrap_or(&Value::Null);
+                match self.slot(at, kind, file, false)?.into_iter().next() {
+                    Some(named) => self.given(at, &named, extras, written)?,
+                    None => return Ok(None),
+                }
+            }
             (Type::Media { kind, extras }, _) => match self.slot(at, kind, value, false)?.into_iter().next() {
                 Some(named) => self.media(&named, extras),
                 None => return Ok(None),
@@ -650,29 +665,69 @@ impl Binder<'_> {
         Value::Object(out)
     }
 
-    /// Pick up from here: the take, as the pickup's `take` takes it, and the frame it's picked up at, on the frames it may land on.
-    fn pickup(&mut self, field: &Field, members: &Struct, pickup: &Pickup) -> Result<Value, Error> {
+    /// A file written with the files it's given beside it (`{file, latents}`): what its version holds, and over that each declared extra
+    /// that holds a file, as a slot of its kind takes it. Any other is left out, said.
+    fn given(&mut self, at: &str, named: &Named, extras: &Struct, written: &Map<String, Value>) -> Result<Value, Error> {
+        let Value::Object(mut out) = self.media(named, extras) else { unreachable!("a file goes as an object") };
+        for (key, value) in written.iter().filter(|(key, _)| !["type", "file", "description", "metadata"].contains(&key.as_str())) {
+            let kind = extras.fields.iter().find(|extra| extra.name == *key).and_then(|extra| match extra.ty.plain() {
+                Type::Asset(kind) => Some(kind.clone()),
+                _ => None,
+            });
+            let Some(kind) = kind else {
+                self.warn(format!("{}'s {at}: {} takes no file called {key} with it, so Cozy ignored it.", self.call.name, self.call.tool));
+                continue;
+            };
+            if let Some(file) = self.slot(&format!("{at}.{key}"), &kind, value, false)?.into_iter().next() {
+                out.insert(key.clone(), json!(file.file));
+            }
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// A run's own pickup as it's written: its take (a mention, or a file with what it's given), the frame it's picked up at and where
+    /// in the beats the new part starts.
+    fn written_pickup(&mut self, field: &Field, members: &Struct, written: &Value) -> Result<Value, Error> {
+        let at = &field.name;
+        let malformed = || {
+            let said = format!("{}'s {at} needs its take and the frame it's picked up at.", self.call.name);
+            Error::new(Kind::Usage, "pickup_malformed", said).remedy(format!("Write it as {at}.take=<box.N or a video file> and {at}.out_frame=<frame>."))
+        };
+        let Value::Object(written) = written else { return Err(malformed()) };
+        let out_frame = written.get("out_frame").and_then(Value::as_u64).and_then(|frame| u32::try_from(frame).ok());
+        let (Some(take), Some(out_frame)) = (written.get("take"), out_frame) else { return Err(malformed()) };
+        for key in written.keys().filter(|key| !members.fields.iter().any(|member| member.name == **key)) {
+            self.warn(format!("{}'s {at}: {} has no {key}, so Cozy ignored it.", self.call.name, self.call.tool));
+        }
+        let beats_from = written.get("beats_from").and_then(Value::as_f64);
+        self.pickup(field, members, take, out_frame, beats_from)
+    }
+
+    /// Pick up from here: the take, bound as the pickup's `take` is declared (a box's take by mention, or a file), and the frame it's
+    /// picked up at, on the frames it may land on.
+    fn pickup(&mut self, field: &Field, members: &Struct, take: &Value, out_frame: u32, beats_from: Option<f64>) -> Result<Value, Error> {
         let name = self.call.name;
-        let take = match graph::mentions(&pickup.take).first().and_then(|inner| graph::mention(inner)) {
-            Some(mention) => self.named(&mention),
+        let at = format!("{}.take", field.name);
+        let took = match members.fields.iter().find(|member| member.name == "take") {
+            Some(member) => self.typed(&at, &member.ty, take)?,
             None => None,
         };
-        let Some(Some(take)) = take.filter(|take| take.as_ref().is_some_and(|take| take.kind == "video")) else {
-            let said = format!("{name}: {} isn't a take Cozy can pick up from.", pickup.take);
-            return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>."));
+        let Some(took) = took else {
+            let shown = take.get("file").unwrap_or(take);
+            let said = format!("{name}: {} isn't a take Cozy can pick up from.", shown.as_str().map_or_else(|| shown.to_string(), str::to_owned));
+            return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>, or a video file."));
         };
         let snap: Snap = field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default();
-        let out_frame = snapped(pickup.out_frame, snap);
-        if out_frame != pickup.out_frame {
-            self.warn(format!("{name}: a pickup can't land on frame {}, so it picks up at frame {out_frame}.", pickup.out_frame));
+        let landed = snapped(out_frame, snap);
+        if landed != out_frame {
+            self.warn(format!("{name}: a pickup can't land on frame {out_frame}, so it picks up at frame {landed}."));
         }
         let mut out = Map::new();
         for member in &members.fields {
-            match (member.name.as_str(), member.ty.plain()) {
-                ("take", Type::Media { extras, .. }) => drop(out.insert("take".into(), self.media(&take, extras))),
-                ("take", _) => drop(out.insert("take".into(), json!(take.file))),
-                ("out_frame", _) => drop(out.insert("out_frame".into(), json!(out_frame))),
-                ("beats_from", _) => drop(out.insert("beats_from".into(), pickup.beats_from.map_or(Value::Null, |seconds| json!(seconds)))),
+            match member.name.as_str() {
+                "take" => drop(out.insert("take".into(), took.clone())),
+                "out_frame" => drop(out.insert("out_frame".into(), json!(landed))),
+                "beats_from" => drop(out.insert("beats_from".into(), beats_from.map_or(Value::Null, |seconds| json!(seconds)))),
                 _ => {}
             }
         }
