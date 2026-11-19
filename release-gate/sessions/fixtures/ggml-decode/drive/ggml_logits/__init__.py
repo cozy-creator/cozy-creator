@@ -2,7 +2,8 @@
 - `logits`: a lane's next-token distributions against a reference lane's on the same text. Per position: whether the
   top tokens agree, and KL(reference || lane) in nats.
 - `decode`: the lane's single-row greedy decode of `PROMPT` for a fixed number of tokens, timed with the checkpoint's
-  MTP head drafting (as every call runs) and without it, warm (each after its own warm-up)."""
+  MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
+- `rows`, `routes`: the engine-routes session's calls that `qwen3/ask` can't make."""
 
 import json
 import time
@@ -326,6 +327,66 @@ def rows(ctx: Context, model: VisionLM) -> Agreement:
                         temperature=0.0, top_p=1.0, seed=0)  # fmt: skip
     return Agreement(json.dumps({"engine": type(model.engine).__name__, "rows": len(answers),
                                  "answered": sum(bool(a.strip()) for a in answers), "first": answers[0][:160]}))
+
+
+class _Digits:
+    """An `lm.Index` (outlines-core's shape) over a tokenizer's vocabulary: one to eight digit tokens, then `stop`.
+    State n has made n digits; state 9 has stopped."""
+
+    def __init__(self, vocab: dict[str, int], stop: int) -> None:
+        self.digits = sorted(i for t, i in vocab.items() if t.isascii() and t.isdigit())
+        self.stop = stop
+
+    def get_initial_state(self) -> int:
+        return 0
+
+    def get_next_state(self, state: int, token: int) -> int | None:
+        if token in self.digits and state < 8:
+            return state + 1
+        return 9 if token == self.stop and 1 <= state <= 8 else None
+
+    def get_allowed_tokens(self, state: int) -> list[int] | None:
+        return self.digits if state == 0 else [*self.digits, self.stop] if state < 8 else [self.stop]
+
+
+class Route(msgspec.Struct):
+    #: `grammar`: a call held to `_Digits` (`allowed`); `conversation`: a text question after a turn with a picture;
+    #: `ngram`: a call with `no_repeat_ngram`.
+    case: str = "grammar"
+
+
+@app.entrypoint(accelerator=True)
+def routes(ctx: Context, payload: Route, model: VisionLM) -> Agreement:
+    """One `VisionLM.ask` that CozyEngine hands to Transformers' engine (the engine-routes session): its answer, and
+    which engine `VisionLM` holds; the run's `.engine` note says which served it and why. The grammar's answer must be
+    digits only, though "Name a colour." asks for a word: proof the constraint held."""
+    from PIL import Image
+
+    from cozy_runtime.vlm import Question, Turn
+
+    tokenizer = model.processor.tokenizer
+    allowed: lm.Grammar | None = None
+    ngram: int | None = None
+    question = Question(text="Name a colour.")
+    if payload.case == "grammar":
+        allowed = lm.Grammar(_Digits(tokenizer.get_vocab(), tokenizer.convert_tokens_to_ids("<|im_end|>")))
+    elif payload.case == "conversation":
+        square = Image.new("RGB", (256, 256), (200, 30, 30))
+        question = Question(text="What colour was the square?", turns=[
+            Turn("user", ["Hello."]), Turn("assistant", ["Hello! How can I help?"]),
+            Turn("user", [square, "Remember this picture."]), Turn("assistant", ["I will."]),
+        ])  # fmt: skip
+    elif payload.case == "ngram":
+        ngram = 3
+    else:
+        raise ValueError(f"no route '{payload.case}'")
+    answer = model.ask([question], system="", thinking=False, stop=[], max_new_tokens=24, presence_penalty=0.0,
+                       temperature=0.0, top_p=1.0, seed=0, allowed=allowed, no_repeat_ngram=ngram)[0]
+    if not answer.strip():
+        raise RuntimeError(f"{payload.case}: no answer")
+    if payload.case == "grammar" and not answer.strip().isdigit():
+        raise RuntimeError(f"grammar: the answer {answer!r} is not digits: the constraint didn't hold")
+    return Agreement(json.dumps({"engine": type(model.engine).__name__, "case": payload.case, "answer": answer[:160]}))
 
 
 @app.entrypoint(accelerator=True)
