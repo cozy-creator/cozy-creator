@@ -179,7 +179,8 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
     if largest is not None:
         report["speed"] = speed(ck, largest, stream, fail)
     for scheme, row in sorted(report["schemes"].items()):
-        verdict = "FAIL" if any(line.startswith(f"FAIL {scheme} ") for line in lines) else "PASS"
+        # A scheme none of whose tensors cut was not checked: no verdict of it.
+        verdict = "FAIL" if any(line.startswith(f"FAIL {scheme} ") for line in lines) else "PASS" if row["checked"] else "UNCUT"
         lines.append(f"{verdict} {scheme}: {row['checked']} checked of {row['cut']} that cut, {row['tensors']} tensors; "
                      f"tiles {row['tiles']}, read whole {row['whole_roles']}")
     report["failed"] = failed
