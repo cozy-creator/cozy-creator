@@ -158,9 +158,10 @@ pub(crate) fn plan_seen(device: i32, set: u64) {
 /// The driver's room every map leaves on `device` (`Device::driver_room`), and what this process holds
 /// outside its books now, measured (by NVML, else read from the card). The room is the most a process
 /// running this model set on this card held outside its books (learned on this machine, kept across
-/// boots), for a set this card never ran its context's measured cost, less what this process holds
-/// there now: its own context is in that already (s13: a cold set kept 267 MiB more beside 360 MiB
-/// it held). Learned across every model set, a process inherited another's growth. A fixed 800 MiB was
+/// boots) less what this process holds there now. A set this card never ran keeps its context's
+/// measured cost: a library's first use loads its code as the driver's own allocation, which what the
+/// process holds says nothing of (s16: a cold H3 on a full 4090 with no room failed cuDNN's first audio
+/// conv). Learned across every model set, a process inherited another's growth. A fixed 800 MiB was
 /// left before, 10-13% of an 8 GB card. `learn`: a request ended, and what this process holds outside
 /// its books joins what its set learned. Read as the process comes up, as a plan becomes active and at
 /// each request's boundaries.
@@ -183,7 +184,7 @@ fn expect(device: i32, learn: bool) -> (usize, usize) {
         let _ = varena_ledger::held_out_of_books(&uuid, set, own as u64);
     }
     let most = set.and_then(|set| varena_ledger::out_of_books(&uuid, set));
-    let room = most.map_or(context, |most| most as usize).saturating_sub(own);
+    let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
     gpu.expect_driver(room, measured.unwrap_or(0), context, most.map_or(0, |most| most as usize));
     (room, own)
 }
