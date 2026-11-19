@@ -3,8 +3,9 @@
 // box is. On project/edits.py, whose two slots' defaults are LoRAs its rule over `edit` picks between: a box made from the palette gets its
 // default edit's trigger; one the API made gets none as the page loads it; choosing an edit puts its trigger after the prompt, drawn, and
 // another edit replaces it; deleted, it stays deleted through a reload and an edit of the words. The chosen LoRA has its row beneath the
-// box, at its release's strength. A LoRA added in Models & LoRAs still appends its own, once. On the Hub's H3 Edit, when its edits are
-// slots (packages #1017), its VFX edit's trigger comes and goes with its Edit. Shots at 1440×900 and 1920×1080, paper and dark.
+// box, its release's strength said in words, no control. A LoRA added in Models & LoRAs still appends its own, once. On the Hub's H3 Edit,
+// when its edits are slots (packages #1017), its VFX edit's trigger comes and goes with its Edit. Shots at 1440×900 and 1920×1080, paper
+// and dark.
 const { test, expect, themed, canvasIdle, canvasVisible, focus, fixtureTool, openPoint } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave, toolRow } = require('./hands');
@@ -92,7 +93,8 @@ test('rule-loras', async ({ page, project, api, guards }) => {
     await open('edited');
     const loras = region.locator('.active-models li.active-lora', { hasText: 'VFX Edit' });
     await softly.poll(() => loras.count(), { message: 'its chosen LoRA has a row beneath it' }).toBe(1);
-    await softly.poll(() => loras.getByRole('spinbutton').inputValue(), { message: 'at its release strength' }).toBe('1');
+    await expect.soft(loras.locator('.active-lora-strength'), "at its release's strength, said as words").toHaveText("Strength 1 (its release's)");
+    await expect.soft(loras.locator('input'), 'no control: nothing in a request sets it').toHaveCount(0);
     await expect.soft(loras.getByRole('button', { name: 'vfx_edit', exact: true }), 'with its trigger').toBeVisible();
     await canvasIdle(page);
     expect.soft(await summaryOf('edited'), 'a load puts no trigger in').toBe(WORDS);

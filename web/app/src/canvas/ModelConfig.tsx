@@ -58,15 +58,22 @@ export function ModelConfig({ name }: { name: string }) {
     return group.length ? <section key={String(lora)}><h4>{lora ? "LoRAs:" : "Models:"}</h4><ul>{group.map((row, index) => <li key={`${row.slot}:${row.ref}:${index}`} className={row.at || row.ruled ? "active-lora" : undefined}>
       <span className="active-model-name" title={row.ref}>{modelChoiceLabel(row.ref)}</span>
       {row.at && <Strength name={modelChoiceLabel(row.ref)} reference={row.ref} value={row.strength} onChange={(strength) => setStrength(row.at!, strength)} />}
-      {row.ruled && <Strength name={modelChoiceLabel(row.ref)} reference={row.ref} value={undefined} />}
+      {row.ruled && <ReleaseStrength reference={row.ref} />}
       {lora && <Triggers box={name} reference={row.ref} />}
     </li>)}</ul></section> : null
   })}</div>
 }
 
-/** A LoRA's strength: a slider from 0 to 2, its number (exact, or beyond 2), and the LoRA's recommended strength back. With no `onChange`,
- *  its release's, shown: a LoRA a tool's rule chose runs at it, as nothing in a request sets its strength (cl-1281). */
-function Strength({ name, reference, value, onChange }: { name: string; reference: string; value: unknown; onChange?(strength: number): void }) {
+/** A LoRA a tool's rule chose runs at its release's strength, which nothing in a request sets (cl-1281): said, not a control. */
+function ReleaseStrength({ reference }: { reference: string }) {
+  const { client } = useConnection()
+  const id = reference.split("@")[0]
+  const { data } = useQuery({ queryKey: ["model", id], queryFn: ({ signal }) => client.model(id, signal), staleTime: 60_000, retry: false })
+  return <span className="active-lora-strength muted">Strength {data?.strength ?? 1} (its release's)</span>
+}
+
+/** A LoRA's strength: a slider from 0 to 2, its number (exact, or beyond 2), and the LoRA's recommended strength back. */
+function Strength({ name, reference, value, onChange }: { name: string; reference: string; value: unknown; onChange(strength: number): void }) {
   const { client } = useConnection()
   const [dragging, setDragging] = useState<number | null>(null)
   const [typed, setTyped] = useState<string | null>(null)
@@ -78,16 +85,16 @@ function Strength({ name, reference, value, onChange }: { name: string; referenc
   // An omitted strength runs at the recommended one (Calcifer fills it from the card, else 1).
   const held = value == null ? recommended : typeof value === "number" && Number.isFinite(value) ? value : undefined
   const shown = dragging ?? held
-  const commit = (next: number | null) => { if (next !== null && Number.isFinite(next) && next !== held) onChange?.(Math.round(next * 1000) / 1000) }
+  const commit = (next: number | null) => { if (next !== null && Number.isFinite(next) && next !== held) onChange(Math.round(next * 1000) / 1000) }
   const release = () => { commit(dragging); setDragging(null) }
   const settle = () => { if (typed !== null && typed.trim() && Number.isFinite(Number(typed))) commit(Number(typed)); setTyped(null) }
-  return <span className="active-lora-strength" title={onChange ? undefined : `Its release's strength: ${recommended}`}>
-    <input type="range" min={0} max={2} step={0.05} aria-label={`Strength of ${name}`} value={Math.min(2, Math.max(0, shown ?? 1))} disabled={!onChange}
+  return <span className="active-lora-strength">
+    <input type="range" min={0} max={2} step={0.05} aria-label={`Strength of ${name}`} value={Math.min(2, Math.max(0, shown ?? 1))}
       onChange={(event) => setDragging(Number(event.target.value))} onPointerUp={release} onKeyUp={release} onBlur={release} />
-    <input type="number" className="field" step={0.05} aria-label={`Strength of ${name}, exactly`} value={typed ?? (shown === undefined ? "" : String(shown))} disabled={!onChange}
+    <input type="number" className="field" step={0.05} aria-label={`Strength of ${name}, exactly`} value={typed ?? (shown === undefined ? "" : String(shown))}
       onChange={(event) => setTyped(event.target.value)} onBlur={settle} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); settle() } }} />
-    {onChange && <button type="button" className="iconb" aria-label={`${name}'s recommended strength, ${recommended}`} title={`Recommended: ${recommended}`}
-      disabled={held === recommended} onClick={() => onChange(recommended)}><Icon name="undo" /></button>}
+    <button type="button" className="iconb" aria-label={`${name}'s recommended strength, ${recommended}`} title={`Recommended: ${recommended}`}
+      disabled={held === recommended} onClick={() => onChange(recommended)}><Icon name="undo" /></button>
   </span>
 }
 
