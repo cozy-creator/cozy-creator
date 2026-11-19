@@ -84,8 +84,9 @@ struct Loop {
     peak: usize,
     named_at: usize,
     peak_sites: Vec<(u32, usize)>,
-    /// The least a later pass added to what stays.
+    /// The least a later pass added to what stays, once two have measured (`added` holds the first).
     growth: Option<usize>,
+    added: Option<usize>,
     /// The least a pass held beyond its start and what it left: an estimate that errs low.
     transient: Option<usize>,
     refused: Option<Verdict>,
@@ -280,7 +281,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
         escapes.loops.insert(head, Loop {
             shape, first: pass, last: pass, start: total, since_first: 0, since_last: 0, passes: 1,
             carried: total, carried_sites, escaped: 0, peak: 0, named_at: 0, peak_sites: vec![],
-            growth: None, transient: None, refused: verdict.clone(), ooms, held,
+            growth: None, added: None, transient: None, refused: verdict.clone(), ooms, held,
         });
         return Ok(verdict);
     }
@@ -298,8 +299,12 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
         held_loop.transient = Some(held_loop.transient.map_or(transient, |least| least.min(transient)));
     }
     if held_loop.passes >= 2 {
+        // One pass's addition can't tell growth from a buffer made once: Qwen3.5's 130k-token
+        // `inputs_embeds` (1.3 GB) read as 3.1 GB more every pass, and a prefill that fit was refused
+        // 13 s in (cr-344, pod-session 44438060803). The least of two or more is what each pass adds.
         let grew = escaped.saturating_sub(held_loop.escaped);
-        held_loop.growth = Some(held_loop.growth.map_or(grew, |least| least.min(grew)));
+        held_loop.growth = held_loop.added.map(|least| least.min(grew));
+        held_loop.added = Some(held_loop.added.map_or(grew, |least| least.min(grew)));
     }
     held_loop.passes += 1;
     held_loop.last = pass;
