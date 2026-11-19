@@ -10,7 +10,7 @@
 # params:
 #   tree       the packages_refs checkout the functions run from (required)
 #   cap        the GPU's limit (6GiB)
-#   runtime    the Runtime wheel, https://…#sha256=<hex> (required)
+#   runtime    the Runtime wheel, https://…#sha256=<hex>, or a cozy-runtime dev-build run id (required)
 #   tensorfs   the TensorFS wheel, likewise (required); the pod's TensorD is this session's cozy
 #   cells      [{"name", "target" ("<package>/<function>"), "args" ([inputs and flags]),
 #              "max_s" (optional: the run is canceled this long in, and said to be unfinished, not failed),
@@ -42,13 +42,19 @@ END_AT=$(( $(date +%s) + NEED ))
 for tool in jq python3 ffmpeg; do command -v "$tool" > /dev/null || fail "no $tool"; done
 V=$(cozy --version | awk '{print $2}')
 # wheel <URL#sha256=hex>: the wheel under its own name (a URL's %2B is a version's +), held to its digest.
+# A dev build's wheel (a cozy-runtime dev-build run id, or `artifact:<run id>/<name>` of a cozy-creator run): lib.sh's
+# wheel_from, under its version's own name.
 wheel() {
   local n f
-  [[ $1 == https://*'#sha256='* ]] || return 1
+  case $1 in
+    https://*'#sha256='*) ;;
+    https://*) return 1 ;;
+    *) f=$(wheel_from "${RUNNER_TEMP:-$OUT}/wheels/${1//[:\/]/_}" "$1") && [ -n "$f" ] && echo "$f"; return ;;
+  esac
   n=$(basename "${1%%#*}"); f=${RUNNER_TEMP:-$OUT}/wheels/$(printf '%b' "${n//%/\\x}"); mkdir -p "${f%/*}"
   curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" && [ "$(sha256sum "$f" | cut -c1-64)" = "${1##*sha256=}" ] && echo "$f"
 }
-RWF=$(wheel "$RW") || fail "runtime is not a wheel at https://…#sha256=<hex> that hashes to it"
+RWF=$(wheel "$RW") || fail "runtime is not a wheel at https://…#sha256=<hex> that hashes to it, nor a dev build's"
 TWF=$(wheel "$TW") || fail "tensorfs is not a wheel at https://…#sha256=<hex> that hashes to it"
 say "candidate: cozy $V · ${RWF##*/} · ${TWF##*/} · packages $(git -C "$PACKAGES/$TREE" rev-parse --short HEAD) · cap $CAPV"
 

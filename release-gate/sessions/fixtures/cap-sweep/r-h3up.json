@@ -1,0 +1,37 @@
+{
+  "tree": "rc",
+  "cap": "6GiB",
+  "runtime": "44629282533",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3526%2Bg0a23cc51-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=7681e07339d82bd8095235b4de48fc9ec51a4541da8a9a38e7523db020333978",
+  "need_s": 6600,
+  "twin_s": 1200,
+  "stall_s": 1800,
+  "quiet_s": 10800,
+  "floor_mb_s": 25,
+  "provider": "runpod",
+  "cells": [
+    {
+      "name": "h3-up-2160p-5s",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip5}",
+        "to=2160p",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "max_s": 2700
+    },
+    {
+      "name": "h3-up-2160p-15s",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip15}",
+        "to=2160p",
+        "strength:=0.909",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "max_s": 1800
+    }
+  ]
+}
