@@ -9,6 +9,7 @@ fn store() -> Arc<Store> {
             returned: std::sync::Condvar::new(),
         },
         durable: Durable::sqlite(),
+        path: std::path::PathBuf::from(":memory:"),
     })
 }
 

@@ -177,6 +177,9 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     if let Some(owed) = &changed.owed {
         output::warn(owed);
     }
+    if let Some(index) = &changed.index {
+        output::warn(index);
+    }
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
     if !changed.ended.is_empty() {
         let runs: Vec<String> = changed.ended.iter().map(u64::to_string).collect();

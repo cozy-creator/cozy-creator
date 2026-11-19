@@ -2734,6 +2734,7 @@ dependencies = [
  "libloading 0.9.0",
  "libmimalloc-sys",
  "nvml-wrapper",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

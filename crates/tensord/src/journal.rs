@@ -629,6 +629,8 @@ pub(crate) struct Journal {
 /// ignored and rows it cannot read are skipped, never a refusal of the whole journal.
 pub(crate) const JOURNAL_FORMAT: u32 = 4;
 const FILE: &str = "executions.sqlite3";
+/// The journal's WAL, emptied once a retirement deletes a project's rows (cl-984).
+static WAL: platform::durable::wal::Wal = platform::durable::wal::Wal::new("the machine journal");
 /// One unreadable row (written by a newer machine, or damaged) must not hide every other run.
 fn readable(rows: Vec<String>) -> Vec<Execution> {
     rows.into_iter()
@@ -908,8 +910,9 @@ impl Journal {
                 AND NOT EXISTS(SELECT 1 FROM objects WHERE sha256=?1) AND NOT EXISTS(SELECT 1 FROM held_memo_objects WHERE sha256=?1)", [sha256]).map_err(db_error)?;
         }
         tx.commit().map_err(db_error)?;
+        // Its WAL is the engine's to empty, its status reader held off (`Engine::empty_wal`).
         let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
-        if secure { self.truncate_wal() } else { self.compact() }
+        if !secure { self.compact() }
         Ok(())
     }
 
@@ -932,21 +935,24 @@ impl Journal {
     /// journal as it was); its scratch copy stays in RAM. Once done,
     /// the journal holds no such copy and a lock's retirement no longer rewrites it.
     fn compact(&self) {
-        self.truncate_wal();
+        self.empty_wal();
         match self.connection.execute_batch("PRAGMA temp_store=MEMORY; VACUUM; INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('secure_delete','1');") {
             Ok(()) => {}
             Err(error) => tracing::warn!("the machine journal could not be rewritten after a retirement: {error}"),
         }
-        self.truncate_wal();
+        self.empty_wal();
     }
 
-    /// The WAL emptied into the journal, retried while a reader holds an older snapshot: no page image it held outlives this.
-    pub(crate) fn truncate_wal(&self) {
-        for _ in 0..40 {
-            let busy: i64 = self.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).unwrap_or(1);
-            if busy == 0 { return; }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+    /// The WAL emptied (`platform::durable::wal`): no page image it held outlives this, or the emptying is owed to the next
+    /// write. False while a reader holds an older snapshot or a write is in flight.
+    pub(crate) fn empty_wal(&self) -> bool {
+        WAL.empty(&self.connection)
+    }
+
+    /// Whether this write should retry the WAL's owed emptying now, taking the retry: the first write after it became owed, then
+    /// one a second at most (`Wal::retry`).
+    pub(crate) fn wal_retry() -> bool {
+        WAL.retry()
     }
 
     pub(crate) fn workspace_id(&self) -> &str {
@@ -1554,7 +1560,9 @@ impl Journal {
         tx.commit().map_err(db_error)?;
         match requests {
             true => self.compact(),
-            false => self.truncate_wal(),
+            false => {
+                self.empty_wal();
+            }
         }
         tracing::info!("{} list items' runs forgotten: their lists come again{}", rows.len(), if requests { "; the journal rewritten, as it held their requests" } else { "" });
         Ok(())
