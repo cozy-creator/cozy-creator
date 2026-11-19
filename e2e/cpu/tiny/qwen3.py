@@ -64,7 +64,8 @@ def dense(folder: Path) -> Path:
 
 
 def moe(folder: Path) -> Path:
-    """35B-A3B's layout: routed and shared experts, each fused bank stored one expert at a time, from seed 0."""
+    """35B-A3B's layout: routed and shared experts, each layer's in Transformers' fused banks as the release stores them
+    (`experts.gate_up_proj`, `experts.down_proj`), which TensorFS's import stores one expert at a time; from seed 0."""
     torch.manual_seed(0)
     plain = config().to_dict()
     text = {**plain["text_config"], "num_experts": 4, "num_experts_per_tok": 2, "moe_intermediate_size": 32,
@@ -72,27 +73,35 @@ def moe(folder: Path) -> Path:
     made = Qwen3_5MoeConfig(text_config=text, vision_config=plain["vision_config"],
                             **{k: plain[k] for k in ("image_token_id", "video_token_id", "vision_start_token_id",
                                                      "vision_end_token_id", "tie_word_embeddings")})
-    folder = write(folder, module(Qwen3_5MoeForConditionalGeneration(made)), modeling_qwen3_5_moe)
-    split(folder / "model.safetensors")
-    return folder
+    return write(folder, module(Qwen3_5MoeForConditionalGeneration(made)), modeling_qwen3_5_moe)
 
 
-def split(path: Path) -> None:
-    """Each fused expert bank one expert at a time, as TensorFS's `qwen3.6-35b-a3b.experts` table lays out the release
-    (that table is pinned to the release's shapes): `experts.{e}.gate_and_up_proj.weight`, `experts.{e}.down_proj.weight`."""
-    tensors = load_file(path)
-    out: dict[str, torch.Tensor] = {}
-    for key, value in tensors.items():
-        bank, _, name = key.rpartition(".experts.")
-        if name in ("gate_up_proj", "down_proj"):
-            row = "gate_and_up_proj" if name == "gate_up_proj" else "down_proj"
-            out |= {f"{bank}.experts.{e}.{row}.weight": value[e].contiguous() for e in range(value.shape[0])}
-        else:
-            out[key] = value
-    save_file(out, path, metadata={"format": "pt"})
+def unpaired(folder: Path, store: Path) -> None:
+    """gpt-oss's banks (xs-220, #4037's review): gate-and-up [E, H, 2I] and down [E, I, H], so with I = H its down alone has the
+    shape of Transformers' [E, H, I]. TensorFS's import splits a layer's banks only as a pair: both stay fused, and it says so.
+    Split alone, each expert's down weight would be named transposed."""
+    import json
+
+    import tensorfs
+
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "config.json").write_text(json.dumps({"model_type": "gpt_oss", "num_local_experts": 4, "hidden_size": 16,
+                                                    "intermediate_size": 16}))
+    stem = "model.layers.0.mlp.experts"
+    torch.manual_seed(0)
+    save_file({f"{stem}.gate_up_proj": torch.randn(4, 16, 32, dtype=torch.bfloat16),
+               f"{stem}.down_proj": torch.randn(4, 16, 16, dtype=torch.bfloat16)}, folder / "model.safetensors", metadata={"format": "pt"})
+    said: list[str] = []
+    checkpoint = tensorfs.convert_to_cozytensors(str(folder), cache_dir=store, progress=lambda line, *_: said.append(line))
+    names = {name for component in checkpoint.components.values() for name in component.tensors.keys()}
+    split = sorted(name for name in names if name.startswith(f"{stem}.") and name.count(".") > stem.count(".") + 1)
+    assert not split, f"an unpaired bank was split, its experts' weights named transposed: {split[:2]}"
+    assert {f"{stem}.gate_up_proj", f"{stem}.down_proj"} <= names, f"the fused banks aren't kept: {sorted(names)[:4]}"
+    assert any(line.startswith("warning:") and stem in line for line in said), f"no warning names the banks kept fused: {said}"
 
 
 def models(root: Path, store: Path) -> dict[str, Path | str]:
+    unpaired(root / "unpaired", store)
     return {MODEL: dense(root / "dense"), MOE: moe(root / "moe")}
 
 

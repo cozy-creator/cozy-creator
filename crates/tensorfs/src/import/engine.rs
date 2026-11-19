@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 30] = [
+pub(crate) const TABLES: [&str; 29] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("anima.diffusion_model"),
@@ -51,7 +51,6 @@ pub(crate) const TABLES: [&str; 30] = [
     table!("ipadapter.sdxl"),
     table!("relayvsr"),
     table!("ideogram4.fp8"),
-    table!("qwen3.6-35b-a3b.experts"),
     table!("moss.text_encoder"),
     table!("pan2.text_encoder"),
 ];
@@ -314,11 +313,12 @@ pub(crate) fn tables() -> &'static [Table] {
     })
 }
 
-/// The built-in tables' digest: an import is what its source's bytes and these tables make.
+/// The built-in tables' digest: an import is what its source's bytes, these tables and the rules
+/// beside them (`experts::RULE`) make.
 pub fn tables_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DIGEST.get_or_init(|| {
-        let tables = TABLES.iter().chain([&super::keep::KEEPS]).copied();
+        let tables = TABLES.iter().chain([&super::keep::KEEPS, &super::experts::RULE]).copied();
         crate::sha256::hex_digest(tables.collect::<Vec<_>>().join("\0").as_bytes())
     })
 }
