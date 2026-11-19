@@ -5,12 +5,20 @@
 # card's used and free MiB. ssh to some pods answers nothing for minutes (43733785568: empty readings, then
 # machine_ssh_unheard; each of those cells waited out a 60 s timeout first), so the pod keeps the readings and the session
 # fetches them whole, in the background each 5 min and before the pod ends (gpu-pod.log).
+# A pid nvidia-smi names in the host's namespace has no /proc entry in the pod: its hwm is then the largest of an executor's.
 WATCH='[ -s /var/tmp/ab-gpu.pid ] && kill -0 "$(cat /var/tmp/ab-gpu.pid)" 2> /dev/null && { echo running; exit 0; }
 cat > /var/tmp/ab-gpu.sh << "EOS"
 while :; do
   t=$(date -u +%T)
+  x=0
+  for d in /proc/[0-9]*; do
+    case "$(tr "\0" " " 2> /dev/null < "$d/cmdline")" in
+      *cozy_runtime.internal.executor*) h=$(awk "/^VmHWM/ {print \$2}" "$d/status" 2> /dev/null); [ "${h:-0}" -gt "$x" ] && x=$h ;;
+    esac
+  done
   nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | while IFS=", " read -r pid mib; do
-    echo "$t pid $pid $mib MiB hwm $(awk "/^VmHWM/ {print \$2}" "/proc/$pid/status" 2> /dev/null) $(tr "\0" " " < "/proc/$pid/cmdline" 2> /dev/null | cut -c1-200)"
+    h=$(awk "/^VmHWM/ {print \$2}" "/proc/$pid/status" 2> /dev/null)
+    echo "$t pid $pid $mib MiB hwm ${h:-$x} $(tr "\0" " " 2> /dev/null < "/proc/$pid/cmdline" | cut -c1-200)"
   done
   echo "$t card $(nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv,noheader,nounits | paste -sd";")"
   sleep 5
