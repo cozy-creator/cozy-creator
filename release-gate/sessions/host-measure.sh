@@ -3,20 +3,22 @@
 # on its path, MemTotal), the cell's host tier record, the pod's memory log, then on the executor's own Python: host copy
 # and read bandwidth, pinned and pageable H2D, and a token's GEMV on the CPU (bf16, int8 dynamic, int4 packed) and on the
 # card, each as GB/s of weights read.
-# params: tree, target, args (a cell, as ab.sh's), cap, runtime, tensorfs (wheel sources as ab.sh's update), need_s
+# params: tree, cells ([{name, target, args, cap}], run in order on one build), runtime, tensorfs (wheel sources as ab.sh's
+# update), need_s
 . "$(dirname "$0")/lib.sh"
-TREE=$(param tree rc) TARGET=$(param target '') CAPV=$(param cap 6GiB) NEED=$(param need_s 3600)
+TREE=$(param tree rc) CELLS=$(param cells '[]') NEED=$(param need_s 3600)
 RT=$(param runtime '') TF=$(param tensorfs '')
-[ -n "$TARGET" ] && [ -d "$PACKAGES/$TREE" ] || fail "no target or no packages checkout $TREE"
-mapfile -t ARGS < <(param args '[]' | jq -r '.[]')
+[ -d "$PACKAGES/$TREE" ] || fail "no packages checkout $TREE"
+mapfile -t names < <(jq -r '.[].name' <<< "$CELLS")
+[ "${#names[@]}" -gt 0 ] || fail "no cells"
 RWF=$(wheel_from "$OUT/wheels/runtime" "$RT") && [ -n "$RWF" ] || fail "no runtime wheel from $RT"
 TWF=$(wheel_from "$OUT/wheels/tensorfs" "$TF") && [ -n "$TWF" ] || fail "no tensorfs wheel from $TF"
-kernels "$PACKAGES/$TREE/${TARGET%%/*}"
+for t in $(jq -r '.[].target | split("/") | first' <<< "$CELLS" | sort -u); do kernels "$PACKAGES/$TREE/$t"; done
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
 quote "$NEED"
 rent
-step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$RWF" --tensorfs "$TWF" --gpu-memory-limit "$CAPV" -y ||
+step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$RWF" --tensorfs "$TWF" -y ||
   fail "update: $(tail -c 300 "$OUT/update.txt")"
 # pod <script> [seconds]: the pod's root shell, all its output.
 pod() {
@@ -24,13 +26,18 @@ pod() {
     grep -v '^Warning: Permanently added'
 }
 say "host: $(pod 'echo "$(nproc) cores, $(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2), MemTotal $(awk "/^MemTotal/ {print \$2 * 1024}" /proc/meminfo) B"' | tail -1)"
-A=()
-for a in "${ARGS[@]}"; do A+=("${a//\{ref\}/$REF}"); done
-step cell run "$PACKAGES/$TREE/./$TARGET" "${A[@]}" --on "$NAME" || say "cell: $(tail -c 400 "$OUT/cell.txt")"
-N=$(runno cell)
-[ -z "$N" ] || (cd "$RUN_PROJECT" && cozy run show "$N" --json --full > "$OUT/cell.json" 2>&1)
-jq -c '[.measurements.memory.stats.varena[0].stats | {baked_pages: (.baked_pages | del(.store_reads)), moved, weight_residency, streamed, gathered}]' \
-  "$OUT/cell.json" > "$OUT/tier.json" 2>/dev/null && say "tier: $(cut -c1-1500 "$OUT/tier.json")"
+for k in "${names[@]}"; do
+  c=$(jq -c --arg k "$k" 'map(select(.name == $k)) | first' <<< "$CELLS")
+  step "update-$k" machine update "$NAME" --gpu-memory-limit "$(jq -r '.cap // "off"' <<< "$c")" -y || say "$k: update failed"
+  A=()
+  while IFS= read -r a; do A+=("${a//\{ref\}/$REF}"); done < <(jq -r '.args[]' <<< "$c")
+  step "$k" run "$PACKAGES/$TREE/./$(jq -r .target <<< "$c")" "${A[@]}" --on "$NAME" || say "$k: $(tail -c 400 "$OUT/$k.txt")"
+  N=$(runno "$k")
+  [ -z "$N" ] || (cd "$RUN_PROJECT" && cozy run show "$N" --json --full > "$OUT/$k.json" 2>&1)
+  say "$k: $(jq -r '"\(.status) exec \((.execution_ms // 0) / 1000)s"' "$OUT/$k.json" 2>/dev/null) $(jq -r '.reason.message // .error // empty' "$OUT/$k.json" 2>/dev/null | cut -c1-300)"
+  jq -c '[.measurements.memory.stats.varena[0].stats | {baked_pages: (.baked_pages | del(.store_reads)), moved, weight_residency, streamed, gathered}]' \
+    "$OUT/$k.json" > "$OUT/$k-tier.json" 2>/dev/null && say "$k tier: $(cut -c1-1500 "$OUT/$k-tier.json")"
+done
 # The bound on the executor's path: each cgroup from the executor's own up to the root.
 pod 'p=$(pgrep -f cozy_runtime.internal.executor | head -1); [ -n "$p" ] || p=$(pgrep -x tensord | head -1); echo "pid $p"
 c=$(awk -F: "\$1 == 0 {print \$3}" /proc/$p/cgroup); while :; do d=/sys/fs/cgroup$c
