@@ -8,12 +8,17 @@ const { fit } = require('./hands');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: release-gate/sessions/cut-1254.sh sets it`); })();
 
-test('a page render on local below this cozy\'s Runtime minor updates local first, then lands', async ({ page, project }) => {
+test('a page render on local below this cozy\'s Runtime minor updates local first, then lands', async ({ page, project, cli }) => {
   const out = need('CUT_OUT');
   const name = 'from-page';
-  const seen = { said: null, at_ms: null, take: null, failure: null };
+  const seen = { said: null, at_ms: null, take: null, failure: null, use: null };
   const record = () => writeFileSync(join(out, 'page.json'), JSON.stringify(seen, null, 2));
   await project.add({ name, tool: need('DRAW'), kind: 'image', fields: { instructions: `A still from the page ${Date.now()}` }, at: { x: 0, y: 0 } });
+  // The project's machines: local, as a person picks it (`cozy machine use`); else Render goes where it finishes soonest, any rental of the
+  // account's included.
+  const use = await cli('machine', 'use', 'local');
+  seen.use = { code: use.code, said: `${use.stdout}${use.stderr}`.trim().slice(-200) };
+  expect(use.code, `cozy machine use local: ${seen.use.said}`).toBe(0);
   await fit(page);
   const region = await focus(page, name);
   const pressed = Date.now();
@@ -42,5 +47,6 @@ test('a page render on local below this cozy\'s Runtime minor updates local firs
   record();
   expect(seen.failure, 'the render did not fail').toBeNull();
   expect(seen.said, 'the box said "Updating local first"').not.toBeNull();
+  expect(seen.take?.main?.machine, 'it rendered on local').toBe('local');
   expect(seen.take?.main?.width ?? 0, 'its picture landed').toBeGreaterThan(0);
 });

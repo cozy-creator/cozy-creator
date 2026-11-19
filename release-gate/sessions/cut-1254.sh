@@ -20,6 +20,7 @@ say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 red() { say "RED: $*"; RED=1; }
 fail() { say "FAIL: $*"; exit 1; }
 pair() { cozy --json machine show local 2> /dev/null | jq -c '.status | {version, runtime, tensorfs}'; }
+held() { cozy --json machine show local 2> /dev/null | jq -r '.held // "none"'; }
 ready() {
   local _
   for _ in $(seq 120); do [ "$(cozy --json machine show local 2> /dev/null | jq -r '.state // empty')" = ready ] && return 0; sleep 5; done
@@ -30,7 +31,7 @@ back() {
   cozy --json machine update local --runtime "$OLD_RT" --tensorfs "$OLD_TFS" -y > "$OUT/back-$1.json" 2>&1 && ready &&
     cozy --json machine update local -y >> "$OUT/back-$1.json" 2>&1 && ready ||
     { red "$1: local not put back on $OLD_RT / $OLD_TFS: $(tail -c 300 "$OUT/back-$1.json")"; return 1; }
-  say "$1: before it, local: $(pair)"
+  say "$1: before it, local: $(pair), held: $(held)"
   [ "$(pair | jq -r .runtime)" = "$OLD_RT" ] || { red "$1: local is not on Runtime $OLD_RT before it"; return 1; }
 }
 # moved <leg>: local on cozy $TO and Runtime $WANT after it.
@@ -44,9 +45,9 @@ moved() {
 # said <leg> <files...>: what the leg printed about local, and no runtime_outdated.
 said() {
   local leg=$1 line; shift
-  line=$(grep -ihoE 'updating local first[^"]*' "$@" 2> /dev/null | head -1)
+  line=$(grep -ihoE "updating local first[^\"]*|Updating local's Runtime from [^\"]*" "$@" 2> /dev/null | head -1)
   say "$leg: said: ${line:-nothing about updating local}"
-  [ -n "$line" ] || red "$leg: it never said \"updating local first\""
+  [ -n "$line" ] || red "$leg: it never said it updates local first"
   ! grep -qs runtime_outdated "$@" || red "$leg: refused runtime_outdated: $(grep -hs runtime_outdated "$@" | head -1 | cut -c1-300)"
 }
 
@@ -59,7 +60,7 @@ say "PyPI: cozy-runtime $(curl -fsS https://pypi.org/pypi/cozy-runtime/json | jq
 ready || fail "local not ready on cozy $LATEST"
 cozy --json machine update local -y > "$OUT/setup-local.json" 2>&1 && ready || fail "cozy $LATEST's local onto its pair: $(tail -c 300 "$OUT/setup-local.json")"
 p=$(pair) OLD_RT=$(pair | jq -r .runtime) OLD_TFS=$(pair | jq -r .tensorfs)
-say "setup: cozy $LATEST's local: $p"
+say "setup: cozy $LATEST's local: $p, held: $(held)"
 P=$OUT/cut-1254 DRAW=$HERE/fixtures/cut-1254/draw.py
 mkdir -p "$P" && cp "$DRAW" "$P/draw.py" || fail "no project folder"
 (cd "$P" && cozy --json new --unencrypted .) > "$OUT/new.json" 2>&1 || fail "cozy new: $(tail -c 300 "$OUT/new.json")"
@@ -69,9 +70,11 @@ say "setup: project $P, box upgraded (draw.py), on cozy $LATEST"
 
 cozy update "$TO" -y > "$OUT/update.txt" 2>&1 || fail "cozy update $TO: $(tail -c 400 "$OUT/update.txt")"
 [ "$(cozy --version)" = "cozy $TO" ] || fail "cozy is $(cozy --version) after cozy update $TO"
+# Calcifer restarts on the new binary at once; local moves to it once its runs end.
+for _ in $(seq 120); do [ "$(pair | jq -r .version)" = "$TO" ] && break; sleep 5; done
 ready || fail "local not ready after cozy update $TO"
 p=$(pair)
-say "setup: cozy update $TO: $(tail -n 1 "$OUT/update.txt" | cut -c1-200); local: $p"
+say "setup: cozy update $TO: $(grep -E '^cozy .* → ' "$OUT/update.txt" | head -1 | cut -c1-120); local: $p, held: $(held)"
 [ "$(jq -r .version <<< "$p")" = "$TO" ] && [ "$(jq -r .runtime <<< "$p")" = "$OLD_RT" ] || red "setup: local is not on cozy $TO with Runtime $OLD_RT: $p"
 
 # 1. The render leg (the page's route).
