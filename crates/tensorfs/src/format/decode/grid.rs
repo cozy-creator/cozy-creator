@@ -16,17 +16,15 @@ pub enum ScaleLayout {
     Cublas128x4,
 }
 
-/// The rows of one `cublas_128x4` tile.
-const CUBLAS_ROWS: usize = 128;
-
 impl ScaleLayout {
-    /// The rows one stored run of scales holds: each row's own run, a tile's rows where they
-    /// interleave inside it, or None where no run of rows is contiguous.
+    /// The rows one stored run of scales holds, for a read of some rows (tfs-303): each row's own
+    /// run where they are stored row by row. None where no run of rows is contiguous, and where
+    /// none is declared yet: `cublas_128x4` interleaves rows inside its tiles, and says its tile
+    /// here with the first checkpoint that stores one.
     pub(crate) fn row_tile(self) -> Option<u64> {
         match self {
             ScaleLayout::RowMajor => Some(1),
-            ScaleLayout::Transposed => None,
-            ScaleLayout::Cublas128x4 => Some(CUBLAS_ROWS as u64),
+            ScaleLayout::Transposed | ScaleLayout::Cublas128x4 => None,
         }
     }
     pub(crate) fn name(self) -> &'static str {
@@ -78,8 +76,7 @@ impl Grid {
                     ScaleLayout::Transposed => vec![w, c.rows as u64],
                     ScaleLayout::Cublas128x4 => {
                         let (stack, n) = c.shape.split_at(c.shape.len() - 2);
-                        let tile = CUBLAS_ROWS as u64;
-                        [stack, &[n[0].div_ceil(tile) * tile, w.div_ceil(4) * 4]].concat()
+                        [stack, &[n[0].div_ceil(128) * 128, w.div_ceil(4) * 4]].concat()
                     }
                 })
             }
@@ -110,9 +107,9 @@ impl Grid {
                     ScaleLayout::RowMajor => i * w + b,
                     ScaleLayout::Transposed => b * rows + i,
                     ScaleLayout::Cublas128x4 => {
-                        let matrix = height.div_ceil(CUBLAS_ROWS) * CUBLAS_ROWS * w.div_ceil(4) * 4;
-                        let tile = (r / CUBLAS_ROWS) * w.div_ceil(4) + b / 4;
-                        m * matrix + tile * (CUBLAS_ROWS * 4) + (r % 32) * 16 + (r % CUBLAS_ROWS / 32) * 4 + b % 4
+                        let matrix = height.div_ceil(128) * 128 * w.div_ceil(4) * 4;
+                        let tile = (r / 128) * w.div_ceil(4) + b / 4;
+                        m * matrix + tile * 512 + (r % 32) * 16 + (r % 128 / 32) * 4 + b % 4
                     }
                 }
             }

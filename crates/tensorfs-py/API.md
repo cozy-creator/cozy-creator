@@ -235,11 +235,12 @@ checkpoint.read_rows([("transformer", "proj_out.weight", start, stop, outs)],
 
 `rows(component, key)` reads only the header: `count` rows along the tensor's first
 dimension; a range starts on a multiple of `tile` and stops on one or at `count`. The tile
-is the encoding's: 1 for plain data, `fp8.rowwise`, `int8.convrot`, `w4a8.convrot` and
-row-major `nvfp4`; 128 for scales stored in cuBLAS tiles. `tile_bytes` gives each part's
-bytes per tile, or None for a part every range reads whole (`nvfp4`'s `scale_2`,
-`w4a8.convrot`'s `codebook`). A tensor whose scheme declares no row cut (`svdq.nvfp4`
-among them), or whose parts store columns first, is None.
+is the encoding's, never assumed: 1 for every layout that cuts so far (plain data,
+`fp8.rowwise`, `int8.convrot`, `w4a8.convrot` and row-major `nvfp4`). `tile_bytes` gives
+each part's bytes per tile, or None for a part every range reads whole (`nvfp4`'s
+`scale_2`, `w4a8.convrot`'s `codebook`). A tensor whose scheme declares no row cut
+(`svdq.nvfp4` among them), whose scales are stored in cuBLAS tiles (`cublas_128x4`), or
+whose parts store columns first, is None.
 `read_rows(reads, *, stream=None)` fills each `(component, key, start, stop, {role: out})`
 with those rows' stored bytes in one read; each out holds exactly `nbytes(start, stop)[role]`.
 Where the consuming op may be cut is its own to decide; this only says how finely the

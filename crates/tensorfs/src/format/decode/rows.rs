@@ -138,8 +138,8 @@ fn cut(scheme: &Scheme, c: &Ctx, lengths: &BTreeMap<&str, u64>) -> Option<Rows> 
                     Some(_) => per_row(length, count),
                     None => None,
                 },
-                Grid::Tiles { rows, .. } if rank == 2 => tiles(rows as u64),
-                Grid::Tiles { .. } => per_row(length, count),
+                // No scheme that declares its rows stores tiles over a matrix: none is cut until one does.
+                Grid::Tiles { .. } => None,
             },
         }?;
         parts.push(RowPart { role: rule.role.to_owned(), length, cut });
