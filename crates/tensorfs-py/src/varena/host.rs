@@ -256,6 +256,21 @@ pub(super) fn ask_idle(bytes: u64) -> bool {
     }
 }
 
+/// What `admit` asks against, for one reading of the number: it less every executor's holdings (the
+/// kernel's charge, or the host page's sum where that is more) and the headroom. Negative: over it.
+/// Unreadable figures (`total <= 0`) are unbounded, `i64::MAX`: `admit` refuses nothing there. A CPU
+/// executor's weights draw on the same room (`varena.host_room`, var-027).
+pub(super) fn room(now: &varena_ledger::host::Budget) -> i64 {
+    if now.total <= 0 {
+        return i64::MAX;
+    }
+    #[cfg(target_os = "linux")]
+    let ledger = i64::try_from(imp::held_everywhere()).unwrap_or(i64::MAX);
+    #[cfg(not(target_os = "linux"))]
+    let ledger = 0;
+    now.total - now.held.max(ledger) - now.headroom
+}
+
 /// The machine's one host admission (var-030 W5), for `bytes` more host memory this process will pin
 /// (varena's last resort, the Runtime's pinned wholes, a shared result mapping): what the number leaves
 /// (`varena_ledger::host::budget`: the tightest limit on this process's path, as TensorD enforces it)
@@ -265,17 +280,10 @@ pub(super) fn ask_idle(bytes: u64) -> bool {
 /// Unreadable figures admit it: only the pin itself can refuse then.
 pub(super) fn admit(bytes: u64) -> Result<(), varena::HostShort> {
     use varena_ledger::host::{Budget, budget};
-    fn room(now: &Budget) -> i64 {
-        #[cfg(target_os = "linux")]
-        let ledger = i64::try_from(imp::held_everywhere()).unwrap_or(i64::MAX);
-        #[cfg(not(target_os = "linux"))]
-        let ledger = 0;
-        now.total - now.held.max(ledger) - now.headroom
-    }
     let want = i64::try_from(bytes).unwrap_or(i64::MAX);
     let short = |now: &Budget| u64::try_from(want - room(now)).unwrap_or(0);
     let mut now = budget();
-    if now.total <= 0 || room(&now) >= want {
+    if room(&now) >= want {
         return Ok(());
     }
     ask_idle(short(&now));

@@ -42,9 +42,10 @@ def activate(device: int, *, shared: bool) -> None:
 
 
 def host_room() -> int:
-    """What more this process may hold in host RAM: the host's number (varena's, sized from what
-    the kernel accounts, with the reserve for programs outside cozy left out) less what its
-    processes hold and its headroom. Negative: over it. A CPU executor's weights draw on it."""
+    """What more this process may hold in host RAM: the room the machine's one host admission asks
+    against (the tightest limit on this process's path less every executor's holdings and the
+    headroom). Negative: over it. Unbounded (2**63 - 1) where the figures are unreadable, as the
+    admission then refuses nothing. A CPU executor's weights draw on it."""
     return _ext._varena_host_room()
 
 
