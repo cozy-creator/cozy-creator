@@ -1,5 +1,5 @@
 import type { StreamEvent } from "./calcifer"
-import { Pending, type Transport } from "./transport"
+import { type HeldMedia, Pending, type Transport } from "./transport"
 
 /**
  * Thumbnails Calcifer is still making (cl-982). Each is made as its file lands and kept in its project; one asked for before that answers
@@ -132,7 +132,7 @@ export interface HeldPreview {
  * for as every file is (`asking`): a `202` waits for the file's `thumb` event, and one that failed or that nothing answered is asked again.
  */
 export function heldPreview(transport: Pick<Transport, "media">, project: string, sha256: string, path: string,
-  then: (held: { url: string; release(): void }) => void): HeldPreview {
+  then: (held: HeldMedia) => void): HeldPreview {
   let stopped = false
   const ask = () => {
     transport.media(path).then((held) => {
