@@ -1,6 +1,6 @@
 """Whole-process Torch working allocator. Install before CUDA initialization in the executor child.
 
-Capture with this module's graph/replay owners. A raw torch.cuda.graph supplies none of the
+Capture with this module's graph/replay owners; `launching` holds a captured graph's pool around any other launch of it. A raw torch.cuda.graph supplies none of the
 lifetime signals the allocator needs, so its capture is refused.
 """
 from __future__ import annotations
@@ -623,29 +623,38 @@ def replay_scope(device: int) -> Iterator[None]:
         guard.close()
 
 
-def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
-    """Replay an owned graph and retain its pool through completion on the selected stream.
-    A scratch pool's contents are undefined between replays: copy every input in first."""
+@contextmanager
+def launching(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> Iterator[Stream]:
+    """The pool of a graph `graph` captured, mapped and held for the block's launches on `stream`
+    (yielded, and current in the block) of any executable that runs it: its own replay, or a
+    larger graph holding its clone. Released once `stream` has passed those launches."""
     _installed()
     import torch
 
     owner, device, pool = cuda_graph._varena_owner  # type: ignore[attr-defined]  # set by graph(); a graph it didn't capture raises here
     if owner != _owner:
-        raise RuntimeError("a CUDA graph cannot be replayed after fork")
+        raise RuntimeError("a CUDA graph cannot be launched after fork")
     stream = torch.cuda.current_stream(device) if stream is None else stream
     if _device(stream.device) != device:
-        raise ValueError("replay stream belongs to a different device")
+        raise ValueError("launch stream belongs to a different device")
     prepare_pool(pool, 0, device)
     _ext._varena_working_pool_retain(device, pool)
     try:
         with torch.cuda.device(device), torch.cuda.stream(stream):
             try:
-                cuda_graph.replay()
+                yield stream
             finally:
-                # End hooks may raise or reset the graph after launch. Our reference survives both.
+                # A launch's end hooks may raise or reset the graph. Our reference survives both.
                 _ext._varena_working_pool_record_stream(device, pool, stream.cuda_stream, False)
     finally:
         _ext._varena_working_pool_release(device, pool)
+
+
+def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
+    """Replay an owned graph, its pool held through completion on the selected stream (`launching`).
+    A scratch pool's contents are undefined between replays: copy every input in first."""
+    with launching(cuda_graph, stream=stream):
+        cuda_graph.replay()
 
 
 def offload(model_or_pipeline: nn.Module | Pipeline, device: DeviceLike = 0, *, graphs: GraphsMode = "auto") -> Offload:
