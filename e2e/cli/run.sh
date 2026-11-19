@@ -509,6 +509,7 @@ WEB_1=(
   unchanged
 )
 WEB_2=(
+  focus-controls
   fields
   layout
   type

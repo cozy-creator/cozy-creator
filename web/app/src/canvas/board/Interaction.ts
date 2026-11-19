@@ -1,6 +1,7 @@
 // All canvas input, on Pixi's federated events: hover, taps, selection, group drag, marquee, corner resize, pans, keys and the context
 // menu. One press at a time, owned from its press to its release wherever the pointer goes (Pixi delivers `pointerupoutside`).
 import type { Container, FederatedPointerEvent } from "pixi.js"
+import { takesKeys } from "../../ui/press"
 import type { Viewport as PixiViewport } from "pixi-viewport"
 import type { ToolField } from "../../api/calcifer"
 import type { CanvasStore, ElementNode } from "../CanvasStore"
@@ -346,9 +347,8 @@ export function createInteraction(o: InteractionOptions): Interaction {
     o.invalidate()
   }
 
-  /** Where typed keys belong to what has the focus: text being written, and the canvas's own native controls. A plain button doesn't
-   *  stop Space from panning: the pan's press takes the focus to the canvas, so the button never sees Space let go. */
-  const writing = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("input,select,textarea,[contenteditable]:not([contenteditable=false]),.canvas-control"))
+  /** Where typed keys belong to what has the focus (`takesKeys`). */
+  const writing = takesKeys
   const keyDown = (event: KeyboardEvent) => {
     if (writing(event.target)) return
     if (event.key === "Escape" && press) { event.preventDefault(); cancel(); return }
