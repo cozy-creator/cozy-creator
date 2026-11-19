@@ -55,6 +55,11 @@ drive_lock() {
   elif grep -qiE 'lock_failed|unsatisfiable|no solution found' "$OUT/lock-$name.txt"; then
     tail -c 2500 "$OUT/lock-$name.txt" | tee -a "$R"
     fail "$name: its lock can't be made (lines above)"
+  elif grep -qE 'package_prepare_description_failed|package_contract' "$OUT/lock-$name.txt"; then
+    # Described as a pod describes it: a package the Runtime refuses here is refused there, after the rental (44447703715:
+    # the decode drive's internal import, told as 'no lock check' and left to fail on a pod).
+    tail -c 2500 "$OUT/lock-$name.txt" | tee -a "$R"
+    fail "$name: the Runtime refuses to describe it (lines above)"
   else
     say "$name: no lock check on the runner: $(tail -n 4 "$OUT/lock-$name.txt" | tr '\n' ' ' | cut -c1-400)"
   fi
