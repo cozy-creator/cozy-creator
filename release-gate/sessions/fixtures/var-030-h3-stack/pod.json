@@ -87,6 +87,17 @@
       "tree": "se"
     },
     {
+      "name": "f2-upscale",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={pic1}",
+        "seed:=30039"
+      ],
+      "max_s": 1500,
+      "tree": "se"
+    },
+    {
       "name": "h3-gen-full-fbcache",
       "target": "minimax-h3/generate",
       "args": [
