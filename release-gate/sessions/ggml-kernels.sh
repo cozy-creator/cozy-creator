@@ -115,63 +115,80 @@ took=$( (cd "$RUN_PROJECT" && cozy --json --full run watch "$(runno runtime-vers
 want=${RUNTIME##*/cozy_runtime-}; want=${want%%-cp*}
 [ "$took" = "$want" ] || fail "the drive's environment imports cozy-runtime ${took:-nothing}, not the candidate $want"
 say "the drive's environment imports cozy-runtime $took: the candidate"
-if [ -n "$DECODE$MAKE$FIRST" ]; then
+if [ -n "$DECODE$MAKE" ]; then
   pod_install stage-decode "$DFIX/drive"
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 fi
+[ -z "$FIRST" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"
 
 # cozy-runtime#2344's cell, before anything else decodes on the pod: a machine's first request on a ggml lane compiles
 # nothing. The escaped bug: ggml's token-table lookup JIT-compiled `_blocks_kernel` inside a fresh machine's first
-# request (44599741328). `first` (label=org/name@sha256:…) is pulled; `first_red` (the Runtime before the decode cores'
-# sets) goes on and its first request must record a `triton compile:` row in request_path.blocking (it reproduces);
-# then the candidate's first request, and once the executors' logs hold its lane's decode set's verdict a second, whose
-# decodes (`kernel.decode_cores`) are all that set's: neither may record a compile, and each makes red's tokens.
+# request, on today's path and under the engine (44599741328). Every call is the same greedy `qwen3/ask` on `first`
+# (label=org/name@sha256:…). `first_red` (the RC before the decode cores' sets) goes on: its first call must record a
+# `triton compile:` row in request_path.blocking (it reproduces). Then the candidate: its first call compiles nothing,
+# makes red's text, and is no slower than red's within 5%; while the lane's decode set builds, the engine runs it eagerly
+# (cozy-runtime#2355's case: "step not captured … Building"), which is told. Calls follow until the engine's note says
+# captured: each compiles nothing and makes red's text, and that one's decodes (`kernel.decode_cores`) are all its set's.
+# Then one warm call for the steady ms a step, and the set's verdict line from the executors' logs.
 if [ -n "$FIRST" ]; then
-  ref=${FIRST#*=}
+  ref=${FIRST#*=} prompt="Write three sentences about the sea."
   step pull-first model install "$ref" --on "$NAME" || fail "pull $ref"
-  first() {
-    if ! step "first-$1" run "$DFIX/drive/first_tokens" --model "model=$ref" --on "$NAME"; then
-      FIRST_BAD=1; say "FAILED: first request ($1): $(grep -m1 -E '^Run .* failed|^error' "$OUT/first-$1.txt" | cut -c1-300)"
-      return 1
+  ask() {
+    local n=$1 k
+    if ! step "$n" run "$PACKAGES/$TREE/qwen3/ask" --model "model=$ref" "prompt=$prompt" max_tokens:=64 temperature:=0 --on "$NAME"; then
+      FIRST_BAD=1; say "FAILED: $n: $(grep -m1 -E '^Run .* failed|^error' "$OUT/$n.txt" | cut -c1-300)"; return 1
     fi
-    on_candidates "first-$1"
-    n=$(runno "first-$1"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/first-$1.json" 2> /dev/null
+    on_candidates "$n"
+    k=$(runno "$n"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$k" --once) > "$OUT/$n.json" 2> /dev/null
     jq -r '[.. | objects | select(.name? == "request_path.blocking") | "\(.value) \(.fields.ms // "")ms"] | join("; ")' \
-      "$OUT/first-$1.json" > "$OUT/first-$1.blocking"
-    jq -r '.result.detail // "{}"' "$OUT/first-$1.json" | jq -c '.tokens' > "$OUT/first-$1.tokens"
+      "$OUT/$n.json" > "$OUT/$n.blocking"
     # Its decode cores' calls by scheme and path (`kernel.decode_cores`: set, host or device; cozy-runtime#2344).
     jq -r '[.. | objects | select(.name? == "kernel.decode_cores") | "\(.fields.scheme) \(.value) \(.fields.calls)"] | join("; ")' \
-      "$OUT/first-$1.json" > "$OUT/first-$1.decodes"
-    say "first request ($1): blocking [$(cut -c1-300 "$OUT/first-$1.blocking")] · decodes [$(cut -c1-200 "$OUT/first-$1.decodes")] · tokens $(cut -c1-80 "$OUT/first-$1.tokens")"
+      "$OUT/$n.json" > "$OUT/$n.decodes"
+    jq -r '[.. | objects | to_entries[] | select((.key | endswith(".engine")) and (.value | type == "string")) | .value] | first // ""' \
+      "$OUT/$n.json" > "$OUT/$n.engine"
+    jq -r '[.. | strings | select(test("step not captured"))] | unique | join("; ")' "$OUT/$n.json" > "$OUT/$n.uncaptured"
+    jq -r '.result.texts[0] // .result.detail // ""' "$OUT/$n.json" > "$OUT/$n.text"
+    jq -r '.execution_ms // ""' "$OUT/$n.json" > "$OUT/$n.ms"
+    say "$n: $(cat "$OUT/$n.ms") ms · blocking [$(cut -c1-200 "$OUT/$n.blocking")] · decodes [$(cut -c1-160 "$OUT/$n.decodes")] · engine: $(cut -c1-260 "$OUT/$n.engine")$([ -s "$OUT/$n.uncaptured" ] && echo " · $(cut -c1-200 "$OUT/$n.uncaptured")")"
   }
+  same() { cmp -s "$OUT/$1.text" "$OUT/first-red.text" || { FIRST_BAD=1; say "FAILED: $1: its text is unlike red's"; }; }
+  clean() { ! grep -q 'triton compile:' "$OUT/$1.blocking" || { FIRST_BAD=1; say "FAILED: $1 compiled in the request"; }; }
   step first-runtime-red machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$FIRST_RED" -y || fail "the pod's Runtime (first_red)"
-  if first red && ! grep -q 'triton compile:' "$OUT/first-red.blocking"; then
-    FIRST_BAD=1; say "FAILED: first request (red): no compile recorded, so the cell reproduces nothing"
+  if ask first-red && ! grep -q 'triton compile:' "$OUT/first-red.blocking"; then
+    FIRST_BAD=1; say "FAILED: first-red: no compile recorded, so the cell reproduces nothing"
   fi
+  say "red's text: $(head -c 200 "$OUT/first-red.text" | tr '\n' ' ')"
   step first-candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate back on the pod"
-  for arm in candidate served; do
-    if [ "$arm" = served ]; then
-      # The lane's decode set's verdict (`kernel_ready.verified`'s line: cozy-decode-ggml.q8_0), in the executors'
-      # stderr logs on the pod: an installed package's executor root is TensorD's, on any mount (44619110063 looked
-      # under `executors` only, 44623512956 on the root filesystem only).
-      verdict='' logs="\$(find / -name stderr.log -not -path '/proc/*' -not -path '/sys/*' 2> /dev/null)"
-      for _ in $(seq 40); do
-        verdict=$(there "grep -h -m1 -E 'cozy-decode-[a-z0-9._-]+ (verified|refused)' $logs 2> /dev/null | head -1" 120 < /dev/null) &&
-          [ -n "$verdict" ] && break
-        sleep 30
-      done
-      say "the lane's decode set: ${verdict:-no verdict in the executor logs in 20 min}"
-      [ -n "$verdict" ] || there "echo \"\$(echo $logs | wc -w) stderr logs\"; grep -h -E 'cozy-decode-' $logs 2> /dev/null | tail -n 5" 120 < /dev/null | cut -c1-300 | tee -a "$R"
-      [[ $verdict == *verified* ]] || { FIRST_BAD=1; continue; }
-    fi
-    first "$arm" || continue
-    ! grep -q 'triton compile:' "$OUT/first-$arm.blocking" || { FIRST_BAD=1; say "FAILED: first request ($arm) compiled in the request"; }
-    if [ "$arm" = served ] && { ! grep -qE '(^|; )[^ ]+ set [0-9]' "$OUT/first-$arm.decodes" || grep -qE ' (host|device) [0-9]' "$OUT/first-$arm.decodes"; }; then
-      FIRST_BAD=1; say "FAILED: first request (served): its decodes were not all its set's"
-    fi
-    cmp -s "$OUT/first-$arm.tokens" "$OUT/first-red.tokens" || { FIRST_BAD=1; say "FAILED: first request ($arm): tokens unlike red's"; }
+  if ask first-candidate; then
+    clean first-candidate; same first-candidate
+    awk -v c="$(cat "$OUT/first-candidate.ms")" -v r="$(cat "$OUT/first-red.ms")" 'BEGIN { exit !(c + 0 <= 1.05 * r) }' ||
+      { FIRST_BAD=1; say "FAILED: first-candidate: $(cat "$OUT/first-candidate.ms") ms, slower than red's $(cat "$OUT/first-red.ms") ms past 5%"; }
+    say "first calls: red $(cat "$OUT/first-red.ms") ms, candidate $(cat "$OUT/first-candidate.ms") ms (the candidate's ran second on the pod)"
+  fi
+  captured=''
+  for i in $(seq 1 20); do
+    ask "later-$i" || break
+    clean "later-$i"; same "later-$i"
+    if grep -q 'by the engine' "$OUT/later-$i.engine" && grep -q 'captured' "$OUT/later-$i.engine"; then captured=later-$i; break; fi
+    sleep 15
   done
-  [ -n "${FIRST_BAD:-}" ] || say "PASS: cozy-runtime#2344's cell: red compiled in its first request, the candidate compiled nothing, same tokens"
+  if [ -z "$captured" ]; then
+    FIRST_BAD=1; say "FAILED: no call the engine captured in 20"
+  else
+    { grep -qE '(^|; )[^ ]+ set [0-9]' "$OUT/$captured.decodes" && ! grep -qE ' (host|device) [0-9]' "$OUT/$captured.decodes"; } ||
+      { FIRST_BAD=1; say "FAILED: $captured: its decodes were not all its set's"; }
+    ask warm && { clean warm; same warm; }
+    say "ms a step: $captured $(grep -o '[0-9.]* ms a step' "$OUT/$captured.engine"), warm $(grep -o '[0-9.]* ms a step' "$OUT/warm.engine" 2> /dev/null)"
+  fi
+  # The lane's decode set's verdict (`kernel_ready.verified`'s line: cozy-decode-ggml.q8_0), in the executors' stderr
+  # logs on the pod: an installed package's executor root is TensorD's, on any mount (44619110063 looked under
+  # `executors` only, 44623512956 on the root filesystem only).
+  logs="\$(find / -name stderr.log -not -path '/proc/*' -not -path '/sys/*' 2> /dev/null)"
+  verdict=$(there "grep -h -E 'cozy-decode-[a-z0-9._-]+ (verified|refused)' $logs 2> /dev/null | sort -u | head -3" 120 < /dev/null)
+  say "the decode sets' verdicts: ${verdict:-none in the executor logs}"
+  [[ $verdict == *verified* && $verdict != *refused* ]] || FIRST_BAD=1
+  [ -n "${FIRST_BAD:-}" ] || say "PASS: cozy-runtime#2344's cell: red compiled in its first call, the candidate compiled nothing, its set served once landed, same text"
 fi
 
 # quality <label> <ref>: the `quality` drive on one lane (or a bf16 reference) into quality-<label>.json; a lane's
