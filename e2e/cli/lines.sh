@@ -7,18 +7,26 @@
 machine_lines() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "three jobs on one machine: each line in job order, all at once (cl-905)"
-local began name n dog a c
+local began name n dog a c log follow
 began=$(date -u +%s%3N)
 dog=$(picture dog2.jpg)
-# A and C at once: local code installs before its call is sent, so their installs meet in the install line. B once A's call
-# is on the machine, so the machine takes its download after A's.
+# Local code installs before its call is sent. C is asked once A's build has the install line, so C's install always comes
+# while A's builds, and waits its turn (44422110411 attempt 1, A and C asked at once: A's CLI took 15.7 s to ask, and C's
+# half-second build had ended long before). B once A's call is on the machine, so the machine takes its download after A's.
 run_submit "$OUT" lines-a run "$(birefnet)" --file "image=$dog" --on local > /dev/null & a=$!
+exec {log}< <(exec timeout 300 "$COZY" machine logs local --lines 0 --since "$(( ( $(date -u +%s%3N) - began ) / 1000 + 2 ))s" --follow 2> /dev/null)
+follow=$!
+grep -m1 -q "install line: its turn .*what=\"local/$(basename "$(dirname "$(birefnet)")") " <&"$log" || check "lines: A's build never had the install line"
+kill "$follow" 2> /dev/null || true
+exec {log}<&-
 run_submit "$OUT" lines-c run "$here/weightless/reverse" "text=lines$RANDOM" --on local > /dev/null & c=$!
-wait "$a" "$c"
-for name in a c; do [ "$(cat "$OUT/lines-$name.number" 2> /dev/null)" != none ] || { check "lines: $name was never a run: $(tail -c 300 "$OUT/lines-$name.err")"; return; }; done
+wait "$a"
+[ "$(cat "$OUT/lines-a.number" 2> /dev/null)" != none ] || { wait "$c"; check "lines: a was never a run: $(tail -c 300 "$OUT/lines-a.err")"; return; }
 n=$(cat "$OUT/lines-a.number")
 for _ in $(seq 600); do cozy --json run watch "$n" --once 2> /dev/null | jq -e '.accepted_at_ms != null' > /dev/null && break; sleep 0.2; done
 n=$(run_submit "$OUT" lines-b model install qwen/qwen3.5-0.8b --on local)
+wait "$c"
+[ "$(cat "$OUT/lines-c.number" 2> /dev/null)" != none ] || { check "lines: c was never a run: $(tail -c 300 "$OUT/lines-c.err")"; return; }
 [ -n "$n" ] || { check "lines: b was never a run: $(tail -c 300 "$OUT/lines-b.err")"; return; }
 for name in a b c; do
   run_wait "$OUT" "lines-$name" || check "lines: $name (run $(cat "$OUT/lines-$name.number")) did not end: $(tail -c 300 "$OUT/lines-$name.ndjson")"
