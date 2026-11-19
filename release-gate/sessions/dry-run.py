@@ -356,6 +356,13 @@ def build():  # type: ignore[no-untyped-def]
     config = json.load(open(os.path.join(SOURCE, "minimax_h3/preparation/assets/model-config.json")))["transformer"]
     config = {k: (tuple(v) if isinstance(v, list) else v) for k, v in config.items() if not k.startswith("_")}
     started = time.perf_counter()
+    # A served model is built with its weights and never initialized; here nothing draws random numbers (a fake CUDA
+    # generator draws through a real one, which a CPU-only torch lacks).
+    init = torch.nn.init
+    for name in ("uniform_", "normal_", "kaiming_uniform_", "kaiming_normal_", "xavier_uniform_", "xavier_normal_", "trunc_normal_"):
+        setattr(init, name, lambda tensor, *a, **k: tensor)
+    torch.Tensor.uniform_ = lambda self, *a, **k: self  # type: ignore[method-assign]
+    torch.Tensor.normal_ = lambda self, *a, **k: self  # type: ignore[method-assign]
     with DEV:
         model = adaln_pruned.H3Transformer(**config).to(torch.bfloat16).eval()
         for block in model.transformer_blocks:
