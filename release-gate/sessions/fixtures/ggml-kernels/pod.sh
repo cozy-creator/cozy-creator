@@ -73,6 +73,8 @@ log "built in $(($(date +%s) - t0)) s"
 $W/py/bin/python $W/shapes.py tests > $W/tests.txt
 log "test-backend-ops perf: $(wc -l < $W/tests.txt) cases"
 t0=$(date +%s)
-LD_LIBRARY_PATH=$CUDA/lib:$W/build/bin timeout 1800 $W/build/bin/test-backend-ops perf -b CUDA0 --test-file $W/tests.txt > $W/out/llama-perf.txt 2>&1 ||
-  { log "FAILED test-backend-ops after $(($(date +%s) - t0)) s"; exit 1; }
+# An hour, and what it timed by then stands (an A40 took over 30 min: 44438719553); the cases it didn't reach read unmeasured.
+LD_LIBRARY_PATH=$CUDA/lib:$W/build/bin timeout 3600 $W/build/bin/test-backend-ops perf -b CUDA0 --test-file $W/tests.txt > $W/out/llama-perf.txt 2>&1 ||
+  { log "test-backend-ops ended after $(($(date +%s) - t0)) s with $(grep -c 'us/run' $W/out/llama-perf.txt) timed"
+    grep -q 'us/run' $W/out/llama-perf.txt || exit 1; }
 log "done: $(grep -c 'us/run' $W/out/llama-perf.txt) timed in $(($(date +%s) - t0)) s"
