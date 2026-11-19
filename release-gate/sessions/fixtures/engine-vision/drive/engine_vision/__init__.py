@@ -83,18 +83,61 @@ def _media_kwargs(media: object, extra: int) -> dict[str, torch.Tensor]:
     return {"mm_token_type_ids": kinds, **{k: v for k, v in named.items() if v is not None}}
 
 
+#: A position is clear where both Transformers reads lead by this much with the same top (`_forced`).
+CLEAR = 0.5
+
+
+#: Transformers' cached decodes by (prompt, tokens): a bucket's row and the same row alone often made the same tokens.
+_DECODED: dict[tuple[tuple[int, ...], tuple[int, ...]], torch.Tensor] = {}
+
+
 def _forced(net: torch.nn.Module, prompt: list[int], made: list[int], media: object) -> dict[str, object]:
-    """`made` held against Transformers' own forward over the prompt (its pictures and videos too) and `made` in one pass
-    (teacher-forced): at each position whose top logit leads the next by at least 0.5, whether `made` took it."""
+    """`made` held against Transformers' teacher-forced reference, the prompt's pictures and videos in it: at each clear
+    position, whether `made` took its choice. Clear, as the decode drive's: Transformers' forward over the prompt and
+    `made` in one pass and its own cached decode of the same tokens, one at a time, both lead by at least `CLEAR` with the
+    same top (`forward_clear`, `forward_agreed`: the forward's alone; `split`: both lead but choose apart)."""
     ids = torch.tensor([prompt + made[:-1]], device=net.device)
     with torch.inference_mode():
         logits = net(input_ids=ids, logits_to_keep=len(made), **_media_kwargs(media, len(made) - 1)).logits[0].float()
     top = logits.topk(2, dim=-1)
     choice, lead = top.indices[:, 0].tolist(), (top.values[:, 0] - top.values[:, 1]).tolist()
-    clear = [t for t in range(len(made)) if lead[t] >= 0.5]
+    gap = (top.values[:, 0] - logits.gather(1, torch.tensor(made, device=logits.device)[:, None])[:, 0]).tolist()
+    key = (tuple(prompt), tuple(made))
+    if key not in _DECODED:
+        _DECODED[key] = _decoded(net, prompt, made, media)
+    decoded = _DECODED[key]
+    d_choice, d_lead, d_gap = (decoded[:, k].tolist() for k in range(3))
+    forward = [t for t in range(len(made)) if lead[t] >= CLEAR]
+    both = [t for t in forward if d_lead[t] >= CLEAR]
+    clear = [t for t in both if int(d_choice[t]) == choice[t]]
     wrong = [t for t in clear if choice[t] != made[t]]
-    return {"clear": len(clear), "agreed": len(clear) - len(wrong), "first_wrong": wrong[0] if wrong else None,
-            "lead": [round(x, 3) for x in lead[:8]]}
+    misses = [t for t in forward if choice[t] != made[t]]
+    found: dict[str, object] = {
+        "clear": len(clear), "agreed": len(clear) - len(wrong), "first_wrong": wrong[0] if wrong else None,
+        "forward_clear": len(forward), "forward_agreed": len(forward) - len(misses),
+        "split": [t for t in both if int(d_choice[t]) != choice[t]][:8], "lead": [round(x, 3) for x in lead[:8]],
+    }  # fmt: skip
+    if misses:  # where the forward alone leads and `made` took another token: both reads there
+        found["misses"] = [{"at": t, "lead": round(lead[t], 3), "gap": round(gap[t], 3), "decoded_lead": round(d_lead[t], 3),
+                            "decoded_gap": round(d_gap[t], 3), "decoded_takes_made": int(d_choice[t]) == made[t]}
+                           for t in misses[:8]]  # fmt: skip
+    return found
+
+
+def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], media: object) -> torch.Tensor:
+    """Transformers' cached decode of `prompt` (its pictures and videos too) then `made`, a token at a time: at each
+    position its top choice, its lead over the next, and how far `made`'s token sits below its top, `[len(made), 3]`."""
+    rows: list[torch.Tensor] = []
+    with torch.inference_mode():
+        out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, **_media_kwargs(media, 0))
+        for t, token in enumerate(made):
+            last = out.logits[0, -1].float()
+            v, i = last.topk(2)
+            rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
+            if t + 1 < len(made):
+                out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=out.past_key_values,
+                          use_cache=True)  # fmt: skip
+    return torch.stack(rows).cpu()
 
 
 @app.entrypoint()
@@ -159,6 +202,14 @@ def pictures(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
     run = getattr(engine, "run", None)
     rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "declared": run is not None,
                                "launcher": not paths.launcher, "tokens": dict(zip(names, map(len, prompts), strict=True))}  # fmt: skip
+    from cozy_runtime import lm
+
+    # Today's path on each case alone (Transformers' engine's `lm.generate`, drafted as a call is), held the same way.
+    today = {}
+    for i, (name, question) in enumerate(cases.items()):
+        made = lm.generate(net, engine.fallback.inputs([question], _params(8)), max_new_tokens=192, stop=[], pad=0)  # type: ignore[attr-defined]  # CozyEngine's
+        today[name] = _forced(net, prompts[i], [int(t) for t in made[0].tolist()], media[i])
+    rows["today"] = today
     head = getattr(net, "mtp", None)
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:

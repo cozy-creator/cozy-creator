@@ -7,8 +7,10 @@
 #   cold      a short text call until the engine serves it (its kernel set landed);
 #   inputs    the CPU check on the GPU;
 #   pictures  the engine's decoder on a picture, a picture in an earlier turn, a short video and text, as one bucket of four rows
-#             (four rope deltas) and each alone, drafted and plain, every row against Transformers' teacher-forced forward with
-#             the pixel values at every clear position; tokens kept a step on each;
+#             (four rope deltas) and each alone, drafted and plain, every row against Transformers' teacher-forced reference with
+#             the pixel values at every clear position (both its one-pass forward and its own cached decode lead by 0.5 with
+#             the same top, as the decode drive's; the forward's alone told beside it); today's path (`lm.generate`) on each
+#             case held the same way, told; tokens kept a step on each;
 #   caption   Caption's question on both engines on one executor, warm, the same seeds: CozyEngine must be faster a call;
 #   bucket    the four cases as one call through both engines likewise (Transformers' engine reads their pictures in one
 #             vision pass, CozyEngine a row at a time): CozyEngine must be faster a call.
@@ -124,6 +126,9 @@ for l in $LANES; do
          all(.value.bucket.agreed == .value.bucket.clear and .value.alone.agreed == .value.alone.clear and .value.alone.clear >= 20)))' \
     "$OUT/pictures-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: pictures-$l: a clear position disagreed, or too few"; FAILED+=("pictures-$l-forced"); }
   say "pictures-$l: tokens kept a step (alone, bucket): $(jq -c '[.drafted // {} | to_entries[] | {(.key): [.value.kept_a_step, .value.bucket_kept_a_step]}] | add' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
+  say "pictures-$l: the forward's alone (bucket, alone: agreed/clear): $(jq -c '[.drafted, .plain] | map(select(. != null) | with_entries(.value |= ["\(.bucket.forward_agreed)/\(.bucket.forward_clear)", "\(.alone.forward_agreed)/\(.alone.forward_clear)"]))' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
+  say "pictures-$l: today's path (agreed/clear, forward's alone): $(jq -c '.today // {} | with_entries(.value |= ["\(.agreed)/\(.clear)", "\(.forward_agreed)/\(.forward_clear)"])' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
+  say "pictures-$l: misses by the forward's alone: $(jq -c '[.today, .drafted, .plain] | map(select(. != null) | with_entries(.value |= ([.misses?, .bucket.misses?, .alone.misses?] | map(select(. != null)) | add))) ' "$OUT/pictures-$l-detail.json" 2> /dev/null | cut -c1-1500)"
   fi
   if part caption; then
   step "caption-$l" run "$DRIVE/caption" --model "model=$model" --file "image=$REF/seed.jpg" runs:=3 --on "$NAME" ||
