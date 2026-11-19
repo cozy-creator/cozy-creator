@@ -148,14 +148,16 @@ if [ -n "$FIRST" ]; then
   step first-candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate back on the pod"
   for arm in candidate served; do
     if [ "$arm" = served ]; then
-      # The set's verdict, in the executors' own stderr logs on the pod (`kernel_ready.verified`'s line).
-      verdict=''
-      for _ in $(seq 20); do
-        verdict=$(there "grep -h -m1 -E 'cozy-decode-cores (verified|refused)' \$(find / -xdev -name stderr.log -path '*executors*' 2> /dev/null) 2> /dev/null | head -1" 120 < /dev/null) &&
+      # The set's verdict (`kernel_ready.verified`'s line), in the executors' stderr logs on the pod: an installed
+      # package's executor root is TensorD's root, not an `executors` folder (44619110063 looked only there).
+      verdict='' logs="\$(find / -xdev -name stderr.log 2> /dev/null)"
+      for _ in $(seq 40); do
+        verdict=$(there "grep -h -m1 -E 'cozy-decode-cores (verified|refused)' $logs 2> /dev/null | head -1" 120 < /dev/null) &&
           [ -n "$verdict" ] && break
         sleep 30
       done
-      say "the decode cores' set: ${verdict:-no verdict in the executor logs in 10 min}"
+      say "the decode cores' set: ${verdict:-no verdict in the executor logs in 20 min}"
+      [ -n "$verdict" ] || there "grep -h -E 'decode-cores|decode_kernels' $logs 2> /dev/null | tail -n 5" 120 < /dev/null | cut -c1-300 | tee -a "$R"
       [[ $verdict == *verified* ]] || { FIRST_BAD=1; continue; }
     fi
     first "$arm" || continue
