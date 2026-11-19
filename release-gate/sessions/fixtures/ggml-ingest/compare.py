@@ -30,6 +30,7 @@ import sys
 from collections.abc import Iterator
 
 import numpy as np
+from numpy.typing import NDArray
 import tensorfs
 from gguf import GGMLQuantizationType, GGUFReader
 from gguf.quants import dequantize
@@ -45,7 +46,9 @@ LAYER = {"attn_q.weight": "self_attn.q_proj.weight", "attn_k.weight": "self_attn
          "ffn_up_shexp.weight": "mlp.shared_expert.up_proj.weight",
          "ffn_down_shexp.weight": "mlp.shared_expert.down_proj.weight"}  # fmt: skip
 
-type Piece = tuple[str, np.ndarray | None]
+type Index = NDArray[np.intp]
+type Matrix = NDArray[np.float32]
+type Piece = tuple[str, Index | None]
 
 
 def say(**row: object) -> None:
@@ -73,7 +76,9 @@ def main() -> int:
     hf, store, bf16_ref, *specs = sys.argv[1:]
     config = json.load(open(os.path.join(hf, "config.json")))
     text = config.get("text_config", config)
-    open_ = lambda ref: tensorfs.open(ref, local_files_only=True, cache_dir=store)  # noqa: E731
+    def open_(ref: str) -> tensorfs.Checkpoint:
+        return tensorfs.open(ref, local_files_only=True, cache_dir=store)
+
     source = open_(bf16_ref).components["model"].tensors
     failed = 0
 
@@ -83,14 +88,14 @@ def main() -> int:
         seen += 1
         fused = re.fullmatch(r"(.*\.mlp\.experts)\.(gate_up|down)_proj(?:\.weight)?", key)
         if key in source:
-            ours_bytes = source.read(key).tobytes()
+            ours_bytes = source.read(key, decode=True).tobytes()
         elif fused:
             own = "gate_and_up" if fused.group(2) == "gate_up" else "down"
             parts = [f"{fused.group(1)}.{e}.{own}_proj.weight" for e in range(int(text["num_experts"]))]
             if not all(p in source for p in parts):
                 missing.append(key)
                 continue
-            ours_bytes = b"".join(source.read(p).tobytes() for p in parts)
+            ours_bytes = b"".join(source.read(p, decode=True).tobytes() for p in parts)
         else:
             missing.append(key)
             continue
@@ -109,7 +114,7 @@ def main() -> int:
     k_heads, v_heads = int(text["linear_num_key_heads"]), int(text["linear_num_value_heads"])
     k_dim, v_dim = int(text["linear_key_head_dim"]), int(text["linear_value_head_dim"])
 
-    def heads(n: int, head_dim: int) -> np.ndarray:
+    def heads(n: int, head_dim: int) -> Index:
         """`_reorder_v_heads`'s permutation of `n` rows: grouped by K head to tiled."""
         return np.arange(n).reshape(k_heads, v_heads // k_heads, head_dim).transpose(1, 0, 2).reshape(-1)
 
@@ -154,17 +159,17 @@ def main() -> int:
             return pieces, False
         return [(p + LAYER[rest], None)], False
 
-    def values(pieces: list[Piece], columns: bool) -> np.ndarray:
+    def values(pieces: list[Piece], columns: bool) -> Matrix:
         """The f32 matrix llama.cpp's converter wrote for these pieces."""
         rows = []
         for key, index in pieces:
-            v = (np.frombuffer(source.read(key).tobytes(), np.uint16).astype(np.uint32) << 16).view(np.float32)
+            v = (np.frombuffer(source.read(key, decode=True).tobytes(), np.uint16).astype(np.uint32) << 16).view(np.float32)
             v = v.reshape(int(source[key].shape[0]), -1)
             rows.append(v if index is None else v[index])
         whole = np.concatenate(rows) if len(rows) > 1 else rows[0]
         return np.ascontiguousarray(whole[:, heads(v_heads * v_dim, v_dim)] if columns else whole)
 
-    def ref(name: str, block: int, matrix: np.ndarray) -> bytes:
+    def ref(name: str, block: int, matrix: Matrix) -> bytes:
         """ggml-ref/1 of `matrix` in `name`, 4096 rows at a time (rows encode alone)."""
         out = []
         for at in range(0, matrix.shape[0], 4096):
@@ -174,9 +179,9 @@ def main() -> int:
             out.append(encoded.parts["blocks"].tobytes())
         return b"".join(out)
 
-    def decoded(name: str, data: bytes) -> np.ndarray:
+    def decoded(name: str, data: bytes) -> Matrix:
         """Block bytes' values as llama.cpp's own gguf-py decodes them (`gguf.quants.dequantize`)."""
-        return dequantize(np.frombuffer(data, np.uint8), GGMLQuantizationType[name.upper()]).ravel()
+        return np.asarray(dequantize(np.frombuffer(data, np.uint8), GGMLQuantizationType[name.upper()]), dtype=np.float32).ravel()
 
     def differs(tensor: str, name: str, got: bytes, want: bytes) -> dict[str, object] | None:
         if got == want:
@@ -223,7 +228,9 @@ def main() -> int:
                 if scheme != f"ggml.{name}":
                     bad.append({"tensor": t.name, "key": key, "llama": name, "ours": scheme})
                     break
-                data = tensors.read(key).parts["blocks"].tobytes()
+                stored = tensors.read(key)
+                assert isinstance(stored, tensorfs.Encoded), f"{key} is stored plain"
+                data = stored.parts["blocks"].tobytes()
                 if index is not None:
                     data = np.frombuffer(data, np.uint8).reshape(int(meta.shape[0]), -1)[index].tobytes()
                 blocks.append(data)

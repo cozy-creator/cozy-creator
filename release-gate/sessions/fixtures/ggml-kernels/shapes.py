@@ -6,6 +6,7 @@
 """
 
 import sys
+from collections.abc import Iterator
 
 MODELS = {
     "q35-9b": (("qkv", 8192, 4096), ("out", 4096, 4096), ("up", 12288, 4096), ("down", 4096, 12288), ("head", 248320, 4096)),
@@ -17,7 +18,10 @@ TYPES = {"q8_0": (8, 32, 34), "q4_k": (12, 256, 144), "q5_k": (13, 256, 176), "q
 MUL_MAT = 28  # GGML_OP_MUL_MAT at b12466
 
 
-def cases():
+type Case = tuple[str, str, str, int, int, int, str, int, int, int]
+
+
+def cases() -> Iterator[Case]:
     for model, sites in MODELS.items():
         for m in ROWS:
             for site, n, k in sites:

@@ -11,17 +11,31 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import cast
+
+
+type Row = dict[str, object]
+
+
+def top1(row: Row) -> list[int]:
+    return cast("list[int]", row["top1"])
+
+
+def perplexities(rows: list[Row]) -> str:
+    values = [cast(float, r["ppl"]) for r in rows]
+    return " ".join(f"{v:.3f}" for v in values) + f" (mean {sum(values) / len(values):.3f})"
 
 
 def main() -> int:
     out = sys.argv[1]
 
-    def load(label: str) -> list[dict[str, object]] | None:
+    def load(label: str) -> list[Row] | None:
         try:
             with open(os.path.join(out, f"quality-{label}.json")) as f:
-                return json.loads(f.read())
+                rows = json.loads(f.read())
         except (OSError, ValueError):
             return None
+        return cast("list[Row]", rows) if isinstance(rows, list) else None
 
     print("\n| lane | reference | top-1 agreement | perplexity (lane) | perplexity (bf16) |\n|---|---|---|---|---|")
     try:
@@ -36,10 +50,9 @@ def main() -> int:
             continue
         same = total = 0
         for x, y in zip(a, b):
-            same += sum(p == q for p, q in zip(x["top1"], y["top1"]))  # type: ignore[call-overload]
-            total += min(len(x["top1"]), len(y["top1"]))  # type: ignore[arg-type]
-        ppl = lambda rows: " ".join(f"{r['ppl']:.3f}" for r in rows) + f" (mean {sum(r['ppl'] for r in rows) / len(rows):.3f})"  # type: ignore[misc]  # noqa: E731
-        print(f"| {lane} | {ref} | {same / max(total, 1):.4f} ({same}/{total}) | {ppl(a)} | {ppl(b)} |")
+            same += sum(p == q for p, q in zip(top1(x), top1(y)))
+            total += min(len(top1(x)), len(top1(y)))
+        print(f"| {lane} | {ref} | {same / max(total, 1):.4f} ({same}/{total}) | {perplexities(a)} | {perplexities(b)} |")
     return 0
 
 

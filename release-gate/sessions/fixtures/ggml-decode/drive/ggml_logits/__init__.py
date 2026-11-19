@@ -3,19 +3,20 @@
   top tokens agree, and KL(reference || lane) in nats.
 - `decode`: the lane's single-row greedy decode of `PROMPT` for a fixed number of tokens, timed with the checkpoint's
   MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
-- `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls.
-- `opening_kernel`: cr-342's cell through the Runtime's bench (cozy-runtime#2322), in this environment, which holds
-  the Transformers it builds its small model with."""
+- `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls."""
 
 import json
 import time
+from collections.abc import Callable
+from typing import cast
 
 import msgspec
 import torch
-from cozy_runtime import bench, lm
-from cozy_runtime.author import App, Context, call
+from cozy_runtime import lm
+from cozy_runtime.author import App, Context
 from cozy_runtime.vlm import VisionLM
 from torch.overrides import TorchFunctionMode
+from transformers import PreTrainedModel
 
 app = App()
 
@@ -90,13 +91,7 @@ def quality(ctx: Context, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
-@app.entrypoint(accelerator=False)
-async def opening_kernel(ctx: Context) -> Agreement:
-    """A cold decode whose first steps meet a kernel still building completes (`bench.lm_opening_kernel`, cr-342)."""
-    return Agreement((await call(bench.lm_opening_kernel, bench.EmptyRequest())).detail)
-
-
-def _timed(net: torch.nn.Module, ids: torch.Tensor, tokens: int) -> tuple[float, list[int]]:
+def _timed(net: PreTrainedModel, ids: torch.Tensor, tokens: int) -> tuple[float, list[int]]:
     inputs = {"input_ids": ids.to(net.device), "attention_mask": torch.ones_like(ids).to(net.device)}
     torch.cuda.synchronize()
     began = time.perf_counter()
@@ -124,12 +119,20 @@ class _HeadLinears(TorchFunctionMode):
         return func(*args, **kwargs)
 
 
-def _head(net: torch.nn.Module) -> dict[str, object]:
+def _output_head(net: PreTrainedModel) -> torch.nn.Module:
+    """`net`'s output head (Transformers' `get_output_embeddings`, which it leaves unannotated)."""
+    head = cast("Callable[[], torch.nn.Module | None]", net.get_output_embeddings)()
+    if head is None:
+        raise ValueError(f"{type(net).__name__} has no output head")
+    return head
+
+
+def _head(net: PreTrainedModel) -> dict[str, object]:
     """The output head's module and the bytes it holds as parameters and buffers; told, never judged."""
     try:
-        out = net.get_output_embeddings()
+        out = _output_head(net)
         held = sum(t.numel() * t.element_size() for t in (*out.parameters(), *out.buffers()))
-        return {"module": type(out).__name__, "rows": int(out.out_features), "bytes": held}
+        return {"module": type(out).__name__, "rows": int(getattr(out, "out_features", -1)), "bytes": held}
     except Exception as e:  # noqa: BLE001  # a head of another shape tells what it is, and the timing goes on
         return {"unread": f"{type(e).__name__}: {e}"[:200]}
 
@@ -178,7 +181,7 @@ def head_reads(ctx: Context, model: VisionLM) -> Agreement:
         if mode == "plain" and head is not None:
             del lm.HEADS[net]
         try:
-            with _HeadLinears(int(net.get_output_embeddings().out_features)) as seen:  # type: ignore[operator]  # a causal LM's
+            with _HeadLinears(int(getattr(_output_head(net), "out_features", -1))) as seen:
                 made = lm.generate(net, inputs, max_new_tokens=12, stop=[], pad=0, temperature=0.7, seed=213)
         finally:
             if head is not None:
