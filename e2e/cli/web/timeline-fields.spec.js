@@ -7,7 +7,7 @@
 // same rule, and each field set is in the API and in the film joined after it (ffprobe: its rate, frames and size). Its menu has no settings.
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, canvasPoint, canvasVisible, focus, png } = require('./fixtures');
+const { test, expect, canvasIdle, canvasPoint, canvasVisible, focus, png, themed } = require('./fixtures');
 const { ffmpeg, fit, leave } = require('./hands');
 
 const FPS = 24;
@@ -34,7 +34,7 @@ function probe(path) {
   return { rate: stream.r_frame_rate, width: stream.width, height: stream.height, frames: Number(stream.nb_read_frames) };
 }
 
-test('timeline-fields', async ({ page, project, cli }) => {
+test('timeline-fields', async ({ page, project, cli, api }) => {
   test.setTimeout(600_000);
   await project.import(plate(test.info().outputPath('red.mp4'), 'red', 2, 440), { name: 'red', at: { x: 0, y: 0 } });
   await project.import(plate(test.info().outputPath('blue.mp4'), 'blue', 3, 880), { name: 'blue', at: { x: 0, y: 260 } });
@@ -132,7 +132,7 @@ test('timeline-fields', async ({ page, project, cli }) => {
     expect.soft(await chosen(rate), 'Frame rate: the cut\'s, 24').toBe('24');
     expect.soft(await chosen(shape), `Aspect ratio: ${FIRST_CLIP}`).toBe(FIRST_CLIP);
     expect.soft(await chosen(size), `Resolution: ${FIRST_CLIP}`).toBe(FIRST_CLIP);
-    expect.soft(await rate.evaluate((el) => [...el.options].filter((option) => !option.hidden).map((option) => option.textContent.trim())), 'its rates').toEqual(['24', '25', '30', '48', '50', '60']);
+    expect.soft(await rate.evaluate((el) => [...el.options].filter((option) => !option.hidden).map((option) => option.textContent.trim())), 'its rates, NTSC\'s among them').toEqual(['23.976', '24', '25', '29.97', '30', '48', '50', '59.94', '60']);
     expect.soft(await size.evaluate((el) => [...el.options].map((option) => option.textContent.trim())), 'its sizes').toEqual([FIRST_CLIP, '720p', '1080p', '1440p', '2160p']);
   });
 
@@ -174,6 +174,52 @@ test('timeline-fields', async ({ page, project, cli }) => {
     await expect.poll(async () => 'aspect_ratio' in (await fieldsOf()), { message: 'the shape unset, in the API' }).toBe(false);
     expect.soft(await chosen(shape)).toBe(FIRST_CLIP);
     await film(`Aspect ratio ${FIRST_CLIP}`, { rate: '25/1', width: 1280, height: 720, frames: at25 });
+  });
+
+  /** A PATCH of the cut's `fields`, as the page writes one: its status, what it said, and its warnings. */
+  const patched = async (fields) => {
+    const answer = await api.raw('PATCH', project.at('/assets/cut'), { body: { fields } });
+    const body = await answer.json().catch(() => ({}));
+    return { status: answer.status, said: body.error?.message ?? body.message ?? null, warnings: body.warnings ?? [] };
+  };
+
+  // #4042's review: one rule for every write, the one `cozy apply` checks. Only what the cut can't use is refused, in one line.
+  await test.step('PATCH: fps 0 and a non-number refused, each in one line; the rate stays', async () => {
+    for (const [fps, line] of [[0, "fps 0 isn't a frame rate: a number above 0, at most 240"], ['fast', "fps fast isn't a frame rate: a number above 0, at most 240"]]) {
+      const answer = await patched({ fps });
+      test.info().annotations.push({ type: `PATCH fps ${JSON.stringify(fps)}`, description: JSON.stringify(answer) });
+      softly(answer.status, `fps ${JSON.stringify(fps)}: refused`).toBeGreaterThanOrEqual(400);
+      softly(answer.said, `fps ${JSON.stringify(fps)}: in one line`).toBe(line);
+    }
+    softly((await fieldsOf()).fps, 'the rate as it was').toBe(25);
+  });
+
+  await test.step('PATCH: 15 fps and 2.35:1, unlisted but usable: kept, each said in one line; the selects show them (pictures)', async () => {
+    const rates = '23.976, 24, 25, 29.97, 30, 48, 50, 59.94 or 60';
+    const slow = await patched({ fps: 15 });
+    test.info().annotations.push({ type: 'PATCH fps 15', description: JSON.stringify(slow) });
+    softly(slow.status, 'fps 15: kept').toBe(200);
+    softly(slow.warnings, 'fps 15: said').toEqual([`fps 15 isn't one of Frame rate's presets (${rates}), so it's used as it is`]);
+    const scope = await patched({ aspect_ratio: '2.35:1' });
+    test.info().annotations.push({ type: 'PATCH aspect_ratio 2.35:1', description: JSON.stringify(scope) });
+    softly(scope.status, '2.35:1: kept').toBe(200);
+    softly(scope.warnings.length === 1 && scope.warnings[0].startsWith("aspect_ratio 2.35:1 isn't one of Aspect ratio's presets (16:9, "), `2.35:1: said: ${JSON.stringify(scope.warnings)}`).toBe(true);
+    await softly.poll(async () => [await chosen(rate), await chosen(shape)], { message: 'the selects show what they hold' }).toEqual(['15', '2.35:1']);
+    for (const theme of ['paper', 'dark']) {
+      await project.look(theme);
+      await themed(page, theme);
+      await page.mouse.move(2, 2);
+      await page.waitForTimeout(500);
+      await page.screenshot({ path: test.info().outputPath(`unlisted-${theme}.png`) });
+    }
+    await project.look(null);
+  });
+
+  await test.step('Frame rate 29.97 in Focus: NTSC kept exactly, 30000/1001, and the film joined at 30000/1001', async () => {
+    await rate.selectOption({ label: '29.97' });
+    await expect.poll(async () => (await fieldsOf()).fps, { message: 'the rate, in the API: 30000/1001' }).toBe(30000 / 1001);
+    const at = await points();
+    await film('Frame rate 29.97', { rate: '30000/1001', width: Math.round((720 * 2.35) / 2) * 2, height: 720, frames: frames(at) });
   });
 
   await test.step('its menu: no settings, what any box has', async () => {

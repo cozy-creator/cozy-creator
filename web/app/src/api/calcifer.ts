@@ -3647,6 +3647,10 @@ auto?: boolean, placeholder?: string | null,
  */
 advanced?: boolean,
 /**
+ * A choice whose `options` are presets: any value its tool can use is kept, one not listed said; only one it can't is refused.
+ */
+presets?: boolean,
+/**
  * `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
  */
 when?: When | null,
@@ -3795,7 +3799,11 @@ detail: string, };
 /**
  * `GET /v1/tools`: the same for every machine, and told changed on `/v1/events` (`tools.changed`).
  */
-export type Tools = { tools: Array<Tool>, };
+export type Tools = { tools: Array<Tool>,
+/**
+ * Film and media's own aspect ratios (`STANDARD_RATIOS`), what a shape is said as: the page's one list of them.
+ */
+ratios: Array<string>, };
 
 /**
  * One track's clips as they read now.

@@ -25,6 +25,9 @@ pub const EDIT: &str = "cozy/edit";
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tools {
     pub tools: Vec<Tool>,
+    /// Film and media's own aspect ratios (`STANDARD_RATIOS`), what a shape is said as: the page's one list of them.
+    #[serde(default)]
+    pub ratios: Vec<String>,
 }
 
 /// Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
@@ -189,6 +192,9 @@ pub struct ToolField {
     /// `Advanced()`: drawn in a collapsed Advanced section under More.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub advanced: bool,
+    /// A choice whose `options` are presets: any value its tool can use is kept, one not listed said; only one it can't is refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presets: bool,
     /// `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<When>,
@@ -251,14 +257,26 @@ pub const EDIT_FPS: u64 = 24;
 /// What an Edit's film may be: its rate, its shape (film and media's own ratios, Paul 11-13) and its short edge. Unset, its shape and size
 /// are its first clip's.
 const EDIT_RATES: [u64; 6] = [EDIT_FPS, 25, 30, 48, 50, 60];
-const EDIT_RATIOS: [&str; 19] = ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21", "2:1", "1:2", "2.39:1", "1.85:1", "1.90:1", "1.43:1", "1.37:1", "1.66:1"];
+/// NTSC's rates, each kept exactly (24000/1001, 30000/1001, 60000/1001), and said as people say them.
+const NTSC_RATES: [(f64, &str); 3] = [(24000.0 / 1001.0, "23.976"), (30000.0 / 1001.0, "29.97"), (60000.0 / 1001.0, "59.94")];
+/// Film and media's own ratios (Paul, 11-13): video, TV, photo and social as N:M, cinema as X.XX:1; the more common first, as a tie goes.
+pub const STANDARD_RATIOS: [&str; 19] = ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21", "2:1", "1:2", "2.39:1", "1.85:1", "1.90:1", "1.43:1", "1.37:1", "1.66:1"];
 const EDIT_SIZES: [&str; 4] = ["720p", "1080p", "1440p", "2160p"];
 const FIRST_CLIP: &str = "Same as the first clip";
 
-/// A choice of the Edit's.
+/// A choice of the Edit's: presets, as its cut reads any value it can (`Canvas::of`).
 fn edit_choice(field: &str, label: &str, options: Vec<Value>, default: Option<Value>) -> ToolField {
     let unset = default.is_none();
-    ToolField { field: field.to_owned(), ty: FieldType::Choice, label: label.to_owned(), default, auto: unset, placeholder: unset.then(|| FIRST_CLIP.to_owned()), options: Some(options), ..ToolField::default() }
+    ToolField { field: field.to_owned(), ty: FieldType::Choice, label: label.to_owned(), default, auto: unset, presets: true, placeholder: unset.then(|| FIRST_CLIP.to_owned()), options: Some(options), ..ToolField::default() }
+}
+
+/// The Edit's frame rates, slowest first, NTSC's among them.
+fn edit_rates() -> ToolField {
+    let mut rates: Vec<(f64, Value)> = EDIT_RATES.iter().map(|rate| (*rate as f64, Value::from(*rate))).collect();
+    rates.extend(NTSC_RATES.iter().map(|(rate, _)| (*rate, Value::from(*rate))));
+    rates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let words = NTSC_RATES.iter().map(|(rate, said)| (Value::from(*rate).to_string(), (*said).to_owned())).collect();
+    ToolField { words: Some(words), ..edit_choice("fps", "Frame rate", rates.into_iter().map(|(_, value)| value).collect(), Some(Value::from(EDIT_FPS))) }
 }
 
 /// Timeline, the built-in video composition tool: clips on a track, rendered here, and the film they make.
@@ -281,8 +299,8 @@ pub fn edit() -> Tool {
         models: vec![],
         fields: vec![
             ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() },
-            edit_choice("fps", "Frame rate", EDIT_RATES.map(Value::from).to_vec(), Some(Value::from(EDIT_FPS))),
-            edit_choice("aspect_ratio", "Aspect ratio", EDIT_RATIOS.map(Value::from).to_vec(), None),
+            edit_rates(),
+            edit_choice("aspect_ratio", "Aspect ratio", STANDARD_RATIOS.map(Value::from).to_vec(), None),
             edit_choice("resolution", "Resolution", EDIT_SIZES.map(Value::from).to_vec(), None),
         ],
     }

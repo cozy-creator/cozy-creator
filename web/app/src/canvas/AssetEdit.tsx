@@ -193,10 +193,15 @@ function NumberField({ field, bound, label }: Drawn) {
 /** Options that each say what they are: a menu of their words and, under it, what the chosen one does. The browser's own menu, which
  *  nothing clips: the list this drew itself opened inside the box it sits at the bottom of and was cut off by it (Paul, 11-16, on H3
  *  Edit's Edit: "clipped by the bounding box it's inside of, so it's impossible (almost) to do anything with it"). */
+/** A choice's options, and a value it holds that isn't one of them (a preset's other value, or one written past them) as itself beside them. */
+const withHeld = (listed: unknown[], held: unknown) =>
+  held == null || listed.some((option) => JSON.stringify(option) === JSON.stringify(held)) ? listed : [...listed, held]
+
 function Described({ field, bound, label }: Drawn) {
-  const options = field.options ?? []
-  const automatic = options.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
+  const listed = field.options ?? []
+  const automatic = listed.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
   const held = bound.value ?? field.default ?? (field.auto ? automatic : undefined)
+  const options = withHeld(listed, held)
   const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
   const says = at < 0 ? undefined : field.descriptions?.[String(options[at])]
   const unset = field.auto && automatic === undefined
@@ -222,9 +227,10 @@ function Described({ field, bound, label }: Drawn) {
 function ChoiceField(props: Drawn) {
   const { field, bound, label } = props
   if (field.descriptions && Object.keys(field.descriptions).length) return <Described {...props} />
-  const options = field.options ?? []
-  const automatic = options.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
+  const listed = field.options ?? []
+  const automatic = listed.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
   const held = bound.value ?? field.default ?? (field.auto ? automatic : undefined)
+  const options = withHeld(listed, held)
   const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
   const unset = field.placeholder ?? "Auto"
   const unsetChoice = field.auto && automatic === undefined

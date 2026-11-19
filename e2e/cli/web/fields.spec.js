@@ -22,8 +22,6 @@ const DRAW = fixtureTool('draw.py/draw');
 // A slot with no model family (its `weights`, defaulting to BiRefNet): the picker lists its default alone (cl-1258).
 const WEIGHTED = fixtureTool('weighted.py/weighted');
 const RUN_MS = 120_000;
-// web/app/src/canvas/ratios.ts's.
-const STANDARD = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
 const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
 
 /** Every control of the open box that isn't one of its tool's fields: each `[data-field]` by its first part, each control outside a group's
@@ -50,6 +48,9 @@ test('fields', async ({ page, project, api, cli, guards }) => {
   // its default's card and is told there is none, and the browser logs each 404 itself.
   guards.allow(/status of 404\b.*\/v1\/models\//);
   const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
+  // The standard ratios, Calcifer's one list of them, as the page names shapes by them.
+  const STANDARD = (await api.get('/v1/tools')).ratios ?? [];
+  expect(STANDARD, 'Calcifer lists the standard ratios with its tools').toHaveLength(19);
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && (tool.models?.length || tool.model));
   expect(qwen, 'the Hub lists Qwen Image 2 with its models').toBeTruthy();
   await project.import(MP4, { name: 'walk', at: { x: 0, y: 0 } });

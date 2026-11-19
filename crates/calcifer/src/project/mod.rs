@@ -41,6 +41,7 @@ mod binder;
 pub(crate) use binder::Inline;
 mod tools;
 mod unseen;
+mod values;
 mod walker;
 mod written;
 pub(crate) mod vault;
