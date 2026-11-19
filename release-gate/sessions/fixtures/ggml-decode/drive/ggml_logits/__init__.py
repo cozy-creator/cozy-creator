@@ -141,48 +141,59 @@ def decode(ctx: Context, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
-def _forced(net: torch.nn.Module, prompt: list[int], made: list[int]) -> dict[str, object]:
-    """`made` held against Transformers' own forward over the prompt and `made` in one pass (teacher-forced): at
-    each position whose top logit leads the next by at least 0.5, whether `made` took it. Where it didn't (`wrong`,
-    the first 8): the forward's lead and how far `made`'s token sits below its top (`gap`), and the same read from
-    Transformers' own cached decode of the same tokens, one at a time (`decoded`): whether a decode, not a prefill
-    pass, takes `made`'s token there."""
+#: A choice is clear where Transformers' one-pass forward and its own cached decode both lead by at least this.
+CLEAR = 0.5
+
+
+def _forced(net: torch.nn.Module, prompt: list[int], made: list[int],
+            memo: dict[tuple[tuple[int, ...], tuple[int, ...]], torch.Tensor]) -> dict[str, object]:  # fmt: skip
+    """`made` held against Transformers' teacher-forced reference: at each clear position, whether `made` took its
+    choice. Clear: Transformers' forward over the prompt and `made` in one pass and its own cached decode of the same
+    tokens, one at a time, both lead by at least `CLEAR` with the same top. A position only the forward leads at is
+    not one the reference is sure of (44638784973: the forward led by 0.625 at token 434, its decode by 0.25), so a
+    two-way bound replaces the forward's alone (`forward_clear`, `forward_agreed`: that old count). Misses by the old
+    count (`misses`, the first 8) say both reads there; `split`, positions where both lead but choose apart."""
     ids = torch.tensor([prompt + made[:-1]], device=net.device)
     with torch.inference_mode():
         logits = net(input_ids=ids).logits[0, len(prompt) - 1 :].float()
     top = logits.topk(2, dim=-1)
     choice, lead = top.indices[:, 0].tolist(), (top.values[:, 0] - top.values[:, 1]).tolist()
-    clear = [t for t in range(len(made)) if lead[t] >= 0.5]
+    gap = (top.values[:, 0] - logits.gather(1, torch.tensor(made, device=logits.device)[:, None])[:, 0]).tolist()
+    key = (tuple(prompt), tuple(made))
+    if key not in memo:
+        memo[key] = _decoded(net, prompt, made)
+    d_choice, d_lead, d_gap = (memo[key][:, k].tolist() for k in range(3))
+    forward = [t for t in range(len(made)) if lead[t] >= CLEAR]
+    both = [t for t in forward if d_lead[t] >= CLEAR]
+    clear = [t for t in both if int(d_choice[t]) == choice[t]]
     wrong = [t for t in clear if choice[t] != made[t]]
-    found: dict[str, object] = {"clear": len(clear), "agreed": len(clear) - len(wrong),
-                                "first_wrong": wrong[0] if wrong else None, "lead": [round(x, 3) for x in lead[:12]]}
-    if wrong:
-        at = wrong[:8]
-        found["wrong"] = [{"at": t, "lead": round(lead[t], 3), "gap": round(float(top.values[t, 0] - logits[t, made[t]]), 3),
-                           "top": round(float(top.values[t, 0]), 3)} for t in at]  # fmt: skip
-        found["decoded"] = _decoded(net, prompt, made, at)
+    misses = [t for t in forward if choice[t] != made[t]]
+    found: dict[str, object] = {
+        "clear": len(clear), "agreed": len(clear) - len(wrong), "first_wrong": wrong[0] if wrong else None,
+        "forward_clear": len(forward), "forward_agreed": len(forward) - len(misses),
+        "split": [t for t in both if int(d_choice[t]) != choice[t]][:8], "lead": [round(x, 3) for x in lead[:12]],
+    }  # fmt: skip
+    if misses:
+        found["misses"] = [{"at": t, "lead": round(lead[t], 3), "gap": round(gap[t], 3), "top": round(float(top.values[t, 0]), 3),
+                            "decoded_lead": round(d_lead[t], 3), "decoded_gap": round(d_gap[t], 3),
+                            "decoded_takes_made": int(d_choice[t]) == made[t]} for t in misses[:8]]  # fmt: skip
     return found
 
 
-def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], at: list[int]) -> list[dict[str, object]] | str:
-    """Transformers' cached decode of `prompt` then `made`, a token at a time: at each of `at`, whether its top choice
-    is `made`'s token, its lead, and how far `made`'s token sits below its top."""
-    rows: list[dict[str, object]] = []
-    try:
-        with torch.inference_mode():
-            out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True)
-            for t in range(max(at) + 1):
-                last = out.logits[0, -1].float()
-                if t in at:
-                    v, i = last.topk(2)
-                    rows.append({"at": t, "takes_made": int(i[0]) == made[t], "lead": round(float(v[0] - v[1]), 3),
-                                 "gap": round(float(v[0] - last[made[t]]), 3)})  # fmt: skip
-                if t < max(at):
-                    out = net(input_ids=torch.tensor([[made[t]]], device=net.device), past_key_values=out.past_key_values,
-                              use_cache=True)  # fmt: skip
-    except Exception as exc:  # told, not raised: the check above stands
-        return f"{type(exc).__name__}: {exc}"[:300]
-    return rows
+def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int]) -> torch.Tensor:
+    """Transformers' cached decode of `prompt` then `made`, a token at a time: at each position its top choice, its
+    lead over the next, and how far `made`'s token sits below its top, as `[len(made), 3]` floats."""
+    rows: list[torch.Tensor] = []
+    with torch.inference_mode():
+        out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True)
+        for t, token in enumerate(made):
+            last = out.logits[0, -1].float()
+            v, i = last.topk(2)
+            rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
+            if t + 1 < len(made):
+                out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=out.past_key_values,
+                          use_cache=True)  # fmt: skip
+    return torch.stack(rows).cpu()
 
 
 def _profile(decoder: object, ids: list[int]) -> dict[str, object]:
@@ -299,9 +310,10 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
         rows["profile_launched"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
     if "drafted-unfused" in decoders:
         rows["profile_unfused"] = _profile(decoders["drafted-unfused"], ids)
-    rows["forced"] = {"today": _forced(net, ids, today)}
+    memo: dict[tuple[tuple[int, ...], tuple[int, ...]], torch.Tensor] = {}
+    rows["forced"] = {"today": _forced(net, ids, today, memo)}
     for mode in made_by:
-        rows["forced"][mode] = _forced(net, ids, made_by[mode])
+        rows["forced"][mode] = _forced(net, ids, made_by[mode], memo)
     if len(sampled) == 2:  # the same noise at each index: told, not required (a near tie in the scores can turn a draw)
         a, b = sampled["drafted"], sampled["plain"]
         rows["sampled_same"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
@@ -354,6 +366,7 @@ def _bucket(model: VisionLM, launcher: bool) -> Agreement:
     run = getattr(model.engine, "run", None)
     rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": [len(p) for p in prompts],
                                "declared": run is not None, "launcher": launcher}
+    memo: dict[tuple[tuple[int, ...], tuple[int, ...]], torch.Tensor] = {}
     head = getattr(net, "mtp", None)
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
@@ -367,7 +380,7 @@ def _bucket(model: VisionLM, launcher: bool) -> Agreement:
             if head is not None:
                 net.mtp = head
         rows[mode] = [
-            {"bucket": _forced(net, p, made[i]), "alone": _forced(net, p, alone[i]),
+            {"bucket": _forced(net, p, made[i], memo), "alone": _forced(net, p, alone[i], memo),
              "same_as_alone": next((t for t, (x, y) in enumerate(zip(made[i], alone[i])) if x != y), None)}
             for i, p in enumerate(prompts)
         ]  # fmt: skip
