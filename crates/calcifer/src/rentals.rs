@@ -498,16 +498,22 @@ impl Machines {
         mut told: Option<tokio::sync::oneshot::Sender<Result<MachineRow, Error>>>,
     ) -> Result<MachineRow, Error> {
         let mut pause = Duration::ZERO;
+        {
+            let mut asking = lock(&self.asking);
+            if let Some(waiting) = asking.get_mut(&ask.key) {
+                // Asked again while its loop asks (a caller's retry under its key: 44499990978, cl-1311): `told` waits on the
+                // loop's next answer, never a refusal of its own order. Only a caller that isn't told hears it is on order.
+                waiting.extend(told);
+                return Err(order_pending(ask));
+            }
+            asking.insert(ask.key.clone(), Vec::new());
+        }
         let mut tell = |answer: &Result<MachineRow, Error>| {
-            if let Some(told) = told.take() {
+            let waiting = lock(&self.asking).get_mut(&ask.key).map(std::mem::take).unwrap_or_default();
+            for told in told.take().into_iter().chain(waiting) {
                 let _ = told.send(answer.clone());
             }
         };
-        if !lock(&self.asking).insert(ask.key.clone()) {
-            let pending = Err(order_pending(ask));
-            tell(&pending);
-            return pending;
-        }
         let _asking = Asking(self, &ask.key);
         loop {
             if self.past_open(ask)? {

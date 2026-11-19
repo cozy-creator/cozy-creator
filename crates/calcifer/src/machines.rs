@@ -80,8 +80,8 @@ pub(crate) struct Machines {
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
     pub(crate) renting: Mutex<HashSet<RunId>>,
-    /// The rent asks being asked of a Hub now: one loop per key.
-    pub(crate) asking: Mutex<HashSet<String>>,
+    /// The rent asks being asked of a Hub now: one loop per key, and the asks again that wait on its next answer.
+    pub(crate) asking: Mutex<HashMap<String, Vec<tokio::sync::oneshot::Sender<Result<MachineRow, Error>>>>>,
     /// The rent asks a Hub has not answered, by key, and why.
     pub(crate) unanswered: Mutex<HashMap<String, String>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
