@@ -50,6 +50,8 @@ pub(crate) struct Job {
     pub scope: Option<crate::private_io::Scope>,
     /// Local code's folder (a packages checkout's, or a project's `./dir`): its `benchmarks.json` is its benchmarks until it's published.
     pub source: Option<std::path::PathBuf>,
+    /// Its request as its function's estimate reads it (cl-1286): its size, and its cost on each machine (`formula`). None: no request.
+    pub cost: Option<Arc<::needs::Cost>>,
 }
 
 /// When one machine would run one job, on this computer's clock.
@@ -75,6 +77,9 @@ pub(crate) struct Offer {
     pub fetch_bytes: u64,
     /// When it was quoted.
     pub quoted_at_ms: i64,
+    /// Its request's size, and its time on one GPU there by its function's own formula (cl-1286).
+    pub size: JobSize,
+    pub formula_ms: Option<f64>,
     /// When its machine should serve, for one on its way (cl-915); none for one that serves.
     pub ready_at_ms: Option<i64>,
 }
@@ -117,6 +122,8 @@ impl Offer {
             queue_position: self.queue_position,
             basis: self.basis,
             ready_ms: self.ready_at_ms.map(|at| (at - now).max(0) as u64),
+            size: self.size.values.clone(),
+            formula_ms: self.formula_ms.map(|ms| ms.round() as u64),
         }
     }
 
@@ -131,6 +138,8 @@ impl Offer {
             warm: self.warm,
             prepare_ms: self.prepare_ms,
             fetch_bytes: self.fetch_bytes,
+            size: self.size.values.clone(),
+            formula_ms: self.formula_ms.map(|ms| ms.round() as u64),
         }
     }
 
@@ -353,12 +362,41 @@ pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
         key: job.key.clone(),
         function: job.function.clone(),
         models: job.models.clone(),
-        size: job.size,
+        size: job.size.clone(),
         gpus: job.gpus,
         gpu: job.gpu,
         prior_ms: prior.ms,
         prior_runs: prior.runs,
-        after_ms: 0,
+        ..Default::default()
+    }
+}
+
+/// The machine `picture` pictures as an estimate reads it (`needs::Card`), for a job of `models`: its first GPU and the memory a run
+/// may use of it, as its quote reads them (`api::estimate::Machine`); the GPUs side by side in service; with none, its host's memory;
+/// and what the job runs there (`runs_of`). A machine says nothing of its CPU.
+pub(crate) fn card(picture: &Picture, models: &[v1::ModelRef]) -> ::needs::Card {
+    let frame = &picture.frame;
+    let runs = api::estimate::runs_of(models);
+    ::needs::Card {
+        gpu: frame.gpus.first().map(|gpu| gpu.name.clone()).unwrap_or_default(),
+        gpus: frame.serving_gpus,
+        memory_bytes: if frame.gpus.is_empty() { frame.memory_bytes } else { api::estimate::card_memory(frame) },
+        lane: runs.lane.to_owned(),
+        model: runs.model.to_owned(),
+        picked: runs.picked,
+        ..Default::default()
+    }
+}
+
+/// `ask` timed on `picture`'s machine by its function's own formula (`cost`, cl-1286), where it declares one that gives a time there;
+/// else the quote's own default times it, as `Cost::on`'s does.
+pub(crate) fn formula(ask: &mut v1::EstimateJob, cost: Option<&::needs::Cost>, picture: &Picture) {
+    if let Some(cost) = cost.filter(|cost| cost.timed()) {
+        let estimated = cost.on(&ask.function, &card(picture, &ask.models), &picture.references);
+        (ask.formula_ms, ask.formula_basis) = match estimated.declared {
+            true => (estimated.ms, Some(estimated.basis)),
+            false => (None, None),
+        };
     }
 }
 
@@ -372,8 +410,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
     let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
     let load = (picture.frame.queue.as_ref().map_or(0, Vec::len) + picture.ahead.len()) as u32;
     let at = |ms: u64| now + ms as i64;
-    (quotes.into_iter().skip(picture.ahead.len()).take(jobs.len()))
-        .map(|quote| Offer {
+    (quotes.into_iter().skip(picture.ahead.len()).take(jobs.len()).zip(jobs))
+        .map(|(quote, job)| Offer {
             machine: picture.on.clone(),
             fits: quote.fits,
             refusal: quote.refusal,
@@ -389,6 +427,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             fetch_bytes: quote.fetch_bytes,
             quoted_at_ms: now,
             ready_at_ms: picture.ready_at_ms,
+            size: job.size.clone(),
+            formula_ms: job.formula_ms,
         })
         .collect()
 }
@@ -467,6 +507,7 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
                 let mut asks = vec![];
                 for &at in &mine {
                     let mut ask = asked(&jobs[at], prior(api, picture, &jobs[at]).await);
+                    formula(&mut ask, jobs[at].cost.as_deref(), picture);
                     api::estimate::learn_reads(frames, &mut ask);
                     asks.push(ask);
                 }

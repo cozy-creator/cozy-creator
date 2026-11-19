@@ -1246,6 +1246,21 @@ impl Runs {
         for (name, why) in &ruled.unanswered {
             self.warn(id, "needs_rule_unanswered", &format!("{name}: its needs rule gives no answer for this request ({why}), so it is fetched as if it had none."));
         }
+        // Its size by its function's own variables (cl-1286): what its time here is kept under. One that gives none is left out, said once.
+        if let (false, Some(entry)) = (spec.warm, api::interface::entrypoint(&interface, &spec.entrypoint)) {
+            let cost = needs::Cost::of(entry, &spec.input);
+            if let Some(fault) = cost.faults.first() {
+                self.warn(id, "estimate_invalid", &format!("its estimate can't be read ({fault}), so it is sized and timed as if it declared none."));
+            }
+            for (name, why) in &cost.size_unanswered {
+                self.warn(id, "size_unanswered", &format!("its size variable {name} gives no value for this request ({why}), so its time leaves it out."));
+            }
+            if cost.sized() {
+                if let Err(error) = self.service.engine.size(id, cost.size) {
+                    tracing::warn!("run {id}: its size: {error}");
+                }
+            }
+        }
         let wants = wants_of(&interface, &generation.record.callees, &spec);
         // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
         if crate::ahead::hidden(&caller) {

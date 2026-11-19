@@ -3919,13 +3919,19 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
     };
     let request = asked.and_then(|(asking, name)| asking.request(name, &package, &renderer.function));
     let models = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made, request.as_ref())).await;
-    let size = v1::JobSize::of(&Value::Object(made));
+    // Its size and cost as its function's estimate reads its render's request (cl-1286); its made fields guessed where none is known.
+    let cost = (request.as_ref().zip(api::interface::entrypoint(package.document(), &renderer.function)))
+        .map(|(request, entry)| Arc::new(::needs::Cost::of(entry, request)));
+    let size = match cost.as_ref().filter(|cost| cost.sized()) {
+        Some(cost) => cost.size.clone(),
+        None => v1::JobSize::of(&Value::Object(made)),
+    };
     let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
     let source = package.local.clone().filter(|dir| dir.is_dir());
-    let job = placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source };
+    let job = placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source, cost };
     Ok((job, package))
 }
 
@@ -4999,6 +5005,7 @@ impl Walk {
             }
             planned.push(plan::Job {
                 ask: placement::asked(job, placement::Prior::default()),
+                cost: job.cost.clone(),
                 priors,
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
@@ -7033,17 +7040,19 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
         Some(v1::Source::Local(local)) => (None, format!("{}/{function}", local.manifest), vec![], !row.spec.models.is_empty()),
         _ => (None, row.target.clone(), vec![], false),
     };
+    let cost = (read.as_ref()).and_then(|read| Some(Arc::new(::needs::Cost::of(api::interface::entrypoint(read.document(), function)?, &payload))));
     let job = placement::Job {
         key: row.id.to_string(),
         target: row.target.clone(),
         function: named,
         models,
-        size: v1::JobSize::of(&payload),
+        size: cost.as_ref().map_or_else(|| v1::JobSize::of(&payload), |cost| cost.size.clone()),
         gpus: row.spec.gpus,
         gpu,
         on: set.to_vec(),
         scope: None,
         source: None,
+        cost,
     };
     let (offers, said) = Box::pin(placement::offers(api, std::slice::from_ref(&job), true)).await;
     let offers = offers.into_iter().next().unwrap_or_default();
@@ -7082,8 +7091,9 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         None => vec![],
     };
     let named = format!("{package}/{function}@{release}");
+    let cost = (read.as_ref().zip(request)).and_then(|(read, request)| Some(Arc::new(::needs::Cost::of(api::interface::entrypoint(read.document(), function)?, request))));
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size: size.clone(), gpus, gpu, on: set.to_vec(), scope: None, source: None, cost: cost.clone() })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, jobs.first(), hub, read.as_ref(), function, &Map::new()).await;

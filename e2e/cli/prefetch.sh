@@ -464,7 +464,11 @@ pre_local_end() { timeout 60 "$COZY" --json machine end stand-l --force -y > "$O
 # in its benchmarks.json. `measured` is guessed onto this computer, made ready there, and its render runs there, quoted from its row.
 # `unmeasured` is guessed nowhere; rendered, it waits with nothing sent, its box and the board saying this computer has no GPU and
 # the rental, and none of e2e/pre-req lands here. Without cl-1279 `unmeasured` was sent here and ran on the CPU, and `measured` was
-# never guessed (#3932's `not_simply`).
+# never guessed (#3932's `not_simply`). cl-1286 (Paul, 11-18: a formula "hand-built per package based on measured times we store in
+# the same benchmark"; #3983's review: a formula that reads no row must not make a GPU-less machine eligible): `authored` (e2e/pre-req)
+# declares `ms` reading no row, and is treated as `unmeasured`; without cl-1286's fix it stood on its author's word and was sent
+# here. `formula` (e2e/pre-ask) declares `ms` over its CPU row: guessed here, and its render quoted here from that row by its formula
+# (`placed.formula_ms` its row's 4,000 ms times 2), as `measured`'s default is from its own (no `formula_ms`).
 prefetch_gpuless() {
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
 step "prefetch gpuless (cl-1279): a computer with no GPU takes a function that builds a model only on a time measured without one"
@@ -475,9 +479,14 @@ J '(.status.gpus // []) | length == 0' "$OUT/gpuless-before.json" || { echo "pre
 pre_project "$P" local || return 0
 jq -n --arg s "$here/project/gpuless/still" --arg m "$here/project/gpuless/measured" '[
   {name: "unmeasured", tool: $s, kind: "image", fields: {instructions: "Nothing measured it without a GPU."}},
-  {name: "measured", tool: $m, kind: "image", fields: {instructions: "Its CPU row times it."}}]' | boxes_in "$P" || return 0
+  {name: "measured", tool: $m, kind: "image", fields: {instructions: "Its CPU row times it."}},
+  {name: "authored", tool: ($s | sub("/still$"; "/authored")), kind: "image", fields: {instructions: "Its author alone times it."}},
+  {name: "formula", tool: ($m | sub("/measured$"; "/formula")), kind: "image", fields: {instructions: "Its formula over its CPU row times it."}}]' \
+  | boxes_in "$P" || return 0
 pre_ready "$P" measured local 300 || return 0
 [ -z "$(pre_row "$P" unmeasured)" ] || check "prefetch gpuless: unmeasured was guessed: $(pre_row "$P" unmeasured)"
+pre_ready "$P" formula local 300 || true
+[ -z "$(pre_row "$P" authored)" ] || check "prefetch gpuless: authored was guessed on its author's word: $(pre_row "$P" authored)"
 coming_go measured '["local"]'
 coming_done measured 600
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "measured")] | last // empty')
@@ -486,10 +495,23 @@ if [ -n "$run" ] && J '.state == "done"' <<< "$job"; then
   echo "$P" > "$OUT/gpuless-measured.at"
   run_show "$OUT" gpuless-measured "$run"
   echo "prefetch gpuless: measured's render $run: $(jq -c '{machine, status, execution_ms, placed: (.placed | {machine, basis, warm, fetch_bytes, prepare_ms, finish_s: ((.finish_at_ms - .quoted_at_ms) / 1000)})}' "$OUT/gpuless-measured.json" 2> /dev/null)"
-  J '.machine == "local" and .placed.basis == "reference"' "$OUT/gpuless-measured.json" \
+  J '.machine == "local" and .placed.basis == "reference" and .placed.formula_ms == null' "$OUT/gpuless-measured.json" \
     || check "prefetch gpuless: measured's render wasn't placed here on its CPU row: $(jq -c '{machine, placed}' "$OUT/gpuless-measured.json")"
 else
   check "prefetch gpuless: measured's render didn't end done here: ${job:-no job}"
+fi
+coming_go formula '["local"]'
+coming_done formula 600
+job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "formula")] | last // empty')
+run=$(jq -r '.run // empty' <<< "${job:-null}")
+if [ -n "$run" ] && J '.state == "done"' <<< "$job"; then
+  echo "$P" > "$OUT/gpuless-formula.at"
+  run_show "$OUT" gpuless-formula "$run"
+  echo "prefetch gpuless: formula's render $run: $(jq -c '{machine, status, execution_ms, placed: (.placed | {machine, basis, warm, formula_ms, size, prepare_ms, finish_s: ((.finish_at_ms - .quoted_at_ms) / 1000)})}' "$OUT/gpuless-formula.json" 2> /dev/null)"
+  J '.machine == "local" and .placed.basis == "reference" and .placed.formula_ms == 8000' "$OUT/gpuless-formula.json" \
+    || check "prefetch gpuless: formula's render wasn't placed here by its formula over its CPU row (8000 ms): $(jq -c '{machine, placed}' "$OUT/gpuless-formula.json")"
+else
+  check "prefetch gpuless: formula's render didn't end done here: ${job:-no job}"
 fi
 coming_go unmeasured '["local"]'
 for _ in $(seq 120); do
@@ -504,11 +526,22 @@ J --arg l "$line" '[.queue[]? | select(.name == "unmeasured") | .no_gpu.line // 
 J --arg l "$line" '[.board.said[]? | .message] | any(ltrimstr("unmeasured: ") | test($l))' "$OUT/gpuless-status.json" \
   || check "prefetch gpuless: the board didn't say unmeasured waits for a GPU: $(jq -c '[.board.said[]?.message]' "$OUT/gpuless-status.json" 2> /dev/null | head -c 500)"
 [ -z "$(jq -r '.run // empty' <<< "${job:-null}")" ] || check "prefetch gpuless: unmeasured's render was sent, run $(jq -r .run <<< "$job")"
+coming_go authored '["local"]'
+for _ in $(seq 120); do
+  status "$P" > "$OUT/gpuless-status.json" 2> /dev/null || true
+  J --arg l "$line" '[.queue[]? | select(.name == "authored") | .no_gpu.line // "" | test($l)] | any' "$OUT/gpuless-status.json" && break
+  sleep 0.5
+done
+job=$(jq -c '[.board.jobs[]? | select(.asset == "authored")] | last // empty' "$OUT/gpuless-status.json" 2> /dev/null)
+echo "prefetch gpuless: authored: $(jq -c '[.queue[]? | select(.name == "authored")]' "$OUT/gpuless-status.json" 2> /dev/null) ${job:-no job}"
+J --arg l "$line" '[.queue[]? | select(.name == "authored") | .no_gpu.line // "" | test($l)] | any' "$OUT/gpuless-status.json" \
+  || check "prefetch gpuless: authored's box doesn't say this computer has no GPU: its formula read no CPU row: ${job:-no job on the board}"
+[ -z "$(jq -r '.run // empty' <<< "${job:-null}")" ] || check "prefetch gpuless: authored's render was sent on its author's word, run $(jq -r .run <<< "$job")"
 sleep 20
 pre_machine local "$OUT/gpuless-after.json"
 [ "$(pre_held "$OUT/gpuless-after.json" e2e/pre-req)" = "$(pre_held "$OUT/gpuless-before.json" e2e/pre-req)" ] \
   || check "prefetch gpuless: e2e/pre-req landed here for unmeasured: $(pre_held "$OUT/gpuless-before.json" e2e/pre-req) then $(pre_held "$OUT/gpuless-after.json" e2e/pre-req)"
-project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -d '{"names":["unmeasured"]}' > "$OUT/gpuless-cancel.json" 2>&1 || true
+project_api "$P" /cancel -X POST -H 'Content-Type: application/json' -d '{"names":["unmeasured","authored"]}' > "$OUT/gpuless-cancel.json" 2>&1 || true
 }
 
 # prefetch_disk (cl-1104): a guess on a short disk, and a guess's install. stand-q, a new stand-in, keeps its store on a 3 GiB disk, 1

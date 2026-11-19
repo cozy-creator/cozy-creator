@@ -1127,6 +1127,12 @@ pub struct EstimateJob {
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
+    /// Its time on one GPU of this machine by its function's own formula over its benchmark rows (`needs::Cost::on`, cl-1286), and
+    /// what that stands on: what it is timed by where the machine has no runs of it. None: it declares none, or none gives a time here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formula_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formula_basis: Option<Basis>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -1166,30 +1172,48 @@ pub struct ModelRef {
     pub picked: bool,
 }
 
-/// What a job makes, in the units a function's time scales with; each unknown one is absent.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// What a job makes, by the variables a function's time scales with: its function's own (`estimate.size`, cl-1286: `needs::Cost`),
+/// else those `of` guesses from its input (each above 0). A declared one may be 0, a switch off, which no ratio scales by; each unknown
+/// one is absent.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct JobSize {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub megapixels: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frames: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steps: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens: Option<u64>,
-    /// Its media's seconds: every `duration` in its input, summed (a shot's beats).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub seconds: Option<f64>,
+    #[serde(flatten)]
+    pub values: std::collections::BTreeMap<String, f64>,
     /// The pictures and videos it reads, where its caller counted them (a box's mentions and slots): no unit of its time, but which
     /// measured request it is most like (`estimate::References`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refs: Option<u32>,
 }
 
+/// On the wire a whole value is written whole, and `frames`, `steps` and `tokens` always are (rounded): a cozy before named variables
+/// reads those three as integers in a Status frame, and the Hub refuses a row whose request has them otherwise.
+impl Serialize for JobSize {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (name, n) in &self.values {
+            let whole = matches!(name.as_str(), "frames" | "steps" | "tokens") || n.fract() == 0.0;
+            match whole && n.abs() < 9.0e15 {
+                true => map.serialize_entry(name, &(n.round() as i64))?,
+                false => map.serialize_entry(name, n)?,
+            }
+        }
+        if let Some(refs) = self.refs {
+            map.serialize_entry("refs", &refs)?;
+        }
+        map.end()
+    }
+}
+
 impl JobSize {
-    /// A run's size as its input says: `megapixels`, else `width` by `height`; `frames`, `steps`,
-    /// `tokens`, and every `duration` summed. The one reading, for callers and the machine's history alike.
+    /// Its variable `name`.
+    pub fn get(&self, name: &str) -> Option<f64> {
+        self.values.get(name).copied()
+    }
+
+    /// The guess, for a function that declares no size: `megapixels`, else `width` by `height`; `frames`, `steps`, `tokens`, and
+    /// `seconds`, every `duration` summed. For callers and the machine's history alike.
     pub fn of(input: &serde_json::Value) -> Self {
         fn durations(value: &serde_json::Value) -> f64 {
             match value {
@@ -1207,26 +1231,19 @@ impl JobSize {
         let number = |key: &str| input.get(key).and_then(serde_json::Value::as_f64).filter(|n| *n > 0.0);
         let count = |key: &str| input.get(key).and_then(serde_json::Value::as_u64).filter(|n| *n > 0);
         let seconds = durations(input);
-        JobSize {
-            megapixels: number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6)),
-            frames: count("frames"),
-            steps: count("steps"),
-            tokens: count("tokens"),
-            seconds: (seconds > 0.0).then_some(seconds),
-            refs: None,
-        }
+        let guessed = [
+            ("megapixels", number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6))),
+            ("frames", count("frames").map(|n| n as f64)),
+            ("steps", count("steps").map(|n| n as f64)),
+            ("tokens", count("tokens").map(|n| n as f64)),
+            ("seconds", (seconds > 0.0).then_some(seconds)),
+        ];
+        JobSize { values: guessed.into_iter().filter_map(|(name, value)| Some((name.to_owned(), value?))).collect(), refs: None }
     }
 
-    /// How much longer `self` takes than `other`: the product of each unit both know.
+    /// How much longer `self` takes than `other`: the product of each variable both know above 0 (a switch off scales nothing).
     pub fn ratio(&self, other: &JobSize) -> f64 {
-        let each = [
-            self.megapixels.zip(other.megapixels),
-            self.frames.zip(other.frames).map(|(a, b)| (a as f64, b as f64)),
-            self.steps.zip(other.steps).map(|(a, b)| (a as f64, b as f64)),
-            self.tokens.zip(other.tokens).map(|(a, b)| (a as f64, b as f64)),
-            self.seconds.zip(other.seconds),
-        ];
-        each.into_iter().flatten().filter(|(_, b)| *b > 0.0).map(|(a, b)| a / b).product()
+        (self.values.iter()).filter_map(|(name, a)| Some((*a, other.get(name)?))).filter(|(a, b)| *a > 0.0 && *b > 0.0).map(|(a, b)| a / b).product()
     }
 }
 

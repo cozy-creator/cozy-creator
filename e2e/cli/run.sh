@@ -18,6 +18,7 @@ parse "$@"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/asleep.sh"
 . "$(dirname "$0")/lines.sh"
+. "$(dirname "$0")/estimate.sh"
 . "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/disk.sh"
 . "$(dirname "$0")/control.sh"
@@ -788,6 +789,8 @@ case $SHARD in
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
+  # A request's size by its function's own variables, in its plan and its run's record; a broken one refused (cl-1286).
+  estimate) parts="estimate_plan logs" ;;
   # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
   answers) parts="answers_while_committing logs" ;;
   # A run repeated on another computer's machine is answered from its held memo (cl-1225): a stand-in, three runs.

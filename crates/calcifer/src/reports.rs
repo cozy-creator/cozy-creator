@@ -264,13 +264,13 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
         width: measured["execution"]["degree"].as_u64().and_then(|d| u32::try_from(d).ok()).unwrap_or(1).max(1),
         gpu,
         size: ReportedSize {
-            megapixels: job.megapixels,
+            megapixels: job.get("megapixels"),
             width: pixels("width"),
             height: pixels("height"),
-            frames: job.frames,
-            steps: job.steps,
-            tokens: job.tokens,
-            seconds: job.seconds,
+            frames: job.get("frames").map(|n| n as u64),
+            steps: job.get("steps").map(|n| n as u64),
+            tokens: job.get("tokens").map(|n| n as u64),
+            seconds: job.get("seconds"),
             refs: job.refs.map(u64::from),
         },
         timing: ReportedTiming {

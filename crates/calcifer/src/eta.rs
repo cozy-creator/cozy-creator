@@ -20,6 +20,8 @@ use serde::Deserialize;
 const RECENT: usize = 5;
 /// A run within this share of another's megapixels is its size.
 const SAME_SIZE: f64 = 0.15;
+/// The size variables a prior's stages scale by themselves: the picture (`Took::at`) and the steps (`Prior::with_steps`).
+const SCALED: [&str; 2] = ["megapixels", "steps"];
 /// What a prior weighs against a run's own steps, in steps: from this machine, from another of its GPU.
 const MACHINE_WEIGHT: f64 = 3.0;
 const GPU_WEIGHT: f64 = 2.0;
@@ -236,12 +238,9 @@ impl Prior {
         let spread = median(&totals.iter().map(|total| (total - middle).abs()).collect::<Vec<_>>()).unwrap_or(0.0) / middle.max(1.0);
         let (weight, trust) = if scaled { (weight / 2.0, trust * 0.8) } else { (weight, trust) };
         let of_size = |pick: &dyn Fn(&JobSize) -> Option<f64>| median(&tooks.iter().filter_map(|took| pick(&took.size)).collect::<Vec<_>>());
-        let extent = JobSize {
-            seconds: of_size(&|size| size.seconds),
-            frames: of_size(&|size| size.frames.map(|n| n as f64)).map(|n| n as u64),
-            tokens: of_size(&|size| size.tokens.map(|n| n as f64)).map(|n| n as u64),
-            ..JobSize::default()
-        };
+        // Every variable but those its stages scale by themselves (`at`, `with_steps`), each its runs' median.
+        let names: std::collections::BTreeSet<&String> = tooks.iter().flat_map(|took| took.size.values.keys()).filter(|name| !SCALED.contains(&name.as_str())).collect();
+        let extent = JobSize { values: names.into_iter().filter_map(|name| Some((name.clone(), of_size(&|size| size.get(name))?))).collect(), refs: None };
         Some(Prior {
             basis,
             runs: tooks.len(),
@@ -317,14 +316,15 @@ pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobS
 /// moves with its project's folder). 0: other machines' of its GPU, or any of its own on another card.
 pub(crate) fn one_gpu(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<(f64, u32)> {
     let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
-    let prior = Prior::of(&one, machine, gpu, size.megapixels)?;
-    let asked = JobSize { seconds: size.seconds, frames: size.frames, tokens: size.tokens, ..JobSize::default() };
+    let prior = Prior::of(&one, machine, gpu, size.get("megapixels"))?;
+    let asked = JobSize { values: size.values.iter().filter(|(name, _)| !SCALED.contains(&name.as_str())).map(|(name, n)| (name.clone(), *n)).collect(), refs: None };
     let mine: Vec<&Took> = one.iter().filter(|took| took.machine == machine).take(RECENT).collect();
     let here = match prior.basis == EtaBasis::Machine && mine.iter().all(|took| took.gpu == gpu) {
         true => mine.len() as u32,
         false => 0,
     };
-    Some((prior.clone().with_steps(size.steps).total_ms(size.steps) * asked.ratio(&prior.extent), here))
+    let steps = size.get("steps").map(|n| n as u64);
+    Some((prior.clone().with_steps(steps).total_ms(steps) * asked.ratio(&prior.extent), here))
 }
 
 /// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that

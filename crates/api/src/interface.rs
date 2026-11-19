@@ -250,6 +250,9 @@ pub struct Callable {
     /// Each function it calls, its own package's or a dependency's: what placement reads of a composed tool's GPU work.
     #[serde(default, deserialize_with = "or_default")]
     pub calls: Vec<Call>,
+    /// `estimate=`: its size variables and its cost, as CEL over its request (cl-1286, `needs::Cost`). Null: none declared.
+    #[serde(default)]
+    pub estimate: Value,
 }
 
 /// `@app.tool`: what a box of it is, beyond its types.
