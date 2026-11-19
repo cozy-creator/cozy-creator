@@ -12,7 +12,7 @@
 #   old, new   the packages_refs checkouts (`-f packages_refs="old=rc/0.27.0 new=proof/cl-1281-lora-slots"`)
 #   runtime    a cozy-runtime dev-build run id for the pod's Runtime (empty: the open RC's)
 #   seed       every box's seed (default 20260926)
-#   phases     all (default), or overrides: only step 3, on `new` (steps 1 and 2 ran in an earlier session; their frames compare there)
+#   phases     all (default), or overrides: step 3 alone on `new`, after the defaults it compares with (turn, restyle, depth)
 . "$(dirname "$0")/lib.sh"
 fail() {
   [ -z "${NAME:-}" ] || cozy machine logs "$NAME" --since 240m -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
@@ -158,6 +158,13 @@ grep -E "cozy:prepare:[^ ]*: its request" "$OUT/tensord-$NAME.log" | cut -c1-120
 for b in turn_new restyle_new depth_new moss_edit_new; do rendered "$b"; done
 }
 
+if [ "$PHASES" = overrides ]; then
+  say "the defaults each override is compared with, on this card"
+  add turn_new orbit/orbit "$(turn)"
+  add restyle_new minimax-h3/edit "$(restyle "style_transfer: ")"
+  add depth_new moss-image/image "$(depth 1)"
+  for b in turn_new restyle_new depth_new; do rendered "$b"; done
+fi
 say "overrides, the twin without a LoRA, nested calls, and a package with no LoRA slot"
 add turn_other orbit/orbit "$(turn | jq -c --arg l "$OTHER_H3" '. + {models: {lora: {ref: $l}}}')"
 add restyle_other minimax-h3/edit "$(restyle "" | jq -c --arg l "$OTHER_H3" '. + {models: {style_transfer: {ref: $l}}}')"
