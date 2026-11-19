@@ -370,19 +370,19 @@ pub(crate) fn acquire<T>(
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
-            Err(AllocationFailure::ReserveShort(_)) => {
-                // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
-                // with no wait on our own work and no owner; short of that, the demand takes the reserve.
-                if reserve(device, protect, wait != Wait::No)? {
+            Err(AllocationFailure::RoomShort(_)) => {
+                // The pages fit, not beside the driver's room: it is kept from what is idle and
+                // finished, with no wait on our own work and no owner; short of that, the demand takes it.
+                if keep_room(device, protect, wait != Wait::No)? {
                     continue;
                 }
-                // Taken, the reserve may be the driver's already (a context's growth, a library's
+                // Taken, the room may be the driver's already (a context's growth, a library's
                 // workspace): a refusal then goes through the order below, waits and owners
                 // included, before the demand fails. var-021: RelayVSR's first keyframe on a 24 GB
-                // card wrote its K/V while the frame's own work still ran; nothing was done, so the
-                // reserve was taken, the driver refused 113 MB, and the run failed beside 14 GiB of
+                // card wrote its K/V while the frame's own work still ran; nothing was finished, so
+                // the room was taken, the driver refused 113 MB, and the run failed beside 14 GiB of
                 // idle weights and spillable K/V.
-                match crate::waived(&mut try_map) {
+                match crate::taking_room(&mut try_map) {
                     Ok(value) => return Ok(value),
                     Err(failure) if failure.is_oom() => failure,
                     Err(failure) => return Err(failure.into()),
@@ -478,17 +478,17 @@ pub(crate) fn release(
     result.map(|()| sequence.evicted)
 }
 
-/// The driver's reserve for pages that fit but not beside it, in the one order with no wait on this
-/// process's GPU work and no owner. A demand (`ask`) asks idle peers before our weights go: they hold
+/// The driver's room for pages that fit but not beside it, kept from what is idle and finished: the
+/// one order with no wait on this process's GPU work and no owner. A demand (`ask`) asks idle peers before our weights go: they hold
 /// what nothing is about to use, and ours are read again. Without the ask an idle H3 executor kept
 /// 27 GB on a 5090 while SDXL beside it evicted and refilled 66 GB of its own weights a call (var-020).
 /// Whether anything came free.
-fn reserve(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
+fn keep_room(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
     if working::existing(device)?.is_none() {
         return Ok(false);
     }
-    let want = crate::DRIVER_RESERVE;
     let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
+    let want = sequence.gpu.driver_room();
     while sequence.released < want && sequence.step < ORDER.len() {
         let (step, left) = (ORDER[sequence.step], want - sequence.released);
         if step == Step::IdlePeers {

@@ -24,6 +24,17 @@ class DeviceStats(TypedDict):
     context_joins: int
     driver_physical_ooms: int
     event_waits: int
+    #: this process's bytes on the card outside its books (context, kernel modules, local memory,
+    #: libraries' handles), as last measured; 0 where it can't be
+    out_of_books_bytes: int
+    #: what every map leaves free for the driver's own allocations still expected
+    driver_room_bytes: int
+    #: that room as the last request began
+    driver_room_begin_bytes: int
+    #: this process's context's measured cost; 0 where NVML could not read the card
+    context_bytes: int
+    #: the most a process of this model set held outside its books here, as learned; 0 for a new set
+    out_of_books_learned_bytes: int
     reclaimed_by_reason: ReclaimedByReason
     poisoned: bool
 

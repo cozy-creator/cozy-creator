@@ -87,9 +87,9 @@ pub enum Error {
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
-    /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
-    /// done for it, an idle peer's before our weights, and short of that takes the reserve.
-    ReserveShort(usize),
+    /// The pages fit, not beside the driver's room: `reclaim::acquire` keeps it from what is idle
+    /// and finished, an idle peer's before our weights, and short of that the demand takes it.
+    RoomShort(usize),
     Other(Error),
 }
 
@@ -98,13 +98,13 @@ pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
 impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
-            Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
+            Self::DriverOutOfMemory(bytes) | Self::RoomShort(bytes) => Some(*bytes),
             Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::RoomShort(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -116,7 +116,7 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::RoomShort(requested_bytes) => {
                 Self::OutOfMemory { requested_bytes }
             }
             AllocationFailure::Other(error) => error,
@@ -146,6 +146,21 @@ pub struct Stats {
     pub driver_physical_ooms: u64,
     /// This device's cuEventSynchronize calls.
     pub event_waits: u64,
+    /// This process's bytes on the card outside its books (its context, kernel modules, local
+    /// memory, libraries' handles), as last measured; 0 where it can't be.
+    pub out_of_books_bytes: usize,
+    /// What every map leaves free for the driver's own allocations still expected here.
+    pub driver_room_bytes: usize,
+    /// That room as the last request began, before what the driver took during it.
+    pub driver_room_begin_bytes: usize,
+    /// What this process held outside its books as the last request began (estimated where unmeasured).
+    pub out_of_books_begin_bytes: usize,
+    /// This process's context's measured cost (free before less after), what a process of a model set
+    /// the card never ran is expected to hold outside its books; 0 where NVML could not read the card.
+    pub context_bytes: usize,
+    /// The most a process running this model set on this card held outside its books, as learned
+    /// when the room was last measured; 0 for a set the card never ran.
+    pub out_of_books_learned_bytes: usize,
     pub poisoned: bool,
 }
 
@@ -657,25 +672,19 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
-/// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
-/// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
-/// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
-/// (cr-293). Measured (os-memory-patterns 10-24): 2x the largest out-of-books growth a request showed,
-/// 391 MiB in a cold H3 15 s (README: The driver's reserve), rounded up to 32 MiB.
-pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
-
 thread_local! {
-    /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
-    static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's demand is short only of the driver's room, with nothing idle and finished left
+    /// to keep it from (`reclaim::acquire`): it takes the room.
+    static TAKES_ROOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// `f` with the driver's reserve open to this thread's maps.
-pub(crate) fn waived<T>(f: impl FnOnce() -> T) -> T {
+/// `f` with the driver's room open to this thread's maps.
+pub(crate) fn taking_room<T>(f: impl FnOnce() -> T) -> T {
     struct Restore;
     impl Drop for Restore {
-        fn drop(&mut self) { RESERVE_WAIVED.set(false); }
+        fn drop(&mut self) { TAKES_ROOM.set(false); }
     }
-    RESERVE_WAIVED.set(true);
+    TAKES_ROOM.set(true);
     let _restore = Restore;
     f()
 }
@@ -724,6 +733,24 @@ pub struct Device {
     outside_floor: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
+    /// The card's free bytes every map of ours leaves to the driver, which allocates on its own (a
+    /// kernel's code at its first launch, local memory, a library's handle): its refusal fails that
+    /// launch, not an allocation of ours, so no reclaim answers it (cr-293: a cold H3 on a full 5090
+    /// failed its first `index_select`). What it is still expected to take for this process, measured
+    /// (`cooperative::expect`); 0 where nothing is known.
+    /// The room is soft: kept only by evicting what is idle and finished, with no wait, it never fails a demand.
+    /// As measured; what the driver takes after that comes out of it (`driver_room`).
+    driver_room: AtomicUsize,
+    /// `outside` when the room was measured.
+    driver_room_outside: AtomicUsize,
+    /// This process's bytes outside its books, as last measured (`cooperative::expect`).
+    out_of_books: AtomicUsize,
+    /// For the record (`DeviceStats`): the room and what this process held outside its books as the last
+    /// request began, the context's measured cost, and the learned figure the room was measured from.
+    driver_room_begin: AtomicUsize,
+    out_of_books_begin: AtomicUsize,
+    context_cost: AtomicUsize,
+    out_of_books_learned: AtomicUsize,
     // The most weight bytes held for use at once in this plan phase (`enter_plan_phase` resets it).
     held_peak: AtomicUsize,
     // Requests running here: the first to begin is a phase boundary.
@@ -773,6 +800,13 @@ impl Device {
             outside_floor: AtomicUsize::new(usize::MAX),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
+            driver_room: AtomicUsize::new(0),
+            driver_room_outside: AtomicUsize::new(0),
+            out_of_books: AtomicUsize::new(0),
+            driver_room_begin: AtomicUsize::new(0),
+            out_of_books_begin: AtomicUsize::new(0),
+            context_cost: AtomicUsize::new(0),
+            out_of_books_learned: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
@@ -915,21 +949,47 @@ impl Device {
         Ok(free)
     }
 
-    /// Of the driver's `free` bytes, what a map of ours may take: all but its reserve.
+    /// Of the driver's `free` bytes, what a map of ours may take: all but the driver's room.
     fn spare(&self, free: usize) -> usize {
-        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(DRIVER_RESERVE) }
+        if TAKES_ROOM.get() { free } else { free.saturating_sub(self.driver_room()) }
     }
 
-    /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
+    /// What every map leaves free for the driver's own allocations: the room as measured, less what the
+    /// driver took beyond our books since, read at each sample. Measured only at a request's boundaries,
+    /// growth inside a request was counted twice, in `outside` and in the room it had been kept for.
+    pub(crate) fn driver_room(&self) -> usize {
+        let grown = self.outside.load(Ordering::Acquire).saturating_sub(self.driver_room_outside.load(Ordering::Acquire));
+        self.driver_room.load(Ordering::Acquire).saturating_sub(grown)
+    }
+
+    /// The driver is now expected to take `room` more bytes for this process, which holds
+    /// `out_of_books` outside its books (`cooperative::expect`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn expect_driver(&self, room: usize, out_of_books: usize, context: usize, learned: usize) {
+        self.driver_room_outside.store(self.outside.load(Ordering::Acquire), Ordering::Release);
+        self.driver_room.store(room, Ordering::Release);
+        self.out_of_books.store(out_of_books, Ordering::Release);
+        self.context_cost.store(context, Ordering::Release);
+        self.out_of_books_learned.store(learned, Ordering::Release);
+    }
+
+    /// A request began with `room` kept for the driver, this process holding `own` outside its books.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn driver_room_began(&self, room: usize, own: usize) {
+        self.driver_room_begin.store(room, Ordering::Release);
+        self.out_of_books_begin.store(own, Ordering::Release);
+    }
+
+    /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the
     /// card has free now. More than the card has free is the driver's to refuse; less, but not
-    /// beside the reserve, is `ReserveShort`.
+    /// beside the room, is `RoomShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
         if self.over(bytes) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
         if bytes <= free && bytes > self.spare(free) {
-            return Err(AllocationFailure::ReserveShort(bytes));
+            return Err(AllocationFailure::RoomShort(bytes));
         }
         Ok(())
     }
@@ -1222,6 +1282,12 @@ impl Device {
             context_joins,
             driver_physical_ooms,
             event_waits,
+            out_of_books_bytes: self.out_of_books.load(Ordering::Acquire),
+            driver_room_bytes: self.driver_room(),
+            driver_room_begin_bytes: self.driver_room_begin.load(Ordering::Acquire),
+            out_of_books_begin_bytes: self.out_of_books_begin.load(Ordering::Acquire),
+            context_bytes: self.context_cost.load(Ordering::Acquire),
+            out_of_books_learned_bytes: self.out_of_books_learned.load(Ordering::Acquire),
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };

@@ -44,26 +44,30 @@ the streamed regions. A plan phase that
 ran through last time with no region coming back is a single pass: its used regions rank with the
 unplanned, and other phases' loops go after every single pass's.
 
-## The driver's reserve
+## The driver's room
 
 The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
-Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
-to leave 800 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
-the reserve, take what is idle and done for it (no wait on our own work, no owner), an idle peer's
-before our weights, and short of that take the reserve. The reserve never makes a demand fail: one the
-driver still refuses goes through the whole order.
+Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map leaves
+the room it is still expected to take for this process free, read from the driver at the map: the most
+a process running the same model set (its plan's phase shapes) on this card held outside its books,
+learned on this machine (`/var/tmp/cozy-varena-<uid>`, kept across boots), less what this process
+holds there now. That is NVML's figure for the process less varena's books, or, where NVML can't name
+it (a container's nested PID namespace), read from the card: its context and what lies outside its
+books now past the least it did. A set this card never ran leaves its context's measured cost. It is
+measured as the process comes up, as a plan becomes active and at each request's boundaries, and
+learned as each request ends. Between those, what the driver takes beyond our books, read at each map,
+comes out of the room: growth is not counted twice. A process coming up asks its peers for it once its context is up,
+before Torch's runtime and first stream, where a refusal reaches no one.
 
-The amount is measured: 2x the largest out-of-books growth (driver used less varena's books) a request
-showed, rounded up to 32 MiB. The cold H3 15 s runs of cr-293:
+The room is soft: it is kept only by evicting what is idle and finished, with no wait, and never fails a
+demand. Pages that fit, but not beside it, take what is idle and finished for it (no wait on our own
+work, no owner), an idle peer's before our weights, and short of that take the room. One the driver
+still refuses goes through the whole order.
 
-| run | card | growth |
-|---|---|---|
-| release-gate 43226249169, kazune (failed beside a 128 MiB slack) | 5090 | 365 MiB: peak less books less what was on the card before |
-| pod-session 43341776458, reserve cell | 4090 | 391 MiB: peak less books less the executor's 552 MiB start (context and kernel checks) |
-| pod-session 43344781014, kazune's room | 5090 | 377 MiB: of the 512 MiB reserve then, 135 MiB was left free |
-| release-gate 43233812383, roxas, three cold runs on a fresh card | 5090 | 385-387 MiB: 937-939 MiB peak less books, less a 552 MiB start |
-
-A warm request grows nothing. 2 x 391 = 782, rounded up: 800 MiB.
+A fixed 800 MiB was left before (2x the 391 MiB a cold H3 15 s grew on a 4090, cr-293): 10-13% of
+an 8 GB card, kept free by evicting weights. A cold H3 15 s's process held 937-939 MiB outside its books
+at its peak on a 5090, of which 552 MiB at its start (context and kernel checks); a warm request grows
+nothing.
 
 ## Fills
 

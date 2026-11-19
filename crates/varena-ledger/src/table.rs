@@ -110,9 +110,14 @@ pub struct Table {
 
 /// The canonical directory, private to this effective UID.
 fn directory() -> io::Result<PathBuf> {
+    private("/dev/shm")
+}
+
+/// `<root>/cozy-varena-<uid>`, made private to this effective UID.
+fn private(root: &str) -> io::Result<PathBuf> {
     // SAFETY: geteuid takes no arguments and cannot fail.
     let uid = unsafe { libc::geteuid() };
-    let path = PathBuf::from(format!("/dev/shm/cozy-varena-{uid}"));
+    let path = PathBuf::from(format!("{root}/cozy-varena-{uid}"));
     match fs::DirBuilder::new().mode(0o700).create(&path) {
         Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
         _ => {}
@@ -122,6 +127,30 @@ fn directory() -> io::Result<PathBuf> {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not this user's private directory", path.display())));
     }
     Ok(path)
+}
+
+/// The most bytes a process running model set `set` on this GPU held outside its own books (its
+/// context, kernel modules, local memory, libraries' handles), as each measured it: None before any
+/// did. In this user's directory under /var/tmp, so a reboot keeps it.
+pub fn out_of_books(uuid: &[u8; 16], set: u64) -> Option<u64> {
+    fs::read_to_string(out_of_books_path(uuid, set).ok()?).ok()?.trim().parse().ok()
+}
+
+/// Records `bytes` held outside one process's books on this GPU running `set`, kept if the most yet.
+/// Two writers racing may lose one figure; the next boundary of either writes it again.
+pub fn held_out_of_books(uuid: &[u8; 16], set: u64, bytes: u64) -> io::Result<()> {
+    if out_of_books(uuid, set).is_some_and(|most| most >= bytes) {
+        return Ok(());
+    }
+    let path = out_of_books_path(uuid, set)?;
+    let staged = path.with_extension(format!("{}", std::process::id()));
+    fs::write(&staged, bytes.to_string())?;
+    fs::rename(&staged, &path)
+}
+
+fn out_of_books_path(uuid: &[u8; 16], set: u64) -> io::Result<PathBuf> {
+    let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(private("/var/tmp")?.join(format!("out-of-books-{name}-{set:016x}")))
 }
 
 /// A `GPU-…` or `MIG-…` name's 16 bytes, as CUDA reports them.

@@ -306,6 +306,9 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             ph['download_s'] = round((b - a) / 1000, 3)
         peaks = [num(obj(x).get('peak_bytes')) or 0 for m in measurements(rec) for x in arr(obj(m.get('memory')).get('driver'))]
         procs = [num(obj(m.get('memory')).get('peak_allocated_bytes')) or 0 for m in measurements(rec)]
+        # varena's measure of each process's bytes outside its books (context, modules, local memory), NVML's.
+        books = [num(obj(obj(obj(v).get('stats')).get('weight_residency')).get('out_of_books_bytes')) or 0
+                 for m in measurements(rec) for v in arr(obj(obj(m.get('memory')).get('stats')).get('varena'))]
         machine = by_name.get(text(rec.get('machine'))) or (machines[0] if machines else {})
         at = num(rec.get('created_at_ms'))
         yield {
@@ -315,7 +318,8 @@ def rows(d: str, source: str, run: str | None, packages: str | None, cap: str | 
             'sku': sku or text(obj(machine.get('rental')).get('sku')) or re.sub(r'^(nvidia )?(geforce )?', '', str(rec.get('gpu') or '').lower()).replace(' ', '-'),
             'workload': w, 'versions': versions(rec, tree(packages, commits.get(name) or text(cand.get('packages_ref')), pkgdir(target) or str(w['package'])), gate),
             'state': st, 'phases': ph,
-            'memory': {'peak_vram_gib': round(max(peaks or [0]) / 2**30, 2), 'peak_allocated_gib': round(max(procs or [0]) / 2**30, 2)},
+            'memory': {'peak_vram_gib': round(max(peaks or [0]) / 2**30, 2), 'peak_allocated_gib': round(max(procs or [0]) / 2**30, 2),
+                       'out_of_books_bytes': int(max(books or [0]))},
             'host': host(rec, machine),
             'outcome': {'status': rec.get('status'), 'verdict': verdict.get(name),
                         'output': [obj(o).get('sha256') for o in arr(rec.get('output')) if obj(o).get('sha256')]},
