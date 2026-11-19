@@ -2289,12 +2289,23 @@ fn no_function(name: &str, package: &str) -> String {
     format!("{name}: {package} has no single function that makes this box, so Cozy can't tell which to use. Choose one of its functions as the box's tool.")
 }
 
-/// The version of cut `asset` that cutting it again from `inputs` would only make again: those inputs, nothing left out, and its film
-/// here and as long as its pieces.
+/// Whether cutting `asset` again from `inputs` would only make version `old` again: those inputs, nothing left out, and its film here and
+/// as long as its pieces.
+fn cuts_same(folder: &Folder, lock: &Lock, asset: &format::Asset, reads: &[format::ReadNow], inputs: &str, old: &Version) -> bool {
+    let film_stands = old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
+    old.inputs == inputs && old.without.is_empty() && film_stands && tools::film_off(&asset.inputs, reads, lock, old).is_none()
+}
+
+/// The newest version of cut `asset` that cutting it again from `inputs` would only make again.
 fn same_cut<'a>(folder: &Folder, lock: &'a Lock, asset: &format::Asset, reads: &[format::ReadNow], inputs: &str) -> Option<&'a Version> {
-    let film_stands = |old: &Version| old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
-    lock.asset(&asset.name)?.versions.iter().rev()
-        .find(|old| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.inputs, reads, lock, old).is_none())
+    lock.asset(&asset.name)?.versions.iter().rev().find(|old| cuts_same(folder, lock, asset, reads, inputs, old))
+}
+
+/// The version cut `asset` shows (`standing`: its pinned one, else its newest), when cutting it again would only make that again: then a
+/// render makes nothing (cl-910). One only an older version holds is landed again as its newest, as a cut lands (cl-1310).
+fn shown_cut<'a>(folder: &Folder, lock: &'a Lock, asset: &format::Asset, standing: &Standing, inputs: &str) -> Option<&'a Version> {
+    let shown = lock.asset(&asset.name)?.version(standing.version()?)?;
+    cuts_same(folder, lock, asset, &standing.reads, inputs, shown).then_some(shown)
 }
 
 /// What a cut of asset `i` is at the root: `<name>.mp4`.
@@ -3102,9 +3113,10 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
             said(&name, format!("{name} is just a file, so there's nothing to render"));
             continue;
         }
-        // A cut that already cuts what it reads now would only be cut the same again: answered now, with nothing queued (cl-910).
+        // A cut whose shown version already cuts what it reads now would only be cut the same again: answered now, with nothing queued
+        // (cl-910). One only an older version cuts is queued, and lands that film as its newest (cl-1310).
         if doc.tool(i) == Some(Tool::Cut) && !reads_asked(i)
-            && let Some(version) = stand[i].inputs.as_deref().and_then(|inputs| same_cut(&project.folder, &lock, asset, &stand[i].reads, inputs))
+            && let Some(version) = stand[i].inputs.as_deref().and_then(|inputs| shown_cut(&project.folder, &lock, asset, &stand[i], inputs))
         {
             said(&name, format!("{name} version {} already cuts what it reads now, so cutting it again would make the same film", version.number));
             continue;
@@ -6484,8 +6496,10 @@ impl Walk {
                     clip.sha256 = read.and_then(|read| folder::main_of(&read.files).cloned());
                 }
                 version.fps = Canvas::of(&asset.inputs, &mut vec![]).fps;
+                // Only the version it shows, cut again the same, makes none; the same as an older one lands as its newest (cl-1310).
                 let now = self.folder().lock()?;
-                let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
+                let shown = standing.version().and_then(|number| now.asset(&name)?.version(number));
+                let again = shown.is_some_and(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files));
                 if again {
                     return Ok(());
                 }
@@ -6554,9 +6568,22 @@ impl Walk {
             self.say(Told::Warning { message: format!("{name} was cut without {piece}, {said}"), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: false });
         }
-        // The same edit, with everything it took here and its film right, isn't rendered again.
-        if without.is_empty() && same_cut(folder, &lock, asset, &standing.reads, inputs).is_some() {
-            return Ok(None);
+        // The same edit, with everything it took here and its film right, isn't cut again: shown, it stands (cl-910); an older version's
+        // film and timeline land again as its newest, by hash (cl-1310).
+        if without.is_empty() {
+            if shown_cut(folder, &lock, asset, standing, inputs).is_some() {
+                return Ok(None);
+            }
+            if let Some(held) = same_cut(folder, &lock, asset, &standing.reads, inputs) {
+                // Said as any cut is, so its job names its film at the root.
+                let sha256 = held.files.get("video");
+                let newest = lock.asset(&asset.name).and_then(|held| held.versions.last()?.files.get("video"));
+                let frames = sha256.and_then(|sha256| lock.files.get(sha256)).map_or(0, |film| film.frames);
+                let retimed = tools::measure(&pieces, canvas.fps).map(|cut| cut.retimed).unwrap_or_default();
+                self.cut.lock().expect("cut lock").insert(name.clone());
+                self.say(Told::Cut { name: asset.name.clone(), cut: name, frames, fps: canvas.fps, retimed, took_s: 0.0, unchanged: newest == sha256, without: vec![] });
+                return Ok(Some((held.files.clone(), vec![])));
+            }
         }
         self.leave_out(&name, &on, tools::unreadable(&ffprobe, &pieces)?, &mut without);
         pieces.retain(|piece| piece.still || piece.shape.is_some());
