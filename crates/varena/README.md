@@ -55,7 +55,8 @@ holds there now. That is NVML's figure for the process less varena's books, or, 
 it (a container's nested PID namespace), read from the card: its context and what lies outside its
 books now past the least it did. A set this card never ran leaves its context's measured cost. It is
 measured as the process comes up, as a plan becomes active and at each request's boundaries, and
-learned as each request ends. A process coming up asks its peers for it once its context is up,
+learned as each request ends. Between those, what the driver takes beyond our books, read at each map,
+comes out of the room: growth is not counted twice. A process coming up asks its peers for it once its context is up,
 before Torch's runtime and first stream, where a refusal reaches no one.
 
 The room is soft: it is kept only by evicting what is idle and finished, with no wait, and never fails a
