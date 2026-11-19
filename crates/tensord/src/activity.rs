@@ -63,7 +63,7 @@ struct Operation {
     /// Status has listed it: one that ended before then is listed once, however short it was, unless no one looks for [`UNSEEN`].
     listed: bool,
     ended: Option<Instant>,
-    /// An encrypted project's own code installing (`wait`): listed only to the readers of its runs that wait on it.
+    /// A project's own code installing (`wait`), encrypted or not: listed only to the readers of its runs that wait on it.
     private: bool,
 }
 
@@ -140,8 +140,9 @@ pub(crate) struct Waiting {
 /// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one. Each is the machine's, one
 /// however many projects' runs wait on it (Paul: packages and models are machine-wide, projects isolate files and runs). cl-1205: a
 /// project's and the machine's own scope each listed BiRefNet's download once. cl-1218: a package installing for two projects was
-/// an item in each one's scope, and none to a reader outside them. An encrypted project's own code (`local/`) is its files, not a
-/// package of the machine's: its install stays in the project's scope, as its installation's record does (`bind_installation`).
+/// an item in each one's scope, and none to a reader outside them. A project's own code (`local/`, in any project's scope, encrypted or
+/// not) is its files, not a package of the machine's: its install stays in the project's scope, as its installation's record does
+/// (`bind_installation`).
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
     let private = kind == Kind::Install && subject.starts_with("local/") && crate::private_io::current().is_some();
     let id = match private {
@@ -443,8 +444,8 @@ pub(crate) fn drive_left() -> HashMap<String, (u64, u64)> {
 }
 
 /// Every download and install, to every caller (cl-1205, cl-1218): what the machine does is its own. Which runs wait is their
-/// caller's: each names only the runs `mine` admits, the rest counted. An encrypted project's own code installing (`private`) is
-/// listed only to a caller whose runs wait on it. One that ended unlisted is listed this once.
+/// caller's: each names only the runs `mine` admits, the rest counted. A project's own code installing (`private`) is listed only to
+/// a caller whose runs wait on it. One that ended unlisted is listed this once.
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations
