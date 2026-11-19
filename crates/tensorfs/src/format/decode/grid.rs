@@ -17,6 +17,16 @@ pub enum ScaleLayout {
 }
 
 impl ScaleLayout {
+    /// The rows one stored run of scales holds, for a read of some rows (tfs-303): each row's own
+    /// run where they are stored row by row. None where no run of rows is contiguous, and where
+    /// none is declared yet: `cublas_128x4` interleaves rows inside its tiles, and says its tile
+    /// here with the first checkpoint that stores one.
+    pub(crate) fn row_tile(self) -> Option<u64> {
+        match self {
+            ScaleLayout::RowMajor => Some(1),
+            ScaleLayout::Transposed | ScaleLayout::Cublas128x4 => None,
+        }
+    }
     pub(crate) fn name(self) -> &'static str {
         match self {
             ScaleLayout::RowMajor => "row_major",

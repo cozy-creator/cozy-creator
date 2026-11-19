@@ -3,6 +3,7 @@
 use super::affine::SIGNED_BYTES;
 use super::fp8::SCALE;
 use super::grid::Grid;
+use super::rows::Follows;
 use super::plan::{Codes, Core, Elems, Post};
 use super::{elem, logical, one, Allowed, Ctx, Dtypes, Param, Part, Plan, Scheme, View};
 use crate::format::Result;
@@ -61,8 +62,8 @@ pub(crate) const CONVROT: Scheme = Scheme {
     view: View::Matrix,
     params: &[ROTATION, ROTATION_SIZE],
     parts: &[
-        Part::req("weight", I8, logical),
-        Part::req("scale", SCALE, |c| Grid::Row.shape(c)),
+        Part::req("weight", I8, logical).rows(Follows::Logical),
+        Part::req("scale", SCALE, |c| Grid::Row.shape(c)).rows(Follows::Grid(|_| Grid::Row)),
     ],
     decode: convrot,
 };

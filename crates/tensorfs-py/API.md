@@ -223,6 +223,32 @@ decoded logical bytes. An encoded tensor with neither raises `InvalidError` nami
 roles, and a role with `decode=True` is refused too. This call does not convert to the
 destination's dtype; provide the appropriate size and representation.
 
+### Read some rows of a tensor, still encoded
+
+```python
+cut = checkpoint.rows("transformer", "proj_out.weight")   # None: it does not cut by rows
+start, stop = 0, 4 * cut.tile
+outs = {role: torch.empty(n, dtype=torch.uint8, device="cuda") for role, n in cut.nbytes(start, stop).items()}
+checkpoint.read_rows([("transformer", "proj_out.weight", start, stop, outs)],
+                     stream=torch.cuda.current_stream().cuda_stream)
+```
+
+`rows(component, key)` reads only the header: `count` rows along the tensor's first
+dimension; a range starts on a multiple of `tile` and stops on one or at `count`. The tile
+is the encoding's, never assumed: 1 for every layout that cuts so far (plain data,
+`fp8.rowwise`, `int8.convrot`, `w4a8.convrot` and row-major `nvfp4`). `tile_bytes` gives
+each part's bytes per tile, or None for a part every range reads whole (`nvfp4`'s
+`scale_2`, `w4a8.convrot`'s `codebook`). A tensor whose scheme declares no row cut
+(`svdq.nvfp4` among them), whose scales are stored in cuBLAS tiles (`cublas_128x4`), or
+whose parts store columns first, is None.
+`read_rows(reads, *, stream=None)` fills each `(component, key, start, stop, {role: out})`
+with those rows' stored bytes in one read; each out holds exactly `nbytes(start, stop)[role]`.
+A CUDA out is written on `stream` after that stream's earlier work, or with none given after all
+earlier work on its device. TensorFS asks a CUDA array's producer to order nothing (DLPack's
+stream -1), so torch makes no stream or event for it: a package may read into CUDA arrays.
+Where the consuming op may be cut is its own to decide; this only says how finely the
+storage allows.
+
 ### Download, verify and manage a checkpoint
 
 ```python
@@ -393,7 +419,7 @@ resident decoding does not invent another quantization convention.
 The call is synchronous: success means the output is ready. Do not mutate inputs or
 access the destination concurrently with the call. Nonempty input/output spans must not overlap;
 duplicate read-only input spans are allowed. The binding holds buffer leases and DLPack
-owners through completion and orders CUDA work against their producer streams.
+owners through completion and orders CUDA work after all earlier work on their device.
 
 Buffer/descriptor and overlap refusals occur before output writes. Unknown schemes raise
 `UnknownSchemeError`; invalid encoding/value cases can raise `DecodeError`. After a

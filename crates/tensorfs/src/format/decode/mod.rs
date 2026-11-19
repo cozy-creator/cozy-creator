@@ -17,6 +17,7 @@ pub(crate) mod blocks;
 pub mod elem;
 pub(crate) mod grid;
 pub(crate) mod plan;
+pub mod rows;
 
 mod fp8;
 mod int8;
@@ -142,6 +143,8 @@ pub struct Part {
     pub dtypes: Dtypes,
     /// The stored shape this part must have, from the view and the params.
     pub shape: fn(&Ctx) -> Result<Shape>,
+    /// How its stored bytes follow the logical tensor's rows, for a read of some of them (`rows`).
+    pub rows: rows::Follows,
 }
 
 impl Part {
@@ -151,6 +154,7 @@ impl Part {
             required: true,
             dtypes,
             shape,
+            rows: rows::Follows::Unknown,
         }
     }
     pub(crate) const fn opt(role: &'static str, dtypes: Dtypes, shape: fn(&Ctx) -> Result<Shape>) -> Part {
@@ -159,7 +163,12 @@ impl Part {
             required: false,
             dtypes,
             shape,
+            rows: rows::Follows::Unknown,
         }
+    }
+    /// It, its rows read as `rows` says.
+    pub(crate) const fn rows(self, rows: rows::Follows) -> Part {
+        Part { rows, ..self }
     }
 }
 
@@ -334,7 +343,7 @@ pub(crate) fn planned<R>(
         parts,
         None,
         read,
-        f,
+        |_, _, plan, g| f(plan, g),
     )
     .map_err(|e| match e {
         Error::Decode(detail) => Error::Decode(format!("{name}: {detail}")),
@@ -382,6 +391,28 @@ fn inputs<R>(
     parts: &[PartMetadata<'_>],
     read: bool,
     f: impl FnOnce(Plan, Geometry) -> Result<R>,
+) -> Result<R> {
+    checked(dtype, shape, encoding, parts, read, |_, _, plan, g| f(plan, g))
+}
+
+/// `f` with the scheme and its checked view of a tensor's part metadata (no bytes read).
+pub(crate) fn with_ctx<R>(
+    dtype: &Dtype,
+    shape: &[u64],
+    encoding: &Encoding,
+    parts: &[PartMetadata<'_>],
+    f: impl FnOnce(&Scheme, &Ctx) -> Result<R>,
+) -> Result<R> {
+    checked(dtype, shape, encoding, parts, false, |scheme, c, _, _| f(scheme, c))
+}
+
+fn checked<R>(
+    dtype: &Dtype,
+    shape: &[u64],
+    encoding: &Encoding,
+    parts: &[PartMetadata<'_>],
+    read: bool,
+    f: impl FnOnce(&Scheme, &Ctx, Plan, Geometry) -> Result<R>,
 ) -> Result<R> {
     let name = encoding.scheme.as_str();
     let scheme = SCHEMES
@@ -436,7 +467,7 @@ fn run<R>(
     parts: &BTreeMap<&str, PartBytes>,
     slots: Option<&Slots>,
     read: bool,
-    f: impl FnOnce(Plan, Geometry) -> Result<R>,
+    f: impl FnOnce(&Scheme, &Ctx, Plan, Geometry) -> Result<R>,
 ) -> Result<R> {
     let (dtype, shape) = logical;
     let fail = Error::Decode;
@@ -533,7 +564,7 @@ fn run<R>(
             post: plan::Post::None,
         },
     };
-    f(plan, g)
+    f(scheme, &ctx, plan, g)
 }
 
 /// Values of matrices of `r × c`, row-major, as `c × r`.

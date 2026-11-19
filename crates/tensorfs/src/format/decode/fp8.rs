@@ -2,6 +2,7 @@
 //! for the tensor, or one per row, or one per column.
 
 use super::grid::Grid;
+use super::rows::Follows;
 use super::plan::Codes;
 use super::{logical, one, Ctx, Dtypes, Part, Plan, Scheme, View};
 
@@ -24,8 +25,8 @@ pub(crate) const ROWWISE: Scheme = Scheme {
     view: View::Matrix,
     params: &[],
     parts: &[
-        Part::req("weight", FP8, logical),
-        Part::req("scale", SCALE, |c| Grid::Row.shape(c)),
+        Part::req("weight", FP8, logical).rows(Follows::Logical),
+        Part::req("scale", SCALE, |c| Grid::Row.shape(c)).rows(Follows::Grid(|_| Grid::Row)),
     ],
     decode: |c| Ok(scaled(c, Grid::Row)),
 };
