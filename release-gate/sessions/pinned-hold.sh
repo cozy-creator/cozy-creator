@@ -6,9 +6,9 @@
 quote 600
 rent
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd)
-(cd "$RUN_PROJECT" && exec cozy --json run "$W/wait" seconds:=900 --on "$NAME") > "$OUT/held.ndjson" 2> "$OUT/held.err" &
+(cd "$RUN_PROJECT" && exec cozy --json run "$W/wait" seconds:=300 --on "$NAME") > "$OUT/held.ndjson" 2> "$OUT/held.err" &
 for _ in $(seq 1 60); do
   grep -qs '"type":"run.in_progress"' "$OUT/held.ndjson" && break; sleep 5
 done
 say "HOLDING: $(handle "$OUT/held.ndjson") is on $NAME; cancel this run now"
-sleep 900
+sleep 600
