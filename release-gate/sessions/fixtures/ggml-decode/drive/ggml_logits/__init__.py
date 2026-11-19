@@ -289,8 +289,19 @@ ASKS = (
 
 @app.entrypoint(accelerator=True)
 def bucket(ctx: Context, model: VisionLM) -> Agreement:
-    """`_bucket` on the launcher's WHILE node, as a call decodes."""
-    return _bucket(model, launcher=True)
+    """`_bucket` on the path the engine judged for this driver (`engine.launcher`), as a call decodes: the launcher,
+    else the host-replayed graph; it waits for the check."""
+    from cozy_runtime.engine import launcher
+
+    index = int(getattr(model.engine, "index", 0))
+    deadline = time.monotonic() + 300
+    while (paths := launcher.judged(index)) is None:
+        if time.monotonic() > deadline:
+            raise RuntimeError("the engine's launcher check never ended")
+        time.sleep(1)
+    if paths.launcher and paths.replayed:
+        raise RuntimeError(f"this driver runs neither launch path: {paths.launcher}; {paths.replayed}")
+    return _bucket(model, launcher=not paths.launcher)
 
 
 @app.entrypoint(accelerator=True)

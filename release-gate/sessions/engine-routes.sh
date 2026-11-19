@@ -2,9 +2,6 @@
 # `VisionLM.ask` call takes, through `cozy run` on one fresh rental of $SKU, each read from the run's own `.engine` note.
 # No run may compile one of the engine's Triton kernels on its request (a `triton compile` confession of one): they are
 # its model's declared set, built while the model loads (`engine.kernels`). Any other kernel a request compiles is told.
-#   refused    the first executor's launcher check has its child killed with SIGSEGV (`fixtures/ggml-decode/kill-check.sh`,
-#              as a crash of the launcher ends it): its calls go to Transformers' engine or the replayed path, with the
-#              check's reason, none crashes and no pass is kept; then TensorD restarts and a fresh executor checks again;
 #   cold       the pod's first q8_0 call: the engine, or Transformers' engine while its set builds ("are building");
 #              then the same short call until the engine serves it (`ready`), the time that took told; int8 likewise;
 #   served     the q8_0 lane, text (`qwen3/ask`): the engine serves it ("by the engine");
@@ -24,7 +21,10 @@
 #   rows       17 questions in one `VisionLM.ask` (the drive's `rows`; AskRequest takes 16): Transformers' engine;
 #   room       the q8_0 lane with the GPU memory limited to `capped`: its weights' lease is refused at the call's start, so
 #              Transformers' engine serves it ("don't fit at the call's start").
-# Then the varena suite's `cases` (engine-loop), and, with TensorD restarted and the GPU free, stock llama.cpp (`llama`).
+# Then the varena suite's `cases` (engine-loop, a section a process), the refusal path (`refused`: the launcher check's
+# records cleared and the next executor's check child killed with SIGSEGV, as a crash ends it: its calls take the
+# replayed path or Transformers' engine with the reason, with the same tokens, none crashed, no launcher pass kept), and,
+# with TensorD restarted and the GPU free, stock llama.cpp (`llama`).
 # Every call must answer with words. The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime.
 # params: tree (required), tensorfs, runtime (required), capped (6GiB), cases (engine-loop), llama (b12466; "" for none),
 #         gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (2400), skus and quoted (preflight.sh).
@@ -32,7 +32,8 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
 VARENA=$(cd "$HERE/../suites/varena/drive" && pwd)
-TREE=$(param tree '') CAPPED=$(param capped 6GiB) CASES=$(param cases engine-loop) LLAMA=$(param llama b12466)
+TREE=$(param tree '') CAPPED=$(param capped 6GiB) LLAMA=$(param llama b12466)
+CASES=$(param cases "engine-loop-loop engine-loop-polled engine-loop-attention engine-loop-ggml engine-loop-copies engine-loop-replayed")
 GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf')
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 [[ $CAPPED =~ ^[0-9]+[MG]iB$ ]] || fail "capped: <n>GiB"
@@ -106,35 +107,20 @@ FAILED=()
 step pull-q8 model install "$Q8" --on "$NAME" || fail "pull q8_0"
 step pull-int8 model install "$INT8" --on "$NAME" || fail "pull int8"
 step pull-q4 model install "$Q4" --on "$NAME" || fail "pull q4_k_m"
-# The refusal path without a driver that crashes the launcher: the first executor's launcher check has its child
-# killed with SIGSEGV a second after it starts (found by its command line), as a crash would end it. That executor's
-# calls must go to Transformers' engine or the replayed path with the check's reason, none crashed, and no pass kept.
-if [ -n "$LLAMA" ]; then  # the pod's shell (an ssh rental)
-  { there "mkdir -p /w" < /dev/null && there "cat > /w/kill-check.sh" < "$FIX/kill-check.sh" &&
-    there "setsid nohup bash /w/kill-check.sh > /w/kill-check.log 2>&1 < /dev/null &" < /dev/null; } || fail "start the check's killer"
-  refused=""
-  for i in $(seq 1 20); do
-    step "refused-$i" run "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=Name a colour." max_tokens:=8 temperature:=0 --on "$NAME" \
-      || { say "FAILED: refused-$i: a call crashed or failed"; FAILED+=("refused-$i"); break; }
-    record "refused-$i"
-    heard=$(note "refused-$i")
-    say "refused-$i: ${heard:-none} · answer: $(jq -r '.result.texts[0] // ""' "$OUT/refused-$i.json" | head -c 80)"
-    if [[ $heard == *"neither of the engine's launch paths"* || $heard == *"host-replayed"* ]]; then refused=$i; break; fi
-    [[ $heard == *"being checked"* ]] || { say "FAILED: refused-$i: neither checking nor refused"; FAILED+=("refused-$i"); break; }
-    sleep 5
-  done
-  say "kill-check: $(there 'cat /w/kill-check.log' < /dev/null | tail -2 | paste -sd ';' -)"
-  [ -n "$refused" ] || { say "FAILED: the killed check never refused the launcher"; FAILED+=("refused"); }
-  kept=$(there "find /var/lib/cozy -name 'cozy-engine-launcher-passed-*' 2> /dev/null | head -3" < /dev/null)
-  say "after the killed check, passes kept: ${kept:-none}"
-  [ -z "$kept" ] || { say "FAILED: a killed check kept a pass"; FAILED+=("refused-kept"); }
-  step restart-check machine update "$NAME" --gpu-memory-limit off -y || fail "restart TensorD"  # a fresh executor checks again
-fi
 ready cold "$Q8"
+# records <label>: the launcher check's records on the machine (passes by path; crash markers, this boot's).
+records() { there "find /var/lib/cozy -name 'cozy-engine-launcher*' -printf '%f\n' 2> /dev/null | sort | paste -sd ' ' -" < /dev/null; }
+LAUNCHED=""
+for f in "$OUT"/cold-*.json; do [[ $(note "$(basename "$f" .json)") == *", launched)"* ]] && LAUNCHED=1; done
 if [ -n "$LLAMA" ]; then
-  kept=$(there "find /var/lib/cozy -name 'cozy-engine-launcher-passed-*' 2> /dev/null | head -3" < /dev/null)
-  say "after a fresh executor's check, passes kept: ${kept:-none}"
-  [ -n "$kept" ] || { say "FAILED: the passing check kept no pass"; FAILED+=("pass-kept"); }
+  kept=$(records)
+  say "the launcher check's records: ${kept:-none} · the engine $([ -n "$LAUNCHED" ] && echo launched || echo host-replayed)"
+  if [ -n "$LAUNCHED" ]; then
+    [[ $kept == *"cozy-engine-launcher-passed-"* ]] || { say "FAILED: the launcher served and kept no pass"; FAILED+=("pass-kept"); }
+  else
+    [[ $kept == *"cozy-engine-launcher-replayed-passed-"* && $kept != *"cozy-engine-launcher-passed-"* ]] ||
+      { say "FAILED: host-replayed without the replayed path's pass, or with the launcher's"; FAILED+=("pass-kept"); }
+  fi
 fi
 route served "by the engine" "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=$STORY" max_tokens:=64 temperature:=0
 ready cold-int8 "$INT8"
@@ -174,11 +160,50 @@ step uncap machine update "$NAME" --gpu-memory-limit off -y || say "uncap failed
 if [ -n "$CASES" ]; then
   pod_install stage-varena "$VARENA"
   for c in $CASES; do
-    step "$c" run "$VARENA/core" "case=$c" --on "$NAME" || { tail -c 3000 "$OUT/$c.txt" | tee -a "$R"; FAILED+=("$c"); continue; }
-    on_candidates "$c"
-    n=$(runno "$c"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail' > "$OUT/$c-case.json"
-    say "$c: $(jq -c '.rows[0] | del(.case)' "$OUT/$c-case.json" 2> /dev/null | cut -c1-3000)"
+    if step "$c" run "$VARENA/core" "case=$c" --on "$NAME"; then
+      on_candidates "$c"
+      n=$(runno "$c"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail' > "$OUT/$c-case.json"
+      say "$c: $(jq -c '.rows[0] | del(.case)' "$OUT/$c-case.json" 2> /dev/null | cut -c1-1500)"
+      continue
+    fi
+    code=$(grep -ao '"exit": -\?[0-9]*' "$OUT/$c.txt" | tail -1 | grep -o -- '-\?[0-9]*$')
+    say "$c: failed, exit ${code:-?}"
+    # A launcher section's crash is this driver's, which the launcher check refused (the engine host-replayed).
+    if [[ -z $LAUNCHED && ${code:-0} -lt 0 && $c =~ ^engine-loop-(loop|polled|copies)$ ]]; then continue; fi
+    tail -c 2000 "$OUT/$c.txt" | tee -a "$R"; FAILED+=("$c")
   done
+fi
+# The refusal path on any driver: the launcher check's records cleared, TensorD restarted, and the next executor's
+# check has its child killed with SIGSEGV a second after it starts (fixtures/ggml-decode/kill-check.sh), as a crash
+# ends it. That executor's calls go to the replayed path or Transformers' engine with the reason, none crashed, and no
+# launcher pass is kept.
+if [ -n "$LLAMA" ]; then
+  there "find /var/lib/cozy \\( -name 'cozy-engine-launcher*' -o -name 'fault-cozy-engine-launcher*' \\) -delete" < /dev/null
+  step restart-check machine update "$NAME" --gpu-memory-limit off -y || fail "restart TensorD"
+  { there "mkdir -p /w" < /dev/null && there "cat > /w/kill-check.sh" < "$FIX/kill-check.sh" &&
+    there "setsid nohup bash /w/kill-check.sh > /w/kill-check.log 2>&1 < /dev/null &" < /dev/null; } || fail "start the check's killer"
+  refused=""
+  for i in $(seq 1 20); do
+    step "refused-$i" run "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=$STORY" max_tokens:=64 temperature:=0 --on "$NAME" \
+      || { say "FAILED: refused-$i: a call crashed or failed"; FAILED+=("refused-$i"); break; }
+    record "refused-$i"
+    heard=$(note "refused-$i")
+    said=$(jq -r '.result.texts[0] // ""' "$OUT/refused-$i.json")
+    say "refused-$i: ${heard:-none} · answer: $(head -c 120 <<<"$said")"
+    if [[ $heard == *"host-replayed: the launcher"* || $heard == *"neither of the engine's launch paths"* ]]; then refused=$i; break; fi
+    [[ $heard == *"being checked"* || $heard == *"by the engine"* ]] || { say "FAILED: refused-$i: an unexpected route"; FAILED+=("refused-$i"); break; }
+    sleep 5
+  done
+  say "kill-check: $(there 'cat /w/kill-check.log' < /dev/null | tail -2 | paste -sd ';' -)"
+  [ -n "$refused" ] || { say "FAILED: the killed check never refused the launcher"; FAILED+=("refused"); }
+  if [ -n "$refused" ]; then  # the same tokens as the first 64 of the same call before
+    same=$(python3 -c "import json,sys; a,b=(json.load(open(p))['result']['texts'][0] for p in sys.argv[1:]); print(a==b)" "$OUT/served.json" "$OUT/refused-$refused.json" 2> /dev/null)
+    say "refused-$refused's answer equals served's (the same call before): ${same:-?}"
+    [[ $(note "refused-$refused") != *"host-replayed"* || $same == True ]] || { say "FAILED: the replayed path's answer differs"; FAILED+=("refused-tokens"); }
+  fi
+  kept=$(records)
+  say "after the killed check, the launcher check's records: ${kept:-none}"
+  [[ $kept != *"cozy-engine-launcher-passed-"* ]] || { say "FAILED: a killed check kept the launcher's pass"; FAILED+=("refused-kept"); }
 fi
 # The executors' own lines on kernels, the engine and lm (a bounded tail of TensorD's log): each set's shapes and build.
 cozy machine logs "$NAME" tensord -n 4000 2> /dev/null | grep -aE '\[kernels\]|\[engine\]|\[lm\]|cozy-engine' > "$OUT/kernel-lines.txt" || true
