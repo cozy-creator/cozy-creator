@@ -49,7 +49,8 @@
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #              "pod_sh" (optional: {"during", "after", "after_s"}, each a root shell on the pod over `cozy machine ssh`: `during` each 5 s
 #              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to `after_s` seconds, 900
-#              by default), into <cell>-pod-after.log);
+#              by default), into <cell>-pod-after.log); "run_s" (optional: the cell's run is cancelled once it has run this
+#              many seconds, a stalled cell leaving the pod to the next ones);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -94,6 +95,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS")
   [[ $k =~ ^[A-Za-z0-9_-]+$ ]] && [ "$(jq --arg k "$k" 'map(select(.name==$k)) | length' <<<"$CELLS")" = 1 ] || fail "cell names must be unique words: $k"
   [[ $(jq -r '.pod_sh.after_s // 900' <<<"$c") =~ ^[1-9][0-9]*$ ]] || fail "cell $k: pod_sh.after_s is seconds"
+  [[ $(jq -r '.run_s // 1' <<<"$c") =~ ^[1-9][0-9]*$ ]] || fail "cell $k: run_s is seconds"
   if [ -z "$(jq -r '.tree // empty' <<<"$c")" ]; then say "cell $k: published $(jq -r .target <<<"$c") $(jq -r '.args | join(" ")' <<<"$c")"; continue; fi
   t=$PACKAGES/$(jq -r .tree <<<"$c")/$(jq -r .target <<<"$c")
   [ -d "${t%/*}" ] || fail "cell $k: no ${t#$PACKAGES/}"
@@ -319,7 +321,11 @@ for k in "${names[@]}"; do
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
   during=$(jq -r '.pod_sh.during // empty' <<<"$c") after=$(jq -r '.pod_sh.after // empty' <<<"$c") PW=''
   [ -z "$during" ] || { ( while :; do echo "== $(date -u +%T.%3N)"; pod_sh "$during"; sleep 5; done ) >> "$OUT/$k-pod-during.log" 2>&1 & PW=$!; }
+  # run_s: the cell's run is cancelled once it has run this long, so a stalled cell leaves the pod to the next ones
+  bound=$(jq -r '.run_s // empty' <<<"$c") CW=''
+  [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || { say "$k: past run_s ${bound}s: cancelling $n"; cd "$RUN_PROJECT" && cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  [ -z "$CW" ] || kill "$CW" 2> /dev/null
   [ -z "$PW" ] || kill "$PW" 2> /dev/null
   [ -z "$after" ] || pod_sh "$after" "$(jq -r '.pod_sh.after_s // 900' <<<"$c")" > "$OUT/$k-pod-after.log" 2>&1
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
