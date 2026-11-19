@@ -1,0 +1,1 @@
+`cozy new <directory>` requires a relative or absolute destination. Use `.` to create a project in the current directory. New projects are encrypted by default. An encrypted project needs an empty directory, which Cozy checks before asking for a passphrase. `cozy new --unencrypted .` initializes an existing directory and keeps its files.

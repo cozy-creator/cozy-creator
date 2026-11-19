@@ -2,14 +2,14 @@
 
 All projects use canonical Automerge state inside `project.db`; media stay separate files.
 New projects are encrypted by default. Encryption remains optional: explicitly choose ordinary
-storage with `cozy new --unencrypted` or the WebUI's “Create without encryption”. Ordinary
+storage with `cozy new --unencrypted <directory>` or the WebUI's “Create without encryption”. Ordinary
 projects need no account, password or mount driver. Existing projects keep their current storage.
 Multiplayer, encrypted hosted backup and trusted collaboration hosting are later phases.
 
 ## Basic use
 
-Create the encrypted project before importing or generating private data. Its directory must be
-new or empty; existing unrelated files are preserved and refuse encrypted initialization:
+Create the encrypted project before importing or generating private data. Give a relative or absolute path
+to a new or empty directory. Use `.` when you are already in that directory.
 
 ```sh
 cozy new /absolute/path/MyProject --recovery-out /separate/device/recovery.txt

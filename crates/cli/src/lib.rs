@@ -63,7 +63,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Create a project in a new or existing directory.
+    /// Create a project, encrypted by default.
     New(project::New),
     /// Open the current project in your browser.
     Open(open::Args),

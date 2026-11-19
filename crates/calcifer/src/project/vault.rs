@@ -108,7 +108,7 @@ fn unusable(e: project_mount::Error) -> Error {
 fn unusable_for_creation(e: project_mount::Error) -> Error {
     let refused = unusable(e);
     match refused.code == "vault_dependency_missing" {
-        true => Error { message: format!("{}; or create the project unencrypted", refused.message), ..refused }.next("cozy new --unencrypted"),
+        true => Error { message: format!("{}; or create the project unencrypted", refused.message), ..refused }.next("cozy new --unencrypted <directory>"),
         false => refused,
     }
 }

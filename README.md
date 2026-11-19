@@ -29,7 +29,7 @@ release's signature, restarts Calcifer on it, and the local machine follows once
 
 ## Use
 
-Create a project in a new or empty directory. New projects are encrypted by default: enter a
+Choose a directory for the project. New projects are encrypted by default and need a new or empty directory. Enter a
 passphrase locally and save the recovery secret on another device, in a password manager or on paper.
 
 ```sh
@@ -37,9 +37,12 @@ cozy login you@example.com
 cozy new garden
 ```
 
+The path can be relative to your current directory or absolute. Use `cozy new .` to select the current directory.
+
 For local source/request files, use the reported readable view as your working directory so those
 files are encrypted too. The WebUI resolves that view automatically. `cozy new --unencrypted garden`
-explicitly opts out; ordinary projects need no filesystem driver. Existing projects keep their storage.
+explicitly opts out. It can initialize a directory that already has files, leaving them in place.
+Ordinary projects need no filesystem driver. Existing projects keep their storage.
 Noninteractive creation uses `--passphrase-file FILE|-` and `--recovery-out NEWFILE` outside the project,
 or the explicit opt-out. [Platform requirements and recovery](crates/calcifer/docs/PROJECT-ENCRYPTION.md).
 
@@ -97,7 +100,7 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
-rent a Linux GPU, or `--on <machine>` for one you have. Run project commands from the project directory. `cozy new [directory]` creates a project explicitly.
+rent a Linux GPU, or `--on <machine>` for one you have. Run project commands from the project directory. `cozy new <directory>` creates a project.
 `cozy run` and `cozy status` use an existing project. `cozy open` opens it; outside a project folder, it opens Cozy Creator, where you can pick one. Outputs land in its `files/` directory.
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.

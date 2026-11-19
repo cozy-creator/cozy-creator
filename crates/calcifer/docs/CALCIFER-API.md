@@ -209,7 +209,7 @@ A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds i
 interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
 a spec.
 
-- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project` ("Run this from inside a project folder, or create a project first.", next `cozy new`), before anything else is done, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project` ("Run this from inside a project folder, or create a project first.", next `cozy new <directory>`), before anything else is done, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing, lock?}`:
   - `target`: one of Calcifer's jobs, `cozy/…` ("Jobs"), which is no project's run; else `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y).
@@ -845,11 +845,11 @@ still refuse with their relative path instead of silently importing outside data
 
 ## CLI verbs and their calls
 
-The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates an encrypted project by default through `POST /v1/projects`; `--unencrypted` explicitly opts out. `cozy open`, function execution and `cozy status` require an existing project. Metadata-only `cozy run --describe` does not create a project or require a new passphrase. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.
+The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new <directory>` accepts a relative or absolute destination and creates an encrypted project by default through `POST /v1/projects`. Pass `--unencrypted` to initialize a project alongside existing files. Function execution and `cozy status` require an existing project. Metadata-only `cozy run --describe` does not create a project or require a new passphrase. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.
 
 | Verb | Calls |
 |---|---|
-| `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
+| `cozy new <directory>` | `POST /v1/projects` with the selected absolute path |
 | `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; starts a private window of the user's browser (`$BROWSER`'s, else the default's, else an installed one's: `--incognito`, `--inprivate`, `--private-window`) at the page's URL (`/p/<code>`) and prints it; with none, prints it and opens nothing; `--json` prints it and starts none |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |

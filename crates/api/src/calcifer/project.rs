@@ -2,12 +2,12 @@
 //! opened by its path, its assets as they stand and their versions (a video's are takes), the runs
 //! that make them, what happens as they go, and its files and cuts. The CLI's asset verbs
 //! are one client of it.
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{calcifer::On, error::Error};
+use crate::{calcifer::On, error::{Error, Kind}};
 
 /// The canvas view, saved inside its project's database.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -123,7 +123,14 @@ pub struct Key {
 
 /// A run asked in no project (cl-1028): every run is kept in its project.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
+    Error::new(Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new <directory>")
+}
+
+/// A fresh encrypted project needs an empty destination.
+pub fn folder_not_empty(dir: &Path) -> Error {
+    Error::new(Kind::Conflict, "project_not_empty", format!("{} isn't empty. An encrypted project needs an empty folder.", dir.display()))
+        .next("cozy new <new-directory>")
+        .next("cozy new --unencrypted <directory>")
 }
 
 /// Where a card sits on a project's canvas: one row of its canvas.
