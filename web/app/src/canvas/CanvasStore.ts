@@ -1046,7 +1046,9 @@ export class CanvasStore {
           this.patch(asset.name, change)
           this.reshape(asset.name)
         }
-        if (landing && !this.lookedAt(asset.name, landing.number)) this.sayLater(asset.name, landing.id || undefined, landing.number, landing.main?.sha256)
+        // Its note shows a picture of an image or a video only, as the take says its file is: a text tool's words have none to ask for.
+        const pictured = landing?.main && ["image", "video"].includes(landing.main.field) ? landing.main.sha256 : undefined
+        if (landing && !this.lookedAt(asset.name, landing.number)) this.sayLater(asset.name, landing.id || undefined, landing.number, pictured)
       } else if (this.adding === 0 && !this.renames.has(asset.name)) {
         // While an import is being asked, a new name may be that import's: its answer says, then this runs again. A box's old name while
         // its rename is on its way is that box, under its new name here: never another box of it (e2e 44094179191: `named` was drawn again
