@@ -21,6 +21,11 @@
 #   graphs-h3-upscale-* Regenerate-2K of a 5 s plate at 1080p, three prompts: the latent upscaler captures its graph (its
 #                       scale embedding was a pageable host copy, refused: gate 44167820873)
 #   graphs-audit        replays were audited against their calls as written, and no P-H3-Image or Anima record differed
+#   graphs-operands     var-034, the coordinator's rule (11-18): "a replay never writes to or reads memory its graph doesn't
+#                       hold … a replay refuses in one line when that is gone. Never a GPU fault from dropping a reference."
+#                       operands.py under the machine's own TensorFS, one process a case: a graph whose output was dropped
+#                       replays, one whose operands were freed refuses in one line. Last: without the guard that replay
+#                       faults the GPU (Xid 31; pod-session 44430279106)
 G=$OUT/graphs
 mkdir -p "$G"
 pod_dev "$CLI" "$M" > /dev/null && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
@@ -180,4 +185,27 @@ elif [ "$audited" -gt 0 ] && [ "${#mismatched[@]}" = 0 ]; then
   expect graphs-audit PASS "$audited replays audited, none differed"
 else
   expect graphs-audit FAIL "$audited replays audited; ${#mismatched[@]} records with a replay_mismatch: ${mismatched[*]:0:2}"
+fi
+if gwant graphs-operands; then
+  # The machine's executor environment: an earlier cell's, else the SDXL copy's install makes one.
+  gop_py() { timeout 60 "$CLI" machine ssh "$M" -- "ls -t /var/lib/cozy/tensord/generations/*/env/bin/python 2> /dev/null | head -1" < /dev/null 2> /dev/null | tail -n 1; }
+  gopy=$(gop_py)
+  if [[ $gopy != /var/lib/cozy/* ]] && gcopy sdxl; then
+    "$CLI" package install ./graphs/sdxl --on "$M" > graphs-operands-install.log 2>&1; gopy=$(gop_py)
+  fi
+  # gop_said <case> <jq>: that case's report, read by the filter.
+  gop_said() { grep -E '^[{]' "graphs-operands-$1.txt" 2> /dev/null | tail -n 1 | jq -r "$2" 2> /dev/null; }
+  if [[ $gopy != /var/lib/cozy/* ]]; then
+    expect graphs-operands FAIL "no executor environment on $M: ${gopy:-none}"
+  elif ! timeout 60 "$CLI" machine ssh "$M" -- "cat > /tmp/graphs-operands.py" < "$HERE/suites/graphs/operands.py" > /dev/null 2>&1; then
+    expect graphs-operands FAIL "operands.py did not reach $M"
+  else
+    for c in outputs operands; do  # one process a case: a fault ends its context
+      timeout 300 "$CLI" machine ssh "$M" -- "$gopy /tmp/graphs-operands.py 0 $c" < /dev/null > "graphs-operands-$c.txt" 2> "graphs-operands-$c.err"
+      log "graphs-operands $c: $(gop_said "$c" tojson | head -c 500)"
+    done
+    gout=$(gop_said outputs 'select(.replayed == true) | .tensorfs') gops=$(gop_said operands '.refused // empty')
+    [ -n "$gout" ] && [ -n "$gops" ] && expect graphs-operands PASS "TensorFS $gout: a dropped output replays; freed operands refuse: $gops" ||
+      expect graphs-operands FAIL "outputs: $(gop_said outputs tojson | grep . || echo 'no report'); operands: $(gop_said operands tojson | grep . || echo 'no report')"
+  fi
 fi
