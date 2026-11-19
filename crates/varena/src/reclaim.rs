@@ -546,11 +546,9 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
 }
 
 /// Of the weights the demand fill of `group` would evict, in its order (the weight classes by rank),
-/// those finished and not used before it: in the active phase, only what lies between the last use
-/// and the group's own plan position, a loop going round, comes first. A group the active phase
-/// doesn't name keeps the classes a guess may take. No wait: one still in use is passed over, as
-/// demand passes it within a class. The bytes found, up to `want`; `evict` takes them once they
-/// reach it.
+/// those finished and next used after the group (or, where the plan names no use for it, the classes
+/// a guess may take). No wait: one still in use is passed over, as demand passes it within a class.
+/// The bytes found, up to `want`; `evict` takes them once they reach it.
 fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evict: bool) -> Result<usize> {
     let order = plan::order(device)?;
     let gpu = crate::gpu(device)?;
@@ -560,21 +558,7 @@ fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evi
     }
     let mut state = gpu.lock()?;
     gpu.poll_fences(&mut state)?;
-    let at = group.iter().filter_map(|id| match order.next_use(*id) {
-        Some((0, position)) => Some(position),
-        _ => None,
-    }).min();
-    let cursor = state.last_used.and_then(|id| match order.next_use(id) {
-        Some((0, position)) => Some(position),
-        _ => None,
-    });
-    // Used before the group: after the last use and before the group's position, round the loop.
-    let sooner = |position: u64| match (at, cursor) {
-        (Some(at), Some(cursor)) if cursor < at => cursor < position && position < at,
-        (Some(at), Some(cursor)) => position > cursor || position < at,
-        (Some(at), None) => position < at,
-        (None, _) => false,
-    };
+    let at = group.iter().filter_map(|id| state.next_at(*id, &order)).min();
     let prefix = state.prefix(&order);
     let classes = if at.is_some() { CONTENTLESS..=PHASE_NEXT } else { UNPLANNED..=PHASE_FRESH };
     let mut candidates: Vec<_> = state.entries.iter()
@@ -588,7 +572,8 @@ fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evi
         if found >= want {
             break;
         }
-        let later = class == CONTENTLESS || !matches!(order.next_use(id), Some((0, position)) if sooner(position));
+        let later = class == CONTENTLESS
+            || at.is_none_or(|at| state.next_at(id, &order).is_none_or(|next| next > at));
         if later && gpu.completion(&state, id) == Completion::Done {
             victims.push(id);
             found += bytes;
