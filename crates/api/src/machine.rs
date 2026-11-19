@@ -1174,7 +1174,7 @@ pub struct ModelRef {
 
 /// What a job makes, by the variables a function's time scales with: its function's own (`estimate.size`, cl-1286: `needs::size`),
 /// else those `of` guesses from its input. Each a number above 0; each unknown one is absent.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct JobSize {
     #[serde(flatten)]
@@ -1183,6 +1183,26 @@ pub struct JobSize {
     /// measured request it is most like (`estimate::References`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refs: Option<u32>,
+}
+
+/// On the wire a whole value is written whole, and `frames`, `steps` and `tokens` always are (rounded): a cozy before named variables
+/// reads those three as integers in a Status frame, and the Hub refuses a row whose request has them otherwise.
+impl Serialize for JobSize {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (name, n) in &self.values {
+            let whole = matches!(name.as_str(), "frames" | "steps" | "tokens") || n.fract() == 0.0;
+            match whole && n.abs() < 9.0e15 {
+                true => map.serialize_entry(name, &(n.round() as i64))?,
+                false => map.serialize_entry(name, n)?,
+            }
+        }
+        if let Some(refs) = self.refs {
+            map.serialize_entry("refs", &refs)?;
+        }
+        map.end()
+    }
 }
 
 impl JobSize {
