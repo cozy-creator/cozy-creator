@@ -6891,6 +6891,14 @@ fn well_placed(api: &Arc<Api>, offers: &[Offer], soonest: &Offer, hub: &str, pac
     }
 }
 
+/// A run's models as it chose them (`--model`), as a box names them: what it fetches and is timed by (cl-1279: a row is of a model).
+fn chosen_models(chosen: &[v1::ModelChoice]) -> Map<String, Value> {
+    let slot = |choice: &v1::ModelChoice| choice.parameter.rsplit(".models.").next().unwrap_or(&choice.parameter).to_owned();
+    let written = |choice: &v1::ModelChoice| if choice.release.is_empty() { choice.model.clone() } else { format!("{}@{}", choice.model, choice.release) };
+    let models: Map<String, Value> = chosen.iter().filter(|choice| !choice.model.is_empty()).map(|choice| (slot(choice), serde_json::json!({ "ref": written(choice) }))).collect();
+    Map::from_iter([("models".to_owned(), Value::Object(models))])
+}
+
 /// Where a job of Calcifer's queue may go (cl-1132): its project's machines (`machines_of`), else where a run naming none goes.
 pub(crate) async fn queue_set(api: &Arc<Api>, row: &crate::store::RunRow) -> Vec<On> {
     if row.project_root.is_some()
@@ -6916,7 +6924,7 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
             let read = Host::new(api).read_published(&hub, &format!("{}@{}", release.package, release.release), &first).await.ok();
             // What its request waits for, by its function's needs rules on its payload (cl-1103).
             let models = match &read {
-                Some(read) => fit::checkpoints(api, &hub, read, function, &Map::new(), Some(&payload)).await,
+                Some(read) => fit::checkpoints(api, &hub, read, function, &chosen_models(&row.spec.models), Some(&payload)).await,
                 None => vec![],
             };
             let gpu = read.as_ref().and_then(|read| api::interface::Interface::parse(read.document()).ok()).is_some_and(|interface| {
@@ -6961,14 +6969,14 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
 /// copies of it as if sent at once, each quoted what its needs rules say `request` (its bound payload) needs (cl-1103). Also each copy's
 /// offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, request: Option<&Value>, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, request: Option<&Value>, chosen: &[v1::ModelChoice], size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     // Its models, for placement, read as a quote reads them: nothing started, moved or updated on the first of `set` (cl-1115), which
     // may not be where it goes; what its needs rules say `request` needs (cl-1103).
     let first = set.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
     let read = host.read_published(hub, &format!("{package}@{release}"), &first).await.ok();
     let models = match &read {
-        Some(read) => fit::checkpoints(api, hub, read, function, &Map::new(), request).await,
+        Some(read) => fit::checkpoints(api, hub, read, function, &chosen_models(chosen), request).await,
         None => vec![],
     };
     let named = format!("{package}/{function}@{release}");
