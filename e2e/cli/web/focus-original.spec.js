@@ -2,8 +2,8 @@
 // right?"): Focus draws a picture's own file at its own pixels, never the thumbnail Calcifer keeps for the canvas (a 512 px JPEG of an
 // opaque picture). A tall one, fitted narrower than 512 screen pixels, drew that thumbnail. Zoomed past one screen pixel to each of its
 // own, its pixels are drawn as they are, as an image editor draws them, not smoothed; fitted, smoothed. A 16,384 px panorama zooms to its
-// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on. Its looks, fitted and zoomed, at 1440×900 and
-// 1920×1080 on paper and dark, are kept for a person to look at.
+// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on: no frame as long as its decode takes on the
+// runner. Its looks, fitted and zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, focus, png, themed } = require('./fixtures');
@@ -120,10 +120,18 @@ test('focus-original', async ({ page, project }) => {
       cancelAnimationFrame(window.__frames.id);
       return Math.round(window.__frames.longest);
     });
-    expect.soft(longest, 'the longest frame while it opened and its file decoded, ms').toBeLessThan(1000);
+    // Judged on this runner: a page that waited for the decode would hold a frame as long as the decode itself takes here (release e2e
+    // 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page).
+    const decoded = await page.evaluate(async (src) => {
+      const blob = await (await fetch(src)).blob();
+      const began = performance.now();
+      (await createImageBitmap(blob)).close();
+      return Math.round(performance.now() - began);
+    }, file);
+    expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under the ${decoded} ms its file takes to decode here`).toBeLessThan(decoded);
     const fitted = await drawn(page);
     const most = await zoomUntil(page, region, 'Zoom in image', () => false);
-    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, fitted, most }) });
+    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, decoded, fitted, most }) });
     expect.soft(most.across, `zoomed all the way in, screen pixels to each of its own (fitted ${fitted.across.toFixed(3)})`).toBeGreaterThanOrEqual(1);
     await soft.poll(async () => (await drawn(page)).rendering, { message: 'and its pixels as they are' }).toBe('pixelated');
   });
