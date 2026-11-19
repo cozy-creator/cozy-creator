@@ -272,14 +272,17 @@ pub(crate) fn calcifers(key: &str) -> bool {
     [MOVE, "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
 }
 
-/// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.
+/// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit. The cozy installed on this
+/// computer (`cozy 0.27.0 (installed)`), which `local` runs anyway and `cozy update` moves it to, is none: it pins nothing.
 fn software(named: &str) -> bool {
-    ["runtime ", "tensorfs ", "tensord ", "cozy "].iter().any(|member| named.starts_with(member))
+    let installed = named.starts_with("cozy ") && named.ends_with(" (installed)");
+    !installed && ["runtime ", "tensorfs ", "tensord ", "cozy "].iter().any(|member| named.starts_with(member))
 }
 
 /// The hold an update under `key` named `target` gives its machine (`flagless`: nothing named): `Some(None)` lets it go, `Some(words)`
-/// holds it on them. None leaves it as it is: Calcifer's own updates, and one that names no software. Software named by version holds it
-/// whatever that version is: an RC build named by hand (`(RC)`) is a pin, not the RC.
+/// holds it on them. None leaves it as it is: Calcifer's own updates, and one that names no software, such as `cozy update`'s move of
+/// `local` to the cozy it installed (cl-1254). Software named by version holds it whatever that version is: an RC build named by hand
+/// (`(RC)`) is a pin, not the RC.
 pub(crate) fn hold_of<'a>(key: &str, target: &'a str, flagless: bool) -> Option<Option<&'a str>> {
     if calcifers(key) {
         return None;
