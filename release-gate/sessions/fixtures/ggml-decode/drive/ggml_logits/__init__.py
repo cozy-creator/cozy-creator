@@ -178,8 +178,10 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     stopping, drafted with the checkpoint's MTP head and plain. Each is timed warm (after the same call once, which records
     its step): `s` is the call's wall time, prefill included; `decode_s` and `steps` the decode's. Each mode runs on the
     launcher's WHILE node and, as `<mode>-replayed`, with the host replaying the step's graph (the same step, the same
-    pod). Its tokens against today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ
-    at, or their length."""
+    pod); the drafted mode also as `drafted-unfused`, replayed, with the step's small ops as torch's (the reference the
+    fused kernels are held against). Every call's greedy tokens are held against Transformers' teacher-forced forward
+    (`forced`), and against today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ
+    at, or their length. `profile` (fused) and `profile_unfused` are replayed calls; `profile_launched` the launcher's."""
     from cozy_runtime.engine.decoder import Decoder, Request
 
     net = model.pipe.components["model"]
@@ -207,6 +209,19 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
                                         "steps": again.steps, "ms_step": round(1e3 * again.decode_s / max(again.steps, 1), 3),
                                         "same_as_launched": None, "captured": again.captured}
             replayed_tokens = again.tokens[0]
+            made_by[f"{mode}-replayed"] = replayed_tokens
+            if mode == "drafted":
+                unfused = decoders["drafted-unfused"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False,
+                                                                     fused=False)
+                unfused(request)
+                torch.cuda.synchronize()
+                began = time.perf_counter()
+                plain_ops = unfused(request)
+                torch.cuda.synchronize()
+                rows["drafted-unfused"] = {"s": round(time.perf_counter() - began, 3), "decode_s": round(plain_ops.decode_s, 3),
+                                           "steps": plain_ops.steps,
+                                           "ms_step": round(1e3 * plain_ops.decode_s / max(plain_ops.steps, 1), 3)}
+                made_by["drafted-unfused"] = plain_ops.tokens[0]
             decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
             decoder(request)
             torch.cuda.synchronize()
@@ -239,10 +254,12 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
                                                 min(len(tokens), len(replayed_tokens)))
     rows["profile"] = _profile(decoders.get("drafted-replayed") or decoders["plain-replayed"], ids)
     rows["profile_launched"] = _profile(decoders.get("drafted") or decoders["plain"], ids)
+    if "drafted-unfused" in decoders:
+        rows["profile_unfused"] = _profile(decoders["drafted-unfused"], ids)
     rows["forced"] = {"today": _forced(net, ids, today)}
     for mode in made_by:
         rows["forced"][mode] = _forced(net, ids, made_by[mode])
-    if len(sampled) == 2:  # a draw is hashed from the seed and the token's index: drafting keeps the same tokens
+    if len(sampled) == 2:  # the same noise at each index: told, not required (a near tie in the scores can turn a draw)
         a, b = sampled["drafted"], sampled["plain"]
         rows["sampled_same"] = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
     return Agreement(json.dumps(rows))
