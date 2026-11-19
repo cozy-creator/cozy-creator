@@ -100,7 +100,11 @@ guess?: boolean, };
  * Another machine a run could rent, against the pick: its time as a multiple of the pick's, and
  * the Hub's one price an hour. `label` says which way it trades.
  */
-export type Alternative = { sku: string, gpus: number, label?: string, time: number, usd_micros_per_hour: number, };
+export type Alternative = { sku: string,
+/**
+ * How many GPUs its machine has, by its Hub: none for the CPU machine.
+ */
+gpus: number, label?: string, time: number, usd_micros_per_hour: number, };
 
 /**
  * How the page looks (cl-1097): a theme, and that theme's own options by name (Paper's `landscape`: `shown` or `hidden`). `GET` and
@@ -2659,6 +2663,10 @@ usd_micros_per_hour: number, disk_gb: number, expected_hours: number, expected_d
  */
 agreed: Agreed,
 /**
+ * How many GPUs the quoted machine has, by its Hub: none for the CPU machine (th-402).
+ */
+gpus?: number | null,
+/**
  * What the Hub changed of the ask to quote it.
  */
 warnings?: Array<string>,
@@ -2900,7 +2908,15 @@ widths: Array<RentalSkuWidth>, };
 /**
  * One GPU count of a product and its one price an hour, the machine with its disk and traffic.
  */
-export type RentalSkuWidth = { accelerator_count: number, price_usd_micros_per_hour: number, container_disk_gb: number, vcpu_count?: number | null, memory_gb?: number | null, expected_price: RentalPriceEstimate, };
+export type RentalSkuWidth = {
+/**
+ * The width, which an order names (`--gpus`): 1 for the CPU machine.
+ */
+accelerator_count: number,
+/**
+ * How many GPUs its machine has: none for the CPU machine (th-402). Calcifer always says it (`machine_gpus`).
+ */
+gpus?: number | null, price_usd_micros_per_hour: number, container_disk_gb: number, vcpu_count?: number | null, memory_gb?: number | null, expected_price: RentalPriceEstimate, };
 
 /**
  * `GET /v1/rental-skus[?hub=]`: what is for rent now, cheapest first by its fewest GPUs, as the
@@ -3192,7 +3208,11 @@ others?: Array<Run>, };
  * `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,
  * and two other machines it would rent instead. `null` for a run that rents nothing: one Calcifer carries out itself.
  */
-export type RunQuote = { sku: string, gpus?: number | null, quote: Quote, why?: string | null, alternatives?: Array<Alternative>,
+export type RunQuote = { sku: string,
+/**
+ * The width its rental orders (`--gpus`); none: the product's fewest. How many GPUs the machine has is `quote.gpus`.
+ */
+gpus?: number | null, quote: Quote, why?: string | null, alternatives?: Array<Alternative>,
 /**
  * What the Hub's placement wants its asker to know.
  */

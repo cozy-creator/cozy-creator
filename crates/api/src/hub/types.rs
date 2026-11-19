@@ -724,7 +724,9 @@ pub struct RentalPlacementMachine {
     pub name: String,
     pub accelerator_model: String,
     pub vram_gb: i64,
+    /// The product's width, which an order names, and how many GPUs its machine has (`calcifer::machine_gpus`).
     pub accelerator_count: i64,
+    pub gpus: Option<i64>,
     pub price_usd_micros_per_hour: i64,
     pub container_disk_gb: i64,
     /// Effective dense TOPS at the lane, from the card's spec sheet.
@@ -798,6 +800,11 @@ pub struct RentalQuote {
     /// The one price an hour, the machine with its disk and traffic: an order sends it back as its cap.
     #[serde(default)]
     pub price_usd_micros_per_hour: i64,
+    /// The width quoted, and how many GPUs its machine has (`calcifer::machine_gpus`).
+    #[serde(default)]
+    pub accelerator_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<i64>,
     #[serde(default)]
     pub container_disk_gb: i64,
     pub expected_price: RentalPriceEstimate,
@@ -848,7 +855,9 @@ pub struct Rental {
     pub sku: Option<String>,
     /// The card asked for, then the one bought.
     pub requested_accelerator_model: String,
+    /// The product's width, and how many GPUs its machine has (`calcifer::machine_gpus`).
     pub accelerator_count: i64,
+    pub gpus: Option<i64>,
     pub provider: Option<String>,
     /// Where its latest attempt was bought, and that its pod mounted the datacenter's NFS drive:
     /// an admin's read, or a renter's who named the provider.

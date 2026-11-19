@@ -200,7 +200,7 @@ impl Hubs {
     /// A rental's GPUs as its Hub last said them.
     pub(crate) fn gpus(&self, row: &MachineRow) -> Option<u32> {
         let rental = self.rental(&row.hub, row.rental_id.as_deref()?)?;
-        u32::try_from(rental.accelerator_count).ok()
+        Some(::api::calcifer::machine_gpus(rental.gpus, rental.accelerator_count))
     }
 
     /// A rental with no address yet, by its Hub's last word: when it should serve, its card and GPUs. None when it isn't coming by any
@@ -209,7 +209,7 @@ impl Hubs {
     pub(crate) fn on_its_way(&self, row: &MachineRow, now: i64) -> Option<OnItsWay> {
         let rental = self.rental(&row.hub, row.rental_id.as_deref()?)?;
         let ready_at_ms = ready_at(&rental, now)?;
-        let gpus = u32::try_from(rental.accelerator_count).unwrap_or_default();
+        let gpus = ::api::calcifer::machine_gpus(rental.gpus, rental.accelerator_count);
         Some(OnItsWay { ready_at_ms, card: rental.requested_accelerator_model.clone(), gpus })
     }
 
@@ -281,6 +281,10 @@ impl Machines {
         let reader = self.hubs.anonymous(hub)?;
         let mut skus = reader.list_rental_skus().await.map_err(|e| hub_refusal(hub, e))?;
         skus.retain(|sku| !sku.widths.is_empty());
+        // Each width says its machine's GPUs, whatever its Hub's age: the CLI and the page read that alone.
+        for width in skus.iter_mut().flat_map(|sku| &mut sku.widths) {
+            width.gpus = Some(i64::from(width.machine_gpus()));
+        }
         let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
         skus.sort_by(|a, b| hourly(a).cmp(&hourly(b)).then_with(|| a.name.cmp(&b.name)));
         Ok(RentalSkus { rental_skus: skus })
@@ -334,7 +338,7 @@ impl Machines {
             rentals.push(RentalRow {
                 ran_s: (ended_at_ms.unwrap_or(now) - started_at_ms) / 1000,
                 sku: r.sku.unwrap_or(r.requested_accelerator_model),
-                gpus: u32::try_from(r.accelerator_count).unwrap_or_default(),
+                gpus: ::api::calcifer::machine_gpus(r.gpus, r.accelerator_count),
                 rental_id: r.rental_id,
                 name: named.unwrap_or_else(|| "—".into()),
                 state: r.state,
@@ -888,13 +892,12 @@ impl Machines {
                 .iter()
                 .map(|e| format!("{} ×{}: {}", e.name, e.accelerator_count, e.reason))
                 .collect();
+            // A Hub that excluded nothing says no reason, and the sentence ends there.
+            let why = if why.is_empty() { String::new() } else { format!(": {}", why.join("; ")) };
             return Err(Error::new(
                 Kind::Capacity,
                 "placement_none_fits",
-                format!(
-                    "No machine the Hub rents right now can run this: {}.",
-                    why.join("; ")
-                ),
+                format!("No machine the Hub rents right now can run this{why}."),
             )
             .next("cozy machine rent"));
         };
@@ -904,14 +907,11 @@ impl Machines {
             (Some(true), _) => format!("the cheapest per run of the {fast} fast enough"),
             _ => format!("the fastest of {}, though none is fast enough", placement.machines.len()),
         };
-        let why = format!(
-            "The Hub picked {} ({}× {}, {}GB), {rule}, for {}GB of weights.",
-            top.name,
-            top.accelerator_count,
-            top.accelerator_model,
-            top.vram_gb,
-            placement.weight_bytes / 1_000_000_000,
-        );
+        let card = match ::api::calcifer::machine_gpus(top.gpus, top.accelerator_count) {
+            0 => "no GPU".to_owned(),
+            gpus => format!("{gpus}× {}, {}GB", top.accelerator_model, top.vram_gb),
+        };
+        let why = format!("The Hub picked {} ({card}), {rule}, for {}GB of weights.", top.name, placement.weight_bytes / 1_000_000_000);
         // The Hub may buy the next machines down its order instead (as fast, when the pick is),
         // never above the price agreed for the pick.
         let others: Vec<_> = placement.machines[1..]
@@ -1679,7 +1679,7 @@ fn alternatives(machines: &[types::RentalPlacementMachine]) -> Vec<Alternative> 
             let m = &rest[i];
             Alternative {
                 sku: m.name.clone(),
-                gpus: u32::try_from(m.accelerator_count).unwrap_or(1),
+                gpus: ::api::calcifer::machine_gpus(m.gpus, m.accelerator_count),
                 label: label.into(),
                 time: m.speed.filter(|s| *s > 0.0).map_or(0.0, |s| speed / s),
                 usd_micros_per_hour: m.price_usd_micros_per_hour,
@@ -1757,6 +1757,7 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
         expected_download_gb: u32::try_from(expected.download_gb).unwrap_or_default(),
         expected_total_usd_micros: expected.total_usd_micros,
         agreed: Agreed { usd_micros_per_hour: quote.price_usd_micros_per_hour },
+        gpus: Some(::api::calcifer::machine_gpus(quote.gpus, quote.accelerator_count)),
         warnings: quote.warnings.clone(),
         provider: quote.provider.clone().filter(|p| !p.is_empty()),
         datacenter: quote.datacenter.clone().filter(|d| !d.is_empty()),
@@ -2013,7 +2014,7 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         sku: rental.sku.clone().filter(|s| !s.is_empty()).or(sku)
             .unwrap_or_else(|| rental.requested_accelerator_model.clone()),
         accelerator: rental.requested_accelerator_model.clone(),
-        gpus: u32::try_from(rental.accelerator_count).unwrap_or_default(),
+        gpus: ::api::calcifer::machine_gpus(rental.gpus, rental.accelerator_count),
         usd_micros_per_hour: hourly(rental),
         spend_usd_micros: Some(rental.spend_usd_micros),
         spend_basis: Some(rental.spend_basis.clone()).filter(|b| !b.is_empty()),
@@ -2123,16 +2124,25 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
     if let Some(at) = &status.last_seen_at {
         message += &format!(" It was last offered at {at}.");
     }
-    let offered: Vec<String> = (status.sku.iter())
-        .flat_map(|s| &s.widths)
-        .map(|w| w.accelerator_count.to_string())
-        .collect();
-    let error = match offered.first() {
-        Some(first) => {
-            message += &format!(" {sku} is available now with {} GPUs.", offered.join(" or "));
-            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku} --gpus {first}"))
+    let widths = || status.sku.iter().flat_map(|s| &s.widths);
+    let offered: Vec<String> = widths().map(|w| w.accelerator_count.to_string()).collect();
+    let error = match offered.as_slice() {
+        // A machine with no GPU has the one width, which names no count.
+        [_, ..] if widths().all(|w| w.machine_gpus() == 0) => {
+            message += &format!(" {sku} has no GPU: rent it without --gpus.");
+            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku}"))
         }
-        None => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
+        [first, ..] => {
+            let counts = offered.join(" or ");
+            message += &format!(" {sku} is available now with {counts} GPU{}.", if counts == "1" { "" } else { "s" });
+            // An order naming no width asks for one GPU (`admit_sku`'s), so one names none.
+            let next = match first.as_str() {
+                "1" => format!("cozy machine rent {sku}"),
+                _ => format!("cozy machine rent {sku} --gpus {first}"),
+            };
+            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(next)
+        }
+        [] => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
     };
     error.next("cozy machine rent")
 }

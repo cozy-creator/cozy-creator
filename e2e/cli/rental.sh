@@ -66,6 +66,13 @@ echo "rented $rental"
 asked=$(grep -F '"operation":"POST /v1/rental-quotes"' "$OUT/hub-kept.jsonl" 2> /dev/null | tail -n +$((${quotes:-0} + 1)) || true)
 [ -n "$asked" ] && jq -se 'all(.body.container_disk_gb == 300)' <<< "$asked" > /dev/null \
   || check "rental_end: machine rent cpu didn't ask for 300 GB: $(printf '%s' "${asked:-hubcheck kept no quote of it}" | head -c 300)"
+# th-402 (the release coordinator, 11-17: "the cpu SKU says it has 1 GPU"): the CPU machine's one width is 1 and it has no GPU. The
+# catalog says both, and the order's quote and `rental.accepted` count the machine's GPUs as their Hub does, never by a `--gpus`
+# default of the CLI's own.
+listed=$(cozy --json machine rent 2> /dev/null | jq -c '[.[] | select(.name == "cpu") | .widths[] | [.accelerator_count, .gpus]]' 2> /dev/null || true)
+[ "$listed" = '[[1,0]]' ] || check "rental_end: the catalog lists cpu's widths and GPUs as ${listed:-nothing}, not [[1,0]]"
+counted=$(jq -sc '[.[] | select(.quote? or .type? == "rental.accepted") | (.quote // .).gpus]' "$OUT/rental-rent.ndjson" 2> /dev/null || true)
+[ "$counted" = '[0,0]' ] || check "rental_end: machine rent cpu's quote and rental.accepted count ${counted:-nothing} GPUs, not [0,0]: $(head -c 400 "$OUT/rental-rent.ndjson")"
 
 step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
 # One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",

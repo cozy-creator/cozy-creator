@@ -5,7 +5,7 @@
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
 // it), a box this computer would render poorly renders here at once, asking nothing (cl-1066: Slow here already offers the rental),
-// canceled as it waits on its fresh install, that install ending with it, and the next Render installs again. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
+// canceled as it waits on its fresh install, that install ending with it, and the next Render installs again. Then a run's price on a new cpu rental in New run, and the docker provider's cpu, rented from Machines at its quoted price (each "CPU", no GPU count: th-402), listed as the CLI lists it, made the
 // project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
 // (e2e/cli/rental.sh). In a dev home whose packages checkout holds H3 (an RC build), the checkout's H3 is timed by its source's
 // benchmarks.json before any run (cl-1024).
@@ -15,7 +15,7 @@ const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = 
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
+const { test, expect, themed, canvasCard, canvasIdle, focus, canvasVisible, openPoint, png } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
@@ -153,6 +153,24 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
     await page.getByLabel('Menu', { exact: true }).click();
     await page.locator('details.main-menu nav').getByRole('link', { name: item, exact: true }).click();
   };
+  /** The page at 1440×900 and 1920×1080, on paper and dark (each a reload, as the page's own switch keeps it), in $OUT/web/<dir>, for a
+   *  person to look at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
+  const lookIn = (dir) => async (what, again) => {
+    const shots = join(need('OUT'), 'web', dir);
+    mkdirSync(shots, { recursive: true });
+    for (const theme of ['dark', 'paper']) {
+      await project.look(theme);
+      await page.reload();
+      await themed(page, theme);
+      await again();
+      for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+        await page.setViewportSize({ width, height });
+        await canvasIdle(page);
+        await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
+  };
   // Every render the page asks for: its boxes and machines.
   const asked = [];
   const renders = `/v1/projects/${encodeURIComponent(project.id)}/runs`;
@@ -256,24 +274,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         const answer = await page.waitForResponse((one) => one.request().method() === 'POST' && new URL(one.url()).pathname === fits && one.request().postDataJSON()?.names?.[0] === name, { timeout: 60_000 });
         return (await answer.json()).estimates?.[0];
       };
-      const shots = join(need('OUT'), 'web', 'render-time');
-      mkdirSync(shots, { recursive: true });
-      /** The page at 1440×900 and 1920×1080, on paper and dark (each a reload, as the page's own switch keeps it), for a person to look
-       *  at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
-      const look = async (what, again) => {
-        for (const theme of ['dark', 'paper']) {
-          await project.look(theme);
-          await page.reload();
-          await themed(page, theme);
-          await again();
-          for (const [width, height] of [[1440, 900], [1920, 1080]]) {
-            await page.setViewportSize({ width, height });
-            await canvasIdle(page);
-            await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
-          }
-        }
-        await page.setViewportSize({ width: 1600, height: 1000 });
-      };
+      const look = lookIn('render-time');
       await page.goto(project.url());
       await expect.poll(() => canvasVisible(page, 'slow')).toBe(true);
       await zoomToFit(page);
@@ -460,10 +461,25 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
     });
 
-    await test.step('Machines › Rent a machine › cpu › Rent, then Rent 1× CPU at its price', async () => {
+    await test.step('Machines › Rent a machine › cpu › Rent, then Rent CPU at its price', async () => {
       // The Hub restored now, not after: Calcifer keeps a key per Hub origin, and the account signed in is the isolated Hub's own.
       await page.goto('about:blank');
       await calciferControl.hub();
+      const look = lookIn('quotes');
+      // th-402: a run's quote on a new cpu rental counts its GPUs as the Hub does, none ("Run on a new 1× CPU" before). A quote rents nothing.
+      const runOnCpu = async () => {
+        await page.goto(`${project.url('new')}?target=${encodeURIComponent('birefnet/remove_background')}`);
+        await drawer.getByRole('combobox', { name: 'Machine', exact: true }).selectOption('new:cpu');
+        // Its one input, which a quote asks for as a run does.
+        await drawer.locator('input[type="file"]').first().setInputFiles({ name: 'still.png', mimeType: 'image/png', buffer: png(90) });
+        const still = drawer.locator('.filerow').filter({ hasText: 'still.png' });
+        await expect(still, 'the still, chosen').toBeVisible();
+        await expect(still, 'the still, sent').not.toContainText(/Reading|Uploading|Waiting to upload/, { timeout: 60_000 });
+        await drawer.getByRole('button', { name: 'Get the price', exact: true }).click();
+        await expect(drawer.getByRole('button', { name: /^Run on a new CPU at \$\d+\.\d{2}\/h$/ }), 'New run, priced on a new cpu rental').toBeVisible({ timeout: 60_000 });
+      };
+      await runOnCpu();
+      await look('run-on-new-cpu', runOnCpu);
       await page.goto(project.url('machines'));
       const cpu = (await api.get('/v1/rental-skus')).rental_skus.find((sku) => sku.name === 'cpu');
       expect(cpu, "the docker provider's cpu, listed").toBeDefined();
@@ -472,12 +488,19 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       // Runs 43405964751, 43415541836: tensorhub's docker provider left its shape off the offer it lists (internal/provider/docker.go,
       // Inventory), and the row said "? vCPU".
       expect.soft(width.vcpu_count, 'its vCPUs, as the Hub lists them').toBeGreaterThan(0);
+      // th-402: the CPU machine's one width is 1 and it has no GPU, so its order names no count ("Rent 1× CPU" before).
+      expect.soft([width.accelerator_count, width.gpus], "its width and its machine's GPUs, as the Hub counts them").toEqual([1, 0]);
       await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
       await expect.soft(rent.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what the quote costs').toBeVisible();
-      const order = rent.getByRole('button', { name: /^Rent 1× CPU at \$\d+\.\d{2}\/h$/ });
+      const order = rent.getByRole('button', { name: /^Rent CPU at \$\d+\.\d{2}\/h$/ });
       await expect(order, 'one click on its stated price').toBeEnabled();
+      await look('rent-cpu', async () => {
+        await row.getByRole('button', { name: 'Rent', exact: true }).click();
+        await expect(order).toBeEnabled();
+        await order.scrollIntoViewIfNeeded();
+      });
       const placed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/machines');
       await order.click();
       const answer = await placed;

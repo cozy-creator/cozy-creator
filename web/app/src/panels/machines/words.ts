@@ -13,6 +13,10 @@ export const handle = (machine: Machine) => (machine.placeholder ? (machine.rent
 /** What it's called in a route that must survive a rename: its rental id, else its name. */
 export const stableName = (machine: Machine) => machine.rental_id ?? machine.name
 
+/** A product by its machine's GPUs, as its Hub counts them (`2× RTX-4090`): alone when it has none (the CPU machine), or when
+ * nothing said how many (th-402). */
+export const counted = (gpus: number | null | undefined, sku: string) => (gpus ? `${gpus}× ${sku.toUpperCase()}` : sku.toUpperCase())
+
 export const gpusWords = (machine: Machine) => {
   const gpus = machine.status?.gpus
   if (gpus?.length) return `${gpus.length}× ${gpus[0].name}${gpus[0].memory_bytes ? ` · ${bytes(gpus[0].memory_bytes)}` : ""}`

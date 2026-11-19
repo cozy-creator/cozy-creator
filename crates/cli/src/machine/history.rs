@@ -62,7 +62,10 @@ fn print(ctx: &Context, h: &RentalHistory) {
     for row in &h.rentals {
         let mut cells = vec![
             row.name.clone(),
-            format!("{}× {}", row.gpus, row.sku),
+            match row.gpus {
+                0 => row.sku.clone(),
+                gpus => format!("{gpus}× {}", row.sku),
+            },
             utc(row.started_at_ms),
             match row.ended_at_ms {
                 Some(_) => clock(row.ran_s * 1000),
