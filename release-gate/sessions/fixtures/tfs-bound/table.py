@@ -86,16 +86,25 @@ for arm in arms:
             if temp == "cold":
                 note += f", cached before {f.get('cached_before_cold')}, after {f.get('cached_after_cold')}"
             add(arm, f"{label} fill {'disk' if cold else 'RAM'} -> card", num(r.get("gb")), num(r.get("s")), cold, True, note)
-    p = load(f"{out}/{arm}-h3-paged.json")
-    if p and not p.get("error"):
-        busy = "overlapped " if p.get("busy_before") or p.get("busy_after") else ""
-        for key, case, cold, card in (("read_host", "h3 disk -> pinned (read_host, 8 readers)", True, False),
-                                      ("read_ahead", "h3 disk -> pinned pages (read_ahead)", True, False),
-                                      ("from_pages", "h3 pinned pages -> card", False, True)):
-            r = obj(p.get(key))
-            add(arm, case, num(r.get("gb")), num(r.get("s")), cold, card, busy + json.dumps({k: v for k, v in r.items() if k not in ("gb", "s", "gb_s")})[:200])
-    elif p:
-        rows.append([arm, "h3 paged", "-", "-", "-", "-", "-", "-", str(p.get("error"))[:120]])
+    paged = [("", f"{out}/{arm}-h3-paged.json")]
+    i = 1
+    while os.path.exists(f"{out}/{arm}-paged-sweep-{i}.json"):
+        paged.append((f"sweep {i} ", f"{out}/{arm}-paged-sweep-{i}.json"))
+        i += 1
+    for tag, path in paged:
+        p = load(path)
+        env = " ".join(f"{k}={v}" for k, v in obj(p.get("env")).items())
+        tag = f"{tag}[{env}] " if env else tag
+        if p and not p.get("error"):
+            busy = "overlapped " if p.get("busy_before") or p.get("busy_after") else ""
+            for key, case, cold, card in (("read_host", "h3 disk -> pinned (read_host, 8 readers)", True, False),
+                                          ("read_ahead", "h3 disk -> pinned pages (read_ahead)", True, False),
+                                          ("from_pages", "h3 pinned pages -> card", False, True)):
+                r = obj(p.get(key))
+                add(arm, tag + case, num(r.get("gb")), num(r.get("s")), cold, card,
+                    busy + json.dumps({k: v for k, v in r.items() if k not in ("gb", "s", "gb_s")})[:200])
+        elif p:
+            rows.append([arm, tag + "h3 paged", "-", "-", "-", "-", "-", "-", str(p.get("error"))[:120]])
     i = 1
     while os.path.exists(f"{out}/{arm}-sweep-{i}.json"):
         f = load(f"{out}/{arm}-sweep-{i}.json")

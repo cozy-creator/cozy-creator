@@ -11,7 +11,8 @@
 # ended first so the card is free:
 #   fill     Qwen-Image 2's every component, one Region a block, by one `varena.fill`: evicted (from disk), then again (RAM)
 #   h3-fill  the same for H3's transformer;  h3-paged: its blocks read ahead into pinned pages, then onto the card from them
-#   sweep    each of the arm's `sweep` env sets, Qwen-Image 2's fill again (a build that reads them: a proof's own)
+#   sweep    each of the arm's `sweep` env sets, Qwen-Image 2's fill again, and each `paged_sweep` set H3's paged rows
+#            again (a build that reads them: a proof's own)
 #   runs     unless `"runs": false`: Qwen-Image 2 cold (evicted, new executor) and warm (new executor), SDXL on a new executor
 #            and again, and with `h3` H3 Turbo 1 s cold and warm: every row's store read against the ceilings
 # A measurement another session's run overlapped (cl-1316: a pinned run sent to this pod) is marked `overlapped` and not judged.
@@ -129,6 +130,11 @@ for a in "${names[@]}"; do
     [ -n "$env" ] || continue
     i=$((i + 1)); load "$a-sweep-$i" "$a" "$env" fill "$QCK" transformer,text_encoder,vae
   done < <(jq -r --arg a "$a" '.[] | select(.name == $a) | (.sweep // [])[] | to_entries | map("\(.key)=\(.value)") | join(" ")' <<<"$ARMS")
+  i=0
+  while read -r env; do
+    [ -n "$env" ] && [ -n "$HCK" ] || continue
+    i=$((i + 1)); load "$a-paged-sweep-$i" "$a" "$env" paged "$HCK" transformer 3
+  done < <(jq -r --arg a "$a" '.[] | select(.name == $a) | (.paged_sweep // [])[] | to_entries | map("\(.key)=\(.value)") | join(" ")' <<<"$ARMS")
   if [ "$(jq -r --arg a "$a" '.[] | select(.name == $a) | .runs // true' <<<"$ARMS")" = true ]; then
     fresh; load "$a-evict" "$a" '' evict "${ALLCK//,/ }"
     run_qimg "$a-qimg-cold"
