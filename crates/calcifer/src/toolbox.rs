@@ -111,7 +111,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     }
     // What's read of the Hub later is told as `tools.changed`.
     crate::hub::checkpoints::families(api, &hub, &mut tools);
-    Ok(Json(Tools { tools }))
+    Ok(Json(Tools { tools, ratios: tool::STANDARD_RATIOS.map(str::to_owned).to_vec() }))
 }
 
 /// Your changes to the list: yours, not a project's, kept in `state.db`.
@@ -571,10 +571,15 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     tool_of(api, tool, dir).await.ok().map(|held| held.fields)
 }
 
+/// `tool` as Calcifer declares it itself, with no package read: the Edit. None: its package declares it.
+pub(crate) fn declared_here(tool: &str) -> Option<Tool> {
+    (api::calcifer::node::plain(tool.trim()).trim_start_matches("_/") == tool::EDIT).then(tool::edit)
+}
+
 /// `tool` as `GET /v1/tools` lists it, read as a run of it on this computer would be, from its package's declarations: nothing of it runs.
 pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<Tool, Error> {
-    if api::calcifer::node::plain(tool.trim()).trim_start_matches("_/") == tool::EDIT {
-        return Ok(tool::edit());
+    if let Some(own) = declared_here(tool) {
+        return Ok(own);
     }
     let hub = api.machines.hubs.default_origin();
     let found = match target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await {

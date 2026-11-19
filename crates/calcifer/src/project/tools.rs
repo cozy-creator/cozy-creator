@@ -261,29 +261,18 @@ pub(crate) struct Canvas {
 impl Canvas {
     /// What a cut's fields say: `fps`, `aspect_ratio`, `resolution`. What can't be read is said, and left at its default.
     pub(crate) fn of(fields: &Map<String, Value>, said: &mut Vec<String>) -> Self {
-        let fps = match fields.get("fps").and_then(Value::as_f64) {
-            Some(fps) if fps.is_finite() && fps > 0.0 && fps <= 240.0 => fps,
-            Some(fps) => {
-                said.push(format!("fps {fps} isn't a frame rate like 24, 25 or 30, so Cozy cuts at {EDIT_FPS}."));
+        let set = |field: &str| fields.get(field).filter(|value| !value.is_null());
+        let fps = set("fps").map_or(EDIT_FPS as f64, |value| {
+            fps_of(value).unwrap_or_else(|why| {
+                said.push(format!("fps {} {why}, so Cozy cuts at {EDIT_FPS}.", text(value)));
                 EDIT_FPS as f64
-            }
-            None => EDIT_FPS as f64,
+            })
+        });
+        let mut read = |field: &str, of: fn(&Value) -> Result<f64, &'static str>| {
+            set(field).and_then(|value| of(value).map_err(|why| said.push(format!("{field} {} {why}, so Cozy ignored it.", text(value)))).ok())
         };
-        let short = fields.get("resolution").map(text).and_then(|written| {
-            let short = written.strip_suffix('p').and_then(|n| n.parse::<u64>().ok()).filter(|n| *n >= 16);
-            if short.is_none() {
-                said.push(format!("resolution {written} isn't a size like 1080p or 1440p, so Cozy ignored it."));
-            }
-            short
-        });
-        let side = |text: &str| text.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0);
-        let ratio = fields.get("aspect_ratio").map(text).and_then(|written| {
-            let ratio = written.split_once(':').and_then(|(w, h)| Some(side(w)? / side(h)?));
-            if ratio.is_none() {
-                said.push(format!("aspect_ratio {written} isn't a ratio like 16:9 or 2.39:1, so Cozy ignored it."));
-            }
-            ratio
-        });
+        let short = read("resolution", short_of).map(|short| short as u64);
+        let ratio = read("aspect_ratio", ratio_of);
         Self { ratio, short, fps }
     }
 
@@ -301,6 +290,35 @@ impl Canvas {
             false => size(ratio, first.0.min(first.1)),
         }
     }
+}
+
+/// Why an Edit can't use `value` as its `field` (`fps`, `resolution`, `aspect_ratio`), as its cut reads them (`Canvas::of`); None: it can.
+pub(crate) fn unusable(field: &str, value: &Value) -> Option<String> {
+    let of: fn(&Value) -> Result<f64, &'static str> = match field {
+        "fps" => fps_of,
+        "resolution" => short_of,
+        "aspect_ratio" => ratio_of,
+        _ => return None,
+    };
+    of(value).err().map(str::to_owned)
+}
+
+/// An Edit's frame rate: a number above 0, at most 240.
+fn fps_of(value: &Value) -> Result<f64, &'static str> {
+    let fps = value.as_f64().or_else(|| value.as_str()?.trim().parse().ok());
+    fps.filter(|fps: &f64| fps.is_finite() && *fps > 0.0 && *fps <= 240.0).ok_or("isn't a frame rate: a number above 0, at most 240")
+}
+
+/// An Edit's short edge, `<n>p`: n pixels, at least 16.
+fn short_of(value: &Value) -> Result<f64, &'static str> {
+    let short = text(value).strip_suffix('p').and_then(|n| n.parse::<u64>().ok()).filter(|n| *n >= 16);
+    short.map(|short| short as f64).ok_or("isn't a size: a whole number of pixels from 16, then p, like 1080p")
+}
+
+/// An Edit's shape, `width:height`, each above 0.
+fn ratio_of(value: &Value) -> Result<f64, &'static str> {
+    let side = |text: &str| text.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0);
+    text(value).split_once(':').and_then(|(w, h)| Some(side(w)? / side(h)?)).ok_or("isn't a ratio: width:height, each above 0, like 16:9 or 2.39:1")
 }
 
 /// Width and height on this aspect for `short` as its short edge, each even.

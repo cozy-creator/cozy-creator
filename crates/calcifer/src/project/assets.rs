@@ -21,7 +21,7 @@ use api::{
 
 use super::{
     Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, stop_at_machines, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
-    measure_soon, model, noun,
+    measure_soon, model, noun, values,
     written::{Boxed, Start, Words, Written},
 };
 use crate::api::{Api, Refusal, parse};
@@ -125,6 +125,22 @@ pub(super) async fn ready_new(api: &Arc<Api>, folder: &folder::Folder, asked: &m
 }
 
 /// The box `asked` makes, its row and what its drop pushed aside, in one transaction (or the act it's in).
+/// `fields` as `tool` declares them, checked as `cozy apply` checks them (`values::checked`), each kept as it's fixed, and what was said of
+/// them. Only a tool Calcifer declares itself, read with no package described: a package's is its release's, which `cozy apply` reads
+/// (#4042's review: one rule for the Edit's rate, shape and size on every write).
+fn declared_checked(tool: Option<&str>, fields: &mut Map<String, Value>) -> Result<Vec<String>, Error> {
+    let Some(declared) = tool.and_then(crate::toolbox::declared_here) else { return Ok(vec![]) };
+    let reads = values::reads_of(&declared.id);
+    let mut said = vec![];
+    for field in &declared.fields {
+        let Some(value) = fields.get(&field.field) else { continue };
+        let (kept, lines) = values::checked(field, value, reads).map_err(|why| Error::new(Kind::Validation, "field_invalid", why))?;
+        said.extend(lines);
+        fields.insert(field.field.clone(), kept);
+    }
+    Ok(said)
+}
+
 pub(super) fn made(folder: &folder::Folder, id: &str, asked: &NewAsset, ready: &NewReady) -> Result<AssetMade, Error> {
     let NewReady { text_asset, plain, said, wanted } = ready;
     folder.act(|| {
@@ -149,7 +165,9 @@ pub(super) fn made(folder: &folder::Folder, id: &str, asked: &NewAsset, ready: &
             canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
         let kept = canvas::pushed(folder, id, asked.moves.clone(), &asked.placed)?;
-        folder.edit(|written| written.added(&name, &asked.tool, &asked.fields).map(drop))?;
+        let mut fields = asked.fields.clone();
+        declared_checked(Some(asked.tool.as_str()), &mut fields)?;
+        folder.edit(|written| written.added(&name, &asked.tool, &fields).map(drop))?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
         Ok(AssetMade { name, etag, kept })
     })
@@ -509,8 +527,14 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
         } else if written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
             fields.insert(format::NODE_KIND.to_owned(), Value::String("video".to_owned()));
         }
+        let tool_now = match &asked.tool {
+            Some(tool) => Some(tool.clone()),
+            None => written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).map(str::to_owned),
+        };
+        let said = declared_checked(tool_now.as_deref(), &mut fields)?;
         let mut edited = written.clone();
-        let warnings = edited.set(&name, &fields)?;
+        let mut warnings = edited.set(&name, &fields)?;
+        warnings.extend(said);
         folder.edit(|now| {
             *now = edited;
             Ok(())

@@ -32,6 +32,7 @@ use super::{
     graph::{self, name_key},
     history,
     nodes::{self, Shown, View},
+    values::{self, or_list},
     written::{Boxed, Written},
 };
 use crate::api::{Api, Refusal, parse};
@@ -184,6 +185,8 @@ struct Planning<'a> {
     changes: Vec<Changed>,
     conflicts: Vec<Conflict>,
     kept: Vec<Said>,
+    /// What reads the presets of the tool whose block is being checked (`values::reads_of`).
+    reads: values::Reads,
 }
 
 impl Planning<'_> {
@@ -519,6 +522,7 @@ impl Planning<'_> {
         let held = self.written.get(name).map(|boxed| nodes::block(&nodes::view(boxed, self.lock, self.folder).fields, Some(tool))).unwrap_or_default();
         let tags = self.lock.reserved.get(&format::plain_tool(id, self.folder)).cloned().unwrap_or_default();
         let slots = node::model_slots(tool);
+        self.reads = values::reads_of(id);
         let mut checked = Map::new();
         for (key, value) in block {
             let path = format!("{name}.{key}");
@@ -552,69 +556,19 @@ impl Planning<'_> {
         if value.is_null() {
             return Some(Value::Null);
         }
-        let not = |what: &str| format!("{what}, not {value}");
         match field.ty {
-            FieldType::Words | FieldType::Prompt => match value {
-                Value::String(text) => {
-                    if field.ty == FieldType::Prompt {
-                        self.mentions(path, text, tags);
+            // A value alone, as the asset PATCH checks it too (`values::checked`); a prompt's mentions are the plan's.
+            FieldType::Words | FieldType::Prompt | FieldType::Toggle | FieldType::Number | FieldType::Choice | FieldType::Shape | FieldType::Seed => {
+                match values::checked(field, value, self.reads) {
+                    Ok((kept, said)) => {
+                        said.into_iter().for_each(|line| self.told.warn(path, line));
+                        if field.ty == FieldType::Prompt && let Some(text) = kept.as_str() {
+                            self.mentions(path, text, tags);
+                        }
+                        Some(kept)
                     }
-                    Some(value.clone())
-                }
-                _ => {
-                    self.told.error(path, not("words"));
-                    None
-                }
-            },
-            FieldType::Toggle => match value {
-                Value::Bool(_) => Some(value.clone()),
-                _ => {
-                    self.told.error(path, not("true or false"));
-                    None
-                }
-            },
-            FieldType::Number => {
-                let Some(mut number) = value.as_f64() else {
-                    self.told.error(path, not("a number"));
-                    return None;
-                };
-                let unit = field.unit.as_ref().map_or_else(String::new, |unit| format!(" {unit}"));
-                let shown = |n: f64| if n.fract() == 0.0 { format!("{n:.0}") } else { n.to_string() };
-                if field.integer && number.fract() != 0.0 {
-                    self.told.warn(path, format!("{} is whole, so {}", shown(number), shown(number.round())));
-                    number = number.round();
-                }
-                if let Some(max) = field.max.filter(|max| number > *max) {
-                    self.told.warn(path, format!("{} is over {}{unit}, so {}", shown(number), shown(max), shown(max)));
-                    number = max;
-                }
-                if let Some(min) = field.min.filter(|min| number < *min) {
-                    self.told.warn(path, format!("{} is under {}{unit}, so {}", shown(number), shown(min), shown(min)));
-                    number = min;
-                }
-                Some(if number.fract() == 0.0 && number.abs() < 9e15 { json!(number as i64) } else { json!(number) })
-            }
-            FieldType::Choice => {
-                let options = field.options.clone().unwrap_or_default();
-                if options.iter().any(|option| canonical(option) == canonical(value)) {
-                    return options.into_iter().find(|option| canonical(option) == canonical(value));
-                }
-                let words: Vec<String> = options.iter().map(|option| option.as_str().map_or_else(|| option.to_string(), str::to_owned)).collect();
-                let fix = value.as_str().and_then(|said| node::near(said, words.iter().map(String::as_str))).map_or_else(String::new, |near| format!(". Did you mean {near}?"));
-                self.told.error(path, format!("{}{fix}", not(&or_list(&words))));
-                None
-            }
-            FieldType::Shape => {
-                let ratio = value.as_str().filter(|said| said.split_once(':').is_some_and(|(w, h)| w.parse::<f64>().is_ok_and(|w| w > 0.0) && h.parse::<f64>().is_ok_and(|h| h > 0.0)));
-                match (ratio, &field.ratios) {
-                    (Some(said), Some(ratios)) if !ratios.iter().any(|ratio| canonical(ratio) == canonical(value)) => {
-                        let words: Vec<String> = ratios.iter().map(|ratio| ratio.as_str().unwrap_or_default().to_owned()).collect();
-                        self.told.warn(path, format!("{said} isn't a ratio it lists ({}): a render clamps it to one, and says so", or_list(&words)));
-                        Some(value.clone())
-                    }
-                    (Some(_), _) => Some(value.clone()),
-                    (None, _) => {
-                        self.told.error(path, not("a ratio, width:height, quoted: \"9:16\""));
+                    Err(why) => {
+                        self.told.error(path, why);
                         None
                     }
                 }
@@ -681,13 +635,6 @@ impl Planning<'_> {
                     (false, value) => row(self, path, value),
                 }
             }
-            FieldType::Seed => match value.as_u64() {
-                Some(_) => Some(value.clone()),
-                None => {
-                    self.told.error(path, not("a whole number, or null for a new one each render"));
-                    None
-                }
-            },
             FieldType::Timeline => {
                 for mention in graph::mentions_in(value) {
                     self.mention(path, &mention, tags);
@@ -973,14 +920,6 @@ fn lora_list(value: &Value) -> Result<Value, String> {
     }
 }
 
-fn or_list(words: &[String]) -> String {
-    match words {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
-    }
-}
-
 fn empty_ask() -> NewAsset {
     NewAsset { tool: String::new(), at: None, name: None, exact: true, fields: Map::new(), kind: None, reads: None, moves: Default::default(), placed: Default::default() }
 }
@@ -1092,7 +1031,7 @@ pub(super) async fn apply(State(api): State<Arc<Api>>, Path(id): Path<String>, b
         }
     }
     let names = written.boxes.iter().map(|held| name_key(&held.name)).chain(asked.nodes.keys().map(|name| name_key(name))).collect();
-    let mut planning = Planning { folder, lock: &lock, written: &written, document: &document, tools: &tools, bases: &bases, names, fields: &fields, force: asked.force_conflicts, told, changes: vec![], conflicts: vec![], kept: vec![] };
+    let mut planning = Planning { folder, lock: &lock, written: &written, document: &document, tools: &tools, bases: &bases, names, fields: &fields, force: asked.force_conflicts, told, changes: vec![], conflicts: vec![], kept: vec![], reads: values::reads_of("") };
     let planned: Vec<Planned> = wrote.iter().filter_map(|wrote| planning.plan(wrote)).collect();
     let Planning { told, changes, conflicts, kept: stood, .. } = planning;
     let mut answer = Applied {

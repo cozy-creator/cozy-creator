@@ -7,6 +7,7 @@ import { Icon } from "../ui/Icon"
 import type { Load } from "./carry"
 import { useCanvasStore } from "./context"
 import { modelLabel, paletteEntries, withBuiltIns, type Operation, type PaletteEntry } from "./palette"
+import { takeStandardRatios } from "./ratios"
 import { useDragScroll } from "./dragScroll"
 import { toolName } from "./shown"
 import { carryingTool } from "./toolchange"
@@ -48,6 +49,8 @@ export function ToolPanel({ project, shut, setShut }: { project: string | null; 
   const [open, setOpen] = useState<Operation | null>(null)
   const { data, error, isPlaceholderData } = useQuery(toolsQuery(client, "", project))
   useEffect(() => {
+    // The standard ratios come with the tools, before what's drawn with them is drawn again.
+    if (data?.ratios) takeStandardRatios(data.ratios)
     store.addTools(withBuiltIns(data && !isPlaceholderData ? data.tools : []))
   }, [store, data, isPlaceholderData])
   const tools = data?.tools
