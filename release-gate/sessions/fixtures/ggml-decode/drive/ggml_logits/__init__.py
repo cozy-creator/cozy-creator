@@ -271,6 +271,45 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
+#: Four asks of different lengths, as Qwen's chat template writes a user turn with thinking off: one bucket's rows.
+ASKS = (
+    PROMPT,
+    "<|im_start|>user\nName three colours.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    f"<|im_start|>user\n{TEXTS[0]}\n\nRetell this as a short poem.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    f"<|im_start|>user\n{TEXTS[2]}\nExplain what this function does, step by step.<|im_end|>\n<|im_start|>assistant\n"
+    "<think>\n\n</think>\n\n",
+)
+
+
+@app.entrypoint(accelerator=True)
+def bucket(ctx: Context, model: VisionLM) -> Agreement:
+    """The engine's decoder on `ASKS` as four rows of one bucket (a call `vlm.ask` serves: up to 16 rows), 256 greedy
+    tokens each, drafted and plain: each row held against Transformers' teacher-forced forward at its clear positions
+    (`forced`), and the same row decoded alone (a bucket of one) held the same way, with where the two first differ."""
+    from cozy_runtime.engine.decoder import Decoder, Request
+
+    net = model.pipe.components["model"]
+    prompts = [model.processor.tokenizer(a, add_special_tokens=False)["input_ids"] for a in ASKS]
+    rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": [len(p) for p in prompts]}
+    head = getattr(net, "mtp", None)
+    for mode in ("drafted", "plain") if head is not None else ("plain",):
+        if mode == "plain" and head is not None:
+            del net.mtp
+        try:
+            decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300)
+            made = decoder(Request(prompts=prompts, max_new=256, stops=[])).tokens
+            alone = [decoder(Request(prompts=[p], max_new=256, stops=[])).tokens[0] for p in prompts]
+        finally:
+            if head is not None:
+                net.mtp = head
+        rows[mode] = [
+            {"bucket": _forced(net, p, made[i]), "alone": _forced(net, p, alone[i]),
+             "same_as_alone": next((t for t, (x, y) in enumerate(zip(made[i], alone[i])) if x != y), None)}
+            for i, p in enumerate(prompts)
+        ]  # fmt: skip
+    return Agreement(json.dumps(rows))
+
+
 @app.entrypoint(accelerator=True)
 def rows(ctx: Context, model: VisionLM) -> Agreement:
     """`VisionLM.ask` with 17 questions in one call, one more than the engine decodes at once (xs-213's fallback routes,
