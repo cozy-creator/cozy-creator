@@ -451,23 +451,18 @@ export class CanvasStore {
   private adding = 0
   private seen = false
   private selected: Set<string>
-  /** The boxes with More open. */
-  private moreOpen: Set<string>
   private named = new Set<() => void>()
   /** The project was read for the first time; whether it held anything. */
   onFirstRead?: (held: boolean) => void
   /** Elements with no row were just placed. */
   onPlaced?: () => void
-  /** More was opened or shut. */
-  onMore?: (names: string[]) => void
 
-  constructor(client: Client, outbox: OutboxPort, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
+  constructor(client: Client, outbox: OutboxPort, projectId: string | null, selected: Iterable<string>) {
     this.client = client
     this.outbox = outbox
     this.projectId = projectId
     this.history = new PageHistory(client, () => this.projectId)
     this.selected = new Set(selected)
-    this.moreOpen = new Set(moreOpen)
     // What's typed goes as the tab is hidden, as the page is about to go (`beforeunload`: Firefox ends what's in flight as soon as it starts to
     // navigate, before `pagehide`), and once more as it goes, which is its last word (cl-904, cl-973). Back from the browser's cache, it goes on.
     document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && this.flush(true))
@@ -550,7 +545,7 @@ export class CanvasStore {
     this.early.clear(); this.offers.clear(); this.dropTargets.clear(); this.carets.clear(); this.ids.clear(); this.namesById.clear(); this.served.clear()
     this.poses.clear(); this.owners.clear(); this.deleting.clear(); this.own.clear(); this.landings.clear(); this.masks.clear(); this.unsettled.clear()
     this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear(); this.renamedAt.clear()
-    this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map())
+    this.selected.clear(); this.tools.set(new Map())
     for (const listeners of this.subscribers.values()) for (const listener of listeners) listener()
     for (const told of [...this.hearing]) told()
     this.subscribers.clear(); this.named.clear(); this.hearing.clear()
@@ -2166,7 +2161,6 @@ export class CanvasStore {
     }
     this.masks.delete(name)
     this.shapes.delete(name)
-    if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
     if (id) this.viewport?.removeNodes([id])
   }
@@ -2194,10 +2188,6 @@ export class CanvasStore {
     const shape = this.shapes.get(from)
     this.shapes.delete(from)
     if (shape) this.shapes.set(to, shape)
-    if (this.moreOpen.delete(from)) {
-      this.moreOpen.add(to)
-      this.onMore?.([...this.moreOpen])
-    }
     const row = this.rows?.get(from)
     if (row) {
       this.rows!.delete(from)
@@ -2215,19 +2205,6 @@ export class CanvasStore {
   }
 
   // A node's inputs
-
-  /** Whether its More is open: as it was left, box by box. */
-  showsMore(name: string): boolean {
-    return this.moreOpen.has(this.resolveName(name))
-  }
-
-  setMore(name: string, open: boolean) {
-    const key = this.resolveName(name)
-    if (open) this.moreOpen.add(key)
-    else this.moreOpen.delete(key)
-    this.patch(key, {})
-    this.onMore?.([...this.moreOpen])
-  }
 
   /** What a control shows: what's typed, else what was sent, else what it holds. */
   valueOf(name: string, field: string): unknown {

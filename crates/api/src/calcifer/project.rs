@@ -17,8 +17,6 @@ pub struct ProjectView {
     pub viewport: Option<ProjectViewport>,
     #[serde(default)]
     pub selection: Vec<String>,
-    #[serde(default)]
-    pub more: Vec<String>,
 }
 
 /// Supplied view fields replace the corresponding saved fields.
@@ -29,8 +27,6 @@ pub struct ProjectViewPatch {
     pub viewport: Option<ProjectViewport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub more: Option<Vec<String>>,
 }
 
 /// A canvas position and zoom level.

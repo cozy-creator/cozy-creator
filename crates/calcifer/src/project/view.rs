@@ -42,7 +42,6 @@ pub(super) async fn patch(
         let mut view = stored(transaction)?;
         if let Some(viewport) = patch.viewport { view.viewport = Some(viewport); }
         if let Some(selection) = patch.selection { view.selection = selection; }
-        if let Some(more) = patch.more { view.more = more; }
         let document = serde_json::to_string(&view).map_err(|error| StoreError::Corrupt(error.to_string()))?;
         transaction.execute("INSERT INTO project_view(singleton,document) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET document=excluded.document", [&document])?;
         Ok(view)
