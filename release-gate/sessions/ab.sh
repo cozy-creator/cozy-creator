@@ -140,20 +140,21 @@ NEED=$(param need_s 3600)
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
 quote "$NEED"
 rent
-# PROOF ONLY (se-176, as proof/var-030-managed-working's cap-sweep): `min_cores` and `min_ram_gib` (the smaller of MemTotal
-# and the container's memory.max): a host below them is ended by name and another rented, `host_tries` in all, before any
-# download. `cozy machine rent` takes no host size, so the session looks after the boot. Unset, every host passes.
+# PROOF ONLY (se-176): podmem <bound|use> runs release-gate/sessions/podmem.sh on the pod.
+PODMEM=$(base64 -w0 < "$(dirname "$0")/podmem.sh")
+podmem() { timeout 90 cozy machine ssh "$NAME" "echo $PODMEM | base64 -d | sh -s $1" < /dev/null 2> /dev/null | grep -E '^[0-9]+ [0-9]+$|^bound ' | tail -1; }
+# PROOF ONLY (se-176): `min_cores` and `min_ram_gib`, against the bound TensorD itself enforces on a run (the tightest
+# cgroup limit on its path, v2 memory.max and memory.high, v1 memory.limit_in_bytes, else MemTotal: `podmem bound`). A host
+# below them is ended by name and another rented, `host_tries` in all, before any download.
 MINC=$(param min_cores 0) MINR=$(param min_ram_gib 0) TRIES=$(param host_tries 3)
 for try in $(seq "$TRIES"); do
   hw=''
   for _ in 1 2 3 4 5 6; do
-    hw=$(timeout 90 cozy machine ssh "$NAME" 'echo "$(nproc) $(awk "/^MemTotal/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) $(cat /sys/fs/cgroup/memory.max 2> /dev/null || echo max)"' < /dev/null 2> /dev/null |
-      grep -E '^[0-9]+ [0-9]+ ' | tail -1)
+    hw=$(podmem bound)
     [ -z "$hw" ] || break; sleep 10
   done
-  read -r cores ram cg <<< "${hw:-0 0 max}"
-  [[ $cg =~ ^[0-9]+$ ]] && [ $((cg >> 30)) -lt "$ram" ] && ram=$((cg >> 30))
-  say "host $NAME: $cores cores, $ram GiB of RAM for the container (asked at least $MINC cores, $MINR GiB)"
+  read -r cores ram <<< "${hw:-0 0}"
+  say "host $NAME: $cores cores, $ram GiB a run may reach (TensorD's bound: the tightest cgroup on its path; asked at least $MINC cores, $MINR GiB)"
   if [ "$cores" -ge "$MINC" ] && [ "$ram" -ge "$MINR" ]; then break; fi
   [ "$try" -lt "$TRIES" ] || fail "no host with $MINC cores and $MINR GiB in $TRIES rentals"
   timeout 120 cozy machine end "$NAME" -y > "$OUT/end-small-$try.txt" 2>&1
@@ -205,7 +206,7 @@ for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socke
 listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
 # PROOF ONLY (se-176): the container's memory, its cgroup's peak since boot and now and the host's available, each minute
 # while a cell runs (host.tsv) and after each cell.
-hostmem() { timeout 60 cozy machine ssh "$NAME" 'echo "cgroup_peak $(cat /sys/fs/cgroup/memory.peak 2> /dev/null || echo -) cgroup_now $(cat /sys/fs/cgroup/memory.current 2> /dev/null || echo -) available_kb $(awk "/^MemAvailable/ {print \$2}" /proc/meminfo) total_kb $(awk "/^MemTotal/ {print \$2}" /proc/meminfo)"' < /dev/null 2> /dev/null | grep -E '^cgroup_peak' | tail -1; }
+hostmem() { podmem use; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
     # Every 5 min the pod's own GPU readings (gpu-pod.log: a stalled cell's other holder is named there); each minute its listeners,
