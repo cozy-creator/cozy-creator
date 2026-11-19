@@ -56,8 +56,14 @@ pub(super) struct Escapes {
     /// Live tracked bytes by (birth pass, site).
     live: BTreeMap<(u32, u32), usize>,
     total: usize,
-    /// The most `total` reached since the last mark.
+    /// The most `total` reached since the last mark, with each cut site's working at its finest level:
+    /// a site re-chooses its level from the room each call, so what a pass held at a coarser one is not
+    /// what it needs (cr-350: PAN2's decode refused at 3.2 GiB its strips took with room to spare). The
+    /// open leaf's observation id (0: none), its finest level's need, and what is live of its bytes.
     peak: usize,
+    leaf: u64,
+    finest: usize,
+    cut: usize,
     last_head: Option<u32>,
     loops: BTreeMap<u32, Loop>,
     learned: BTreeMap<(u32, u64), Learned>,
@@ -141,20 +147,27 @@ fn named(sites: &[(u32, usize)]) -> Vec<(String, usize)> {
 }
 
 impl Escapes {
-    /// A live eager block born now, at `site`: its tally's key.
-    pub(super) fn born(&mut self, bytes: usize, site: u32) -> (u32, u32) {
+    /// A live eager block born now, at `site`: its tally's key, with the leaf it was born in.
+    pub(super) fn born(&mut self, bytes: usize, site: u32) -> (u32, u32, u64) {
         let key = (self.pass, site);
         *self.live.entry(key).or_default() += bytes;
         self.total += bytes;
-        self.peak = self.peak.max(self.total);
+        if self.leaf != 0 {
+            self.cut += bytes;
+        }
+        self.peak = self.peak.max(self.total.saturating_sub(self.cut.saturating_sub(self.finest)));
         for held in self.loops.values_mut() {
             held.since_first += bytes;
             held.since_last += bytes;
         }
-        key
+        (key.0, key.1, self.leaf)
     }
 
-    pub(super) fn died(&mut self, key: (u32, u32), bytes: usize) {
+    pub(super) fn died(&mut self, (pass, site, leaf): (u32, u32, u64), bytes: usize) {
+        if leaf != 0 && leaf == self.leaf {
+            self.cut = self.cut.saturating_sub(bytes);
+        }
+        let key = (pass, site);
         if let Some(held) = self.live.get_mut(&key) {
             *held = held.saturating_sub(bytes);
             if *held == 0 {
@@ -180,6 +193,15 @@ impl Escapes {
         sites.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
         sites.truncate(NAMED);
         sites
+    }
+
+    /// A cut site's leaf opened (observation `id`): its finest level needs `finest`.
+    pub(super) fn leaf_opened(&mut self, id: u64, finest: usize) {
+        (self.leaf, self.finest, self.cut) = (id, finest, 0);
+    }
+
+    pub(super) fn leaf_closed(&mut self) {
+        (self.leaf, self.finest, self.cut) = (0, 0, 0);
     }
 
     /// An allocation was refused with `owned` (this process's bytes and the request) not fitting.
