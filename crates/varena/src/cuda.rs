@@ -531,6 +531,7 @@ impl Driver {
     /// PROOF ONLY (var-030 section 8): a managed range whose contents are dead, dropped in `stream`'s order: its
     /// pages leave the card and host memory with no copy, so an eviction never writes dead bytes out. False where
     /// the driver has no such call.
+    #[allow(dead_code)]
     pub(crate) fn discard(&self, ptr: u64, bytes: usize, stream: usize) -> Result<bool> {
         let Some(call) = self.discard else { return Ok(false) };
         let stream = if stream != 0 { stream } else { self.paged_stream()? };
