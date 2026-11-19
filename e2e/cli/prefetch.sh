@@ -360,37 +360,38 @@ J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"
 
 # A LoRA slot's choice swapped while its LoRA comes (cl-1281: a LoRA is a slot with a default a box overrides). `styled`'s slot
-# default, e2e/pre-lora-a (128 MiB), comes at 10 MB/s; once 16 MiB of it are there the box names e2e/pre-lora-b. The old one stops
-# where it was, and the new one comes whole before Render.
-local held_a swapped ready_ms
+# default, e2e/pre-lora-a (128 MiB), comes at 10 MB/s; once its row says 16 MiB are there, the box names e2e/pre-lora-b. The old one
+# stops where it was, and the new one comes whole before Render.
+local at_swap swapped b_ms=''
 jq -n '[{name: "styled", tool: "e2e-prefetched-lora/styled", kind: "image", fields: {instructions: "A still in a borrowed style."}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
-held_a=0
-for _ in $(seq 300); do
-  pre_machine stand-p "$OUT/pre-yields-lora.json"
-  held_a=$(jq -r '[.status.models[]? | select(.repository == "e2e/pre-lora-a") | .unique_bytes // 0] | add // 0' "$OUT/pre-yields-lora.json")
-  [ "${held_a:-0}" -ge $((16 << 20)) ] && break
-  sleep 0.2
-done
-if [ "${held_a:-0}" -lt $((16 << 20)) ]; then
-  check "prefetch yields: stand-p fetched ${held_a:-0} B of e2e/pre-lora-a, styled's slot default, in 60 s: its row: $(pre_row "$P" styled)"
+came=$(pre_wait "$P" styled 16)
+pre_machine stand-p "$OUT/pre-yields-lora.json"
+at_swap=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
+if [ "$came" -lt $((16 << 20)) ]; then
+  check "prefetch yields: stand-p fetched nothing of e2e/pre-lora-a, styled's slot default: its row: $(pre_row "$P" styled)"
+elif ! J 'all(.complete | all(. != true))' <<< "$at_swap"; then
+  check "prefetch yields: e2e/pre-lora-a was whole before styled's swap ($((came >> 20)) MiB in its row), nothing left to stop: $at_swap"
 else
   swapped=$(date -u +%s%3N)
   project_api "$P" /assets/styled -X PATCH -H 'content-type: application/json' \
     -d '{"fields": {"instructions": "A still in a borrowed style.", "models": {"lora": {"ref": "e2e/pre-lora-b@0.1.0"}}}}' \
     > "$OUT/pre-yields-swap.json" 2>&1 || check "prefetch yields: styled's lora wasn't swapped: $(tail -c 300 "$OUT/pre-yields-swap.json")"
-  pre_ready "$P" styled stand-p 120 && ready_ms=$(($(date -u +%s%3N) - swapped))
-  sleep 3
+  for _ in $(seq 240); do
+    pre_machine stand-p "$OUT/pre-yields-lora.json"
+    J 'length > 0 and all(.complete | any)' <<< "$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)" && { b_ms=$(($(date -u +%s%3N) - swapped)); break; }
+    sleep 0.5
+  done
+  [ -n "$b_ms" ] || check "prefetch yields: e2e/pre-lora-b, styled's new LoRA, isn't whole on stand-p 2 min after the swap: $(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)"
   pre_machine stand-p "$OUT/pre-yields-lora.json"
   first=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
   sleep 5
   pre_machine stand-p "$OUT/pre-yields-lora.json"
   second=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
-  echo "prefetch yields: styled's slot swapped with $((held_a >> 20)) MiB of e2e/pre-lora-a on stand-p; ready ${ready_ms:-never} ms after; e2e/pre-lora-a then $second; e2e/pre-lora-b $(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)"
+  echo "prefetch yields: styled's slot swapped when its row said $((came >> 20)) MiB were there (e2e/pre-lora-a $at_swap); e2e/pre-lora-b whole ${b_ms:-never} ms after; e2e/pre-lora-a then $first, 5 s on $second"
   [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-lora-a went on coming after styled's slot named e2e/pre-lora-b: $first, then $second"
   J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-lora-a is whole on stand-p though styled's slot was swapped as it came: $second"
-  J 'length > 0 and all(.complete | any)' <<< "$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)" \
-    || check "prefetch yields: e2e/pre-lora-b, styled's new LoRA, isn't whole on stand-p: $(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)"
+  pre_ready "$P" styled stand-p 60 || true
 fi
 sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch || { pre_end; return 0; }
 }
