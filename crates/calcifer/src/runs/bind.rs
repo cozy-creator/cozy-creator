@@ -444,7 +444,8 @@ impl Binder<'_> {
                     Some(ty) if !mention => scalar(ty, raw).ok_or_else(|| usage("pickup_malformed", format!("{key}={raw} is not {}", describe::phrase(ty))))?,
                     _ => Value::String(raw.to_owned()),
                 };
-                set_path(&mut self.document, &parts, value)?;
+                // A take's mention sits beside the latents written with it, either first, as an attached file does.
+                self.place(&parts, value)?;
                 continue;
             }
             // A mention is the project's box, which its binder fills.
@@ -566,9 +567,10 @@ impl Binder<'_> {
         type_at(&field.ty, &parts[1..])
     }
 
-    /// Writes a file's digest at `parts`. A box-shaped input written whole (`{file, latents}`) takes it as its `file`, and one
-    /// given a file beside its own (`video=… video.latents=…`) becomes that whole: the file and the files it's given with.
-    fn place(&mut self, parts: &[String], digest: Value) -> Result<(), Error> {
+    /// Writes `value` at `parts`: a file's digest or mention, or a member's value. A box-shaped input written whole (`{file, latents}`)
+    /// takes a file as its `file`, and one given a file beside its own (`video=… video.latents=…`) becomes that whole: the file and the
+    /// files it's given with.
+    fn place(&mut self, parts: &[String], value: Value) -> Result<(), Error> {
         let media = |binder: &Self, at: &[String]| matches!(binder.type_at(at), Some(Type::Media { .. }));
         for n in 1..parts.len() {
             if media(self, &parts[..n])
@@ -578,10 +580,10 @@ impl Binder<'_> {
             }
         }
         let mut parts = parts.to_vec();
-        if media(self, &parts) && node_mut(&mut self.document, &parts).is_some_and(|whole| whole.is_object()) {
+        if value.is_string() && media(self, &parts) && node_mut(&mut self.document, &parts).is_some_and(|whole| whole.is_object()) {
             parts.push("file".to_owned());
         }
-        set_path(&mut self.document, &parts, digest)
+        set_path(&mut self.document, &parts, value)
     }
 
     /// A scalar spelled as the field's declared type.

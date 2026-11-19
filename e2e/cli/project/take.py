@@ -30,6 +30,12 @@ class Pick(msgspec.Struct, kw_only=True):
     pickup: TakePickup | None = None
 
 
+class Bare(msgspec.Struct, kw_only=True):
+    """A pickup whose take declares no latents."""
+
+    pickup: Pickup | None = None
+
+
 class Redo(msgspec.Struct, kw_only=True):
     video: Take
     start_s: float = 0.0
@@ -52,6 +58,14 @@ def pick(payload: Pick) -> Read:
     if payload.pickup is None:
         raise InvalidRequest("no pickup reached it")
     return _read(payload.pickup.take, payload.pickup.out_frame)
+
+
+@app.entrypoint(accelerator=False)
+def bare(payload: Bare) -> Read:
+    """The take it picks up and the frame, a take with no latents."""
+    if payload.pickup is None:
+        raise InvalidRequest("no pickup reached it")
+    return Read(hashlib.sha256(payload.pickup.take.file.read_bytes()).hexdigest(), "", payload.pickup.out_frame)
 
 
 @app.entrypoint(accelerator=False)
