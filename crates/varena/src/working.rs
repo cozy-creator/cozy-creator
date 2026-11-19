@@ -131,6 +131,8 @@ pub struct WorkingStats {
     pub driver_physical_ooms: u64,
     pub driver_memory_ns: u64,
     pub driver_memory_longest_ns: u64,
+    /// Pages moved to a new block's address rather than released and made again (`assemble`).
+    pub remapped_bytes: u64,
     pub observed_mapped: u64,
     pub observed_retired: u64,
     pub observed_ns: u64,
@@ -212,13 +214,23 @@ impl Segment {
     fn new(bytes: usize, size_class: usize, pool: Option<PoolId>) -> Self {
         let chunk = if pool.is_none() { bytes.min(CHUNK) } else { bytes };
         let chunks = (0..bytes).step_by(chunk)
-            .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
+            .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None, retiring: false })
             .collect();
         Self { bytes, size_class, chunks, pool, phase_blocks: 0, touched: 0, guard: 0, host: false }
     }
 
     fn backed(&self) -> bool {
         self.chunks.iter().any(|chunk| chunk.handle.is_some())
+    }
+
+    /// Its VA can go back: no pages, and no address still mapping pages that moved on.
+    fn gone(&self) -> bool {
+        !self.backed() && !self.chunks.iter().any(|chunk| chunk.retiring)
+    }
+
+    /// Blocks here are runs that split and merge, and their pages can move (`remaps`).
+    fn runs(&self) -> bool {
+        self.pool.is_none() && !self.host && self.size_class > LARGE
     }
 
     fn unbacked(&self) -> usize {
@@ -277,6 +289,30 @@ struct Chunk {
     bytes: usize,
     // None: its pages went back. The VA stays until the segment goes, or an idle pool maps again.
     handle: Option<u64>,
+    // Its pages moved to another block's address (`assemble`); this one still maps them until
+    // what was submitted here completes (`State::retiring`).
+    retiring: bool,
+}
+
+/// A moved chunk's old address, unmapped by `poll` once `waits` complete.
+struct Retiring {
+    segment: u64,
+    index: usize,
+    waits: Waits,
+}
+
+/// `waits` also complete only after `(id, sequence)`.
+fn merge_wait(waits: &mut Waits, (id, sequence): (u64, u64)) {
+    match waits.iter_mut().find(|(known, _)| *known == id) {
+        Some(wait) => wait.1 = wait.1.max(sequence),
+        None => waits.push((id, sequence)),
+    }
+}
+
+/// Free run pages move between sizes (`Device::assemble`); off under `GUARDS`, whose large blocks
+/// each keep a segment of their own.
+fn remaps() -> bool {
+    !checks::on(checks::GUARDS)
 }
 
 struct Segment {
@@ -344,6 +380,7 @@ pub(crate) struct State {
     free: BTreeMap<(Option<PoolId>, usize, Option<u64>), Vec<u64>>,
     // The free blocks of eager runs by (capacity, address): a cut's best fit in O(log n).
     runs: BTreeSet<(usize, u64)>,
+    retiring: Vec<Retiring>,
     addresses: BTreeMap<u64, usize>,
     pools: BTreeMap<PoolId, Pool>,
     fenced: Vec<u64>,
@@ -467,11 +504,8 @@ impl State {
         let block = self.blocks.get_mut(&left).expect("joined block");
         block.capacity += gone.capacity;
         block.streams.extend(gone.streams);
-        for (id, sequence) in gone.waits {
-            match block.waits.iter_mut().find(|(known, _)| *known == id) {
-                Some(wait) => wait.1 = wait.1.max(sequence),
-                None => block.waits.push((id, sequence)),
-            }
+        for wait in gone.waits {
+            merge_wait(&mut block.waits, wait);
         }
         let fence = gone.fenced && !block.fenced;
         block.fenced |= gone.fenced;
@@ -509,6 +543,19 @@ impl State {
             .filter(|chunk| chunk.handle.is_some() && self.chunk_free(base, chunk))
             .map(|chunk| chunk.bytes)
             .sum()
+    }
+
+    /// Whether this run chunk's pages could move to a new block on `stream` now: only free blocks
+    /// on them, each done or freed on that stream alone, whose order a block there keeps.
+    fn movable(&self, base: u64, chunk: &Chunk, stream: u64) -> bool {
+        let start = base + chunk.offset as u64;
+        chunk.handle.is_some() && self.touching(start, start + chunk.bytes as u64)
+            .all(|block| block.life == Life::Ready && block.reusable_on.is_none_or(|on| on == stream))
+    }
+
+    /// The run segments: their free pages a working allocation reuses in place, never releases.
+    fn run_segments(&self) -> BTreeSet<u64> {
+        self.segments.iter().filter(|(_, segment)| segment.runs()).map(|(base, _)| *base).collect()
     }
 
     fn reusable_eager_pages(&self) -> usize {
@@ -566,22 +613,29 @@ impl State {
         (reusable.saturating_sub(need.unwrap_or(0)).min(outside), kept)
     }
 
-    /// A completed free block across `at` becomes two, so a handle's pages can leave alone.
+    /// A free block across `at` becomes two in its order, so a handle's pages can leave alone.
     fn carve(&mut self, at: u64) {
         let Some((&ptr, block)) = self.blocks.range(..at).next_back() else { return };
-        let (capacity, end) = (block.capacity, ptr + block.capacity as u64);
+        let (capacity, end, origin) = (block.capacity, ptr + block.capacity as u64, block.reusable_on);
         if end <= at {
             return;
         }
         let mut tail = block.clone();
         tail.capacity = (end - at) as usize;
-        tail.fenced = false;
-        self.unlist((None, capacity, None), ptr);
+        self.unlist((None, capacity, origin), ptr);
         self.blocks.get_mut(&ptr).expect("carved block").capacity = (at - ptr) as usize;
+        tail.fenced = !tail.waits.is_empty();
+        if tail.fenced {
+            self.fenced.push(at);
+        }
+        let token = self.phases.active.as_ref().map(|active| active.token);
+        if tail.charge() != 0 && tail.phase.is_some() && tail.phase == token {
+            self.segments.get_mut(&tail.segment).expect("owned segment").phase_blocks += 1;
+        }
         let rest = tail.capacity;
         self.blocks.insert(at, tail);
-        self.list((None, (at - ptr) as usize, None), ptr);
-        self.list((None, rest, None), at);
+        self.list((None, (at - ptr) as usize, origin), ptr);
+        self.list((None, rest, origin), at);
     }
 
     fn phase_changed(
@@ -855,7 +909,13 @@ impl Device {
                 state.fenced.push(ptr);
             }
         }
+        let (retired, retiring) = std::mem::take(&mut state.retiring).into_iter()
+            .partition::<Vec<_>, _>(|old| fences.complete(&old.waits));
+        state.retiring = retiring;
         drop(fences);
+        for old in retired {
+            self.retire(state, old)?;
+        }
         for &(ptr, bytes, segment, (charge, phase)) in &ready {
             state.list((state.segments[&segment].pool, bytes, None), ptr);
             if charge != 0 {
@@ -864,6 +924,150 @@ impl Device {
         }
         for (ptr, ..) in ready {
             Self::merge_run(state, ptr);
+        }
+        Ok(())
+    }
+
+    /// A moved chunk's old address, nothing submitted reading it any more: unmapped, its pages
+    /// staying with their new block. Its segment goes once nothing of it is mapped.
+    fn retire(&self, state: &mut State, old: Retiring) -> Result<()> {
+        let segment = state.segments.get_mut(&old.segment).expect("retiring segment");
+        let chunk = segment.chunks[old.index];
+        let at = old.segment + chunk.offset as u64;
+        observer::retiring(self, at, chunk.bytes, None, segment.size_class)?;
+        self.driver().unmap(at, chunk.bytes)?;
+        segment.chunks[old.index].retiring = false;
+        if segment.gone() {
+            let bytes = segment.bytes + segment.guard;
+            state.segments.remove(&old.segment);
+            Self::return_address(state, old.segment, bytes);
+        }
+        Ok(())
+    }
+
+    /// Short of room for new pages: a block of `class` on `stream` from run pages already mapped,
+    /// at a fresh address. A free chunk's handle maps there while its old address still maps it;
+    /// `poll` unmaps the old one once what was submitted on it completes. Stream order makes the
+    /// reuse safe, so a free on this stream serves its next allocation of any size with no wait,
+    /// and nothing goes back to the driver between sizes. What they leave short comes as new pages
+    /// if the room holds them, else `Short` names that much for the reclaim order.
+    fn assemble(&self, state: &mut State, class: usize, stream: u64) -> crate::AllocationResult<()> {
+        // Segments with nothing else mapped first, so their address space goes back; then oldest
+        // first, as `trim_ready` takes them: what was freed last is what comes back next.
+        let mut found = Vec::new();
+        for (base, segment) in state.segments.iter().filter(|(_, segment)| segment.runs()) {
+            let free: Vec<_> = segment.chunks.iter().enumerate()
+                .filter(|(_, chunk)| state.movable(*base, chunk, stream)).map(|(index, chunk)| (index, chunk.bytes)).collect();
+            if free.is_empty() {
+                continue;
+            }
+            let shared = free.len() != segment.chunks.iter().filter(|chunk| chunk.handle.is_some()).count();
+            let newest = state.blocks.range(*base..*base + segment.bytes as u64).filter_map(|(_, block)| block.phase).max();
+            found.extend(free.into_iter().map(|(index, bytes)| (shared, newest, *base, index, bytes)));
+        }
+        found.sort_unstable();
+        let mut moved = Vec::new();
+        let mut gathered = 0usize;
+        for (.., base, index, bytes) in found {
+            if gathered >= class {
+                break;
+            }
+            moved.push((base, index));
+            gathered += bytes;
+        }
+        let rest = class.saturating_sub(gathered);
+        if rest != 0 {
+            self.admit(rest).map_err(|failure| match failure {
+                crate::AllocationFailure::Other(Error::OutOfMemory { .. }) => crate::AllocationFailure::Short(rest),
+                other => other,
+            })?;
+        }
+        let total = gathered + rest;
+        let ptr = Self::address(state, total)?;
+        // New pages first: refused, nothing has moved.
+        let mut fresh = Vec::new();
+        for offset in (0..rest).step_by(CHUNK) {
+            match self.driver().create(CHUNK.min(rest - offset)) {
+                Ok(handle) => fresh.push((CHUNK.min(rest - offset), handle)),
+                Err(failure) => {
+                    for (_, handle) in fresh {
+                        self.driver().release(handle)?;
+                    }
+                    Self::return_address(state, ptr, total);
+                    return Err(failure);
+                }
+            }
+        }
+        // The old blocks go, their order kept for what the new segment holds past this block.
+        let (mut waits, mut ordered) = (Waits::new(), false);
+        let (mut chunks, mut offset) = (Vec::new(), 0usize);
+        for (base, index) in moved {
+            let chunk = state.segments[&base].chunks[index];
+            let (start, end) = (base + chunk.offset as u64, base + (chunk.offset + chunk.bytes) as u64);
+            state.carve(start);
+            state.carve(end);
+            let mut held = Waits::new();
+            let pieces: Vec<_> = state.blocks.range(start..end).map(|(at, _)| *at).collect();
+            for at in pieces {
+                let piece = state.blocks.remove(&at).expect("carved piece");
+                state.unlist((None, piece.capacity, piece.reusable_on), at);
+                ordered |= piece.reusable_on.is_some();
+                let charge = piece.charge();
+                if charge != 0 {
+                    state.phase_changed(charge, 0, piece.phase, piece.phase, base);
+                }
+                for wait in piece.waits {
+                    merge_wait(&mut held, wait);
+                }
+            }
+            for &wait in &held {
+                merge_wait(&mut waits, wait);
+            }
+            let old = &mut state.segments.get_mut(&base).expect("run segment").chunks[index];
+            old.handle = None;
+            old.retiring = true;
+            state.retiring.push(Retiring { segment: base, index, waits: held });
+            chunks.push(Chunk { offset, retiring: false, ..chunk });
+            offset += chunk.bytes;
+        }
+        for (bytes, handle) in fresh {
+            chunks.push(Chunk { offset, bytes, handle: Some(handle), retiring: false });
+            offset += bytes;
+            self.working.fetch_add(bytes, Ordering::AcqRel);
+            state.stats.mapped_bytes += bytes;
+        }
+        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+        state.stats.remapped_bytes += gathered as u64;
+        let mut segment = Segment::new(total, class, None);
+        segment.chunks = chunks.clone();
+        state.segments.insert(ptr, segment);
+        for chunk in &chunks {
+            self.driver().map_only(ptr + chunk.offset as u64, chunk.bytes, chunk.handle.expect("assembled chunk"))?;
+        }
+        self.driver().grant(ptr, total)?;
+        for chunk in &chunks {
+            observer::mapped(self, ptr + chunk.offset as u64, chunk.bytes, None, class)?;
+        }
+        // This allocation's block, which its caller takes on `stream`, and the rest: free in the
+        // order of the pages they hold.
+        let origin = ordered.then_some(stream);
+        for (at, bytes) in [(ptr, class), (ptr + class as u64, total - class)] {
+            if bytes == 0 {
+                continue;
+            }
+            let mut block = Block::free(ptr, bytes);
+            block.reusable_on = origin;
+            block.waits = waits.clone();
+            block.fenced = !block.waits.is_empty();
+            if block.fenced {
+                state.fenced.push(at);
+            }
+            let charge = block.charge();
+            state.blocks.insert(at, block);
+            state.list((None, bytes, origin), at);
+            if charge != 0 {
+                state.phase_changed(0, charge, None, None, ptr);
+            }
         }
         Ok(())
     }
@@ -1319,7 +1523,7 @@ impl Device {
             }
             released += self.unback_chunk(state, base, index)?;
         }
-        if !state.segments[&base].backed() {
+        if state.segments[&base].gone() {
             let segment = state.segments.remove(&base).expect("owned segment");
             Self::return_address(state, base, segment.bytes + segment.guard);
         }
@@ -1347,6 +1551,10 @@ impl Device {
                 .filter_map(|(_, block)| block.phase).max();
             if segment.chunks.len() > 1 {
                 large.push((newest, *base));
+                continue;
+            }
+            // Its one chunk moved: `poll` unmaps the old address, and the segment goes then.
+            if segment.chunks[0].retiring {
                 continue;
             }
             if let Some(id) = segment.pool {
@@ -1462,7 +1670,7 @@ impl Device {
 
     // Events whose completion would free `limit` bytes of whole segments and released pages.
     // Each is already submitted: no live allocation, graph reference or owner action is awaited.
-    fn pending_events(&self, state: &State, limit: usize, exclude: Option<PoolId>) -> Vec<usize> {
+    fn pending_events(&self, state: &State, limit: usize, exclude: Option<PoolId>, stream: Option<u64>) -> Vec<usize> {
         let fences = self.fences();
         let (mut events, mut bytes) = (Vec::new(), 0usize);
         for (base, segment) in &state.segments {
@@ -1482,8 +1690,12 @@ impl Device {
                 continue;
             }
             let before = events.len();
+            // A run's pages freed on `stream` alone move to its block with no wait (`assemble`).
+            let ordered = |block: &Block| stream.is_some() && segment.runs() && block.life == Life::Ready && block.reusable_on == stream;
             for (_, block) in &mut blocks {
-                fences.events(&block.waits, &mut events);
+                if !ordered(block) {
+                    fences.events(&block.waits, &mut events);
+                }
             }
             if let Some(pool) = pool {
                 fences.events(&pool.waits, &mut events);
@@ -1639,7 +1851,10 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let segment = rounded(class.max(SEGMENT), owner.page())?;
     // A loop's working allocation, like its weights, takes weights before its other pages: what one
     // step freed the next uses again.
-    let protect = Protect { reuse_working: true, keep_phase: looping, outside: true, ..Default::default() };
+    let moves = class > LARGE && remaps();
+    let protect = Protect {
+        reuse_working: true, keep_phase: looping, outside: true, stream: remaps().then_some(stream), ..Default::default()
+    };
     let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
@@ -1656,7 +1871,15 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                     // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
                     let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
                     let mapped = if whole { segment } else { exact };
-                    owner.map(&mut state, mapped, None, class)?;
+                    // Short of new pages, free ones already mapped take this size first.
+                    if moves && owner.over(mapped) != 0 {
+                        owner.assemble(&mut state, class, stream)?;
+                    } else {
+                        match owner.map(&mut state, mapped, None, class) {
+                            Err(failure) if moves && failure.is_oom() => owner.assemble(&mut state, class, stream)?,
+                            other => other.map(|_| ())?,
+                        }
+                    }
                     Device::take(&mut state, class, bytes, stream, None, || false).expect("new slab has a block")
                 }
             };
@@ -2077,15 +2300,19 @@ pub fn trim_all() -> Result<usize> {
 
 /// The first step of the reclaim order: completed free pages, with no waiting.
 pub(crate) fn release_completed(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
-    release_free(device, want, maximum, keep, false)
+    release_free(device, want, maximum, keep, false, None)
 }
 
 /// Completed free pages the active phase can spare (`State::beyond_phase`).
 pub(crate) fn release_beyond_phase(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
-    release_free(device, want, maximum, keep, true)
+    release_free(device, want, maximum, keep, true, None)
 }
 
-fn release_free(device: i32, want: usize, maximum: usize, keep: Option<PoolId>, phase: bool) -> Result<usize> {
+/// Either of those; for working memory on `stream` (`Protect::stream`), run pages stay: that
+/// allocation moves them in place (`Device::assemble`), and releasing them gives it nothing.
+pub(crate) fn release_free(
+    device: i32, want: usize, maximum: usize, keep: Option<PoolId>, phase: bool, stream: Option<u64>,
+) -> Result<usize> {
     let Some(owner) = existing(device)? else {
         return Ok(0);
     };
@@ -2094,7 +2321,10 @@ fn release_free(device: i32, want: usize, maximum: usize, keep: Option<PoolId>, 
     let mut state = owner.lock()?;
     let _context = owner.driver().enter()?;
     let result = owner.poll(&mut state).and_then(|()| {
-        let (beyond, kept) = if phase { state.beyond_phase() } else { (usize::MAX, BTreeSet::new()) };
+        let (beyond, mut kept) = if phase { state.beyond_phase() } else { (usize::MAX, BTreeSet::new()) };
+        if stream.is_some() {
+            kept.extend(state.run_segments());
+        }
         owner.trim_ready(&mut state, want.min(beyond), keep, &kept, maximum)
     });
     result.map_err(|error| owner.fail(&mut state, error))
@@ -2115,7 +2345,8 @@ pub(crate) fn release_idle_pools(device: i32, want: usize, maximum: usize, keep:
 }
 
 /// Wait outside every lock for submitted work on memory already freed. False: nothing pending.
-pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>) -> Result<bool> {
+/// Never for what `stream` freed alone: in stream order that is its room already.
+pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>, stream: Option<u64>) -> Result<bool> {
     let Some(owner) = existing(device)? else {
         return Ok(false);
     };
@@ -2126,7 +2357,7 @@ pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>) -> Re
         let _context = owner.driver().enter()?;
         let polled = owner.poll(&mut state);
         polled.map_err(|error| owner.fail(&mut state, error))?;
-        let events = owner.pending_events(&state, want, keep);
+        let events = owner.pending_events(&state, want, keep, stream);
         if events.is_empty() {
             return Ok(false);
         }

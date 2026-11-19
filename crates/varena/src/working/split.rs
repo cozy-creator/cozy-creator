@@ -364,6 +364,8 @@ fn fits(
             let mut missing = classes.clone();
             let mut used = BTreeSet::new();
             let mut preserve = BTreeSet::new();
+            // What the slots and cuts below take, by address: the run pages left can still move.
+            let mut taken = BTreeMap::<u64, u64>::new();
             for (&class, count) in &mut missing {
                 for origin in [Some(stream), None] {
                     let Some(slots) = state.free.get(&(None, class, origin)) else {
@@ -387,17 +389,18 @@ fn fits(
                         }
                         used.insert(*ptr);
                         preserve.insert(block.segment);
+                        taken.insert(*ptr, *ptr + class as u64);
                         *count -= 1;
                     }
                 }
             }
-            // What's left of the shared sizes can be cut from free runs.
-            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..)
+            // What's left of the shared sizes can be cut from free runs, each from its start.
+            let mut runs: Vec<(usize, u64, u64)> = state.free.range((None, LARGE + 1, None)..)
                 .take_while(|((pool, ..), _)| pool.is_none())
                 .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
                 .flat_map(|((_, capacity, origin), slots)| slots.iter().filter_map(|ptr| {
                     let block = state.blocks.get(ptr).filter(|block| block.capacity == *capacity && block.reusable_from(*origin))?;
-                    (!used.contains(ptr)).then_some((*capacity, block.segment))
+                    (!used.contains(ptr)).then_some((*capacity, block.segment, *ptr))
                 }))
                 .collect();
             for (&class, count) in missing.iter_mut().rev().take_while(|(class, _)| **class > LARGE) {
@@ -405,6 +408,8 @@ fn fits(
                     let Some(run) = runs.iter_mut().filter(|run| run.0 >= class).min_by_key(|run| run.0) else {
                         break;
                     };
+                    let start = taken.get(&run.2).copied().unwrap_or(run.2);
+                    taken.insert(run.2, start + class as u64);
                     run.0 -= class;
                     preserve.insert(run.1);
                     *count -= 1;
@@ -415,12 +420,26 @@ fn fits(
             // A refusal's bound over the estimate is missing too.
             let short = site.samples.get(&choice.id).map_or(0, |sample| sample.refused.saturating_sub(full));
             let (full, missing) = (full + short, missing + short);
+            // Run pages none of that takes, done or freed on this stream, are room as they are: an
+            // allocation of any size there moves them to its block (`Device::assemble`), however its
+            // segment's other pages are used. The rest goes back to make room, as before.
+            let mut movable = 0usize;
+            for (base, segment) in state.segments.iter().filter(|(_, segment)| remaps() && segment.runs()) {
+                for chunk in &segment.chunks {
+                    let (start, end) = (*base + chunk.offset as u64, *base + (chunk.offset + chunk.bytes) as u64);
+                    if state.movable(*base, chunk, stream)
+                        && taken.range(..end).next_back().is_none_or(|(_, &stop)| stop <= start)
+                    {
+                        movable += chunk.bytes;
+                    }
+                }
+            }
             let reclaimable: usize = state
                 .segments
                 .iter()
-                .filter(|(base, segment)| segment.pool.is_none() && !preserve.contains(base))
+                .filter(|(base, segment)| segment.pool.is_none() && !preserve.contains(base) && !(remaps() && segment.runs()))
                 .map(|(base, segment)| state.releasable(*base, segment))
-                .sum();
+                .sum::<usize>() + movable;
             let after_outside = headroom(
                 owner,
                 free,
@@ -439,7 +458,7 @@ fn fits(
                 full,
                 missing,
                 preserve,
-                now: headroom(owner, free, 0),
+                now: headroom(owner, free, movable),
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
                 generation,
                 phase: phase.cloned(),
@@ -619,8 +638,9 @@ fn select(device: i32, owner: &'static Device, key: &str, stream: u64) -> Result
 
 /// `select` among the levels from index `least` on.
 fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, least: usize) -> Result<SplitSelection> {
-    // A split's fit already counts completed working pages; split_begin trims what it needs.
-    let keep = Protect { keep_working: true, ..Default::default() };
+    // A split's fit already counts completed working pages, and this stream's own frees in its
+    // runs; split_begin trims what it needs.
+    let keep = Protect { keep_working: true, stream: remaps().then_some(stream), ..Default::default() };
     // Make room for the target with memory this process can give up by itself.
     let at_target = reclaim::acquire(device, 0, Wait::Local, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
@@ -777,7 +797,7 @@ fn split_begin_inner(
         }
     }
     let looping = owner.lock()?.looping();
-    let keep = Protect { keep_working: true, keep_phase: looping, ..Default::default() };
+    let keep = Protect { keep_working: true, keep_phase: looping, stream: remaps().then_some(stream), ..Default::default() };
     let opened = reclaim::acquire(device, 0, Wait::Yes, keep, || {
         // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
         let lease = crate::plan::Lease::acquire(device)?;
@@ -795,8 +815,12 @@ fn split_begin_inner(
             let plan = plans.iter().find(|plan| plan.id == choice_id)
                 .ok_or(Error::Invalid("split choice is not declared"))?;
             if plan.missing > plan.now {
-                // Matched compatible slots stay mapped, and so does a loop's; only other completed backing goes.
-                let preserve = plan.preserve.union(&state.kept()).copied().collect();
+                // Matched compatible slots stay mapped, and so does a loop's; only other completed backing
+                // goes. Run pages are counted where they are (`fits`): releasing them gives no room.
+                let mut preserve: BTreeSet<u64> = plan.preserve.union(&state.kept()).copied().collect();
+                if remaps() {
+                    preserve.extend(state.run_segments());
+                }
                 owner.trim_ready(&mut state, plan.missing - plan.now, None, &preserve, usize::MAX)?;
                 let free = owner.spare(owner.driver().memory_info()?.0);
                 let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;

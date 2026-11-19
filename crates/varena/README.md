@@ -96,7 +96,11 @@ capture out; replay does not block reclaim, because pins and references protect 
 Up to 1 MiB, one-class slabs, every block 512 B aligned. Above that, runs, cut best-fit and merged
 when free; up to 64 MiB they share 64 MiB segments. A segment has one VMM handle per 16 MiB, since a
 handle comes back only whole: free pages stay mapped until something needs them, and then only those
-handles go. Own-stream reuse does no driver work. A plan phase seen looping keeps every segment its
+handles go. Own-stream reuse does no driver work. A run with no room for new pages takes free handles
+already mapped, done or freed on its own stream, at a fresh address: the old address keeps mapping
+them until its work completes, and `poll` unmaps it then. So a stream never waits on its own frees,
+and handles go back to the driver only for room elsewhere (weights, peers, the cap); a split counts
+them as room. A plan phase seen looping keeps every segment its
 working phases touched: its weights and its own allocations take weights first, and it never waits on
 its own frees, so a step makes no driver call for working memory.
 
