@@ -145,6 +145,10 @@ pub(super) async fn thumb(
         }
         return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("This project has no file {named}."))));
     };
+    // What ffmpeg draws: a picture, a video and a sound. A text tool's answer is none, refused at once rather than drawn and failed.
+    if !matches!(field, "image" | "video" | "audio") {
+        return Err(Refusal(Error::new(Kind::Validation, "thumb_unsupported", format!("{named} is {field}, and Cozy makes thumbnails only of pictures, videos and sounds."))));
+    }
     let preview = asked.preview && field == "video";
     let wave = asked.wave && field == "video" && !preview;
     let frames = asked.strip.filter(|_| field == "video" && !preview && !wave).map_or(0, |n| n.clamp(1, MOST_FRAMES));

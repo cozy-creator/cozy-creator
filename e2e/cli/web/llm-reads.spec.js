@@ -5,19 +5,26 @@
 // render makes only what it names, cl-1192); reply's run is sent the answer's words in place, with no reference; a new answer moves what
 // reply reads and nothing says reply is out of date, as with a new picture; `<answer.1>` reads version 1 whatever comes after. The page's
 // `<` offers LLM boxes in any prompt, as words (SDXL's, beside the picture it reads since sdxl 0.15, se-175), and reply's prompt shows its
-// mention as a chip with no picture under it. The `<` list and reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark.
+// mention as a chip with no picture under it. The `<` list and reply's prompt are kept at 1440×900 and 1920×1080, on paper and dark. A take's note
+// shows a picture of an image or a video only: an LLM's words land with none and no `/thumbs` asked of them (#4031 asked one of each, and
+// its 400s were console errors), a still lands with its own, and `/thumbs` refuses a text file at once.
+const { randomUUID } = require('crypto');
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { test, expect, themed, canvasIdle, canvasVisible, fixtureTool, focus, png } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
 const LLM = fixtureTool('llm.py/ask');
+const STILL = `${fixtureTool('tool.py')}/still`;
 /** SDXL's Image, which the isolated Hub holds for every web job (setup.js SEED): its words take words and pictures. */
 const SDXL = 'sdxl/image';
 const RUN_MS = 240_000;
 
 test('llm-reads', async ({ page, project, api }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(480_000);
+  // Every thumbnail the page asks for, by its path.
+  const thumbs = [];
+  page.on('request', (request) => { const { pathname } = new URL(request.url()); if (pathname.includes('/thumbs/')) thumbs.push(pathname.toLowerCase()); });
   await project.add({ name: 'answer', tool: LLM, kind: 'text', fields: { instructions: 'Say hello.' }, at: { x: 0, y: 0 } });
   await project.add({ name: 'reply', tool: LLM, kind: 'text', fields: { instructions: '<answer> Then say goodbye.' }, at: { x: 720, y: 0 } });
   await project.import(png(120), { name: 'coast', at: { x: 0, y: 360 } });
@@ -135,5 +142,29 @@ test('llm-reads', async ({ page, project, api }) => {
     await shown();
     await leave(page);
     await look('reply-prompt', shown);
+  });
+
+  await test.step("a take's note: words show no picture and ask for none, a still shows its own, and /thumbs refuses words at once", async () => {
+    const ready = (name) => page.locator('[data-note]').filter({ hasText: new RegExp(`of ${name} is ready`) });
+    const renderHere = (name) => api.call('POST', project.at('/runs'), { names: [name], on: ['local'] }, { headers: { 'Idempotency-Key': randomUUID() } });
+    await renderHere('answer');
+    await expect(ready('answer'), "answer's take is said").toBeVisible({ timeout: RUN_MS });
+    await expect.soft(ready('answer').locator('.note-picture'), 'with no picture').toHaveCount(0);
+    const words = (await Promise.all(['answer', 'reply', 'fixed'].map((name) => project.asset(name))))
+      .flatMap((asset) => asset.prefixes.map((take) => take.main?.sha256)).filter(Boolean).map((sha) => sha.replace(/^sha256:/, '').toLowerCase());
+    expect(words.length, 'the LLM takes are files').toBeGreaterThanOrEqual(5);
+    expect.soft(thumbs.filter((at) => words.some((hex) => at.includes(hex))), 'no thumbnail asked of words').toEqual([]);
+
+    await project.add({ name: 'still', tool: STILL, kind: 'image', fields: { instructions: 'a still' }, at: { x: 1440, y: 360 } });
+    await renderHere('still');
+    await expect(ready('still'), "still's take is said").toBeVisible({ timeout: RUN_MS });
+    await expect.soft(ready('still').locator('img.note-picture'), 'with its picture').toBeVisible({ timeout: 60_000 });
+    const picture = (await project.asset('still')).prefixes.at(-1)?.main?.sha256?.replace(/^sha256:/, '').toLowerCase();
+    expect.soft(thumbs.some((at) => picture && at.includes(picture)), "its thumbnail was asked").toBe(true);
+
+    const asked = await api.raw('GET', project.at(`/thumbs/${words[0]}`));
+    const said = await asked.json().catch(() => null);
+    expect.soft({ status: asked.status, code: said?.error?.code }, `a text file's thumbnail is refused at once: ${JSON.stringify(said)}`).toEqual({ status: 400, code: 'thumb_unsupported' });
+    console.log(`llm-reads thumbs: ${asked.status} ${said?.error?.message}`);
   });
 });
