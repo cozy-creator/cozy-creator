@@ -12,13 +12,14 @@ cozy machine update "$NAME" --runtime "$RW" --tensorfs "$TW" --tensord "$(comman
   fail "update $NAME: $(tail -c 300 "$OUT/update.txt")"
 say "$NAME: $(cozy machine show "$NAME" 2>&1 | grep -E '^(version|runtime|tensorfs) ' | paste -sd' ')"
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd)
-cozy --json run "$W/wait" seconds:=600 --on "$NAME" > "$OUT/pinned.ndjson" 2> "$OUT/pinned.err" & P=$!
+# A run belongs to the session's project (lib.sh RUN_PROJECT): asked from inside it.
+(cd "$RUN_PROJECT" && exec cozy --json run "$W/wait" seconds:=600 --on "$NAME") > "$OUT/pinned.ndjson" 2> "$OUT/pinned.err" & P=$!
 # started <run>: `yes` once its machine began executing it.
 started() { cozy --json run show "$1" 2> /dev/null | jq -r '(.run // .) | if .started_at_ms != null then "yes" else "no" end'; }
 h=
 for _ in $(seq 1 120); do
   h=$(handle "$OUT/pinned.ndjson"); [ -n "$h" ] && [ "$(started "$h")" = yes ] && break
-  kill -0 "$P" 2> /dev/null || fail "the run ended before it ran: $(tail -c 300 "$OUT/pinned.err")"
+  kill -0 "$P" 2> /dev/null || fail "the run ended before it ran: $(tail -c 300 "$OUT/pinned.err") $(tail -c 300 "$OUT/pinned.ndjson")"
   sleep 5
 done
 [ "$(started "$h")" = yes ] || fail "run $h never ran on $NAME"
