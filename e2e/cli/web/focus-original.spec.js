@@ -2,8 +2,8 @@
 // right?"): Focus draws a picture's own file at its own pixels, never the thumbnail Calcifer keeps for the canvas (a 512 px JPEG of an
 // opaque picture). A tall one, fitted narrower than 512 screen pixels, drew that thumbnail. Zoomed past one screen pixel to each of its
 // own, its pixels are drawn as they are, as an image editor draws them, not smoothed; fitted, smoothed. A 16,384 px panorama zooms to its
-// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on: no frame as long as its decode takes on the
-// runner. Its looks, fitted and zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
+// own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on: no main-thread task as long as its decode
+// takes on the runner. Its looks, fitted and zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, focus, png, themed } = require('./fixtures');
@@ -14,8 +14,24 @@ const WIDE = { name: 'wide', width: 2304, height: 1728 };
 const TALL = { name: 'tall', width: 1512, height: 2688 };
 const PANORAMA = { name: 'panorama', width: 16384, height: 2048 };
 const LOOKS = [[1440, 900], [1920, 1080]];
-/** The longest frame while the panorama opens, as a share of its file's decode on the same runner: a main-thread decode holds all of it. */
+/** The page's longest main-thread task while the panorama opens, as a share of its file's decode on the same runner: a main-thread decode
+ *  holds all of it. */
 const DRAWS_ON = 0.85;
+
+/** From a Chrome trace: the renderer main thread's longest task by its own work, that is its time less what it waited on the GPU process
+ *  (`CommandBufferHelper::Finish`). A runner has no GPU, so a WebGL canvas's commit reads its pixels back (`GLES2::ReadPixels`) and waits
+ *  there while SwiftShader uploads the 32 MP texture, which is the GPU process's work and not the page's. */
+function mainThreadWork(events) {
+  const names = new Map(events.filter((e) => e.ph === 'M' && e.name === 'thread_name').map((e) => [`${e.pid}:${e.tid}`, e.args.name]));
+  const main = events.filter((e) => e.ph === 'X' && names.get(`${e.pid}:${e.tid}`) === 'CrRendererMain');
+  const waits = main.filter((e) => e.name === 'CommandBufferHelper::Finish');
+  let worst = { task: 0, waited: 0, work: 0 };
+  for (const t of main.filter((e) => e.name === 'ThreadControllerImpl::RunTask')) {
+    const waited = waits.filter((w) => w.pid === t.pid && w.tid === t.tid && w.ts >= t.ts && w.ts + w.dur <= t.ts + t.dur).reduce((sum, w) => sum + w.dur, 0);
+    if (t.dur - waited > worst.work * 1000) worst = { task: Math.round(t.dur / 1000), waited: Math.round(waited / 1000), work: Math.round((t.dur - waited) / 1000) };
+  }
+  return { ...worst, tasks: main.filter((e) => e.name === 'ThreadControllerImpl::RunTask').length };
+}
 const soft = expect.configure({ soft: true });
 
 /** A picture with detail at every scale: colour sweeps, a grid of single pixels every 32, fine diagonals. A copy, or its pixels smoothed,
@@ -104,7 +120,12 @@ test('focus-original', async ({ page, project }) => {
   });
 
   await test.step('a 16,384 px panorama: its 32 MP file drawn as the page draws on, zoomed to its own pixels', async () => {
-    // Every frame from here to its file drawn: the longest gap between two.
+    // The page's main thread from here to its file drawn, traced (`mainThreadWork`); and the longest gap between two frames, said beside it.
+    const cdp = await page.context().newCDPSession(page);
+    const traced = [];
+    cdp.on('Tracing.dataCollected', ({ value }) => traced.push(...value));
+    const traceDone = new Promise((done) => cdp.once('Tracing.tracingComplete', done));
+    await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: ['toplevel', 'gpu', '__metadata'] } });
     await page.evaluate(() => {
       const seen = (window.__frames = { longest: 0, last: performance.now(), id: 0 });
       const tick = (now) => {
@@ -122,10 +143,16 @@ test('focus-original', async ({ page, project }) => {
       cancelAnimationFrame(window.__frames.id);
       return Math.round(window.__frames.longest);
     });
+    await cdp.send('Tracing.end');
+    await traceDone;
+    const main = mainThreadWork(traced);
+    await cdp.detach();
     // Judged on this runner (release e2e 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page): its file's
-    // decode timed here (the middle of three), and a page that waited for it on its main thread holds a frame at least that long. The page
-    // drawing on held 0.47, 0.49 and 0.69 of it (44444265058, 44445572294 in web-3, 44447062335); a stall as long as the decode held
-    // 1.10 (44447065164). Under 0.85 of it passes the first by a fifth and fails any main-thread decode.
+    // decode timed here (the middle of three), and a page that decodes it on its main thread runs a task at least that long. The frame gap
+    // was the bar until 11-19, but on a runner it is mostly the main thread waiting on the GPU process. Traced 44625913414 and 44625926928:
+    // the longest tasks were 161 and 228 ms, 153 and 216 ms of them in `CommandBufferHelper::Finish`; the decode ran on worker threads.
+    // That wait swung the gap from 0.60 to 1.10 of the decode on one build (44622175694, 44622160999, 44622187292). Under 0.85 of it, the
+    // page's own work fails any main-thread decode.
     const decoded = await page.evaluate(async (src) => {
       const blob = await (await fetch(src)).blob();
       const times = [];
@@ -136,11 +163,12 @@ test('focus-original', async ({ page, project }) => {
       }
       return Math.round(times.sort((x, y) => x - y)[1]);
     }, file);
-    expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under ${DRAWS_ON} of the ${decoded} ms its file takes to decode here`)
+    expect(main.tasks, 'its main thread traced while it opened').toBeGreaterThan(0);
+    expect.soft(main.work, `the page's own main-thread work in its longest task while it opened (${main.task} ms, ${main.waited} of them waiting on the GPU process), ms: under ${DRAWS_ON} of the ${decoded} ms its file takes to decode here`)
       .toBeLessThan(DRAWS_ON * decoded);
     const fitted = await drawn(page);
     const most = await zoomUntil(page, region, 'Zoom in image', () => false);
-    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, decoded, fitted, most }) });
+    test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, main, decoded, fitted, most }) });
     expect.soft(most.across, `zoomed all the way in, screen pixels to each of its own (fitted ${fitted.across.toFixed(3)})`).toBeGreaterThanOrEqual(1);
     await soft.poll(async () => (await drawn(page)).rendering, { message: 'and its pixels as they are' }).toBe('pixelated');
   });
