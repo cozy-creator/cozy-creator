@@ -505,6 +505,7 @@ coming_done formula 600
 job=$(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "formula")] | last // empty')
 run=$(jq -r '.run // empty' <<< "${job:-null}")
 if [ -n "$run" ] && J '.state == "done"' <<< "$job"; then
+  echo "$P" > "$OUT/gpuless-formula.at"
   run_show "$OUT" gpuless-formula "$run"
   echo "prefetch gpuless: formula's render $run: $(jq -c '{machine, status, execution_ms, placed: (.placed | {machine, basis, warm, formula_ms, size, prepare_ms, finish_s: ((.finish_at_ms - .quoted_at_ms) / 1000)})}' "$OUT/gpuless-formula.json" 2> /dev/null)"
   J '.machine == "local" and .placed.basis == "reference" and .placed.formula_ms == 8000' "$OUT/gpuless-formula.json" \
