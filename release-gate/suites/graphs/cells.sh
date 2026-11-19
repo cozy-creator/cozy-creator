@@ -25,7 +25,8 @@
 #                       hold … a replay refuses in one line when that is gone. Never a GPU fault from dropping a reference."
 #                       operands.py under the machine's own TensorFS, one process a case: a graph whose output was dropped
 #                       replays, one whose operands were freed refuses in one line. Last: without the guard that replay
-#                       faults the GPU (Xid 31; pod-session 44430279106)
+#                       faults the GPU (Xid 31; pod-session 44430279106). A fault cell: judged by its outcome, its verdict in
+#                       expect.tsv; no ledger row, as it times no workload (coordinator 11-19)
 G=$OUT/graphs
 mkdir -p "$G"
 pod_dev "$CLI" "$M" > /dev/null && expect graphs-dev PASS "the pod's config.toml says dev = true" ||
