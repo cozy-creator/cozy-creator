@@ -2731,7 +2731,7 @@ export type Readied = { id: string, state: string, readiness?: Readiness | null,
  * How ready a machine is for a predicted request (cl-1123): `planning` (its request not planned yet), `installing`, `downloading`,
  * `ready` (its weights here), `loading`
  * (its executor starting and its weights going onto a GPU), `loaded` (they are there: its first step loads nothing), `evicted`
- * (a run took that GPU memory since), `running`, `done`. `done`/`total` count what the stage counts, in bytes; `reason` says why
+ * (a run took that GPU memory since). `done`/`total` count what the stage counts, in bytes; `reason` says why
  * it stops where it is (`refused`: the machine won't make it ready, and why).
  */
 export type Readiness = { stage: string, done: number, total: number, reason: string, };
