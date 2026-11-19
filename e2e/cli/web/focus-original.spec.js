@@ -14,6 +14,8 @@ const WIDE = { name: 'wide', width: 2304, height: 1728 };
 const TALL = { name: 'tall', width: 1512, height: 2688 };
 const PANORAMA = { name: 'panorama', width: 16384, height: 2048 };
 const LOOKS = [[1440, 900], [1920, 1080]];
+/** The longest frame while the panorama opens, as a share of its file's decode on the same runner: a main-thread decode holds all of it. */
+const DRAWS_ON = 0.75;
 const soft = expect.configure({ soft: true });
 
 /** A picture with detail at every scale: colour sweeps, a grid of single pixels every 32, fine diagonals. A copy, or its pixels smoothed,
@@ -120,15 +122,18 @@ test('focus-original', async ({ page, project }) => {
       cancelAnimationFrame(window.__frames.id);
       return Math.round(window.__frames.longest);
     });
-    // Judged on this runner: a page that waited for the decode would hold a frame as long as the decode itself takes here (release e2e
-    // 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page).
+    // Judged on this runner (release e2e 44431308176: 1017 ms on a runner 3.8x slower than one that took 267 ms, the same page): its file's
+    // decode timed here, and a page that waited for it on its main thread would hold a frame at least that long. The page drawing on
+    // holds about half of it (117 of 250 ms alone, 267 of 545 ms in web-3: 44444265058, 44445572294); three quarters fails a decode
+    // on the main thread by a third.
     const decoded = await page.evaluate(async (src) => {
       const blob = await (await fetch(src)).blob();
       const began = performance.now();
       (await createImageBitmap(blob)).close();
       return Math.round(performance.now() - began);
     }, file);
-    expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under the ${decoded} ms its file takes to decode here`).toBeLessThan(decoded);
+    expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under 3/4 of the ${decoded} ms its file takes to decode here`)
+      .toBeLessThan(DRAWS_ON * decoded);
     const fitted = await drawn(page);
     const most = await zoomUntil(page, region, 'Zoom in image', () => false);
     test.info().annotations.push({ type: 'panorama', description: JSON.stringify({ longest, decoded, fitted, most }) });
