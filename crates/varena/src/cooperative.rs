@@ -122,7 +122,10 @@ pub(crate) fn request_boundary(device: i32, begin: bool) {
     if let Some(service) = service(device) {
         if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }
     }
-    expect(device, !begin);
+    let room = expect(device, !begin);
+    if begin && let Ok(gpu) = crate::gpu(device) {
+        gpu.driver_room_began(room);
+    }
 }
 
 /// What a process on each GPU is expected to hold outside its books, as read when it came up.
@@ -179,7 +182,7 @@ fn expect(device: i32, learn: bool) -> usize {
     }
     let most = set.and_then(|set| varena_ledger::out_of_books(&uuid, set));
     let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
-    gpu.expect_driver(room, measured.unwrap_or(0));
+    gpu.expect_driver(room, measured.unwrap_or(0), context, most.map_or(0, |most| most as usize));
     room
 }
 
