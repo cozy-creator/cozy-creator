@@ -56,7 +56,6 @@ grep -q '"held"' "$OUT/show.json" || fail "no page shows the project: $(tail -c 
 nice -n 19 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1024x1024:rate=1' -frames:v 1 "$OUT/photo.png" || fail "no picture"
 run_page import "$OUT/photo.png" --name photo > "$OUT/photo.json" 2>&1 || fail "import photo: $(tail -c 300 "$OUT/photo.json")"
 run_page add cut --tool birefnet/remove_background --fields '{"image": "<photo>"}' > "$OUT/add-cut.json" 2>&1 || fail "the cut box: $(tail -c 300 "$OUT/add-cut.json")"
-run_page add shot --tool minimax-h3/generate --fields "$SHOT" > "$OUT/add-shot.json" 2>&1 || fail "the shot box: $(tail -c 300 "$OUT/add-shot.json")"
 
 # placed <box>: its newest run's record (runs-<box>.json), and its quote said.
 job_run() { run_page board 2> /dev/null | jq -r --arg a "$1" '[.jobs[]? | select(.asset == $a) | .run // empty][-1] // empty'; }
@@ -73,6 +72,8 @@ RUN=$(job_run cut)
 judge 'jq -e --arg m "$NAME" ".machine == \$m and .placed.machine == \$m and .placed.basis == \"reference\" and .placed.formula_ms == null" "$OUT/runs-cut.json" > /dev/null 2>&1' \
   "BiRefNet is placed on $NAME by the platform's default from its row of the card (basis reference, no formula)"
 
+# The shot's box only now, so its guess fetches nothing while the cut renders.
+run_page add shot --tool minimax-h3/generate --fields "$SHOT" > "$OUT/add-shot.json" 2>&1 || fail "the shot box: $(tail -c 300 "$OUT/add-shot.json")"
 (cd "$RUN_PROJECT" && exec cozy render shot) > "$OUT/render-shot.txt" 2>&1 & SP=$!
 RUN=''
 for _ in $(seq 180); do RUN=$(job_run shot); [ -n "$RUN" ] && break; sleep 5; done
