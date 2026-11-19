@@ -7,6 +7,7 @@
 
 import json
 import time
+from collections.abc import Callable
 
 import msgspec
 import torch
@@ -349,9 +350,103 @@ class _Digits:
         return self.digits if state == 0 else [*self.digits, self.stop] if state < 8 else [self.stop]
 
 
+class _NoDigits:
+    """An `lm.Index` of `[^0-9]+` then `stop`, over a tokenizer's vocabulary: a JSON string's loop, nearly every token
+    allowed at each step. State 0 has made nothing, 1 is inside, 2 has stopped."""
+
+    def __init__(self, vocab: dict[str, int], decode: Callable[[int], str], stop: int, specials: set[int]) -> None:
+        self.words = sorted(i for i in vocab.values() if i not in specials and not any(c.isdigit() for c in decode(i)))
+        self.member, self.stop = frozenset(self.words), stop
+
+    def get_initial_state(self) -> int:
+        return 0
+
+    def get_next_state(self, state: int, token: int) -> int | None:
+        if state < 2 and token in self.member:
+            return 1
+        return 2 if state == 1 and token == self.stop else None
+
+    def get_allowed_tokens(self, state: int) -> list[int] | None:
+        return self.words if state == 0 else [*self.words, self.stop] if state == 1 else [self.stop]
+
+
+class _Replaying:
+    """cr-351's `lm.Grammar` as it was before xs-213's follow-up: one prefix's state kept, the allowed ids a new list
+    each ask. The A arm of `grammar-cost`, so both arms run on one pod and one Runtime."""
+
+    def __init__(self, index: _NoDigits) -> None:
+        self.index = index
+        self.last: tuple[tuple[int, ...], int] = ((), index.get_initial_state())
+
+    def allowed(self, tokens: list[int]) -> list[int]:
+        held = tuple(tokens)
+        done, state = self.last
+        if held[: len(done)] != done:
+            done, state = (), self.index.get_initial_state()
+        for token in held[len(done) :]:
+            following = self.index.get_next_state(state, token)
+            if following is None:
+                raise ValueError(f"token {token} is outside the grammar")
+            state = following
+        self.last = (held, state)
+        ids = self.index.get_allowed_tokens(state)
+        if ids is None:
+            raise ValueError(f"state {state} is outside the grammar")
+        return list(ids)
+
+
+class _Any:
+    """A constraint that allows any token: the baseline arm, on the same path a held call takes (Transformers'
+    engine, its host caught up with each step) with no mask to build."""
+
+    def allowed(self, tokens: list[int]) -> None:
+        return None
+
+
+def _grammar_cost(model: VisionLM) -> Agreement:
+    """Four rows sharing one constraint, 128 greedy tokens each, warm: held by `_Any`, by `lm.Grammar`, and by
+    `_Replaying` (the old Grammar): each arm's wall seconds and its cost a token a row over `_Any`'s. Both grammars
+    must give the same answers, with no digit in them."""
+    from cozy_runtime.vlm import Question
+
+    tokenizer = model.processor.tokenizer
+    stop = int(tokenizer.convert_tokens_to_ids("<|im_end|>"))
+    index = _NoDigits(tokenizer.get_vocab(), lambda i: tokenizer.decode([i]), stop, set(tokenizer.all_special_ids))
+    questions = [Question(text=t) for t in ("Describe a lighthouse at night.", "Describe a busy market.",
+                                            "Describe a mountain lake.", "Describe a train station.")]
+
+    def timed(allowed: object) -> tuple[float, list[str]]:
+        def run() -> list[str]:
+            return model.ask(questions, system="", thinking=False, stop=[], max_new_tokens=128, presence_penalty=0.0,
+                             temperature=0.0, top_p=1.0, seed=0, allowed=allowed)  # type: ignore[arg-type]  # a Constraint
+
+        run()
+        torch.cuda.synchronize()
+        began = time.perf_counter()
+        answers = run()
+        torch.cuda.synchronize()
+        return time.perf_counter() - began, answers
+
+    plain_s, _ = timed(_Any())
+    new_s, new = timed(lm.Grammar(index))
+    old_s, old = timed(_Replaying(index))
+    if new != old:
+        raise RuntimeError(f"grammar-cost: lm.Grammar and the old Grammar answered differently: {new[0][:80]!r} / {old[0][:80]!r}")
+    if any(c.isdigit() for a in new for c in a):
+        raise RuntimeError("grammar-cost: a digit in a grammar-held answer")
+    per = 1e3 / (128 * len(questions))
+    return Agreement(json.dumps({
+        "engine": type(model.engine).__name__, "case": "grammar-cost", "allowed_ids": len(index.words),
+        "plain_s": round(plain_s, 3), "grammar_s": round(new_s, 3), "old_grammar_s": round(old_s, 3),
+        "grammar_ms_token_row": round((new_s - plain_s) * per, 3), "old_grammar_ms_token_row": round((old_s - plain_s) * per, 3),
+        "first": new[0][:120],
+    }))
+
+
 class Route(msgspec.Struct):
     #: `grammar`: a call held to `_Digits` (`allowed`); `conversation`: a text question after a turn with a picture;
-    #: `ngram`: a call with `no_repeat_ngram`.
+    #: `ngram`: a call with `no_repeat_ngram`; `ceiling`: 512 tokens asked of an engine whose rows hold 256;
+    #: `grammar-cost`: a grammar's cost a token (`_grammar_cost`).
     case: str = "grammar"
 
 
@@ -364,6 +459,8 @@ def routes(ctx: Context, payload: Route, model: VisionLM) -> Agreement:
 
     from cozy_runtime.vlm import Question, Turn
 
+    if payload.case == "grammar-cost":
+        return _grammar_cost(model)
     tokenizer = model.processor.tokenizer
     allowed: lm.Grammar | None = None
     ngram: int | None = None
@@ -378,12 +475,30 @@ def routes(ctx: Context, payload: Route, model: VisionLM) -> Agreement:
         ])  # fmt: skip
     elif payload.case == "ngram":
         ngram = 3
+    elif payload.case == "ceiling":  # the engine serves it, its length clamped at the start, with a warning
+        from cozy_runtime.engine.decoder import Decoder
+
+        model.engine.decoder = Decoder(model.pipe.components["model"], max_rows=16, max_tokens=256)  # type: ignore[attr-defined]  # CozyEngine's
+        question = Question(text=PROMPT.split("\n")[1].removesuffix("<|im_end|>"))
     else:
         raise ValueError(f"no route '{payload.case}'")
-    answer = model.ask([question], system="", thinking=False, stop=[], max_new_tokens=24, presence_penalty=0.0,
-                       temperature=0.0, top_p=1.0, seed=0, allowed=allowed, no_repeat_ngram=ngram)[0]
+    try:
+        answer = model.ask([question], system="", thinking=False, stop=[], presence_penalty=0.0, temperature=0.0,
+                           max_new_tokens=512 if payload.case == "ceiling" else 24, top_p=1.0, seed=0,
+                           allowed=allowed, no_repeat_ngram=ngram)[0]  # fmt: skip
+    finally:
+        if payload.case == "ceiling":
+            model.engine.decoder = None  # type: ignore[attr-defined]  # the next call's is the model's own
     if not answer.strip():
         raise RuntimeError(f"{payload.case}: no answer")
+    if payload.case == "ceiling":
+        from cozy_runtime.author._model import WARNINGS
+
+        clamped = [row for row in WARNINGS if "clamped to" in str(row[0])]
+        if not clamped:
+            raise RuntimeError("ceiling: 512 tokens past a 256-token ceiling, and no clamp warning")
+        return Agreement(json.dumps({"engine": type(model.engine).__name__, "case": payload.case,
+                                     "warning": str(clamped[-1][0]), "words": len(answer.split())}))
     if payload.case == "grammar" and not answer.strip().isdigit():
         raise RuntimeError(f"grammar: the answer {answer!r} is not digits: the constraint didn't hold")
     return Agreement(json.dumps({"engine": type(model.engine).__name__, "case": payload.case, "answer": answer[:160]}))
