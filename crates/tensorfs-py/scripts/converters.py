@@ -1501,11 +1501,12 @@ IP_ADAPTER = VECTORS / "ip-adapter-headers"  # hf://h94/IP-Adapter@018e402774aee
 
 
 def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
-    """h94's SDXL IP-Adapter Plus file (`image_proj.*`, `ip_adapter.N.*`) in the layout Diffusers' own loader converts it
-    to (`UNet2DConditionLoadersMixin._convert_ip_adapter_image_proj_to_diffusers`, `_convert_ip_adapter_attn_to_diffusers`):
-    `image_proj`, `IPAdapterPlusImageProjection`'s state_dict (each `to_kv`'s rows halved into `to_k` and `to_v`), and
-    `ip_adapter`, every SDXL cross-attention processor's `to_k_ip.0` and `to_v_ip.0` under its UNet name. Both run here on
-    a meta SDXL UNet over index stand-ins of the banked header, their loads captured."""
+    """h94's SDXL IP-Adapter Plus file (`image_proj.*`, `ip_adapter.N.*`) as Diffusers' own loader reads it
+    (`UNet2DConditionLoadersMixin._convert_ip_adapter_image_proj_to_diffusers`, `_convert_ip_adapter_attn_to_diffusers`):
+    `image_proj` is `IPAdapterPlusImageProjection`'s state_dict (each `to_kv`'s rows halved into `to_k` and `to_v`), with
+    its constructor's arguments as its config; `ip_adapter` keeps each cross-attention's `N.to_k_ip`/`N.to_v_ip`, in the
+    order Diffusers gives them to the UNet's processors (N = 1, 3, 5, … over `attn_processors`). Both run here on a meta
+    SDXL UNet over index stand-ins of the banked header, their loads captured."""
     from diffusers import UNet2DConditionModel
 
     keys = header(IP_ADAPTER / "ip-adapter-plus_sdxl_vit-h.safetensors.header")
@@ -1530,7 +1531,7 @@ def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
     finally:
         torch.nn.Module.load_state_dict = real  # type: ignore[method-assign]
 
-    def rows(state: dict[str, torch.Tensor], prefix: str, into: str = "") -> list[TableRow]:
+    def rows(state: dict[str, torch.Tensor], prefix: str) -> list[TableRow]:
         out: list[TableRow] = []
         for target, value in state.items():
             source = owner[value.untyped_storage().data_ptr()]
@@ -1538,16 +1539,16 @@ def ip_adapter_sdxl(unet_config: Config) -> Table[TableRow]:
             cols = math.prod(shape[1:])
             ops = row_ops((value.reshape(len(value), -1)[:, 0] // cols).numpy(), shape)
             local = source.removeprefix(prefix)
-            name = f"{into}{target}"
-            out.append((name,) if local == name and ops is None else (name, local) if ops is None else (name, local, ops))
+            out.append((target,) if local == target and ops is None else (target, local) if ops is None else (target, local, ops))
         return out
 
     (proj_module, captured), *sites = loaded
     assert proj_module is projection and sorted(captured) == sorted(projection.state_dict()), "image_proj"
     proj_state = {k: captured[k] for k in projection.state_dict()}  # construction order
-    named = {id(module): name for name, module in processors.items()}
-    site_rows = [row for module, state in sites for row in rows(state, "ip_adapter.", f"{named[id(module)]}.")]
-    assert len(site_rows) == len(parts["ip_adapter"]), "every ip_adapter weight is one processor's"
+    assert {id(m) for m, _ in sites} <= {id(m) for m in processors.values()}, "each site is a UNet processor's"
+    site_rows: list[TableRow] = [(owner[v.untyped_storage().data_ptr()].removeprefix("ip_adapter."),)
+                                 for _, state in sites for v in state.values()]
+    assert sorted(site_rows) == sorted((k,) for k in parts["ip_adapter"]), "every ip_adapter weight is one processor's"
     p = projection
     config = {"_class_name": type(p).__name__, "embed_dims": p.proj_in.in_features, "output_dims": p.proj_out.out_features,
               "hidden_dims": p.latents.shape[2], "depth": len(p.layers), "dim_head": 64, "heads": p.layers[0].attn.heads,
