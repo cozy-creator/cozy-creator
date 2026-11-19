@@ -289,6 +289,17 @@ ASKS = (
 
 @app.entrypoint(accelerator=True)
 def bucket(ctx: Context, model: VisionLM) -> Agreement:
+    """`_bucket` on the launcher's WHILE node, as a call decodes."""
+    return _bucket(model, launcher=True)
+
+
+@app.entrypoint(accelerator=True)
+def bucket_replayed(ctx: Context, model: VisionLM) -> Agreement:
+    """`_bucket` with the host replaying the step's graph (`Decoder(launcher=False)`): no WHILE node."""
+    return _bucket(model, launcher=False)
+
+
+def _bucket(model: VisionLM, launcher: bool) -> Agreement:
     """The engine's decoder on `ASKS` as four rows of one bucket (a call `vlm.ask` serves: up to 16 rows), 256 greedy
     tokens each, drafted and plain: each row held against Transformers' teacher-forced forward at its clear positions
     (`forced`), and the same row decoded alone (a bucket of one) held the same way, with where the two first differ.
@@ -300,13 +311,14 @@ def bucket(ctx: Context, model: VisionLM) -> Agreement:
     prompts = [model.processor.tokenizer(a, add_special_tokens=False)["input_ids"] for a in ASKS]
     run = getattr(model.engine, "run", None)
     rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": [len(p) for p in prompts],
-                               "declared": run is not None}
+                               "declared": run is not None, "launcher": launcher}
     head = getattr(net, "mtp", None)
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del net.mtp
         try:
-            decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300, run=run or JIT)
+            decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300, run=run or JIT,
+                              launcher=launcher)
             made = decoder(Request(prompts=prompts, max_new=256, stops=[])).tokens
             alone = [decoder(Request(prompts=[p], max_new=256, stops=[])).tokens[0] for p in prompts]
         finally:
