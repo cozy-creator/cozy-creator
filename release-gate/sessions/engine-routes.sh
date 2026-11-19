@@ -2,6 +2,9 @@
 # `VisionLM.ask` call takes, through `cozy run` on one fresh rental of $SKU, each read from the run's own `.engine` note.
 # No run may compile one of the engine's Triton kernels on its request (a `triton compile` confession of one): they are
 # its model's declared set, built while the model loads (`engine.kernels`). Any other kernel a request compiles is told.
+#   refused    the first executor's launcher check has its child killed with SIGSEGV (`fixtures/ggml-decode/kill-check.sh`,
+#              as a crash of the launcher ends it): its calls go to Transformers' engine or the replayed path, with the
+#              check's reason, none crashes and no pass is kept; then TensorD restarts and a fresh executor checks again;
 #   cold       the pod's first q8_0 call: the engine, or Transformers' engine while its set builds ("are building");
 #              then the same short call until the engine serves it (`ready`), the time that took told; int8 likewise;
 #   served     the q8_0 lane, text (`qwen3/ask`): the engine serves it ("by the engine");
@@ -103,7 +106,36 @@ FAILED=()
 step pull-q8 model install "$Q8" --on "$NAME" || fail "pull q8_0"
 step pull-int8 model install "$INT8" --on "$NAME" || fail "pull int8"
 step pull-q4 model install "$Q4" --on "$NAME" || fail "pull q4_k_m"
+# The refusal path without a driver that crashes the launcher: the first executor's launcher check has its child
+# killed with SIGSEGV a second after it starts (found by its command line), as a crash would end it. That executor's
+# calls must go to Transformers' engine or the replayed path with the check's reason, none crashed, and no pass kept.
+if [ -n "$LLAMA" ]; then  # the pod's shell (an ssh rental)
+  { there "mkdir -p /w" < /dev/null && there "cat > /w/kill-check.sh" < "$FIX/kill-check.sh" &&
+    there "setsid nohup bash /w/kill-check.sh > /w/kill-check.log 2>&1 < /dev/null &" < /dev/null; } || fail "start the check's killer"
+  refused=""
+  for i in $(seq 1 20); do
+    step "refused-$i" run "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=Name a colour." max_tokens:=8 temperature:=0 --on "$NAME" \
+      || { say "FAILED: refused-$i: a call crashed or failed"; FAILED+=("refused-$i"); break; }
+    record "refused-$i"
+    heard=$(note "refused-$i")
+    say "refused-$i: ${heard:-none} · answer: $(jq -r '.result.texts[0] // ""' "$OUT/refused-$i.json" | head -c 80)"
+    if [[ $heard == *"neither of the engine's launch paths"* || $heard == *"host-replayed"* ]]; then refused=$i; break; fi
+    [[ $heard == *"being checked"* ]] || { say "FAILED: refused-$i: neither checking nor refused"; FAILED+=("refused-$i"); break; }
+    sleep 5
+  done
+  say "kill-check: $(there 'cat /w/kill-check.log' < /dev/null | tail -2 | paste -sd ';' -)"
+  [ -n "$refused" ] || { say "FAILED: the killed check never refused the launcher"; FAILED+=("refused"); }
+  kept=$(there "find /var/lib/cozy -name 'cozy-engine-launcher-passed-*' 2> /dev/null | head -3" < /dev/null)
+  say "after the killed check, passes kept: ${kept:-none}"
+  [ -z "$kept" ] || { say "FAILED: a killed check kept a pass"; FAILED+=("refused-kept"); }
+  step restart-check machine update "$NAME" --gpu-memory-limit off -y || fail "restart TensorD"  # a fresh executor checks again
+fi
 ready cold "$Q8"
+if [ -n "$LLAMA" ]; then
+  kept=$(there "find /var/lib/cozy -name 'cozy-engine-launcher-passed-*' 2> /dev/null | head -3" < /dev/null)
+  say "after a fresh executor's check, passes kept: ${kept:-none}"
+  [ -n "$kept" ] || { say "FAILED: the passing check kept no pass"; FAILED+=("pass-kept"); }
+fi
 route served "by the engine" "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=$STORY" max_tokens:=64 temperature:=0
 ready cold-int8 "$INT8"
 route int8 "by the engine" "$SOURCE/qwen3/ask" --model "model=$INT8" "prompt=$STORY" max_tokens:=512 temperature:=0
