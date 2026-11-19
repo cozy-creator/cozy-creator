@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::prefix_of,
-    format::{INSTRUCTIONS, LEADS, NODE_KIND, SELECTED_VERSION, STARRED, TEXT, canonical, end_trimmed},
+    format::{NODE_KIND, SELECTED_VERSION, STARRED, TEXT, canonical, end_trimmed},
     graph::{mention, mention_moved, name_key},
 };
 
@@ -149,15 +149,19 @@ impl Written {
     }
 
     /// What a change of its tool writes of box `name`, with what `fields` ask, `tool` empty taking it off, and its fields with it (Paul,
-    /// 11-06). Its pictures, numbers, approval and description stay. Only a box with none of those pictures has its words in another field:
-    /// `text` with no tool, `instructions` with one. Typed media keep their type and prompt words when a model is removed.
+    /// 11-06). Its pictures, numbers, approval and description stay. Only a box with none of those pictures has its words moved, unless
+    /// `fields` says them: from where they are (`words.from`, its tool's main text, else `text`) to where the next tool reads them
+    /// (`words.to`, its main text), or to `text` with no tool. Typed media keep their type and prompt words when a model is removed.
     /// A tool going on a picture, `holds`, starts by reading it where `start` says.
-    pub(crate) fn with_tool(&self, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, fields: &mut Map<String, Value>) -> Result<(), Error> {
+    pub(crate) fn with_tool(&self, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, words: &Words, fields: &mut Map<String, Value>) -> Result<(), Error> {
         let held = self.get(name).ok_or_else(|| unknown(name))?.map();
         let kind = super::format::node_kind(fields.get(NODE_KIND).or_else(|| held.get(NODE_KIND)))?;
         let media = kind.is_some_and(|kind| kind != TEXT);
-        let said = fields.contains_key(INSTRUCTIONS) || fields.contains_key(TEXT);
-        let moved = |fields: &mut Map<String, Value>, from: &str, to: &str| {
+        let from = words.from.as_deref().unwrap_or(TEXT);
+        let to = if tool.is_empty() { Some(TEXT) } else { words.to.as_deref() };
+        let said = fields.contains_key(TEXT) || fields.contains_key(from) || to.is_some_and(|to| fields.contains_key(to));
+        let moved = |fields: &mut Map<String, Value>, to: Option<&str>| {
+            let Some(to) = to.filter(|to| *to != from) else { return };
             if let Some(words) = held.get(from).filter(|_| !said) {
                 fields.insert(to.to_owned(), words.clone());
                 fields.insert(from.to_owned(), Value::Null);
@@ -165,9 +169,9 @@ impl Written {
         };
         match (tool.is_empty(), holds) {
             // A box of words is its words, whatever versions a tool wrote on it (xs-204).
-            (true, _) if !media => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
-            (false, _) if !media => moved(fields, TEXT, INSTRUCTIONS),
-            (false, None) => moved(fields, TEXT, INSTRUCTIONS),
+            (true, _) if !media => moved(fields, to),
+            (false, _) if !media => moved(fields, to),
+            (false, None) => moved(fields, to),
             (false, Some(number)) if !said && !held.contains_key(TOOL) => {
                 let own = format!("<self.{number}>");
                 match start {
@@ -183,7 +187,7 @@ impl Written {
         }
         // Off, its fields go with it; what it was given back by Undo is a write of them.
         if tool.is_empty() {
-            let gone: Vec<String> = held.keys().filter(|field| !BOX.contains(&field.as_str()) && !(media && LEADS.contains(&field.as_str())) && !fields.contains_key(*field)).cloned().collect();
+            let gone: Vec<String> = held.keys().filter(|field| !BOX.contains(&field.as_str()) && !(media && field.as_str() == from) && !fields.contains_key(*field)).cloned().collect();
             fields.extend(gone.into_iter().map(|field| (field, Value::Null)));
         }
         fields.insert(TOOL.to_owned(), if tool.is_empty() { Value::Null } else { json!(tool) });
@@ -276,6 +280,14 @@ impl Written {
         self.get_mut(name)?.fields.clone_from(&back.fields);
         Ok(())
     }
+}
+
+/// Where a box's words are as its tool changes: its tool's main text (`tool::main_text`) now (`from`, none with no tool or one not
+/// read), and the next tool's (`to`). None of either is the box's own `text`.
+#[derive(Clone, Default)]
+pub(crate) struct Words {
+    pub(crate) from: Option<String>,
+    pub(crate) to: Option<String>,
 }
 
 /// Where a tool going on a picture or a video starts from it: its first required slot of that kind, else the start of its first prompt.

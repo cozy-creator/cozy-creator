@@ -22,7 +22,7 @@ use api::{
 use super::{
     Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, stop_at_machines, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
     measure_soon, model, noun,
-    written::{Boxed, Start, Written},
+    written::{Boxed, Start, Words, Written},
 };
 use crate::api::{Api, Refusal, parse};
 
@@ -344,6 +344,7 @@ pub(super) struct PatchReady {
     validated_tool: Option<String>,
     incoming: Option<String>,
     start: Option<Start>,
+    words: Words,
 }
 
 /// `asked` of box `name` read as `patch` reads it.
@@ -380,7 +381,18 @@ pub(super) async fn ready_patch(api: &Arc<Api>, folder: &folder::Folder, name: &
         (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(api, tool, &folder.dir).await.and_then(|fields| start_of(&fields, kind, false)),
         _ => None,
     };
-    Ok(PatchReady { validated_tool, incoming, start })
+    // Where its words are now and where they go: each tool's main text (`tool::main_text`), as the page carries them.
+    let words = match asked.tool.as_deref() {
+        Some(tool) => {
+            let held = folder.written()?.get(name).and_then(|held| held.get("tool").and_then(Value::as_str).map(str::to_owned)).filter(|held| !held.is_empty());
+            let main = |fields: Option<Vec<tool::ToolField>>| fields.and_then(|fields| tool::main_text(&fields).map(|field| field.field.clone()));
+            let from = match held { Some(held) => main(crate::toolbox::fields_of(api, &held, &folder.dir).await), None => None };
+            let to = match tool.is_empty() { true => None, false => main(crate::toolbox::fields_of(api, tool, &folder.dir).await) };
+            Words { from, to }
+        }
+        None => Words::default(),
+    };
+    Ok(PatchReady { validated_tool, incoming, start, words })
 }
 
 /// Where a box of a tool with `fields` starts from a box of `kind` (`tool::reads_kind`).
@@ -423,7 +435,7 @@ async fn read_from(api: &Arc<Api>, folder: &folder::Folder, asked: &mut NewAsset
 
 /// `asked` written to box `name` in one transaction (or the act it's in).
 pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, ready: &PatchReady) -> Result<AssetPatched, Error> {
-    let PatchReady { validated_tool, incoming, start } = ready;
+    let PatchReady { validated_tool, incoming, start, words } = ready;
     let name = name.to_owned();
     folder.act(|| {
         let holds = match &asked.tool {
@@ -493,7 +505,7 @@ pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, r
                 let clips: Vec<Value> = holds.filter(|number| *number > 0).map(|number| json!(format!("<self.{number}>"))).into_iter().collect();
                 fields.insert("tracks".to_owned(), json!([{"clips": clips}]));
             }
-            written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;
+            written.with_tool(&name, tool, *holds, start.clone(), words, &mut fields)?;
         } else if written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
             fields.insert(format::NODE_KIND.to_owned(), Value::String("video".to_owned()));
         }
