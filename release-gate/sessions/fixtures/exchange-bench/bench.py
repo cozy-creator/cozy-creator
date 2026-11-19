@@ -74,6 +74,13 @@ def rank(r: int, store_path: str) -> int:
          runtime=__import__("cozy_runtime").__file__, name=torch.cuda.get_device_name(device))
     if exchange is None:
         return 1
+    import inspect
+
+    # cr-348's exchange takes a matrix a tensor and crosses a cross-attention (Q rows unlike K/V's).
+    new = "matrices" in inspect.signature(exchange.start).parameters
+
+    def a2a(sends, matrix, out) -> None:
+        exchange.all_to_all_into(sends, [matrix] * len(sends) if new else matrix, out)
 
     def timed(fn, n: int, warm: int = 3) -> dict[str, float]:
         for _ in range(warm):
@@ -98,7 +105,7 @@ def rank(r: int, store_path: str) -> int:
         out = torch.empty_like(send)
         matrix = [[rows] * WORLD for _ in range(WORLD)]
         n = max(4, min(50, 2048 // mib))
-        staged = timed(lambda: exchange.all_to_all_into([send], matrix, [out]), n)
+        staged = timed(lambda: a2a([send], matrix, [out]), n)
         nccl = timed(lambda: dist.all_to_all_single(out, send, group=pg), n)
         peer = rows * 1024
         emit("raw", mib_to_peer=mib, staged=staged, staged_gbps=round(peer / staged["ms"] / 1e6, 2),
@@ -141,8 +148,15 @@ def rank(r: int, store_path: str) -> int:
         clock = ulysses.taken()
         whole = torch.randn(1, video, 16, 128, dtype=torch.bfloat16, device=device)
         alone = timed(lambda: sdpa(whole, whole, whole), n)
+        mine_out = ulysses.exchange(q, k, v, pg, sdpa, "bench self")
+        full = [torch.empty((WORLD, *x.shape), dtype=x.dtype, device=device) for x in (q, k, v)]
+        for x, into in zip((q, k, v), full):
+            dist.all_gather_into_tensor(into, x)
+        ref = sdpa(*(x.transpose(0, 1).flatten(1, 2) for x in full))[:, r * mine : (r + 1) * mine]
         emit("self", stage=stage, rows=mine, exchange=through, sdpa_share=alone, clock=clock,
+             exact=bool(torch.equal(mine_out, ref)), max_diff=float((mine_out.float() - ref.float()).abs().max()),
              sync=returns(lambda: ulysses.exchange(q, k, v, pg, sdpa, "bench self")))
+        del full, ref, mine_out
         del q, k, v, whole
         # cross: a2v (q video, kv audio) and v2a (q audio, kv video), 32 heads x 64, as ltx_2_5/parallel.py crosses.
         vq = torch.randn(1, mine, 32, 64, dtype=torch.bfloat16, device=device)
@@ -163,12 +177,19 @@ def rank(r: int, store_path: str) -> int:
         two = [torch.randn(WORLD * half, dtype=torch.bfloat16, device=device) for _ in range(2)]
         m = [[half] * WORLD for _ in range(WORLD)]
         o1, o2 = torch.empty_like(one), [torch.empty_like(x) for x in two]
-        one_way = timed(lambda: exchange.all_to_all_into([one], m, [o1]), n)
-        kv_way = timed(lambda: exchange.all_to_all_into(two, m, o2), n)
+        one_way = timed(lambda: a2a([one], m, [o1]), n)
+        kv_way = timed(lambda: a2a(two, m, o2), n)
+        row = {}
+        if new:  # the cross-attention through the Runtime's Ulysses, against the package's own crossing
+            row["a2v_ulysses"] = timed(lambda: ulysses.exchange(vq, aq, aq, pg, sdpa, "bench a2v"), n)
+            row["v2a_ulysses"] = timed(lambda: ulysses.exchange(aq, vq, vq, pg, sdpa, "bench v2a"), n)
+            row["a2v_ulysses_sync"] = returns(lambda: ulysses.exchange(vq, aq, aq, pg, sdpa, "bench a2v"))
+            for name, args in (("a2v", (vq, aq, aq)), ("v2a", (aq, vq, vq))):
+                got, want = ulysses.exchange(*args, pg, sdpa, f"bench {name}"), package(*args)
+                row[f"{name}_exact"] = bool(torch.equal(got, want))
         emit("cross", stage=stage, rows=mine, a2v_package=a2v, v2a_package=v2a,
              a2v_sync=returns(lambda: package(vq, aq, aq)),
-             staged_q_or_o_ms=one_way["ms"], staged_kv_ms=kv_way["ms"],
-             staged_pattern_ms=round(3 * one_way["ms"] + kv_way["ms"], 3))
+             staged_a2v_bytes_ms=round(2 * one_way["ms"], 3), staged_v2a_bytes_ms=kv_way["ms"], **row)
         del vq, aq, one, two, o1, o2
 
     # meet: the per-call rendezvous, lockstep, then with GPU 1 2 ms late each call.
