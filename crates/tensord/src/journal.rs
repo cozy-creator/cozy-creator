@@ -1475,9 +1475,7 @@ impl Journal {
                 if invocation.local_private.as_ref().is_some_and(|scope| local_private.as_ref().is_none_or(|parent| parent.project_id != scope.project_id)) {
                     return Err(io::Error::new(io::ErrorKind::PermissionDenied, "preparation cannot change its private workspace"));
                 }
-                // A guess or a speculative run stays no job once bound (cl-1123 D: 44175857630's held the idle clock); `adopt` makes it one.
-                let background = record.invocation.background;
-                record.invocation = Invocation { root, family, local_private, background, ..invocation };
+                record.invocation = Invocation { root, family, local_private, ..invocation };
                 if let Some(submission) = record.submission.as_mut() {
                     submission.preparation_id = preparation.into();
                 }
@@ -1771,8 +1769,6 @@ fn insert(
         invocation.local_private = parent.invocation.local_private.clone();
         invocation.root = parent.root_seq().to_string();
         invocation.family = parent.family().unwrap_or_default().into();
-        // A guess's calls, or a speculative run's, are no job either (cl-1123 D).
-        invocation.background |= parent.invocation.background;
     }
     let objects: Vec<_> = invocation
         .inputs
@@ -1924,33 +1920,6 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
-    }
-
-    /// `actor`'s run `from` (a speculative run, cl-1123 D) becomes the run its caller sends as `to`: named so from now on, and a job
-    /// (no longer `background`). Its execution's id; none when no such run is going or has succeeded.
-    pub(crate) fn adopt(&mut self, actor: &str, from: &str, to: &str) -> io::Result<Option<String>> {
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        let found: Option<(String, String)> = tx
-            .query_row(
-                "SELECT id,record FROM executions WHERE actor=?1 AND request_id=?2 AND state NOT IN ('failed','canceled')",
-                params![actor, from],
-                |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get(1)?)),
-            )
-            .optional()
-            .map_err(db_error)?;
-        let Some((id, record)) = found else { return Ok(None) };
-        let mut record = decoded_execution(&record)?;
-        if let Some(submission) = record.submission.as_mut() {
-            to.clone_into(&mut submission.request_id);
-        }
-        record.invocation.background = false;
-        tx.execute(
-            "UPDATE executions SET request_id=?1,invocation=?2,record=?3,updated_ms=?4 WHERE id=?5",
-            params![to, invocation_index(&record.invocation)?, encoded_execution(&record)?, timestamp(), id],
-        )
-        .map_err(db_error)?;
-        tx.commit().map_err(db_error)?;
-        Ok(Some(id))
     }
 
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
@@ -2650,15 +2619,6 @@ impl Journal {
             if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_cancelled"})) }
             else { Ok(()) }
         })
-    }
-
-    /// The machine ends speculative run `id` (cl-1123 D): its cancel recorded as `cancel_observed` records it, its commit not waiting
-    /// for the disk. A crash loses the run anyway, and its draft runs again.
-    pub(crate) fn cancel_unsynced(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
-        self.connection.pragma_update(None, "synchronous", "OFF").map_err(db_error)?;
-        let canceled = self.cancel_observed(id, actor, None);
-        self.connection.pragma_update(None, "synchronous", self.synchronous).map_err(db_error)?;
-        canceled
     }
 
     /// A run's children that have not finished.

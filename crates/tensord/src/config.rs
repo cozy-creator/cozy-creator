@@ -69,8 +69,6 @@ pub(crate) struct Config {
     pub gpu_samples: Option<PathBuf>,
     /// A dev machine (a top-level `dev = true`): its executors audit their CUDA graphs' replays.
     pub dev: bool,
-    /// Runs a loaded prediction ahead (cl-1123 D): `machine.speculate`, read only with `dev = true`. Off by default.
-    pub speculate: bool,
 }
 
 /// The one load, which declares the origins this machine fetches at a local address.
@@ -90,14 +88,7 @@ pub(crate) fn reread(config: &mut Config) -> io::Result<()> {
     config.display_pace = display_pace(config.mode, &loaded.config.machine);
     config.gpu_samples.clone_from(&loaded.config.machine.gpu_samples);
     config.dev = loaded.config.dev;
-    config.speculate = speculates(config.grant.lifetime, &loaded.config);
     Ok(())
-}
-
-/// `machine.speculate`, honored only on a dev rental. Never on this computer's machine (cl-1123): its lists come with no project's
-/// scope while its project's runs are scoped, so a draft run ahead here would run outside its project, an encrypted one's vault.
-fn speculates(lifetime: Lifetime, config: &shared::Config) -> bool {
-    lifetime == Lifetime::Rental && config.dev && config.machine.speculate
 }
 
 /// `machine.display_pace` (absent: the default) on a shared machine whose pace pauses at all.
@@ -143,7 +134,6 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         warnings,
         gpu_samples: machine.gpu_samples.clone(),
         dev: loaded.config.dev,
-        speculate: speculates(lifetime, &loaded.config),
     })
 }
 

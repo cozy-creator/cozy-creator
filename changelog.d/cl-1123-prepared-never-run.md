@@ -1,0 +1,1 @@
+A machine never runs a box's predicted request before Render (Paul 11-19). The dev-only `[machine] speculate` setting, the run ahead it turned on and a render's adoption of that run are gone. A box's needs are still downloaded and its models loaded on its predicted machine ahead of Render, and its render takes the loaded executor.
