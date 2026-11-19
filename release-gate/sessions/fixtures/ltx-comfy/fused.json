@@ -15,7 +15,7 @@
   {
    "name": "b",
    "update": {
-    "runtime": "44456984840",
+    "runtime": "44457978065",
     "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
     "tensord": true,
     "gpu_memory_limit": "off"

@@ -1,0 +1,30 @@
+{
+ "bench_ref": "5be107a84d83172fca9d24cb21925ed195493999",
+ "tree": "pk",
+ "record": "release-gate/sessions/fixtures/ltx-comfy/rc-ltx-4090.json",
+ "arms": [
+  {
+   "name": "b",
+   "update": {
+    "runtime": "44457978065",
+    "tensorfs": "artifact:44348488572/tensorfs-wheel-5c5b25395bd693c63edd8cafcb2bbf3bb63651f1",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
+  }
+ ],
+ "order": "one-way",
+ "need_s": 7200,
+ "gpus": 1,
+ "cells": [
+  {
+   "name": "l-ltx-20s-bf16",
+   "key": "ltx25_bf16",
+   "duration_s": 20,
+   "gpus": 1,
+   "lane": "bf16",
+   "prompt": "A street violinist plays under neon rain in a narrow alley; the camera circles slowly as people with umbrellas hurry past and puddles ripple with each step. Sound: a slow violin melody, steady rain, distant traffic. A 16-bit take.",
+   "seed": 64704
+  }
+ ]
+}
