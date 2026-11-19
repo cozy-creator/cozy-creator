@@ -47,10 +47,17 @@ done < <(cut -f1 "$W/slots" | sort -u)
 awk '{print NR, $0}' "$W/asked" | xargs -r -P 4 -n 2 sh -c 'timeout 120 cozy --json model show "$2" > "$0/shown.$1" 2> /dev/null' "$W"
 # A run resolves `@x.y.z` to the newest public fix of its series (TensorD published.rs `forward`, xs-183), which `cozy model
 # show` names `resolves_to`: a private x.y.z still loads when that release is public (cl-1254 11-19: 0.1.0 encoders unpublished
-# for 0.1.1). An absent release has no such answer, and fails.
+# for 0.1.1). An absent x.y.z, which TensorD forwards too, has no `model show`: it passes when the model's newest release is
+# public, of its series and no older (#4066's check).
 forward() {  # <org/name@x.y.z> <its model show>: the public release a run loads instead, or nothing
-  local to; to=$(jq -r '.resolves_to // empty' <<< "$2" 2> /dev/null); [ -n "$to" ] || return 1
-  [ "$(timeout 120 cozy --json model show "${1%@*}@$to" 2> /dev/null | jq -r '.visibility // empty' 2> /dev/null)" = public ] && echo "$to"
+  local want=${1##*@} to
+  to=$(jq -r '.resolves_to // empty' <<< "$2" 2> /dev/null)
+  if [ -z "$to" ] && [ "$(jq -r '.error.kind // empty' <<< "$2" 2> /dev/null)" = not_found ]; then
+    to=$(timeout 120 cozy --json model show "${1%@*}" 2> /dev/null | jq -r '.release // empty' 2> /dev/null)
+    [ "${to%.*}" = "${want%.*}" ] && [ "${to##*.}" -ge "${want##*.}" ] 2> /dev/null || return 1
+  fi
+  [ -n "$to" ] && [ "$(timeout 120 cozy --json model show "${1%@*}@$to" 2> /dev/null | jq -r '.visibility // empty' 2> /dev/null)" = public ] &&
+    echo "$to"
 }
 i=0
 while read -r r; do
