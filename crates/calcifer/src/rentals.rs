@@ -774,7 +774,7 @@ impl Machines {
                 };
                 // Until its machine is named, the run says what it rents.
                 let card = sku.replace(['-', '_'], " ").to_uppercase();
-                me.calcifer.waiting(&run.id, match gpus {
+                me.calcifer.renting(&run.id, match gpus {
                     Some(n) if n > 1 => format!("renting {n}× {card}"),
                     _ => format!("renting {card}"),
                 });

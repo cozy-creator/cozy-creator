@@ -188,11 +188,24 @@ impl Drop for Canceling {
     }
 }
 
+/// What a run's wait is for: what acts on a wait (whether it stalled, whether it waits for a rental) reads this, never its words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum WaitKind {
+    #[default]
+    Other,
+    /// GPUs another run or its machine's own work holds, as its machine said (`Live::gpus`).
+    Gpus,
+    /// A rental ordered for it, until its machine is named.
+    Renting,
+}
+
 /// What a run is doing now, never stored: the latest of each live event, the stage moving
 /// bytes with its last few seconds of (when, bytes moved): its rate, and what says its time left.
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
+    /// What `waiting` is a wait for, which what acts on it reads: its words are only shown (xs-215).
+    waits_for: WaitKind,
     /// The GPUs it waits for, while `waiting` is that wait, as its machine said it (cl-1247).
     gpus: Option<::api::calcifer::GpuWait>,
     /// Its place in its machine's line while it waits there, as the machine says it (1 next).
@@ -216,6 +229,15 @@ struct Live {
     said_wait: Option<String>,
     /// Each text output's words so far, by (output, item), while it runs (xs-209): memory only, never its record's.
     text: BTreeMap<(String, u32), String>,
+}
+
+impl Live {
+    /// It waits no more: what it waited for goes with its words. Returns the words it had.
+    fn waits_no_more(&mut self) -> Option<String> {
+        self.waits_for = WaitKind::Other;
+        self.gpus = None;
+        self.waiting.take()
+    }
 }
 
 /// A run's text outputs so far, as its record shows them.
@@ -1461,7 +1483,7 @@ impl Calcifer {
     /// from it yet. One that waits in a line (its machine's, for GPUs another run holds, or behind
     /// other runs' downloads) has only that line's progress.
     fn stalled(&self, run: &Run) -> Option<Stalled> {
-        if run.status != RunStatus::InProgress || queued(run) || run.waiting.as_deref().is_some_and(|w| w.contains("held by")) {
+        if run.status != RunStatus::InProgress || queued(run) || self.waits_for(&run.id) == WaitKind::Gpus {
             return None;
         }
         let machine = run.machine.clone()?;
@@ -1823,10 +1845,7 @@ impl Calcifer {
 
     /// The run waits no longer: its record says so, and its followers hear an empty reason.
     fn not_waiting(&self, id: &RunId) {
-        let cleared = lock(&self.live).get_mut(id).and_then(|live| {
-            live.gpus = None;
-            live.waiting.take()
-        });
+        let cleared = lock(&self.live).get_mut(id).and_then(Live::waits_no_more);
         if cleared.is_some() {
             let reason = String::new();
             let _ = self.events.send((id.clone(), Event::Waiting { reason, gpus: None }));
@@ -1834,13 +1853,25 @@ impl Calcifer {
     }
 
     pub(crate) fn waiting(&self, id: &RunId, reason: String) {
-        self.waits(id, reason, None);
+        self.waits(id, reason, WaitKind::Other, None);
     }
 
-    /// It waits `reason`, and for `gpus` when that's a wait for GPUs its machine said (cl-1247): followers hear both when either changes.
-    fn waits(&self, id: &RunId, reason: String, gpus: Option<::api::calcifer::GpuWait>) {
+    /// It waits `reason` for a rental ordered for it (`Rentals::rent_for`), until its machine is named.
+    pub(crate) fn renting(&self, id: &RunId, reason: String) {
+        self.waits(id, reason, WaitKind::Renting, None);
+    }
+
+    /// What `id` waits for now, as what acts on its wait reads it.
+    fn waits_for(&self, id: &RunId) -> WaitKind {
+        lock(&self.live).get(id).map_or(WaitKind::Other, |live| live.waits_for)
+    }
+
+    /// It waits `reason`, a wait for `kind`, and for `gpus` when that's a wait for GPUs its machine said (cl-1247): followers hear the
+    /// reason and the GPUs when either changes.
+    fn waits(&self, id: &RunId, reason: String, kind: WaitKind, gpus: Option<::api::calcifer::GpuWait>) {
         let mut live = lock(&self.live);
         let entry = live.entry(id.clone()).or_default();
+        entry.waits_for = kind;
         if entry.waiting.as_ref() != Some(&reason) || entry.gpus != gpus {
             entry.waiting = Some(reason.clone());
             entry.gpus = gpus;
@@ -2201,8 +2232,7 @@ impl Calcifer {
             }
             let Some(name) = run.machine.clone() else {
                 // A rental ordered for it says what it rents (`Rentals::rent_for`) until it is named.
-                let renting = lock(&self.live).get(id).and_then(|live| live.waiting.as_deref()).is_some_and(|w| w.starts_with("renting "));
-                if run.wants != "any" && !renting {
+                if run.wants != "any" && self.waits_for(id) != WaitKind::Renting {
                     self.waiting(id, "waiting for Cozy to pick a machine".into());
                 }
                 wake.notified().await;
@@ -2680,7 +2710,7 @@ impl Calcifer {
                 // Accepted, it waits no more: its in-progress event says so.
                 lock(&self.live)
                     .get_mut(&run.id)
-                    .map(|live| live.waiting.take());
+                    .map(Live::waits_no_more);
                 self.publish(&run.id, events);
             }
             Acceptance::Again => {}
@@ -2950,7 +2980,7 @@ impl Calcifer {
                         batch.logs.push((frame.at_ms, "stage".into(), format!("{reason}, {left}")));
                     }
                     // Said typed too, from this frame alone: how many GPUs and its machine's time for them (cl-1247).
-                    self.waits(id, format!("{reason}, {left}"), Some(::api::calcifer::GpuWait { width: gpu.width, left_ms: gpu.left_ms }));
+                    self.waits(id, format!("{reason}, {left}"), WaitKind::Gpus, Some(::api::calcifer::GpuWait { width: gpu.width, left_ms: gpu.left_ms }));
                     // A wait its machine can't time leaves its time left not known: never the 0 s of a first phase held (cl-1247).
                     if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
                         clock.waits_for_gpus(gpu.left_ms > 0);
