@@ -101,6 +101,14 @@ done) & BG="$BG $!"
 # First, every package this session runs is staged on the pod: its lock and the candidates over it are settled in the pod's
 # first minutes, not after llama.cpp's build.
 pod_install stage-drive "$FIX/drive"
+# The Runtime the drive's environment imports, asked of the environment itself: a pod's listing named the candidate while
+# the environment ran a Runtime without its ggml code (44508689123: every case of ours unmeasured, and `cozy_runtime.bench`
+# without the candidate's `ggml_batch_shapes`), when a release published mid-session became its lock's.
+step runtime-version run "$FIX/drive/runtime_version" --on "$NAME" || fail "runtime_version"
+took=$( (cd "$RUN_PROJECT" && cozy --json --full run watch "$(runno runtime-version)" --once) 2> /dev/null | jq -r '.result.detail // ""')
+want=${RUNTIME##*/cozy_runtime-}; want=${want%%-cp*}
+[ "$took" = "$want" ] || fail "the drive's environment imports cozy-runtime ${took:-nothing}, not the candidate $want"
+say "the drive's environment imports cozy-runtime $took: the candidate"
 if [ -n "$DECODE$MAKE" ]; then
   pod_install stage-decode "$DFIX/drive"
   [ -z "$MAKE" ] || pod_install stage-qwen3 "$PACKAGES/$TREE/qwen3"

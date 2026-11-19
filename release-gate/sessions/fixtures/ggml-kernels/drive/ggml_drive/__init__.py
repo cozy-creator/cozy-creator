@@ -29,3 +29,11 @@ async def host_calibrate(ctx: Context) -> Measured:
 async def batch_shapes(ctx: Context) -> Measured:
     """batch-shapes raced on torch's default stream with no sync, beside the same cases settled (cozy-runtime#2309)."""
     return Measured((await call(bench.ggml_batch_shapes, bench.EmptyRequest())).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def runtime_version(ctx: Context) -> Measured:
+    """The cozy-runtime this environment imports, which the session holds against the candidate wheel."""
+    import cozy_runtime
+
+    return Measured(cozy_runtime.__version__)
