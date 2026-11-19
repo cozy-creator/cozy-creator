@@ -1,4 +1,5 @@
 //! Bounded tensor conversion through the existing checkpoint reader and Writer journal.
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::Ordering;
@@ -110,6 +111,9 @@ struct Pending<'a> {
     output_bytes: u64,
     parts: Vec<(String, Dtype, Vec<u64>)>,
     nvfp4: bool,
+    /// The parts after the first wait in memory for it to stream (`Stream`): they fit the buffer
+    /// budget beside the chunks. Otherwise in scratch files.
+    later_in_memory: bool,
     error_fraction: f64,
     required_buffer_bytes: usize,
     fit: Option<fitting::PendingFit>,
@@ -315,6 +319,7 @@ impl Writer {
                         output_bytes: bytes,
                         parts,
                         nvfp4: false,
+                        later_in_memory: false,
                         error_fraction: 0.25,
                         required_buffer_bytes: fit.required_buffer_bytes,
                         fit: Some(fit),
@@ -328,10 +333,22 @@ impl Writer {
                     "fit references require the explicit SVDQ fitting strategy",
                 );
             }
+            let ggml = (spec.strategy == encode::GGML_REF_STRATEGY)
+                .then(|| encode::ggml_written(&spec.encoding.scheme))
+                .flatten()
+                .filter(|ty| spec.encoding == ty.encoding());
             let (nvfp4, block, error_fraction) = match (
                 spec.encoding.scheme.as_str(),
                 spec.strategy.as_str(),
             ) {
+                // A tripwire for a broken producer, as a fraction of the tensor's amax. A block's
+                // worst step is 2·amax/15 for q4_k (its 4 bits span a min to a max), amax/16 for
+                // q5_0 and smaller for q5_1, q5_k, q6_k and q8_0; an element is off by at most
+                // half a step, so each bound is twice the worst error or more.
+                (_, encode::GGML_REF_STRATEGY) if ggml.is_some() => {
+                    let ty = ggml.expect("matched");
+                    (false, ty.block, if ty.name == "q4_k" { 0.25 } else { 0.125 })
+                }
                 ("int8.convrot", encode::CONVROT_STRATEGY)
                     if spec.encoding == Encoding::int8_convrot(256) =>
                 {
@@ -377,7 +394,9 @@ impl Writer {
                 .map_err(|_| invalid("tensor shape exceeds this platform's address space"))?;
             // Source + F32 input + every encoded part coexist. ConvRot additionally owns
             // one F64 row; the fixed allowance covers block arithmetic/metadata scratch.
-            let row_output = if nvfp4 || w4a8 {
+            let row_output = if let Some(ty) = ggml {
+                checked((cols / ty.block).checked_mul(ty.size))?
+            } else if nvfp4 || w4a8 {
                 checked(
                     cols.checked_div(2)
                         .and_then(|n| n.checked_add(cols / 16))
@@ -434,7 +453,9 @@ impl Writer {
                     0
                 })
             }))?;
-            let parts = if nvfp4 {
+            let parts = if let Some(ty) = ggml {
+                vec![("blocks".into(), Dtype::U8, vec![*rows, *cols / ty.block, ty.size])]
+            } else if nvfp4 {
                 vec![
                     ("weight".into(), Dtype::F4, spec.shape.clone()),
                     ("scale".into(), Dtype::F8_E4M3, vec![*rows, *cols / 16]),
@@ -461,6 +482,11 @@ impl Writer {
                     ("scale".into(), Dtype::F32, vec![*rows]),
                 ]
             };
+            let later = parts.iter().skip(1).try_fold(0u64, |sum, (_, dtype, shape)| {
+                checked(sum.checked_add(checked(dtype.byte_len(shape))?))
+            })?;
+            let chunks = scratch + rows_per_chunk * row_memory;
+            let later_in_memory = chunks.saturating_add(later) <= options.max_buffer_bytes as u64;
             if active {
                 self.component_writer(&spec.component)?; // Validate every executed destination before mutation.
             }
@@ -480,8 +506,10 @@ impl Writer {
                     output_bytes: bytes,
                     parts,
                     nvfp4,
+                    later_in_memory,
                     error_fraction,
-                    required_buffer_bytes: (scratch + rows_per_chunk * row_memory) as usize,
+                    required_buffer_bytes: (chunks + if later_in_memory { later } else { 0 })
+                        as usize,
                     fit: None,
                 });
             }
@@ -538,6 +566,9 @@ impl Writer {
         Ok(result)
     }
 
+    /// One tensor, encoded chunk by chunk as the put reads it: the first part streams straight into
+    /// the put, each later one waits for it to end (`Stream`). The tripwire is judged before the
+    /// first part's last bytes go, so a lane that trips records nothing.
     async fn quantize_one(
         &mut self,
         source: &Checkpoint,
@@ -546,13 +577,14 @@ impl Writer {
     ) -> Result<QuantizedTensor> {
         let spec = pending.spec;
         let rows = spec.shape[0] as usize;
-        let cols = spec.shape[1] as usize;
+        let reader = float_reader(source, pending);
+        reader.fetch(options.control).await?;
         let mut read_bytes = 0u64;
         let mut maximum = 0.0f64;
         if pending.nvfp4 {
             for start in (0..rows).step_by(pending.rows_per_chunk) {
                 let count = pending.rows_per_chunk.min(rows - start);
-                let values = read_window(source, pending, start, count, options.control).await?;
+                let values = reader.read_local(start, count, options.control)?;
                 read_bytes += count as u64 * pending.row_source_bytes;
                 for raw in values.as_chunks::<4>().0 {
                     let value = f32::from_le_bytes(*raw);
@@ -566,114 +598,37 @@ impl Writer {
                 }
             }
         }
-        let mut staged = pending
+        let later = pending
             .parts
             .iter()
-            .map(|_| self.scratch())
+            .skip(1)
+            .map(|_| match pending.later_in_memory {
+                true => Ok(Staged::Memory(std::io::Cursor::new(Vec::new()))),
+                false => self.scratch().map(Staged::File),
+            })
             .collect::<Result<Vec<_>>>()?;
-        let mut measured = encode::QuantizationStats::default();
-        for start in (0..rows).step_by(pending.rows_per_chunk) {
-            let count = pending.rows_per_chunk.min(rows - start);
-            let values = read_window(source, pending, start, count, options.control).await?;
-            read_bytes += count as u64 * pending.row_source_bytes;
-            let shape = [count as u64, cols as u64];
-            let amax = maximum.to_le_bytes();
-            let mut arrays = BTreeMap::from([(
-                "values",
-                PartBytes {
-                    dtype: &Dtype::F32,
-                    shape: &shape,
-                    bytes: &values,
-                },
-            )]);
-            if pending.nvfp4 {
-                arrays.insert(
-                    "tensor_amax",
-                    PartBytes {
-                        dtype: &Dtype::F64,
-                        shape: &[],
-                        bytes: &amax,
-                    },
-                );
-            }
-            let encoded = encode::quantize_measured(
-                &encode::Input {
-                    dtype: &spec.dtype,
-                    shape: &shape,
-                    encoding: &spec.encoding,
-                    arrays: &arrays,
-                },
-                &spec.strategy,
-            )?;
-            if encoded.parts.len() != pending.parts.len() {
-                return fail(Kind::Integrity, "quantizer changed its resolved part count");
-            }
-            measured.merge(&encoded.stats);
-            for (index, part) in encoded.parts.iter().enumerate() {
-                let (role, dtype, geometry) = &pending.parts[index];
-                let mut expected = geometry.clone();
-                let shared = geometry.is_empty() || role == "codebook";
-                if let Some(rows) = expected.first_mut().filter(|_| !shared) {
-                    *rows = count as u64;
-                }
-                if part.role != *role || part.dtype != *dtype || part.shape != expected {
-                    return fail(
-                        Kind::Integrity,
-                        "quantizer changed its resolved part geometry",
-                    );
-                }
-                if !shared || start == 0 {
-                    options.control.check()?;
-                    staged[index]
-                        .file()
-                        .write_all(&part.bytes)
-                        .map_err(|e| super::io_failure("quantization staging", e))?;
-                }
-            }
-        }
-        let relative = if measured.energy > 0.0 {
-            (measured.sse / measured.energy).sqrt()
-        } else {
-            0.0
-        };
-        let bound = measured.amax * pending.error_fraction;
-        if !measured.max_abs_error.is_finite()
-            || measured.max_abs_error > bound
-            || !relative.is_finite()
-            || options
-                .max_relative_frobenius
-                .is_some_and(|limit| relative > limit)
-        {
-            return fail(
-                Kind::Decode,
-                format!(
-                    "quantization_tripwire: {}.{} max error {}, bound {bound}, relative Frobenius {relative}",
-                    spec.component, spec.key, measured.max_abs_error
-                ),
-            );
-        }
-        for (file, (_, dtype, shape)) in staged.iter_mut().zip(&pending.parts) {
-            if file
-                .file()
-                .metadata()
-                .map_err(|e| super::io_failure("quantization staging", e))?
-                .len()
-                != dtype
-                    .byte_len(shape)
-                    .ok_or_else(|| invalid("encoded part size overflows"))?
-            {
-                return fail(Kind::Integrity, "quantizer emitted a different part length");
-            }
-            file.file()
-                .seek(SeekFrom::Start(0))
-                .map_err(|e| super::io_failure("quantization staging", e))?;
-        }
-        options.control.check()?;
-        let mut readers: Vec<_> = staged
-            .iter_mut()
-            .map(|part| CheckedRead {
-                source: part.file(),
-                control: options.control,
+        let stream = RefCell::new(Stream {
+            reader,
+            pending,
+            control: options.control,
+            limit: options.max_relative_frobenius,
+            maximum,
+            next: 0,
+            head: Vec::new(),
+            at: 0,
+            head_bytes: 0,
+            later,
+            rewound: vec![false; pending.parts.len() - 1],
+            measured: encode::QuantizationStats::default(),
+            relative: 0.0,
+            read_bytes,
+            done: false,
+            failed: None,
+        });
+        let mut readers: Vec<_> = (0..pending.parts.len())
+            .map(|index| PartReader {
+                stream: &stream,
+                index,
             })
             .collect();
         let parts = readers
@@ -693,10 +648,18 @@ impl Writer {
             spec.encoding.clone(),
             parts,
         );
+        drop(readers);
+        let mut stream = stream.into_inner();
+        if let Some(failure) = stream.failed.take() {
+            return Err(failure);
+        }
         if written.is_err() {
             options.control.check()?;
         }
         written?;
+        if !stream.done {
+            return fail(Kind::Integrity, "the put ended before the encoded tensor did");
+        }
         options
             .control
             .written_tensors
@@ -704,12 +667,219 @@ impl Writer {
         Ok(QuantizedTensor {
             component: spec.component.clone(),
             key: spec.key.clone(),
-            source_bytes_read: read_bytes,
+            source_bytes_read: stream.read_bytes,
             new_bytes_written: pending.output_bytes,
-            relative_frobenius: relative,
-            measured,
+            relative_frobenius: stream.relative,
+            measured: stream.measured,
             fit: None,
         })
+    }
+}
+
+/// A tensor's encoding as its put reads it. The first part is produced a chunk of rows at a time
+/// while the put reads it; the later parts (scales, codebooks: an eighth of the first or less)
+/// gather beside it and are read once it ends, from memory where the buffer budget holds them
+/// (`Pending::later_in_memory`), else from scratch files.
+struct Stream<'s, 'a> {
+    reader: FloatReader<'s>,
+    pending: &'s Pending<'a>,
+    control: &'s ConversionControl,
+    limit: Option<f64>,
+    maximum: f64,
+    next: usize,
+    head: Vec<u8>,
+    at: usize,
+    head_bytes: u64,
+    later: Vec<Staged>,
+    rewound: Vec<bool>,
+    measured: encode::QuantizationStats,
+    relative: f64,
+    read_bytes: u64,
+    done: bool,
+    failed: Option<Failure>,
+}
+
+impl Stream<'_, '_> {
+    /// The first part's next bytes, encoding the next chunk when these ran out; 0 at its end.
+    fn head(&mut self, into: &mut [u8]) -> Result<usize> {
+        while self.at == self.head.len() {
+            if self.next == self.pending.spec.shape[0] as usize {
+                let (_, dtype, shape) = &self.pending.parts[0];
+                if Some(self.head_bytes) != dtype.byte_len(shape) {
+                    return fail(Kind::Integrity, "quantizer emitted a different part length");
+                }
+                self.done = true;
+                return Ok(0);
+            }
+            self.chunk()?;
+        }
+        let n = into.len().min(self.head.len() - self.at);
+        into[..n].copy_from_slice(&self.head[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+
+    /// Later part `index`'s bytes, once the first part has ended.
+    fn later(&mut self, index: usize, into: &mut [u8]) -> Result<usize> {
+        if !self.done {
+            return fail(Kind::Integrity, "a later part was read before the first ended");
+        }
+        let io = self.later[index].io();
+        if !self.rewound[index] {
+            let (_, dtype, shape) = &self.pending.parts[index + 1];
+            let length = io
+                .seek(SeekFrom::End(0))
+                .map_err(|e| super::io_failure("quantization staging", e))?;
+            if Some(length) != dtype.byte_len(shape) {
+                return fail(Kind::Integrity, "quantizer emitted a different part length");
+            }
+            io.seek(SeekFrom::Start(0))
+                .map_err(|e| super::io_failure("quantization staging", e))?;
+            self.rewound[index] = true;
+        }
+        io.read(into)
+            .map_err(|e| super::io_failure("quantization staging", e))
+    }
+
+    fn chunk(&mut self) -> Result<()> {
+        let pending = self.pending;
+        let spec = pending.spec;
+        let (rows, cols) = (spec.shape[0] as usize, spec.shape[1] as usize);
+        let start = self.next;
+        let count = pending.rows_per_chunk.min(rows - start);
+        let values = self.reader.read_local(start, count, self.control)?;
+        self.read_bytes += count as u64 * pending.row_source_bytes;
+        let shape = [count as u64, cols as u64];
+        let amax = self.maximum.to_le_bytes();
+        let mut arrays = BTreeMap::from([(
+            "values",
+            PartBytes {
+                dtype: &Dtype::F32,
+                shape: &shape,
+                bytes: &values,
+            },
+        )]);
+        if pending.nvfp4 {
+            arrays.insert(
+                "tensor_amax",
+                PartBytes {
+                    dtype: &Dtype::F64,
+                    shape: &[],
+                    bytes: &amax,
+                },
+            );
+        }
+        let encoded = encode::quantize_measured(
+            &encode::Input {
+                dtype: &spec.dtype,
+                shape: &shape,
+                encoding: &spec.encoding,
+                arrays: &arrays,
+            },
+            &spec.strategy,
+        )?;
+        if encoded.parts.len() != pending.parts.len() {
+            return fail(Kind::Integrity, "quantizer changed its resolved part count");
+        }
+        self.measured.merge(&encoded.stats);
+        let mut head = Vec::new();
+        for (index, part) in encoded.parts.into_iter().enumerate() {
+            let (role, dtype, geometry) = &pending.parts[index];
+            let mut expected = geometry.clone();
+            let shared = geometry.is_empty() || role == "codebook";
+            if let Some(rows) = expected.first_mut().filter(|_| !shared) {
+                *rows = count as u64;
+            }
+            if part.role != *role || part.dtype != *dtype || part.shape != expected {
+                return fail(
+                    Kind::Integrity,
+                    "quantizer changed its resolved part geometry",
+                );
+            }
+            if index == 0 {
+                head = part.bytes;
+            } else if !shared || start == 0 {
+                self.later[index - 1]
+                    .io()
+                    .write_all(&part.bytes)
+                    .map_err(|e| super::io_failure("quantization staging", e))?;
+            }
+        }
+        self.next = start + count;
+        if self.next == rows {
+            self.tripwire()?;
+        }
+        self.head_bytes += head.len() as u64;
+        (self.head, self.at) = (head, 0);
+        Ok(())
+    }
+
+    /// A broken producer's tripwire, over the whole tensor, before its last bytes go.
+    fn tripwire(&mut self) -> Result<()> {
+        let measured = &self.measured;
+        self.relative = if measured.energy > 0.0 {
+            (measured.sse / measured.energy).sqrt()
+        } else {
+            0.0
+        };
+        let bound = measured.amax * self.pending.error_fraction;
+        if !measured.max_abs_error.is_finite()
+            || measured.max_abs_error > bound
+            || !self.relative.is_finite()
+            || self.limit.is_some_and(|limit| self.relative > limit)
+        {
+            let spec = self.pending.spec;
+            return fail(
+                Kind::Decode,
+                format!(
+                    "quantization_tripwire: {}.{} max error {}, bound {bound}, relative Frobenius {}",
+                    spec.component, spec.key, measured.max_abs_error, self.relative
+                ),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// One part of a `Stream` as the put reads it; a failure is kept for the put's caller to return.
+struct PartReader<'r, 's, 'a> {
+    stream: &'r RefCell<Stream<'s, 'a>>,
+    index: usize,
+}
+
+impl Read for PartReader<'_, '_, '_> {
+    fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+        let mut stream = self.stream.borrow_mut();
+        let read = stream.control.check().and_then(|()| match self.index {
+            0 => stream.head(into),
+            index => stream.later(index - 1, into),
+        });
+        match read {
+            Ok(read) => {
+                stream
+                    .control
+                    .written_bytes
+                    .fetch_add(read as u64, Ordering::Release);
+                Ok(read)
+            }
+            Err(failure) => {
+                let error = std::io::Error::other(failure.clone());
+                stream.failed.get_or_insert(failure);
+                Err(error)
+            }
+        }
+    }
+}
+
+fn float_reader<'s>(source: &'s Checkpoint, pending: &'s Pending<'_>) -> FloatReader<'s> {
+    FloatReader {
+        checkpoint: source,
+        component: &pending.component,
+        component_name: &pending.spec.component,
+        key: &pending.spec.key,
+        dtype: &pending.spec.source_dtype,
+        layout: &pending.source,
+        columns: pending.spec.shape[1] as usize,
     }
 }
 
@@ -720,17 +890,9 @@ async fn read_window(
     count: usize,
     control: &ConversionControl,
 ) -> Result<Vec<u8>> {
-    FloatReader {
-        checkpoint: source,
-        component: &pending.component,
-        component_name: &pending.spec.component,
-        key: &pending.spec.key,
-        dtype: &pending.spec.source_dtype,
-        layout: &pending.source,
-        columns: pending.spec.shape[1] as usize,
-    }
-    .read(start, count, control)
-    .await
+    float_reader(source, pending)
+        .read(start, count, control)
+        .await
 }
 
 /// Shared bounded F32 source windows for normalization and encoded quantization.
@@ -745,7 +907,49 @@ struct FloatReader<'a> {
 }
 
 impl FloatReader<'_> {
+    /// The stored parts `count` rows from `start` come from: each role, offset and length.
+    fn ranges(&self, start: usize, count: usize) -> Vec<(Option<&'static str>, u64, usize)> {
+        let cols = self.columns;
+        match self.layout {
+            Source::Plain { width } => {
+                vec![(None, (start * cols * width) as u64, count * cols * width)]
+            }
+            Source::Rowwise { scale_width, .. } => vec![
+                (Some("weight"), (start * cols) as u64, count * cols),
+                (
+                    Some("scale"),
+                    (start * scale_width) as u64,
+                    count * scale_width,
+                ),
+            ],
+        }
+    }
+
+    /// Every stored byte of the tensor local, for `read_local`.
+    async fn fetch(&self, control: &ConversionControl) -> Result<()> {
+        for (role, _, _) in self.ranges(0, 0) {
+            fetch_part(self.checkpoint, self.component_name, self.key, role, None, control)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn read(
+        &self,
+        start: usize,
+        count: usize,
+        control: &ConversionControl,
+    ) -> Result<Vec<u8>> {
+        for (role, offset, length) in self.ranges(start, count) {
+            let range = Some(offset..offset + length as u64);
+            fetch_part(self.checkpoint, self.component_name, self.key, role, range, control)
+                .await?;
+        }
+        self.read_local(start, count, control)
+    }
+
+    /// `count` rows from `start` as F32, from stored bytes already local.
+    fn read_local(
         &self,
         start: usize,
         count: usize,
@@ -753,19 +957,17 @@ impl FloatReader<'_> {
     ) -> Result<Vec<u8>> {
         control.check()?;
         let cols = self.columns;
+        let mut stored = self
+            .ranges(start, count)
+            .into_iter()
+            .map(|(role, offset, length)| {
+                local_part(self.component, self.key, role, offset, length, control)
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter();
         match self.layout {
-            Source::Plain { width } => {
-                let bytes = read_named_part(
-                    self.checkpoint,
-                    self.component,
-                    self.component_name,
-                    self.key,
-                    None,
-                    (start * cols * width) as u64,
-                    count * cols * width,
-                    control,
-                )
-                .await?;
+            Source::Plain { .. } => {
+                let bytes = stored.next().expect("a plain tensor's one part");
                 if *self.dtype == Dtype::F32 {
                     return Ok(bytes);
                 }
@@ -791,30 +993,10 @@ impl FloatReader<'_> {
                 encoding,
                 weight,
                 scale,
-                scale_width,
+                ..
             } => {
-                let codes = read_named_part(
-                    self.checkpoint,
-                    self.component,
-                    self.component_name,
-                    self.key,
-                    Some("weight"),
-                    (start * cols) as u64,
-                    count * cols,
-                    control,
-                )
-                .await?;
-                let scales = read_named_part(
-                    self.checkpoint,
-                    self.component,
-                    self.component_name,
-                    self.key,
-                    Some("scale"),
-                    (start * scale_width) as u64,
-                    count * scale_width,
-                    control,
-                )
-                .await?;
+                let codes = stored.next().expect("the weight part");
+                let scales = stored.next().expect("the scale part");
                 let shape = [count as u64, cols as u64];
                 let scale_shape = [count as u64];
                 let parts = BTreeMap::from([
@@ -859,13 +1041,27 @@ async fn read_named_part(
     length: usize,
     control: &ConversionControl,
 ) -> Result<Vec<u8>> {
+    let range = Some(offset..offset + length as u64);
+    fetch_part(source, component_name, key, role, range, control).await?;
+    local_part(component, key, role, offset, length, control)
+}
+
+/// A stored part's bytes (`range`, or all of them) made local.
+async fn fetch_part(
+    source: &Checkpoint,
+    component_name: &str,
+    key: &str,
+    role: Option<&str>,
+    range: Option<std::ops::Range<u64>>,
+    control: &ConversionControl,
+) -> Result<()> {
     control.check()?;
     let wanted = Download {
         selection: Selection::Part {
             component: component_name.to_owned(),
             key: key.to_owned(),
             role: role.map(str::to_owned),
-            range: Some(offset..offset + length as u64),
+            range,
         },
         ..Default::default()
     };
@@ -873,7 +1069,18 @@ async fn read_named_part(
         fetched = source.download(&wanted) => { fetched?; }
         () = control.cancelled() => { control.check()?; }
     }
-    control.check()?;
+    control.check()
+}
+
+/// `length` stored bytes of a local part from `offset`.
+fn local_part(
+    component: &Component,
+    key: &str,
+    role: Option<&str>,
+    offset: u64,
+    length: usize,
+    control: &ConversionControl,
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length).map_err(|_| Failure {
         kind: Kind::Full,
@@ -896,8 +1103,24 @@ async fn read_named_part(
     Ok(bytes)
 }
 
+/// A later encoded part while the first streams into the put: memory, or a scratch file.
+enum Staged {
+    File(crate::writer::Scratch),
+    Memory(std::io::Cursor<Vec<u8>>),
+}
+trait Stage: Read + Write + Seek {}
+impl<T: Read + Write + Seek> Stage for T {}
+impl Staged {
+    fn io(&mut self) -> &mut dyn Stage {
+        match self {
+            Staged::File(scratch) => scratch.file(),
+            Staged::Memory(bytes) => bytes,
+        }
+    }
+}
+
 struct CheckedRead<'a> {
-    source: &'a mut std::fs::File,
+    source: &'a mut dyn Stage,
     control: &'a ConversionControl,
 }
 impl Read for CheckedRead<'_> {
