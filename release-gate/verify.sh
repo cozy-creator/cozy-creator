@@ -92,8 +92,9 @@ if [ -n "$RELEASE" ]; then
   # unchanged <row> <SKU pattern>: with --unchanged, its line's earlier gate must be trusted and have passed the row on such a
   # SKU, and `git diff --name-only` from that gate's set to this one must touch none of escaped-paths.tsv's paths for the row,
   # each repo at its own commit in a checkout here (cozy-creator: this one; cozy-runtime and packages in --checkouts), but a file
-  # whose change is versions alone (version-only.py: a release cut's). Prints where it stands; anything it cannot read or verify
-  # says why and fails.
+  # whose change is versions alone (version-only.py: a release cut's), or a requirement on another component whose own paths the
+  # row judges (TensorFS for a tf: pattern, the Runtime for an rt: one). Prints where it stands; anything it cannot read or
+  # verify says why and fails.
   # Read only with --unchanged: --release alone needs no checkout.
   top= && [ -z "$UNCHANGED" ] || top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
   CHECKOUTS=${CHECKOUTS:-$top/..}
@@ -113,7 +114,7 @@ if [ -n "$RELEASE" ]; then
     elif [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then [ "$1" = tf ] && echo "tensorfs-v$v" || echo "v$v"; fi
   }
   unchanged() {
-    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs changed=() said versions=
+    local row=$1 skus=$2 run line h d old= sku k p a b c files pats=() spec bs changed=() said versions= members
     run=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$UNCHANGED")
     [[ $run =~ ^[0-9]+$ ]] || { echo "not in $UNCHANGED"; return 1; }
     line=$(awk -F'\t' -v r="$row" '$1 == r {print $2; exit}' "$paths" 2>/dev/null)
@@ -140,6 +141,8 @@ if [ -n "$RELEASE" ]; then
       done
     }
     mapfile -t pats < <(expand "$line")
+    # The set's components this row judges by their own diffs: a requirement on one is no change of another repo's file.
+    members=$(printf '%s\n' "${pats[@]}" | sed -n 's/^tf:.*/tensorfs/p; s/^rt:.*/cozy-runtime/p' | sort -u | paste -sd,)
     for p in "${pats[@]}"; do
       a=${p#!}; case ${a%%:*} in cr | tf | rt | pk | rg) ;; *) echo "escaped-paths.tsv: '$p' names no repo"; return 1 ;; esac
     done
@@ -159,7 +162,8 @@ if [ -n "$RELEASE" ]; then
         files=$(git -C "${repo[$k]}" diff --name-only "$a" "$b" -- "${spec[@]}") || { echo "$k: git diff ${a:0:10}..${b:0:10} failed"; return 1; }
         if [ -n "$files" ]; then
           mapfile -t changed <<< "$files"
-          said=$(python3 -I "$(dirname "$0")/version-only.py" "${repo[$k]}" "$a" "$b" --files "${changed[@]}" | sed -n 's/^version only //p') || true
+          said=$(python3 -I "$(dirname "$0")/version-only.py" "${repo[$k]}" "$a" "$b" ${members:+--members "$members"} --files "${changed[@]}" |
+            sed -n 's/^version only //p') || true
           files=$(grep -vxFf <(printf '%s\n' "$said") <<< "$files" || true)
           [ -z "$said" ] || versions="$versions $k:$(paste -sd, <<< "$said")"
         fi

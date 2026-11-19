@@ -1,7 +1,8 @@
 # What each escaped.tsv row's cell exercises, coarse on purpose: a doubtful path counts as changed. `verify.sh --release
 # --unchanged FILE` takes a required row that these gates did not run as UNCHANGED only when `git diff --name-only` between the
-# set of its last passing gate and the candidate set touches none of its paths but by versions alone (version-only.py) (Paul 11-18:
-# a case is tested only when it is new or its code changed). Every escaped.tsv row has a line; a row with none can only pass.
+# set of its last passing gate and the candidate set touches none of its paths but by versions alone (version-only.py; a
+# requirement on TensorFS or the Runtime counts as one when the row's tf: or rt: paths judge it) (Paul 11-18: a case is tested
+# only when it is new or its code changed). Every escaped.tsv row has a line; a row with none can only pass.
 # `@name<TAB>patterns` defines a macro; `<row><TAB>patterns`: space-separated `<repo>:<pathspec glob>`, `!` first takes one out.
 # Repos, each at the set's own commit: cr cozy-creator at cozy's (TensorD, Calcifer), tf cozy-creator at TensorFS's (varena
 # too), rt cozy-runtime at the Runtime's, pk packages at the set's packages_ref, rg cozy-creator at the gate run's own commit
