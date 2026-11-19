@@ -32,7 +32,8 @@ use super::{Asking, Project, host::{Host, Package, Renderer}, job_and_package};
 use crate::{api::Api, placement, plan, prefetch::Guess, store::now_ms};
 
 /// What's typed settles this long before it's guessed again (cl-1123: a prediction is only as good as how early it starts). A project
-/// just shown is guessed at once.
+/// just shown is guessed at once, and so is an edit that comes this long after the last round began (a tool put on a box, a box
+/// added, a word changed): only one that comes sooner, in the middle of typing, waits it out (cl-1318: every edit waited 300 ms).
 const SETTLE: Duration = Duration::from_millis(300);
 /// What machines said settles this long: a load that moved needs no guess sooner.
 const LOADS: Duration = Duration::from_millis(800);
@@ -181,7 +182,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
         // older one finishing after it changes nothing, and none does once the project closes.
         let applied = Arc::new(Mutex::new(0_u64));
         let (ended, mut ending) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let (mut started, mut going) = (0_u64, 0_usize);
+        let (mut started, mut going, mut began) = (0_u64, 0_usize, None::<Instant>);
         loop {
             if stale && going < ROUNDS {
                 // An edit that came while it guessed settles as an edit, whatever else moved (44068453992: one waited 800 ms).
@@ -190,7 +191,8 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 }
                 match why.as_ref() {
                     "shown" => {}
-                    "edited" => tokio::time::sleep(SETTLE).await,
+                    "edited" if began.is_some_and(|at: Instant| at.elapsed() < SETTLE) => tokio::time::sleep(SETTLE).await,
+                    "edited" => {}
                     _ => tokio::time::sleep(LOADS).await,
                 }
                 let Some(project) = open.upgrade() else { break };
@@ -200,7 +202,7 @@ pub(super) fn keep(api: &Arc<Api>, project: &Arc<Project>) {
                 machines.borrow_and_update();
                 read = super::revision(&project.folder.dir);
                 load = loads();
-                (started, going) = (started + 1, going + 1);
+                (started, going, began) = (started + 1, going + 1, Some(Instant::now()));
                 let (api, folder, why, applied, ended, round) = (api.clone(), folder.clone(), why.clone(), applied.clone(), ended.clone(), started);
                 tokio::spawn(async move {
                     let began = std::time::Instant::now();

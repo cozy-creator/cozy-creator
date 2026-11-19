@@ -16,17 +16,13 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::File,
-    io::{self, Read},
+    io,
     sync::{
-        atomic::{AtomicI64, AtomicUsize, Ordering},
+        atomic::Ordering,
         Arc, Mutex,
     },
 };
 
-/// Readers of a cold call's weights ahead of its executor: enough requests in flight for an
-/// array of disks, as the executor's own reads keep.
-const READ_AHEAD_THREADS: usize = 4;
 use tensorfs::{
     err::{Code, Refusal},
     format::ObjectRef,
@@ -536,51 +532,18 @@ impl Fetch {
         Ok((account, lined.held_back))
     }
 
-    /// The page cache takes `selected`'s chunks on disk, the smallest component first, while the call's executor forks, imports and opens its GPU: its Start pass and first
-    /// phase then read memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on
-    /// threads of their own, a chunk the cache holds skipped, within half of the host's available
-    /// memory, ending with the call.
+    /// The page cache takes `selected`'s chunks on disk (`stage`) while the call's executor forks, imports and opens its GPU: its
+    /// Start pass and first phase then read memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Only into memory nothing
+    /// holds (`Budget::cache`): its own load reads right behind it, and a read-ahead that displaced cache would have the kernel reclaim
+    /// under those reads. It ends with the call.
     fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)]) {
-        let store = self.store().clone();
-        let ordered = |groups: &[(String, Vec<String>)]| {
-            let mut components: Vec<(u64, Vec<ObjectRef>)> = groups.iter()
-                .filter_map(|(header, components)| Some((checkpoint(&store, header).ok()?, components)))
-                .flat_map(|(checkpoint, components)| components.iter().map(move |component| {
-                    let objects = storage::chunks(&checkpoint, std::slice::from_ref(component));
-                    (objects.iter().map(|o| o.length).sum(), objects)
-                }).collect::<Vec<_>>())
-                .collect();
-            components.sort_by_key(|(bytes, _)| *bytes);
-            components.into_iter().flat_map(|(_, objects)| objects).collect::<Vec<_>>()
-        };
-        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().filter(|o| store.holds(o)).collect();
+        let chunks = crate::stage::ordered(self.store(), selected);
         if chunks.is_empty() {
             return;
         }
-        let room = Arc::new(AtomicI64::new(varena_ledger::host::budget().cache()));
-        let (chunks, next) = (Arc::new(chunks), Arc::new(AtomicUsize::new(0)));
-        for reader in 0..READ_AHEAD_THREADS {
-            let (store, chunks, next, room, call) = (store.clone(), chunks.clone(), next.clone(), room.clone(), Arc::downgrade(self));
-            let started = std::thread::Builder::new().name(format!("read-ahead-{reader}")).spawn(move || {
-                let mut buf = vec![0u8; 8 << 20];
-                while let Some(object) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    if call.upgrade().is_none_or(|call| call.stop.is_cancelled()) {
-                        return;
-                    }
-                    let Some(mut file) = store.path(object).ok().and_then(|path| File::open(path).ok()) else { continue };
-                    if platform::durable::cached(&file, 0, object.length) == Some(true) {
-                        continue;
-                    }
-                    if room.fetch_sub(i64::try_from(object.length).unwrap_or(i64::MAX), Ordering::Relaxed) < 0 {
-                        return;
-                    }
-                    while matches!(file.read(&mut buf), Ok(n) if n > 0) {}
-                }
-            });
-            if let Err(error) = started {
-                tracing::warn!("reading a call's weights ahead: {error}");
-            }
-        }
+        let call = Arc::downgrade(self);
+        let live = move || call.upgrade().is_some_and(|call| !call.stop.is_cancelled());
+        crate::stage::start(self.store(), chunks, |_| varena_ledger::host::budget().cache(), live, false, |_| {});
     }
 
     pub(crate) fn ready(&self) -> Ready {

@@ -2,7 +2,9 @@
 //! hold, sized here from what the kernel accounts, with the computer's reserve for programs
 //! outside cozy left out. Its clients draw on it and keep no budget of their own: weight pages,
 //! spilled retained state and spares (a tier's [`Budget::room`]), the page cache a read or a
-//! read-ahead fills ([`Budget::cache`]), and staging and every process's own memory, which the
+//! read-ahead fills ([`Budget::cache`]), a predicted request's weights staged in the page cache
+//! ahead of its load (TensorD's `stage`: up to [`Budget::room`], clean cache, so never held and the
+//! first the kernel takes back), and staging and every process's own memory, which the
 //! kernel charges and [`Budget::held`] counts. A contained machine's `memory.max` is this number
 //! ([`machine`]): TensorD writes it and sizes nothing. Idle clients give pages back through the
 //! host's ledger page, and every client looks again as the kernel's figures move.

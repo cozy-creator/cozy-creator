@@ -51,6 +51,7 @@ pub mod serve;
 mod slowed;
 mod queue;
 mod service;
+mod stage;
 mod stop;
 mod stored;
 mod storage;
