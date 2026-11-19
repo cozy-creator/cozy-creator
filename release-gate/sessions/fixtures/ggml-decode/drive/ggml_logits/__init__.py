@@ -291,18 +291,22 @@ ASKS = (
 def bucket(ctx: Context, model: VisionLM) -> Agreement:
     """The engine's decoder on `ASKS` as four rows of one bucket (a call `vlm.ask` serves: up to 16 rows), 256 greedy
     tokens each, drafted and plain: each row held against Transformers' teacher-forced forward at its clear positions
-    (`forced`), and the same row decoded alone (a bucket of one) held the same way, with where the two first differ."""
+    (`forced`), and the same row decoded alone (a bucket of one) held the same way, with where the two first differ.
+    Its kernels are the model's declared set where CozyEngine installed one (`declared`), as a call's are."""
     from cozy_runtime.engine.decoder import Decoder, Request
+    from cozy_runtime.engine.launch import JIT
 
     net = model.pipe.components["model"]
     prompts = [model.processor.tokenizer(a, add_special_tokens=False)["input_ids"] for a in ASKS]
-    rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": [len(p) for p in prompts]}
+    run = getattr(model.engine, "run", None)
+    rows: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": [len(p) for p in prompts],
+                               "declared": run is not None}
     head = getattr(net, "mtp", None)
     for mode in ("drafted", "plain") if head is not None else ("plain",):
         if mode == "plain" and head is not None:
             del net.mtp
         try:
-            decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300)
+            decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300, run=run or JIT)
             made = decoder(Request(prompts=prompts, max_new=256, stops=[])).tokens
             alone = [decoder(Request(prompts=[p], max_new=256, stops=[])).tokens[0] for p in prompts]
         finally:
@@ -445,7 +449,8 @@ def _grammar_cost(model: VisionLM) -> Agreement:
 
 class Route(msgspec.Struct):
     #: `grammar`: a call held to `_Digits` (`allowed`); `conversation`: a text question after a turn with a picture;
-    #: `ngram`: a call with `no_repeat_ngram`; `ceiling`: 512 tokens asked of an engine whose rows hold 256;
+    #: `ngram`: a call with `no_repeat_ngram`; `ceiling`: 512 tokens asked of an engine whose rows hold 256 (its
+    #: clamp warning is in the run's record);
     #: `grammar-cost`: a grammar's cost a token (`_grammar_cost`).
     case: str = "grammar"
 
@@ -491,14 +496,6 @@ def routes(ctx: Context, payload: Route, model: VisionLM) -> Agreement:
             model.engine.decoder = None  # type: ignore[attr-defined]  # the next call's is the model's own
     if not answer.strip():
         raise RuntimeError(f"{payload.case}: no answer")
-    if payload.case == "ceiling":
-        from cozy_runtime.author._model import WARNINGS
-
-        clamped = [row for row in WARNINGS if "clamped to" in str(row[0])]
-        if not clamped:
-            raise RuntimeError("ceiling: 512 tokens past a 256-token ceiling, and no clamp warning")
-        return Agreement(json.dumps({"engine": type(model.engine).__name__, "case": payload.case,
-                                     "warning": str(clamped[-1][0]), "words": len(answer.split())}))
     if payload.case == "grammar" and not answer.strip().isdigit():
         raise RuntimeError(f"grammar: the answer {answer!r} is not digits: the constraint didn't hold")
     return Agreement(json.dumps({"engine": type(model.engine).__name__, "case": payload.case, "answer": answer[:160]}))

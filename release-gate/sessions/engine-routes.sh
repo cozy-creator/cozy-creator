@@ -1,7 +1,7 @@
 # engine-routes (xs-213 phase 2): with CozyEngine switched on (a Runtime whose `vlm.COZY_ENGINE` is True), every route a
 # `VisionLM.ask` call takes, through `cozy run` on one fresh rental of $SKU, each read from the run's own `.engine` note.
-# No engine-served run may compile a Triton kernel (its record's "compiling triton kernels" stage or a `triton compile`
-# confession): the engine's kernels are its model's declared set, built while the model loads (`engine.kernels`).
+# No run may compile one of the engine's Triton kernels on its request (a `triton compile` confession of one): they are
+# its model's declared set, built while the model loads (`engine.kernels`). Any other kernel a request compiles is told.
 #   cold       the pod's first q8_0 call: the engine, or Transformers' engine while its set builds ("are building");
 #              then the same short call until the engine serves it (`ready`), the time that took told; int8 likewise;
 #   served     the q8_0 lane, text (`qwen3/ask`): the engine serves it ("by the engine");
@@ -15,6 +15,8 @@
 #              the old one's (the drive's `routes`);
 #   ngram      a call with `no_repeat_ngram` (the drive's `routes`): Transformers' engine;
 #   ceiling    512 tokens asked of an engine whose rows hold 256: the engine, clamped at the start with a warning;
+#   bucket     the real 9B's four rows in a bucket through the model's declared set, drafted and plain, against
+#              Transformers' teacher-forced forward at every clear position (the decode drive's `bucket`);
 #   unknown    the q4_k_m lane (ggml.q4_k and q6_k, outside the engine's LANES): Transformers' engine;
 #   rows       17 questions in one `VisionLM.ask` (the drive's `rows`; AskRequest takes 16): Transformers' engine;
 #   room       the q8_0 lane with the GPU memory limited to `capped`: its weights' lease is refused at the call's start, so
@@ -60,8 +62,12 @@ there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 record() { local n; n=$(runno "$1"); [ -n "$n" ] && (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$1.json" 2> /dev/null; }
 # note <step>: the run's `.engine` note (which engine served it, and why not the engine).
 note() { jq -r '[.. | objects | to_entries[] | select((.key | endswith(".engine")) and (.value | type == "string")) | .value] | first // ""' "$OUT/$1.json" 2> /dev/null; }
-# compiled <step>: how often the run compiled a Triton kernel on its request (its stage, or a confession).
-compiled() { jq '[.. | objects | to_entries[]? | select(.key | test("compiling triton kernels"))] + [.. | strings | select(test("^triton compile:"))] | length' "$OUT/$1.json" 2> /dev/null || echo "?"; }
+# compiled <step>: how many of the engine's kernels the run compiled on its request; others <step>: the rest, named.
+ENGINE_KERNELS='(rms_norm|add_norm|silu_mul|qk_norm_rope|keep|gated_norm|write_step|paged_step|paged_join|conv_span|delta_span|slots)_kernel'
+compiled() { jq --arg k "$ENGINE_KERNELS" '[.. | strings | select(test("^triton compile: " + $k + "$"))] | length' "$OUT/$1.json" 2> /dev/null || echo "?"; }
+others() { jq -r --arg k "$ENGINE_KERNELS" '[.. | strings | select(test("^triton compile:") and (test("^triton compile: " + $k + "$") | not))] | unique | join(", ")' "$OUT/$1.json" 2> /dev/null; }
+# jitted <step>: the engine's launches that went through Triton's JIT, and why (its run warnings).
+jitted() { jq -r '[.. | strings | select(test("went through Triton.s JIT"))] | unique | join("; ")' "$OUT/$1.json" 2> /dev/null; }
 # route <step> <the note's words> <run args...>: the call answers with words, its note says the route, and if the
 # engine served it, it compiled nothing.
 route() {
@@ -70,9 +76,9 @@ route() {
   record "$n"
   heard=$(note "$n") made=$(compiled "$n")
   said=$(jq -r '.result.texts[0] // .result.detail // ""' "$OUT/$n.json" 2> /dev/null)
-  say "$n: engine note: ${heard:-none} · Triton compiles on the request: $made · answer: $(head -c 300 <<<"$said")"
+  say "$n: engine note: ${heard:-none} · the engine's kernels compiled on the request: $made$(o=$(others "$n"); [ -n "$o" ] && echo " · others: $o")$(j=$(jitted "$n"); [ -n "$j" ] && echo " · $j") · answer: $(head -c 300 <<<"$said")"
   [[ $heard == *"$want"* ]] || { say "FAILED: $n: its note doesn't say '$want'"; FAILED+=("$n"); return; }
-  [[ $heard != *"by the engine"* || $made == 0 ]] || { say "FAILED: $n: the engine compiled on the request"; FAILED+=("$n"); return; }
+  [ "$made" = 0 ] || { say "FAILED: $n: an engine kernel compiled on the request"; FAILED+=("$n"); return; }
   [ -n "${said//[[:space:]]/}" ] || { say "FAILED: $n: no words"; FAILED+=("$n"); }
 }
 # ready <label> <model>: a short call until the engine serves it (its set landed), at most 20 tries 15 s apart; each
@@ -85,8 +91,8 @@ ready() {
       --on "$NAME" || { FAILED+=("$label-$i"); return; }
     record "$label-$i"
     heard=$(note "$label-$i")
-    say "$label-$i: $(compiled "$label-$i") Triton compiles on the request · ${heard:-none}"
-    [ "$(compiled "$label-$i")" = 0 ] || { say "FAILED: $label-$i compiled on the request"; FAILED+=("$label-$i"); return; }
+    say "$label-$i: the engine's kernels compiled on the request: $(compiled "$label-$i")$(o=$(others "$label-$i"); [ -n "$o" ] && echo " · others: $o")$(j=$(jitted "$label-$i"); [ -n "$j" ] && echo " · $j") · ${heard:-none}"
+    [ "$(compiled "$label-$i")" = 0 ] || { say "FAILED: $label-$i: an engine kernel compiled on the request"; FAILED+=("$label-$i"); }
     if [[ $heard == *"by the engine"* ]]; then say "$label: the engine serves from call $i, $(($(date +%s) - began)) s after the first"; return; fi
     sleep 15
   done
@@ -111,6 +117,15 @@ route grammar "no grammar-constrained decode" "$FIX/drive/routes" --model "model
 route grammar-cost "no grammar-constrained decode" "$FIX/drive/routes" --model "model=$Q8" case=grammar-cost
 route ngram "no repeat-n-gram cut" "$FIX/drive/routes" --model "model=$Q8" case=ngram
 route ceiling "by the engine" "$FIX/drive/routes" --model "model=$Q8" case=ceiling
+clamp=$(jq -r '[.. | strings | select(test("clamped to"))] | first // ""' "$OUT/ceiling.json" 2> /dev/null)
+say "ceiling: warning: ${clamp:-none}"
+[ -n "$clamp" ] || { say "FAILED: ceiling: no clamp warning in the run"; FAILED+=("ceiling-warning"); }
+step bucket run "$FIX/drive/bucket" --model "model=$Q8" --on "$NAME" || { tail -c 2000 "$OUT/bucket.txt" | tee -a "$R"; FAILED+=("bucket"); }
+record bucket
+jq -r '.result.detail // ""' "$OUT/bucket.json" > "$OUT/bucket-detail.json" 2> /dev/null
+say "bucket: $(jq -c '{declared, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/bucket-detail.json" 2> /dev/null)"
+jq -e '.declared and ([(.drafted // [])[], (.plain // [])[]] | length == 8) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' \
+  "$OUT/bucket-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket: not through the declared set, or a clear position disagreed"; FAILED+=("bucket-forced"); }
 route unknown "which the engine's cells have not passed" "$SOURCE/qwen3/ask" --model "model=$Q4" "prompt=$STORY" \
   max_tokens:=32 temperature:=0
 route rows "at most 16 rows" "$FIX/drive/rows" --model "model=$Q8"
