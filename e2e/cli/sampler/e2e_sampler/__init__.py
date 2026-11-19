@@ -6,7 +6,11 @@ that seed and position. The RC's order (top-k before the presence penalty) is sc
 
 from __future__ import annotations
 
+import json
 import math
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from importlib import metadata
 from typing import TypedDict
 
@@ -509,3 +513,250 @@ def repeat(payload: Repeat, model: VisionLM) -> Repeated:
     first = next((n for n in order if diffs.get(n, 0.0) > 0), "")
     return Repeated(float((lasts[0] - lasts[1]).abs().max()), first, diffs.get(first, 0.0),
                     sum(1 for v in diffs.values() if v > 0), len(order), metadata.version("cozy-runtime"))
+
+
+# ---- cr-351: a constraint that starts after the thought, and a conversation
+
+
+#: `think_then_schema`'s seeds (llm-sampling's) and `free_line_then_schema`'s, one call each: a single draw could parse by
+#: chance.
+THOUGHT_SEEDS = (7, 8, 9)
+#: Qwen3.5's card for thinking: up to 32,768 new tokens, at its general thinking profile (what Ask runs: `vlm.CARD[True]`,
+#: top_k 20, presence 1.5).
+THOUGHT_TOKENS = 32768
+
+
+class _Timed:
+    """A constraint's own time: what `then` spends answering, summed (a draft's checks included)."""
+
+    def __init__(self, then: lm.Constraint) -> None:
+        self.then, self.seconds = then, 0.0
+
+    def allowed(self, tokens: Sequence[int]) -> Sequence[int] | None:
+        start = time.perf_counter()
+        try:
+            return self.then.allowed(tokens)
+        finally:
+            self.seconds += time.perf_counter() - start
+
+
+@contextmanager
+def _drafting(hf: torch.nn.Module, on: bool) -> Iterator[None]:
+    """A fresh engine for the calls inside, with the checkpoint's draft head or without it; the head back after."""
+    head = lm.HEADS.get(hf)
+    lm.release(hf)
+    if not on:
+        lm.HEADS.pop(hf, None)
+    try:
+        yield
+    finally:
+        lm.release(hf)
+        if head is not None:
+            lm.HEADS[hf] = head
+
+
+class Fruit(msgspec.Struct, forbid_unknown_fields=True):
+    name: str
+    seeds: int
+
+
+class Fruits(msgspec.Struct, forbid_unknown_fields=True):
+    fruits: list[Fruit]
+
+
+#: Each answer's JSON schema, as outlines compiles it (`Fruit` and `Fruits`, which parse it back).
+FRUIT = {"type": "object", "properties": {"name": {"type": "string"}, "seeds": {"type": "integer"}},
+         "required": ["name", "seeds"], "additionalProperties": False}
+SCHEMAS: dict[type[msgspec.Struct], dict[str, object]] = {
+    Fruit: FRUIT,
+    Fruits: {"type": "object", "properties": {"fruits": {"type": "array", "items": FRUIT}}, "required": ["fruits"],
+             "additionalProperties": False},
+}
+
+
+def _index(model: VisionLM, schema: type[msgspec.Struct]) -> lm.Index:
+    """outlines' index of `schema` over the model's tokenizer (an outlines-core `Index`)."""
+    from outlines import from_transformers
+    from outlines.generator import SteerableGenerator
+    from outlines.types import JsonSchema
+
+    made = SteerableGenerator(from_transformers(model.pipe.components[vlm.COMPONENT], model.processor.tokenizer),
+                              JsonSchema(json.dumps(SCHEMAS[schema])))
+    assert made.logits_processor is not None
+    index: lm.Index = made.logits_processor.index
+    return index
+
+
+def _parses(schema: type[msgspec.Struct], text: str) -> bool:
+    try:
+        msgspec.json.decode(text, type=schema)
+    except msgspec.DecodeError:  # not JSON, or not the schema (ValidationError)
+        return False
+    return True
+
+
+class Thought(msgspec.Struct):
+    prompt: str = "Name one fruit and how many seeds it usually has."
+    max_tokens: int = THOUGHT_TOKENS
+    #: one call a run (llm-sampling takes `THOUGHT_SEEDS` across its arms, each arm's first seed before any second)
+    seed: int = THOUGHT_SEEDS[0]
+    #: the constraint's cost (llm-sampling's `think` part): without it, and without the draft head
+    constrained: bool = True
+    drafting: bool = True
+    arm: str = ""
+
+
+class Thinking(msgspec.Struct):
+    #: an answer followed the thought within `max_tokens` (it closed), and it parses exactly to the schema
+    closed: bool
+    parsed: bool
+    thought_tokens: int
+    answer_tokens: int
+    seconds: float
+    #: the grammar's own time (its `Index` steps), per answer token; 0 without the constraint
+    grammar_ms: float
+    thought_tail: str
+    answer: str
+    runtime: str
+    error: str = ""
+
+
+@app.entrypoint(defaults={"model": DRAFTING})
+def think_then_schema(payload: Thought, model: VisionLM) -> Thinking:
+    """Qwen3.5-9B thinks freely, then answers held to a JSON schema (`Params.allowed`, an `lm.Grammar` over outlines'
+    index of the schema, which the engine starts after the thought with `lm.After`), as its card sets it: the general
+    thinking profile and up to 32,768 new tokens. The engine's own call, which `VisionLM.ask` answers from, so the run
+    says whether its thought closed and how many tokens each part took."""
+    runtime = metadata.version("cozy-runtime")
+    hf = model.pipe.components[vlm.COMPONENT]
+    tokenizer = model.processor.tokenizer
+    try:
+        grammar = lm.Grammar
+        timed = _Timed(grammar(_index(model, Fruit))) if payload.constrained else None
+        with _drafting(hf, payload.drafting):
+            start = time.perf_counter()
+            final = model.engine.generate(
+                [vlm.Question(payload.prompt)],
+                vlm.Params(system="", thinking=True, reasoning_effort=None, stop=[], max_new_tokens=payload.max_tokens,
+                           temperature=1.0, top_p=0.95, top_k=20, presence_penalty=1.5, seed=payload.seed, allowed=timed),
+                on_delta=lambda delta: None,
+            )
+            seconds = time.perf_counter() - start
+    except (TypeError, AttributeError) as exc:  # a Runtime without `allowed` after the thought
+        return Thinking(False, False, 0, 0, 0.0, 0.0, "", "", runtime, error=f"{type(exc).__name__}: {exc}")
+    thought, answer = final.thoughts[0], final.texts[0].strip()
+    told = len(tokenizer.encode(answer, add_special_tokens=False))
+    return Thinking(
+        bool(answer), bool(answer) and _parses(Fruit, answer), len(tokenizer.encode(thought, add_special_tokens=False)),
+        told, round(seconds, 2), round(1000 * timed.seconds / max(told, 1), 3) if timed else 0.0, thought[-400:],
+        answer[-400:], runtime,
+    )
+
+
+class Listing(msgspec.Struct):
+    prompt: str = "List ten fruits and how many seeds each usually has, as JSON."
+    max_tokens: int = 512
+    constrained: bool = True
+    drafting: bool = True
+    arm: str = ""
+
+
+class Listed(msgspec.Struct):
+    answer: str
+    parsed: bool
+    tokens: int
+    #: the grammar's own time (its `Index` steps), per token; 0 without the constraint
+    grammar_ms: float
+    runtime: str
+    error: str = ""
+
+
+@app.entrypoint(defaults={"model": DRAFTING})
+def schema_cost(payload: Listing, model: VisionLM) -> Listed:
+    """The JSON grammar's cost, which a thought's short answer is too brief to show: one answer without thinking, ten
+    fruits held to their schema (`VisionLM.ask`'s `allowed`) or free, at Qwen's card profile without thinking
+    (`vlm.CARD[False]`: T 0.7, top_p 0.8, top_k 20, presence 1.5). Its decode note gives ms/token."""
+    runtime = metadata.version("cozy-runtime")
+    hf = model.pipe.components[vlm.COMPONENT]
+    tokenizer = model.processor.tokenizer
+    try:
+        grammar = lm.Grammar
+        timed = _Timed(grammar(_index(model, Fruits))) if payload.constrained else None
+        with _drafting(hf, payload.drafting):
+            (answer,) = model.ask([vlm.Question(payload.prompt)], system="", thinking=False, stop=[],
+                                  max_new_tokens=payload.max_tokens, temperature=0.7, top_p=0.8, top_k=20,
+                                  presence_penalty=1.5, seed=7, allowed=timed)
+    except (TypeError, AttributeError) as exc:  # a Runtime without `allowed`
+        return Listed("", False, 0, 0.0, runtime, error=f"{type(exc).__name__}: {exc}")
+    tokens = len(tokenizer.encode(answer, add_special_tokens=False))
+    grammar_ms = round(1000 * timed.seconds / max(tokens, 1), 3) if timed else 0.0
+    return Listed(answer[-600:], _parses(Fruits, answer), tokens, grammar_ms, runtime)
+
+
+class Line(msgspec.Struct):
+    prompt: str = ("Write one short sentence about a fruit on the first line. On the next line, give that fruit's name and "
+                   "its usual number of seeds as JSON.")
+    max_tokens: int = 160
+
+
+class Lined(msgspec.Struct):
+    #: at each seed (`THOUGHT_SEEDS`) `VisionLM.ask`'s answer: a free first line (prose, the constraint not yet started),
+    #: then, held by `lm.After` on the newline, JSON that must parse exactly to the schema
+    answers: list[str]
+    free: list[bool]
+    parsed: list[bool]
+    runtime: str
+    error: str = ""
+
+
+@app.entrypoint(defaults={"model": MODEL})
+def free_line_then_schema(payload: Line, model: VisionLM) -> Lined:
+    """`think_then_schema`'s mechanism on a CPU budget: `VisionLM.ask`'s `allowed` as `lm.After` the first newline over an
+    `lm.Grammar` of the schema (the thinking path wraps `After` on `</think>` itself, which the 0.8B never reaches in
+    time). The precise profile (T 0.6, top_p 0.95, top_k 20)."""
+    runtime = metadata.version("cozy-runtime")
+    tokenizer = model.processor.tokenizer
+    newline = list(tokenizer.encode("\n", add_special_tokens=False))
+    try:
+        after, grammar = lm.After, lm.Grammar
+        index = _index(model, Fruit)
+        texts = [model.ask([vlm.Question(payload.prompt)], system="", thinking=False, stop=[],
+                           max_new_tokens=payload.max_tokens, temperature=0.6, top_p=0.95, top_k=20,
+                           presence_penalty=0.0, seed=seed, allowed=after(newline, grammar(index)))[0]
+                 for seed in THOUGHT_SEEDS]
+    except (TypeError, AttributeError) as exc:  # a Runtime without `allowed` after a marker
+        return Lined([], [], [], runtime, error=f"{type(exc).__name__}: {exc}")
+    free, parsed = [], []
+    for text in texts:
+        line, _, rest = text.partition("\n")
+        free.append(len(line.split()) >= 3 and not line.lstrip().startswith("{"))
+        parsed.append(_parses(Fruit, rest.strip()))
+    return Lined([t[:600] for t in texts], free, parsed, runtime)
+
+
+class Remember(msgspec.Struct):
+    name: str = "Zorblat"
+
+
+class Remembered(msgspec.Struct):
+    answer: str
+    #: the answer names what only the earlier turns said
+    recalled: bool
+    runtime: str
+    error: str = ""
+
+
+@app.entrypoint(defaults={"model": MODEL})
+def conversation(payload: Remember, model: VisionLM) -> Remembered:
+    """A conversation through `VisionLM.ask`: a user turn and the assistant's reply before the question, which only
+    they answer."""
+    runtime = metadata.version("cozy-runtime")
+    try:
+        turn = vlm.Turn
+        turns = [turn("user", [f"Hello, my name is {payload.name}."]), turn("assistant", [f"Nice to meet you, {payload.name}!"])]
+        asked = vlm.Question("What is my name? Answer with the name only.", turns=turns)
+    except (TypeError, AttributeError) as exc:  # a Runtime without conversations
+        return Remembered("", False, runtime, error=f"{type(exc).__name__}: {exc}")
+    (text,) = model.ask([asked], system="", thinking=False, stop=[], max_new_tokens=16, presence_penalty=0.0,
+                        temperature=0.0, top_p=1.0, seed=0)
+    return Remembered(text, payload.name.lower() in text.lower(), runtime)

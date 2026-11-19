@@ -128,3 +128,27 @@ bad=$(jq -c '[.result.calls[] | select(.error == "" and .kept_equal != .steps) |
 J '.result.calls | length == 7 and ([.[] | select(.name | startswith("order-")) | .old_draw_differs] | add > 0)' "$f" \
   || check "llm-order: the RC's order never draws another token in the order calls, so they show nothing: $said"
 }
+
+# cr-351 (the coordinator, 11-19, from xs-222's audit: MiniMax-H3-Image's expander thinks freely, then answers to a strict JSON
+# schema upstream): a constraint that starts after a marker. Qwen3.5 0.8B on this computer's CPU through `cozy run` writes a free
+# first line, then answers held to a small JSON schema (`VisionLM.ask`'s `allowed` as `lm.After` the newline over an `lm.Grammar`
+# of outlines' index), at three seeds: each first line is prose and each answer after it parses exactly. A thinking model's path,
+# the same `After` on `</think>` that `ask` wraps itself, runs on a GPU (release-gate/sessions/llm-sampling.sh): the 0.8B thinks
+# past any budget a CPU affords. Qwen's precise profile (T 0.6, top_p 0.95, top_k 20). Then a conversation (`vlm.Turn`s before
+# the question, the way PAN2's correction turn and qwen-image-2's enhancer need): the answer names what only the earlier turns said.
+llm_think_schema() {
+[ -n "$LOCAL" ] || return 0
+step "an LLM thinks freely, then answers to a schema; a conversation's earlier turns are read (cr-351)"
+local qwen=(--model model=huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0) f=$OUT/llm-think.json g=$OUT/llm-turns.json
+if cell llm-think "$here/sampler/free_line_then_schema" "${qwen[@]}"; then
+  echo "llm-think: $(jq -c '.result | {answers: [.answers[] | .[:200]], free, parsed, error}' "$f")"
+  J '.result.error == ""' "$f" || check "llm-think: not run: $(jq -r .result.error "$f")"
+  J '.result.free | length == 3 and all' "$f" || check "llm-think: a seed's first line isn't free prose (the constraint started before its marker): $(jq -c '.result.answers | map(.[:120])' "$f" | head -c 600)"
+  J '.result.parsed | length == 3 and all' "$f" || check "llm-think: a seed's answer after its marker doesn't parse exactly to the schema: $(jq -c '[.result.parsed, (.result.answers | map(.[:120]))]' "$f" | head -c 600)"
+fi
+if cell llm-turns "$here/sampler/conversation" "${qwen[@]}"; then
+  echo "llm-turns: $(jq -c '.result | {answer, recalled, error}' "$g")"
+  J '.result.error == ""' "$g" || check "llm-turns: not run: $(jq -r .result.error "$g")"
+  J '.result.recalled' "$g" || check "llm-turns: the answer doesn't name what the earlier turns said: $(jq -r .result.answer "$g")"
+fi
+}

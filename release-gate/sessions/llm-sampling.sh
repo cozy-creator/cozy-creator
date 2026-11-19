@@ -14,6 +14,7 @@
 #   tensorfs the TensorFS wheel beside it (an https URL or artifact:<run>/<name>; required)
 #   control  a cozy-runtime dev-build run id whose Runtime runs `drafted` after (optional)
 #   model    the checkpoint (default: `drafted`'s, qwen/qwen3.5-9b@0.2.0)
+#   only     drafted, think or both, comma-separated (default drafted)
 #   seconds  what the cap must buy (default 2400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -99,6 +100,46 @@ arm() {
     say "  $label: every drafted split is a near tie; $floor undrafted repeats split clear"
   fi
 }
-arm candidate "$W"
-[ -z "$CW" ] || arm control "$CW"
+# think (cr-351, `only` holds think): Qwen3.5-9B as its card sets it (the general thinking profile, up to 32,768 new tokens), its
+# answer held to a JSON schema after the thought (`Params.allowed`, the engine's `After(</think>)` its own), at three seeds, one
+# run each: each must close its thought and parse exactly. First the grammar's own cost, which a short answer can't show: ten fruits without
+# thinking, held or free, drafted and not (each run's decode note: ms/token); then the thinking calls with and without it.
+think() {
+  local c d f
+  for c in true false; do
+    for d in true false; do
+      f=$OUT/cost-$c-$d.json
+      step "cost-$c-$d" run "$ROOT/e2e/cli/sampler/schema_cost" ${MODEL:+--model "model=$MODEL"} constrained:=$c drafting:=$d "arm=cost-$c-$d" --on "$NAME" ||
+        fail "cost $c $d: $(tail -c 400 "$OUT/cost-$c-$d.txt")"
+      record "cost-$c-$d" "$f"
+      say "  schema cost constrained=$c drafting=$d: $(jq -r '.result | "parsed \(.parsed), \(.tokens) tokens, grammar \(.grammar_ms) ms/token"' "$f"); ${NOTE#*: }"
+      [ "$c" = false ] || jq -e '.result.parsed' "$f" > /dev/null || { say "FAIL cost: the held answer doesn't parse: $(jq -c '.result.answer' "$f")"; RC=1; }
+    done
+  done
+  local seed
+  for seed in 7 8 9; do  # think_then_schema's THOUGHT_SEEDS, each arm's first before any second: a cap that ends the pod leaves every arm measured
+    for c in true false; do
+      for d in true false; do
+        f=$OUT/think-$c-$d-$seed.json
+        step "think-$c-$d-$seed" run "$ROOT/e2e/cli/sampler/think_then_schema" ${MODEL:+--model "model=$MODEL"} constrained:=$c drafting:=$d seed:=$seed "arm=think-$c-$d" --on "$NAME" ||
+          fail "think $c $d $seed: $(tail -c 400 "$OUT/think-$c-$d-$seed.txt")"
+        record "think-$c-$d-$seed" "$f"
+        say "  think constrained=$c drafting=$d seed $seed: $(jq -r '.result | "closed \(.closed), parsed \(.parsed), thought \(.thought_tokens) + answer \(.answer_tokens) tokens in \(.seconds) s, grammar \(.grammar_ms) ms/token"' "$f"); ${NOTE#*: }"
+        if [ "$c" = true ]; then
+          jq -e '.result | .closed and .parsed' "$f" > /dev/null || {
+            say "FAIL think: seed $seed didn't close its thought and parse: $(jq -c '.result | {thought_tail: .thought_tail[-200:], answer: .answer[-200:]}' "$f")"; RC=1; }
+        fi
+      done
+    done
+  done
+}
+ONLY=$(param only drafted)
+WANT=$(basename "$W" | cut -d- -f2)
+[[ ,$ONLY, != *,drafted,* ]] || arm candidate "$W"
+[[ ,$ONLY, != *,drafted,* ]] || [ -z "$CW" ] || arm control "$CW"
+if [[ ,$ONLY, == *,think,* ]]; then
+  step update-think machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" --tensorfs "$TF" -y || fail "think: the candidate Runtime"
+  WANT=$(basename "$W" | cut -d- -f2)
+  think
+fi
 exit "${RC:-0}"
