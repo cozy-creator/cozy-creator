@@ -221,9 +221,13 @@ fn stays(job: &Job, was: &Option<(usize, Offer)>, now_placed: &Option<(usize, Of
     }
 }
 
-/// `sooner` finishes clearly before `than`: 10% and 30 s.
+/// `sooner` finishes clearly before `than`: 10% and 30 s. Where neither's finish is known, by when each starts, as `placement::soonest`
+/// chooses then (free soonest).
 pub(crate) fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
-    finishes_clearly_sooner(sooner.finish_at_ms, than.finish_at_ms, now)
+    match (sooner.finish_at_ms, than.finish_at_ms) {
+        (None, None) => finishes_clearly_sooner(sooner.start_at_ms, than.start_at_ms, now),
+        (sooner, than) => finishes_clearly_sooner(sooner, than, now),
+    }
 }
 
 /// A finish at `sooner` is clearly before one at `than` (`clearly_sooner`): a known one before an unknown one; an unknown one never.
