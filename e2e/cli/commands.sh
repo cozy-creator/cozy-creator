@@ -660,6 +660,35 @@ for n in first again member; do
 done
 }
 
+# cl-1317 (Paul, 11-19, se-177): continue any video from its last frames' motion, and redo a range of any video. `cozy run` renders
+# what the page renders (cl-956), and the page picks up an imported video's box, so a plain video file binds as a pickup's take and
+# as a take to redo, by the field's type (H3's `ShotVideo`), with the latents the take names when given. It refused a plain file as
+# `pickup.take` and dropped `video.latents` as an undeclared field. A phone clip goes as each, with and without its latents: each run
+# completes and reads the clip's bytes, its latents' too.
+given_take() {
+step "a plain video file as a pickup's take and as a take to redo, with its latents (cl-1317)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/given-take clip latents n fn want got
+rm -rf "$dir"; mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=72x128:rate=30:duration=1 -f lavfi -i sine=f=440:d=1 -c:v libx264 -pix_fmt yuv420p \
+  -c:a aac -shortest "$dir/phone.mp4"
+head -c 4096 /dev/urandom > "$dir/phone.latents"
+clip=$(sha256sum "$dir/phone.mp4" | cut -d' ' -f1) latents=$(sha256sum "$dir/phone.latents" | cut -d' ' -f1)
+for n in pick pick-latents redo redo-latents; do
+  case $n in
+    pick) want="$clip  12"; set -- pick "pickup.take=$dir/phone.mp4" pickup.out_frame=12 ;;
+    pick-latents) want="$clip $latents 12"; set -- pick "pickup.take=$dir/phone.mp4" "pickup.take.latents=$dir/phone.latents" pickup.out_frame=12 ;;
+    redo) want="$clip  -1"; set -- redo "video=$dir/phone.mp4" ;;
+    redo-latents) want="$clip $latents -1"; set -- redo "video=$dir/phone.mp4" "video.latents=$dir/phone.latents" ;;
+  esac
+  fn=$1; shift
+  cell "take-$n" "$here/project/take.py/$fn" "$@" \
+    || { check "given take: the $n run ($*) $(run_get "$OUT" "take-$n" .status): $(run_get "$OUT" "take-$n" .reason.message | head -c 300) $(tail -c 300 "$OUT/take-$n.err" 2> /dev/null)"; continue; }
+  got=$(run_get "$OUT" "take-$n" '"\(.result.take) \(.result.latents) \(.result.out_frame)"')
+  [ "$got" = "$want" ] || check "given take: the $n run ($*) read '$got', not '$want'"
+done
+}
+
 # xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
 # Qwen-Image-2.1 with its VAE replaced; its `vae` slot warned that 30.8 GiB doesn't fit for 1.35 GB). TensorD asks the Hub
 # with its GPUs, their free bytes and the slot's components; a CPU runner has no GPUs to send, so the cell asks it the same

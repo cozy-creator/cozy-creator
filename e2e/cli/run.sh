@@ -757,6 +757,7 @@ case $SHARD in
     describe
     first_run
     given_file
+    given_take
     llm_write
     llm_stream
     llm_caption
@@ -1173,6 +1174,8 @@ case $SHARD in
   typed-calls) parts="typed_calls logs" ;;
   # A run's own file at a box-shaped input, its first use and again (cl-1183).
   given-file) parts="given_file logs" ;;
+  # A plain video file as a pickup's take and as a take to redo, with its latents (cl-1317).
+  given-take) parts="given_take logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest
