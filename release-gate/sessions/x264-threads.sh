@@ -52,6 +52,8 @@ result() { jq -r ".$2" "$OUT/$1.facts"; }
 arm image
 say "image Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
 [ "$LOCAL" = true ] || [ "$(result image cpus)" -ge "$MIN" ] || fail "$NAME gives $(result image cpus) CPUs, under the $MIN the arms need to differ"
+# A machine runs an RC's Runtime only under the RC's cozy (`rc_runtime_needs_rc_cozy`, pod 11-19 taison): its cozy first.
+[ "$LOCAL" = true ] || step update-cozy machine update "$NAME" -y || fail "the RC's cozy on $NAME"
 step update machine update "$NAME" --runtime "$W" -y || fail "the change's Runtime on $NAME"
 say "change's Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
 arm change
