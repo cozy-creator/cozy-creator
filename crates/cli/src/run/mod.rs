@@ -88,7 +88,7 @@ struct RunArgs {
     /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Without a strength, its recommended one, else 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
-    /// Show the function's inputs and outputs.
+    /// Show the function's inputs and outputs. Runs nothing, so it takes no inputs.
     #[arg(long)]
     describe: bool,
     /// Export output copies to this directory. Project locks do not protect exported copies.
@@ -258,7 +258,12 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
     let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
-    if args.describe && !inputs {
+    if args.describe {
+        // A describe reads the function and runs nothing: what a run would send is refused, never sent as one (cl-1317).
+        if inputs || !args.assets.is_empty() || !args.loras.is_empty() || !args.fidelities.is_empty() {
+            return Err(Error::new(Kind::Usage, "describe_inputs", "--describe shows the function and runs nothing, so it takes no inputs.")
+                .remedy(format!("Run `cozy run {written} --describe` alone, then `cozy run {written}` with the inputs.")));
+        }
         return match local(ctx, &written, &cwd)? {
             None => describe(ctx, &written, None, args.on.as_deref(), None).await,
             Some((package, function)) => {
