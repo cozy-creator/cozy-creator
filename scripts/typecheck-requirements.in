@@ -17,6 +17,8 @@ torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-many
 triton
 diffusers
 transformers
+# e2e/cli/sampler compiles its JSON schemas with outlines (cr-351)
+outlines>=1.3,<1.4
 huggingface-hub
 opentimelineio
 cuda-python

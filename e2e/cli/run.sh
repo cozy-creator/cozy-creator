@@ -676,6 +676,7 @@ case $SHARD in
     responses_sdk
     llm_cli_words
     llm_sampling
+    llm_think_schema
     run_overhead
     previews
     second_executor
@@ -758,6 +759,7 @@ case $SHARD in
     responses_sdk
     llm_cli_words
     llm_sampling
+    llm_think_schema
     run_overhead
     previews
     run_flags
