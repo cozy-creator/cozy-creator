@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use super::grid::{Grid, ScaleLayout};
+use super::grid::Grid;
 use super::{Ctx, PartMetadata, Scheme};
 use crate::format::{Body, Dtype, Encoding, Error, Result, Tensor, Value};
 
@@ -14,7 +14,7 @@ use crate::format::{Body, Dtype, Encoding, Error, Result, Tensor, Value};
 pub enum Follows {
     /// Undeclared: the tensor does not cut.
     Unknown,
-    /// The same bytes for every range: a scalar, a per-column vector, a codebook, a factor over columns.
+    /// The same bytes for every range: a scalar, a per-column vector, a codebook.
     Whole,
     /// One element for the tensor (read whole), or one per matrix of a stack (cut with its rows).
     PerMatrix,
@@ -131,12 +131,15 @@ fn cut(scheme: &Scheme, c: &Ctx, lengths: &BTreeMap<&str, u64>) -> Option<Rows> 
             Follows::Logical => None,
             Follows::Grid(grid) => match grid(c) {
                 Grid::Tensor | Grid::Col => Some(Cut::Whole),
-                Grid::Row | Grid::Blocks { layout: ScaleLayout::RowMajor, .. } => per_row(length, count),
-                Grid::Blocks { layout: ScaleLayout::Transposed, .. } => None,
-                // Each matrix of a stack is tiled on its own: whole matrices cut row by row.
-                Grid::Blocks { layout: ScaleLayout::Cublas128x4, .. } if rank == 2 => tiles(128),
+                Grid::Row => per_row(length, count),
+                // Each matrix of a stack is laid out on its own: whole matrices cut row by row.
+                Grid::Blocks { layout, .. } => match layout.row_tile() {
+                    Some(rows) if rank == 2 => tiles(rows),
+                    Some(_) => per_row(length, count),
+                    None => None,
+                },
                 Grid::Tiles { rows, .. } if rank == 2 => tiles(rows as u64),
-                Grid::Blocks { .. } | Grid::Tiles { .. } => per_row(length, count),
+                Grid::Tiles { .. } => per_row(length, count),
             },
         }?;
         parts.push(RowPart { role: rule.role.to_owned(), length, cut });
