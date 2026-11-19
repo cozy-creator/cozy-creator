@@ -137,25 +137,26 @@ fn max(a: f32, b: f32) -> f32 {
     }
 }
 
-/// A legacy block's `id` (`d ? 1/d : 0`), and 0 where `d` rounds to an fp16 zero: that block decodes to zeros whatever its
-/// quants, which are then zeros too, never `x / d` saturated from an infinite `id`. Its input is subnormal bf16 (~1e-39),
-/// which gguf-py's bf16 writer flushes to zero, so llama-quantize's file holds the same zero quants (Qwen3.6-35B-A3B's
-/// expert stacks, 44438135332). Every decoded value is unchanged.
-fn inverse(d: f32) -> f32 {
-    if d != 0.0 && f16(fp16(d)) != 0.0 {
-        1.0 / d
-    } else {
-        0.0
+/// A legacy block's input as llama-quantize reads it: gguf-py's bf16 writer (as ggml's `ggml_compute_fp32_to_bf16`) flushes
+/// a subnormal to a zero of its sign, so the GGUF it quantizes holds none. No decoded value changes: a flushed input could
+/// quantize nonzero only in a block whose fp16 scale is zero, which decodes to zeros (Qwen3.6-35B-A3B q8_0: 75 of 443
+/// tensors, 44438135332; a rule zeroing every fp16-zero-scale block broke 9 others, 44500031437).
+fn flushed(x: &[f32]) -> [f32; 32] {
+    let mut out = [0.0f32; 32];
+    for (o, &v) in out.iter_mut().zip(x) {
+        *o = if v.is_subnormal() { f32::from_bits(v.to_bits() & 0x8000_0000) } else { v };
     }
+    out
 }
 
 fn q8_0(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let mut amax = 0.0f32;
     for v in x {
         amax = max(amax, v.abs());
     }
     let d = amax / 127.0;
-    let id = inverse(d);
+    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
     y[0..2].copy_from_slice(&fp16(d));
     for (q, v) in y[2..34].iter_mut().zip(x) {
         *q = (v * id).round() as i8 as u8;
@@ -163,6 +164,7 @@ fn q8_0(x: &[f32], y: &mut [u8]) {
 }
 
 fn q5_0(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let (mut amax, mut top) = (0.0f32, 0.0f32);
     for &v in x {
         if amax < v.abs() {
@@ -171,7 +173,7 @@ fn q5_0(x: &[f32], y: &mut [u8]) {
         }
     }
     let d = top / -16.0;
-    let id = inverse(d);
+    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
     y[0..2].copy_from_slice(&fp16(d));
     let mut qh = 0u32;
     for j in 0..16 {
@@ -185,6 +187,7 @@ fn q5_0(x: &[f32], y: &mut [u8]) {
 }
 
 fn q5_1(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
     for &v in x {
         if v < lo {
@@ -195,7 +198,7 @@ fn q5_1(x: &[f32], y: &mut [u8]) {
         }
     }
     let d = (hi - lo) / 31.0;
-    let id = inverse(d);
+    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
     y[0..2].copy_from_slice(&fp16(d));
     y[2..4].copy_from_slice(&fp16(lo));
     let mut qh = 0u32;
