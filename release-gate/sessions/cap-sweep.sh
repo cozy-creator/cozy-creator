@@ -103,15 +103,19 @@ printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-# `--provider` is a dev flag: on a hosted runner its own cozy home says `dev = true` first.
+# `--provider` is a dev flag: on a hosted runner its own cozy home says `dev = true` while the rental is quoted and ordered,
+# and no longer once it is placed. Calcifer read its config when it started, before this, so it is no dev home: a dev
+# home's rental follows the RC's builds (rc.rs `follows`), which would move the pod off the builds under test.
+DEVC=~/.cozy/config.toml
 if [ -n "$PROVIDER" ]; then
   [ -n "${GITHUB_ACTIONS:-}" ] || fail "provider: only on a hosted runner, whose cozy home is its own"
-  c=~/.cozy/config.toml; mkdir -p ~/.cozy; touch "$c"
-  grep -qx 'dev = true' "$c" || { { echo 'dev = true'; cat "$c"; } > "$c.new" && mv "$c.new" "$c"; }
+  mkdir -p ~/.cozy; touch "$DEVC"; cp "$DEVC" "${RUNNER_TEMP:-/tmp}/config.toml.kept"
+  { echo 'dev = true'; cat "${RUNNER_TEMP:-/tmp}/config.toml.kept"; } > "$DEVC"
 fi
 RENT_ARGS="--ssh${PROVIDER:+ --provider $PROVIDER}"
 quote "$NEED"
 rent
+[ -z "$PROVIDER" ] || cp "${RUNNER_TEMP:-/tmp}/config.toml.kept" "$DEVC"
 jq -e '.status.gpus | length == 1' "$OUT/show.json" > /dev/null || fail "not one GPU"
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: nothing starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
