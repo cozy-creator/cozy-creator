@@ -84,6 +84,7 @@ finish() {
   done
   for r in "${RIDS[@]}"; do
     local tries=0
+    gone "$r" || unpin "$r"
     until gone "$r"; do
       if [ $((tries % 12)) = 0 ]; then
         cozy machine end "$r" -y >> "$OUT/end.txt" 2>&1 || cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1
@@ -282,9 +283,21 @@ guard() {
         why="no read of what the Hub bills for ${blind}s"
       fi
       echo "$(date -u +%T) GUARD: $why, ending $(jq -r 'join(" ")' <<<"$ids")" >> "$R"
-      jq -r '.[]' <<<"$ids" | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
+      jq -r '.[]' <<<"$ids" | while read -r r; do unpin "$r"; cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
       exit 0
     done ) 9>&- & WD=$!
+}
+
+# unpin <rental id or name>: this session's runs still on that machine, canceled before it ends. A run asked on it (`--on`) whose
+# machine ends is retried elsewhere, on another session's pod (cl-1316: 44590881858, 44610448156, cr-348's goblin), until Calcifer keeps
+# a pinned run's placement (cozy-creator #4094) in the cozy a session runs.
+unpin() {
+  local m; m=$(cozy --json machine show "$1" < /dev/null 2> /dev/null | jq -r '.name // empty' 2> /dev/null)
+  [ -n "$m" ] || return 0
+  # Asked from the session's project, as `run ls` lists runs (control-plane.sh, gpuless-render.sh).
+  (cd "$RUN_PROJECT" && timeout 60 cozy --json run ls --all --limit 0 --on "$m" < /dev/null) > "$OUT/unpin-$m.json" 2>&1
+  jq -r '.runs[]? | select(.status == "queued" or .status == "in_progress") | .id' "$OUT/unpin-$m.json" 2> /dev/null |
+    while read -r id; do (cd "$RUN_PROJECT" && cozy run cancel "$id" -y < /dev/null) >> "$OUT/end.txt" 2>&1 && say "canceled $id on $m before it ends"; done
 }
 
 # billed <rental id>: what the Hub bills for it, and what its provider does, from the account's rentals of the last day.
