@@ -176,6 +176,27 @@ oldcall() {
   fi
 }
 
+# fields (bench_fields, cl-1279): the hub suite's weightless echo as the admin's account's `e2e-fields` 0.1.0, its benchmarks.json
+# carrying a field no cozy reads, `e2e_unread`, in rows 0, 1 and 3 and in row 1's `ran_on`, as 0.28's rows (`lane`, `cold_ms`) came to a
+# 0.27 cozy. What publishing it said is exported, a refusal too, for the cell to judge.
+fields() {
+  local copy=$seed/packages/e2e-fields account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
+  sed -i 's/^name = "ci-hub-pkg"$/name = "e2e-fields"/' "$copy/pyproject.toml"
+  cat > "$copy/benchmarks.json" <<'JSON'
+[
+  {"function": "echo", "gpu": "NVIDIA GeForce RTX 4090", "gpus": 1, "request": {}, "warm_ms": 20, "e2e_unread": 1},
+  {"function": "echo", "gpu": "NVIDIA GeForce RTX 5090", "gpus": 1, "request": {}, "warm_ms": 15, "e2e_unread": 2, "ran_on": {"cozy": "0.28.0", "e2e_unread": "x"}},
+  {"function": "echo", "gpu": "NVIDIA L4", "gpus": 1, "request": {}, "warm_ms": 60},
+  {"function": "echo", "gpu": "NVIDIA A100-SXM4-80GB", "gpus": 1, "request": {}, "warm_ms": 18, "e2e_unread": 3}
+]
+JSON
+  export E2E_FIELDS_PUBLISHED=$seed/publish-e2e-fields.json E2E_FIELDS=$account/e2e-fields
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_FIELDS_PUBLISHED" 2>&1; then log "published $E2E_FIELDS 0.1.0"
+  else log "publishing e2e-fields was refused: $(tail -c 300 "$E2E_FIELDS_PUBLISHED" | tr '\n' ' ')"; fi
+}
+
 # next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing the Latest's Runtime
 # minor, which only a cozy of the Latest's line runs.
 next() {
@@ -319,8 +340,9 @@ case $key in
   # project_runtime's probe (cl-1055).
   cli:local-code) needs='packages birefnet scratch' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
-  # model of one component with another's (xs-190).
-  cli:commands) needs='packages birefnet loras fits parts lorabase uninstall ltxlora' ;;
+  # model of one component with another's (xs-190); bench_fields reads e2e-fields' publication (cl-1279).
+  cli:commands) needs='packages birefnet loras fits parts lorabase uninstall ltxlora fields' ;;
+  cli:bench-fields) needs='fields' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
@@ -346,7 +368,7 @@ case $key in
   cli:queue) needs='packages birefnet' ;;
   # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
   cli:prefetch | cli:prefetch-retry | cli:prefetch-order) needs='packages pre' ;;
-  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
+  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre fields' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -474,6 +496,10 @@ fi
 if [[ " $needs " == *" next "* ]]; then
   next
   needs=${needs/next/} && needs=${needs# }
+fi
+if [[ " $needs " == *" fields "* ]]; then
+  fields
+  needs=${needs/fields/} && needs=${needs% }
 fi
 # The probe alone (selfupdate's forward, cl-1055), without the first-party packages.
 if [ "$needs" = scratch ]; then
