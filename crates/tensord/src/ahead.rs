@@ -30,8 +30,6 @@ use crate::{api::auth::VerifiedActor, runs::Runs, stop::Stop};
 /// The prefixes of the ids an upcoming job's and a prepare item's runs take.
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
 pub(crate) const PREPARE: &str = "cozy:prepare:";
-/// The prefix of a speculative run's id: a guess run as if it were sent (cl-1123 D, `speculate`), `<prefix><key>.<attempt>`.
-pub(crate) const SPECULATIVE: &str = "cozy:speculative:";
 
 /// A caller and a list's prefix.
 type List = (String, &'static str);
@@ -90,27 +88,6 @@ static PUTS: LazyLock<Mutex<HashMap<List, u64>>> = LazyLock::new(Mutex::default)
 
 /// Listed items not yet admitted, by their run's id, and why its admission refused one (`admit`): their Status until their runs say.
 static PLANNING: LazyLock<Mutex<HashMap<String, Option<String>>>> = LazyLock::new(Mutex::default);
-
-/// Each listed guess's request as it was sent (inputs and all), by its run's id, its caller, and since when the lists have named it
-/// (`drafts`): what a speculative run runs (cl-1123 D).
-static DRAFTS: LazyLock<Mutex<HashMap<String, Draft>>> = LazyLock::new(Mutex::default);
-
-#[derive(Clone)]
-pub(crate) struct Draft {
-    pub actor: VerifiedActor,
-    pub key: String,
-    pub spec: v1::RunSpec,
-    /// Since when it has stood unchanged: a draft edited is another item, under another key.
-    pub since: std::time::Instant,
-}
-
-/// Each guess the lists name now, its request as sent, in the lists' order: what a speculative run may run (`speculate`).
-pub(crate) fn drafts() -> Vec<(String, Draft)> {
-    let drafts = lock(&DRAFTS);
-    let mut named: Vec<(String, Draft)> = drafts.iter().map(|(id, draft)| (id.clone(), draft.clone())).collect();
-    named.sort_by_key(|(id, draft)| rank(&crate::runs::actor_id(draft.actor), id));
-    named
-}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -185,19 +162,9 @@ pub(crate) fn extras(caller: &str) -> Stop {
     stop
 }
 
-/// A run of a list's: never listed.
+/// A run of a list item's (an upcoming job's, a guess's): one the machine makes ready, and loads (cl-1123); never listed.
 pub(crate) fn hidden(id: &str) -> bool {
-    id.starts_with(UPCOMING) || id.starts_with(PREPARE) || speculative(id)
-}
-
-/// A run of a list item's (an upcoming job's, a guess's): one the machine makes ready, and loads (cl-1123).
-pub(crate) fn item(id: &str) -> bool {
     id.starts_with(UPCOMING) || id.starts_with(PREPARE)
-}
-
-/// A speculative run's (`speculate`): no job, never listed, until a call adopts it.
-pub(crate) fn speculative(id: &str) -> bool {
-    id.starts_with(SPECULATIVE)
 }
 
 /// A run of a prepare list's, by its caller's id: a guess, no job.
@@ -215,7 +182,6 @@ pub(crate) fn put(
     admission: crate::machine::lifecycle::Admission,
 ) -> Result<(), Error> {
     let mut identities = vec![];
-    let mut sent = vec![];
     let requests: Vec<v1::RunRequest> = (items.into_iter())
         .map(|v1::Predicted { key, spec, interface }| {
             let id = format!("{prefix}{key}");
@@ -225,10 +191,6 @@ pub(crate) fn put(
             identities.push((id.clone(), crate::runs::identity(spec.clone()).unwrap_or_default()));
             if let Some(value) = crate::runs::identity_value(spec.clone()) {
                 lock(&IDENTIFIED).insert(id.clone(), value);
-            }
-            // A guess of the plain namespace may be run as sent, once loaded and still (`speculate`).
-            if prefix == PREPARE && crate::private_io::current().is_none() {
-                sent.push((id.clone(), Draft { actor, key: key.clone(), spec: spec.clone(), since: std::time::Instant::now() }));
             }
             // Its Hub's transport for TensorFS too, as a run's spec carries it.
             let tensorfs = spec.tensorfs.clone().or_else(|| {
@@ -243,23 +205,7 @@ pub(crate) fn put(
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
     let list = (crate::runs::actor_id(actor), prefix);
-    let before = lock(&LISTED).insert(list.clone(), ids.clone()).unwrap_or_default();
-    // A draft that stays keeps the time it was first named; one edited is another item, and its speculative run ends (cl-1123 D).
-    {
-        let mut drafts = lock(&DRAFTS);
-        let gone: Vec<Draft> = before.iter().filter(|id| !ids.contains(id)).filter_map(|id| drafts.remove(id)).collect();
-        for (id, draft) in sent {
-            if let std::collections::hash_map::Entry::Vacant(vacant) = drafts.entry(id) {
-                crate::speculate::listed(draft.actor, &draft.key);
-                vacant.insert(draft);
-            }
-        }
-        drop(drafts);
-        for draft in gone {
-            crate::speculate::dropped(runs, draft.actor, &draft.key);
-        }
-    }
-    crate::speculate::start(runs);
+    lock(&LISTED).insert(list.clone(), ids.clone());
     // What no list names now loads no more (cl-1123).
     if let Some(pool) = runs.service.pool() {
         pool.unlist(&crate::runs::actor_id(actor));
@@ -499,13 +445,11 @@ pub(crate) fn standing(store: &crate::storage::Store, busy: bool, mut states: Ve
     states
 }
 
-/// The items `states` as their caller `reader` reads them: one whose run made it ready (its weights here) says how far it ran ahead
-/// (`speculate::readiness`), else how far the load step took it (`gpu_service::Pool::readiness`, cl-1123).
-pub(crate) fn readiness(runs: &Runs, reader: VerifiedActor, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
-    let (pool, actor) = (runs.service.pool(), crate::runs::actor_id(reader));
+/// The items `states` as their caller `actor` reads them: one whose run made it ready (its weights here) says how far the load
+/// step took it (`gpu_service::Pool::readiness`, cl-1123).
+pub(crate) fn readiness(pool: Option<&crate::gpu_service::Pool>, actor: &str, mut states: Vec<v1::RunState>) -> Vec<v1::RunState> {
     for state in states.iter_mut().filter(|state| state.state == "succeeded") {
-        // Run ahead (`running`, `done`, cl-1123 D), else as far as the load step took it.
-        state.readiness = crate::speculate::readiness(runs, reader, &state.id).or_else(|| pool.as_deref().and_then(|pool| pool.readiness(&actor, &state.id)));
+        state.readiness = pool.and_then(|pool| pool.readiness(actor, &state.id));
     }
     states
 }

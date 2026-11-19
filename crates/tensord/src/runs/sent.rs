@@ -379,12 +379,8 @@ impl Runs {
             match spec_of(request.spec).and_then(|(spec, hub)| reach(&signer, spec, hub)) {
                 Ok(spec) => {
                     if let (Some(key), Some(asked)) = (&predicted, asked) {
-                        // The request the item predicted: what its speculative run made, going or done, is this run's (cl-1123 D).
-                        match crate::ahead::adopts(key, &request.id, &spec.digest) {
-                            true => {
-                                crate::speculate::adopt(self, &signer, key, &request.id);
-                            }
-                            false => crate::ahead::differs(key, &request.id, identity_value(asked)),
+                        if !crate::ahead::adopts(key, &request.id, &spec.digest) {
+                            crate::ahead::differs(key, &request.id, identity_value(asked));
                         }
                     }
                     // Renewed from before it prepares: its first reads wait for the token.

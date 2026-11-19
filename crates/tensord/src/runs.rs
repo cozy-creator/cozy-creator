@@ -508,7 +508,7 @@ impl Runs {
                 invocation: std::mem::take(&mut **invocation),
                 objects: references,
                 // Nor is it kept for a restart: its list is sent again, and the start forgets it (`Journal::forget_lists`).
-                spec: if crate::ahead::item(id) { &[] } else { spec.journaled.as_slice() },
+                spec: if crate::ahead::hidden(id) { &[] } else { spec.journaled.as_slice() },
             })
             .collect();
         let accepted = self.service.engine.accept_runs(actor, accepting, synced)?;
@@ -602,7 +602,7 @@ impl Runs {
             module: String::new(),
             entrypoint: spec.entrypoint.clone(),
             // A list item's request stays in memory (cl-1123): it comes with no project's scope, and a draft is the project's.
-            input: match crate::ahead::item(id) {
+            input: match crate::ahead::hidden(id) {
                 true => serde_json::Value::Object(Default::default()),
                 false => spec.input.clone(),
             },
@@ -613,8 +613,7 @@ impl Runs {
             inputs: spec.inputs.clone(),
             parent: spec.parent.clone(),
             prepares: spec.warm || spec.remove,
-            // A guess, or one run as if it were sent (cl-1123 D): no job until a call adopts it.
-            background: crate::ahead::guess(id) || crate::ahead::speculative(id),
+            background: crate::ahead::guess(id),
             ..Default::default() // root and family: stamped at acceptance
         };
         Ok(Drafted::New(Box::new(draft), references))
@@ -632,8 +631,7 @@ impl Runs {
                 Err(_) => return 0,
             },
         };
-        let open = crate::estimate::chooses(&root) && !root.invocation.background
-            && self.service.pool().is_some_and(|pool| pool.open(root.root_seq()));
+        let open = crate::estimate::chooses(&root) && self.service.pool().is_some_and(|pool| pool.open(root.root_seq()));
         if open { 0 } else { root.width }
     }
 
@@ -1182,7 +1180,7 @@ impl Runs {
                 });
                 // A list item whose caller said its interface: its slots resolve, and its needs come, while its code installs
                 // (cl-1123: one after the other, a package's first plan here took 2 s, its describe 0.5 s of it).
-                let read = (early.is_none() && !install_only && crate::ahead::item(&caller)).then(|| crate::ahead::interface(&caller)).flatten();
+                let read = (early.is_none() && !install_only && crate::ahead::hidden(&caller)).then(|| crate::ahead::interface(&caller)).flatten();
                 let (installed, ahead) = std::thread::scope(|scope| {
                     // In the run's project, as this thread is.
                     let (private, spec, stop, hub) = (crate::private_io::current(), &spec, &stoppable.stop, hub.clone());
@@ -1243,7 +1241,7 @@ impl Runs {
         }
         let wants = wants_of(&interface, &generation.record.callees, &spec);
         // A list item's plan, said: which of its request's fields its rules read, and what they made of them (cl-1123).
-        if crate::ahead::item(&caller) {
+        if crate::ahead::hidden(&caller) {
             let fields: Vec<&String> = spec.input.as_object().map(|input| input.keys().collect()).unwrap_or_default();
             tracing::info!(
                 "{caller}: its request ({} fields: {fields:?}); its rules hold for {:?}, not for {:?}, give no answer for {:?}; it needs {:?}, what all of {:?} read, extras {:?}; planned in {} ms, its code ready in {installed_ms} ms",
@@ -1433,7 +1431,7 @@ impl Runs {
             }
             // A predicted request's weights are here: its machine loads it as its call would, once a GPU is idle (cl-1123), the
             // on-demand models its rules say its request reads built ahead too.
-            if let (true, Some(plan), Some(pool)) = (crate::ahead::item(&caller), plan, self.service.pool()) {
+            if let (true, Some(plan), Some(pool)) = (crate::ahead::hidden(&caller), plan, self.service.pool()) {
                 let build = (plan.slots.iter())
                     .filter(|slot| slot.on_demand && wants.needed.contains(&slot.binding.model_binding_path))
                     .map(|slot| slot.binding.model_parameter_name.clone())

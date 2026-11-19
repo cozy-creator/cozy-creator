@@ -51,7 +51,6 @@ pub mod serve;
 mod slowed;
 mod queue;
 mod service;
-mod speculate;
 mod stop;
 mod stored;
 mod storage;

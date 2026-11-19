@@ -3,7 +3,7 @@
 # machine makes sense as well. Although I would stop short at actually doing the full run", and "even for encrypted projects, sending
 # ahead of time is fine. What really matters is that we can trust the remote machine as safe"): in an encrypted project, a box's input
 # files and the project's own code are carried ahead to the rental its render would go to, behind every run's carry; its render finds
-# them there and sends nothing more, and nothing is run ahead.
+# them there and sends nothing more.
 # Qwen Image 2 from a packages checkout (a dev home), every step through this runner's cozy and its Calcifer, on the session's TensorD;
 # evidence is the machine's own log and records.
 # 0. An encrypted project (`cozy new`, its passphrase from a file), unlocked with no idle lock. `photo`, `wide` and `third`, pictures
@@ -13,14 +13,13 @@
 # 1. A page shows the project: own's guess goes to the rental, its code carried there (the machine's log lands its objects) and its
 #    item ready; own's render adopts the item.
 # 2. photo gets Qwen and an edit: Calcifer says photo's guess carried its picture ahead to the rental, an encrypted project's, and the
-#    machine says it landed whole, before any render. Its request is `loaded` and stays so, its draft unchanged: nothing runs ahead.
+#    machine says it landed whole, before any render. Its request is `loaded` and stays so, its draft unchanged.
 # 3. The runner's uplink shaped to `mbit`: wide gets Qwen and an edit (no prompt enhancer: cr-333 faults an executor's second LM call),
 #    and while its picture goes ahead, third gets the project's own `plain` on its picture and is rendered at once, so its run sends
 #    that picture. The carry waits for the render's ("a run's inputs go first") and goes on after, from what had landed ("going on
 #    from … there"); the machine lands third's picture in the render and wide's whole once, and the runner sends about their sizes.
 # 4. photo and wide rendered: each reused its picture there ("reused … already on"), the machine landed none of its picture while it
-#    was sent, and it adopted its item. No predicted request ran: the machine's log names no speculative run, and its Status never
-#    said `running` or `done` for one.
+#    was sent, and it adopted its item.
 # 5. yield (load-ahead.sh's): `other`'s weights fetched by one call, TensorD restarted, and `other` sent while a predicted request is
 #    `loading`: TensorD's log says how long the call waited for the GPU. Said, not judged; skipped when the cap leaves too little.
 # params:
@@ -463,7 +462,7 @@ for _ in $(seq 900); do
 done
 jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${got:-null}" > /dev/null 2>&1 || fail "photo isn't ready on $NAME after 30 min: ${got:-no row}"
 say "photo ready on $NAME: $got"
-# Its request loaded, and left there: its draft stands unchanged well past the 3 s a machine told to run ahead waits.
+# Its request loaded, and left there: still loaded 20 s on, its draft unchanged.
 loaded=false
 for _ in $(seq 20); do
   if staged loaded 30; then loaded=true; break; fi
@@ -499,12 +498,6 @@ rendered photo "$PHOTO"
 kept wide-render || fail "$NAME doesn't keep the session's software"
 rendered wide "$WIDE"
 say "Calcifer's carries ahead: $(grep -o "[a-z]*'s guess carried .*" "$OUT/calcifer.log" | paste -sd ';' -)"
-# Nothing ran ahead: no speculative run in the machine's log, and no predicted request its Status ever said was running or done.
-ran_log=$(grep -acE "runs as if it were sent|predicted requests run ahead here|speculative run" "$OUT/tensord-$NAME.log")
-ran_status=$(jq -R -r 'fromjson? | .status.ahead[]? | select(.stage == "running" or .stage == "done") | .id' "$OUT/status.ndjson" 2> /dev/null | sort -u | wc -l)
-were_loaded=$(jq -R -r 'fromjson? | .status.ahead[]? | select(.stage == "loaded") | .id' "$OUT/status.ndjson" 2> /dev/null | sort -u | wc -l)
-say "nothing ran ahead: $NAME's log names $ran_log speculative runs; its Status said running or done for $ran_status predicted requests, loaded for $were_loaded"
-[ "$ran_log" = 0 ] && [ "$ran_status" = 0 ] || MISMATCH+=("a predicted request ran ahead: $ran_log in $NAME's log, $ran_status in its Status")
 (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 50) > "$OUT/runs.json" 2>&1 || true
 say "the project's runs: $(jq -r '[.runs[]? | "\(.number) \(.target // "")"] | join("; ")' "$OUT/runs.json" 2> /dev/null | cut -c1-400)"
 if [ ${#MISMATCH[@]} = 0 ]; then say "steps 1 to 4 matched"; else say "steps 1 to 4, what didn't match: ${MISMATCH[*]}"; fi
@@ -521,4 +514,4 @@ logs
 say "$NAME ends on TensorD, Runtime and TensorFS $(set_of); checked before each step:"
 sed 's/^/  /' "$OUT/versions.txt" | tee -a "$R"
 [ ${#MISMATCH[@]} = 0 ] || fail "what didn't match: ${MISMATCH[*]}"
-say "PASS: an encrypted project's own code and its pictures went ahead to the rental, behind a render's upload and each landing once; each render found what it reads there and adopted its item; nothing ran ahead${YIELDED:+; $OTHER, sent while a load held the GPU: $YIELDED}"
+say "PASS: an encrypted project's own code and its pictures went ahead to the rental, behind a render's upload and each landing once; each render found what it reads there and adopted its item${YIELDED:+; $OTHER, sent while a load held the GPU: $YIELDED}"

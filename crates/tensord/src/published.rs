@@ -1708,8 +1708,8 @@ impl Publisher {
             }
             let granted = began.elapsed();
             job.stage(format!("resolving {}", named.shown()));
-            let named = self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller))?;
-            if crate::ahead::item(&job.caller) {
+            let named = self.resolve(service, source, named, &hardware, job.order, crate::ahead::hidden(&job.caller))?;
+            if crate::ahead::hidden(&job.caller) {
                 tracing::info!("{}: {path}: the Hub granted its reads in {} ms, resolved {} in {} ms", job.caller, granted.as_millis(), named.model, (began.elapsed() - granted).as_millis());
             }
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
@@ -1733,7 +1733,7 @@ impl Publisher {
             if let Some(named) = named {
                 let began = std::time::Instant::now();
                 self.structure(request.hub("a Hub model")?, &named, job)?;
-                if crate::ahead::item(&job.caller) {
+                if crate::ahead::hidden(&job.caller) {
                     tracing::info!("{}: {}: its structure landed in {} ms", job.caller, grant.slot, began.elapsed().as_millis());
                 }
             }
@@ -1743,7 +1743,7 @@ impl Publisher {
             let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
             if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order, crate::ahead::item(&job.caller));
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order, crate::ahead::hidden(&job.caller));
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
                 if !installation.generation.is_empty() {
