@@ -154,6 +154,8 @@ pod() {
     grep -v '^Warning: Permanently added' | tail -1
 }
 say "host: $(pod 'echo "$(nproc) cores, $(awk "/^MemTotal/ {printf \"%.0f\", \$2 / 1048576}" /proc/meminfo) GiB RAM, driver and card MiB $(nvidia-smi --query-gpu=driver_version,memory.total --format=csv,noheader,nounits | head -1)"' 60)"
+# The host bounds TensorD's executors meet (W5's number is the tightest on their path): every memory.max under the root.
+say "host bounds: $(pod 'for f in /sys/fs/cgroup/memory.max $(find /sys/fs/cgroup -mindepth 2 -maxdepth 6 -name memory.max 2> /dev/null | head -40); do v=$(cat "$f" 2> /dev/null); [ "$v" = max ] || [ -z "$v" ] || printf "%s=%s " "${f#/sys/fs/cgroup}" "$v"; done' 60)"
 . "$(dirname "$0")/gpu-reader.sh"
 # The pod's own logs leave with it.
 before_end() {
