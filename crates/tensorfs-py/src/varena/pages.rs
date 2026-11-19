@@ -204,6 +204,8 @@ struct State {
     kept: HashMap<String, Kept>,
     bytes: u64,
     room: i64,
+    /// The host's figures were unreadable at the last look: nothing pins, and no one is asked.
+    unread: bool,
     /// What stays free, as the last look decided it.
     headroom: i64,
     /// The host stalled on memory at the last look (a shared machine): `host_memory::Stall`.
@@ -422,9 +424,9 @@ impl Tier {
     /// What varena's host number leaves this process, re-read at most every `LOOK`, after kept
     /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
     /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
-    /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
-    /// peers are asked for their pages, and this tier's go only for what they do not hold; their
-    /// pages are worth less than any of a running call's.
+    /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom, over
+    /// the number or under it: idle peers are asked for all of it and what they hold counts first,
+    /// and this tier's go only for the rest; their pages are worth less than any of a running call's.
     fn trim(&self, state: &mut State) -> Gone {
         let mut gone = Gone::new(self);
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
@@ -435,13 +437,14 @@ impl Tier {
         self.look(state, &budget);
         let (room, mut left) = self.rooms(&budget);
         state.room = room;
-        if left >= state.headroom {
+        state.unread = budget.total <= 0;
+        if !state.unread && left >= state.headroom {
             return gone;
         }
-        let idle = if left >= 0 { super::host::short((state.headroom - left) as u64) } else { 0 };
+        let idle = if state.unread { 0 } else { super::host::short((state.headroom - left) as u64) };
         let idle = i64::try_from(idle).unwrap_or(i64::MAX);
-        let headroom = state.headroom;
-        let enough = |left: i64| left >= 0 && left.saturating_add(idle) >= headroom;
+        let (headroom, unread) = (state.headroom, state.unread);
+        let enough = |left: i64| !unread && left.saturating_add(idle) >= headroom;
         while !enough(left) {
             let Some((page, _)) = state.spare.pop() else { break };
             left += page.len as i64;
@@ -453,9 +456,7 @@ impl Tier {
                 break;
             }
             if let Some(kept) = state.remove(&key, "short") {
-                if left >= 0 {
-                    left += kept.page.len as i64;
-                }
+                left += kept.page.len as i64;
                 gone.push(kept);
             }
         }
@@ -562,10 +563,11 @@ impl Tier {
         drop(gone);
     }
 
-    /// Short of the headroom for `bytes` more while the cap allows them: idle peers are asked.
+    /// Short of the headroom for `bytes` more while the cap allows them, over the number or under it:
+    /// idle peers are asked.
     fn ask_room(&self, state: &State, bytes: i64) {
-        if state.room >= 0 && state.bytes as i64 + bytes <= self.cap as i64 {
-            super::host::short((state.headroom + bytes - state.room).max(0) as u64);
+        if !state.unread && state.room - bytes < state.headroom && state.bytes as i64 + bytes <= self.cap as i64 {
+            super::host::short((state.headroom + bytes - state.room) as u64);
         }
     }
 
