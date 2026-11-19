@@ -636,7 +636,7 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
         other => return other,
     }
     // Only now a smaller legal choice, or what other threads and processes can give up.
-    reclaim::acquire(device, 0, Wait::Yes, keep, || {
+    let chosen = reclaim::acquire(device, 0, Wait::Yes, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
         let target = menu.target().max(least);
         let choices = &menu.plans[target..];
@@ -646,7 +646,26 @@ fn select_from(device: i32, owner: &'static Device, key: &str, stream: u64, leas
         let least = choices.iter().min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle))
             .expect("copied menu");
         Err(least.short().into())
-    })
+    });
+    match chosen {
+        Err(Error::Exhausted { .. }) if !super::fallback() => floor(device, owner, key, stream, least),
+        other => other,
+    }
+}
+
+/// No level has room with everything reclaimable gone, and nothing cheaper stands behind a refusal
+/// (`fallback`: a split's whole that can go to host instead): the level nearest to fitting runs, the
+/// coarsest of equals, and what the card cannot hold of it goes to the last resort (`host`).
+fn floor(device: i32, owner: &'static Device, key: &str, stream: u64, least: usize) -> Result<SplitSelection> {
+    let menu = snapshot(device, owner, key, stream)?;
+    let target = menu.target().max(least).min(menu.plans.len() - 1);
+    let short = |plan: &Fit| plan.missing.saturating_sub(plan.after_idle.saturating_add(plan.streamed));
+    let nearest = menu.plans[target..].iter().min_by_key(|plan| short(plan)).expect("copied menu");
+    eprintln!(
+        "varena: GPU {device}: {key}: no level has room; level {} runs {} bytes short, and host memory holds what the card cannot",
+        nearest.id, short(nearest),
+    );
+    Ok(menu.selection(nearest, target, stream))
 }
 
 /// After `split_end` closed a leaf of `key` at `choice_id` in which an allocation was refused with
@@ -759,7 +778,7 @@ fn split_begin_inner(
     }
     let looping = owner.lock()?.looping();
     let keep = Protect { keep_working: true, keep_phase: looping, ..Default::default() };
-    reclaim::acquire(device, 0, Wait::Yes, keep, || {
+    let opened = reclaim::acquire(device, 0, Wait::Yes, keep, || {
         // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
         let lease = crate::plan::Lease::acquire(device)?;
         let gate = crate::gate(device)?;
@@ -792,7 +811,19 @@ fn split_begin_inner(
             open_leaf(&mut state, key, choice_id, completion_owner, stream, gate.epoch())
         })();
         result.map_err(|error| owner.fail(&mut state, error).into())
-    })
+    });
+    // Its room went since selection, and nothing cheaper stands behind a refusal (`floor`): it opens
+    // short, and the last resort holds what the card cannot.
+    match opened {
+        Err(Error::Exhausted { .. }) if !super::fallback() => {
+            let _lease = crate::plan::Lease::acquire(device)?;
+            let gate = crate::gate(device)?;
+            gate.not_capturing()?;
+            let mut state = owner.lock()?;
+            open_leaf(&mut state, key, choice_id, completion_owner, stream, gate.epoch())
+        }
+        other => other,
+    }
 }
 
 fn open_leaf(
