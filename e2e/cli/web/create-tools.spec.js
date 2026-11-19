@@ -61,8 +61,9 @@ test('create-tools', { tag: '@engines' }, async ({ page, project, api, cli }) =>
   // The boxes create makes by hand, made as the page posts them: a video, a Text box, and a Qwen Image 2.1 box.
   const names = { video: 'take', text: 'text', tool: 'image_1' };
   await project.import(MP4, { name: names.video, at: { x: 0, y: 0 } });
-  await project.add({ name: names.text, kind: 'text', at: { x: 420, y: 0 } });
-  await project.add({ name: names.tool, tool: 'qwen-image-2/image', kind: 'image', at: { x: 840, y: 0 } });
+  // As Tools › Text posts one (place.ts): no words yet.
+  await project.add({ name: names.text, kind: 'text', fields: { text: '', node_kind: 'text' }, at: { x: 420, y: 0 } });
+  await project.add({ name: names.tool, tool: 'qwen-image-2/image', kind: 'image', fields: { node_kind: 'image' }, at: { x: 840, y: 0 } });
   for (const name of Object.values(names)) await expect.poll(() => canvasVisible(page, name), { message: `${name} on the canvas` }).toBe(true);
   await fit(page);
 
