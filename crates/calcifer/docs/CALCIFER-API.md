@@ -596,8 +596,9 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   slot reads them composed with its other slots' models. A commit, `org/name@sha256:…`, on no `base` or `components` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
   checked against `lane` before anything is recorded. That is Calcifer's own run, its result a `RecordedCommit`, and its quote
-  `null`, since nothing rents. Its triggers and strength (the flags, else the source's own)
-  are set at the Hub once it completes (`result.after.display`).
+  `null`, since nothing rents. Its triggers and strength (the flags, else the source's own: Civitai's trainedWords, a Hugging
+  Face card's `instance_prompt`) are set at the Hub once it completes (`result.after.display`). A LoRA keeps what its card has;
+  else it has no trigger and strength 1.0, each said in `display.defaulted`.
 - `cozy/model_quantize` `ModelQuantize` (quoted for published
   packages only): Calcifer picks the commit (a release's original weights, else the commit named),
   reads its header's components, matches the package's recipe for the lane and the calibration

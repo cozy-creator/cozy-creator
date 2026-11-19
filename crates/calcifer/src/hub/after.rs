@@ -11,7 +11,7 @@ use api::{
     calcifer::hub::{AfterRun, Displayed, Retired},
     ids::RunId,
     machine::{self as v1, Source},
-    model_ref::ModelId,
+    model_ref::{ModelId, ModelKind},
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -21,8 +21,8 @@ use crate::Calcifer;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub(crate) enum After {
-    /// Sets `model`'s triggers and strength: these, else (`offered`) the triggers its source gave
-    /// (Civitai's trainedWords, each one entry), which the machine's result names.
+    /// Sets `model`'s triggers and strength: these, else (`offered`) the triggers its source states
+    /// (Civitai's trainedWords, a Hugging Face card's instance_prompt, each one entry), which the machine's result names.
     Display {
         model: String,
         #[serde(default)]
@@ -75,13 +75,10 @@ impl Calcifer {
         let mut done = AfterRun::default();
         match after {
             After::Display { model, triggers, strength, offered } => {
-                let given: Vec<String> = (result["models"][0]["triggers"].as_array().into_iter().flatten())
+                let stated: Vec<String> = (result["models"][0]["triggers"].as_array().into_iter().flatten().filter(|_| offered))
                     .filter_map(|t| t.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned))
                     .collect();
-                let triggers = triggers.or_else(|| (offered && !given.is_empty()).then_some(given));
-                if triggers.is_some() || strength.is_some() {
-                    done.display = Some(display(&machines, &hub, model, triggers, strength).await);
-                }
+                done.display = display(&machines, &hub, model, triggers, stated, strength).await;
             }
             After::Retire { package } => {
                 let release = result["release"].as_str().unwrap_or_default().to_owned();
@@ -111,28 +108,56 @@ impl Calcifer {
     }
 }
 
-/// Sets `model`'s display metadata at `hub`; the upload stands either way.
+/// Sets an upload's display metadata at `hub`: the uploader's `triggers` and `strength`, else the triggers its source `stated`. A
+/// LoRA ships with both (Paul, 11-18: "Every LoRA published to hub should ship with this metadata"): what its card has stays, else
+/// it has no trigger and strength 1.0, each said in `defaulted`. The upload stands either way. None: a model given neither.
 pub(super) async fn display(
     machines: &crate::machines::Machines,
     hub: &str,
     model: String,
     triggers: Option<Vec<String>>,
+    stated: Vec<String>,
     strength: Option<f64>,
-) -> Displayed {
-    let set_triggers = triggers.is_some();
-    let mut shown = Displayed { model, triggers: triggers.unwrap_or_default(), strength, error: None };
+) -> Option<Displayed> {
+    let triggers = triggers.or_else(|| (!stated.is_empty()).then_some(stated));
+    let mut shown = Displayed { model, triggers: triggers.clone().unwrap_or_default(), strength, ..Default::default() };
+    let login = || crate::rentals::login(hub);
     let set = async {
         let model_id = ModelId::hub(&shown.model)?;
-        let origin = Origin::parse(hub)?;
-        let client = machines.hubs.client(&origin)?;
-        let triggers = set_triggers.then_some(shown.triggers.as_slice());
-        let answer = client.set_model_display(&model_id.org, &model_id.name, triggers, shown.strength.map(Some)).await;
-        answer.map(drop).map_err(|e| e.refusal(|| crate::rentals::login(hub)))
+        let client = machines.hubs.client(&Origin::parse(hub)?)?;
+        let card = (client.get_model(&model_id.org, &model_id.name).await).map_err(|e| e.refusal(login))?.model;
+        let lora = card.kind.or_else(|| card.role.as_deref().and_then(ModelKind::from_role)) == Some(ModelKind::Lora);
+        if !lora && triggers.is_none() && strength.is_none() {
+            return Ok(false);
+        }
+        if lora && triggers.is_none() {
+            match card.triggers.is_empty() {
+                true => shown.defaulted.push("no trigger: neither its source nor its upload gives one".into()),
+                false => shown.triggers = card.triggers,
+            }
+        }
+        let mut set_strength = strength.is_some();
+        if lora && strength.is_none() {
+            match card.strength {
+                Some(kept) => shown.strength = Some(kept),
+                None => {
+                    (shown.strength, set_strength) = (Some(1.0), true);
+                    shown.defaulted.push("strength 1.0: neither its source nor its upload gives one".into());
+                }
+            }
+        }
+        if triggers.is_some() || set_strength {
+            let triggers = triggers.is_some().then_some(shown.triggers.as_slice());
+            let strength = set_strength.then_some(shown.strength);
+            (client.set_model_display(&model_id.org, &model_id.name, triggers, strength).await).map_err(|e| e.refusal(login))?;
+        }
+        Ok::<_, api::error::Error>(true)
     };
-    if let Err(e) = set.await {
-        shown.error = Some(e.to_string());
+    match set.await {
+        Ok(false) => None,
+        Ok(true) => Some(shown),
+        Err(e) => Some(Displayed { error: Some(e.to_string()), ..shown }),
     }
-    shown
 }
 
 /// Removes the older releases of `package` that `machine` holds from the Hub `release` came

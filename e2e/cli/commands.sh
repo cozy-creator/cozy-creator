@@ -243,6 +243,50 @@ J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum'
 echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
 }
 
+# cl-1287 (Paul, 11-18): "loras, uploaded to tensorhub, both have a default strength and a trigger word as part of their metadata";
+# "Every LoRA published to hub should ship with this metadata". Each upload's card is read back by its exact name (`lora ls`):
+# - PE Balloon Style from Hugging Face, whose card states `instance_prompt: PEBalloonStyle` and no strength: that trigger, 1.0;
+# - a file that states neither: no trigger and 1.0, each said in the upload's one line (`after.display.defaulted`);
+# - the same file with --trigger and --strength: the uploader's, nothing defaulted.
+lora_metadata() {
+[ -n "$LOCAL" ] || return 0
+step "a LoRA upload records its trigger and strength: the uploader's, its source's, else none and 1.0 (cl-1287)"
+local root=$OUT/lora-metadata seed=$((RANDOM % 9000 + 1000)) account file
+local balloon=hf://ProomptEngineer/pe-balloon-diffusion-style@47d52838cdbe29625ec88a57059d64f630cdc623/PE_BalloonStyle.safetensors
+rm -rf "$root" && mkdir -p "$root"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "lora metadata: e2e/isolated.sh named no Hub log or email to sign in with"; return 0; }
+signin "$E2E_HUB_EMAIL" > "$root/login.json" || { check "lora metadata: cozy login failed: $(tail -c 300 "$root/login.json")"; return 0; }
+account=$(cozy --json whoami | jq -r '.account // empty' || true)
+file=$root/bare-lora.safetensors
+python3 -I - "$file" <<'PY'
+import json, struct, sys
+header = json.dumps({"layer.lora_A.weight": {"dtype": "F16", "shape": [2, 4], "data_offsets": [0, 16]}, "layer.lora_B.weight": {"dtype": "F16", "shape": [4, 2], "data_offsets": [16, 32]}}).encode()
+header += b" " * (-len(header) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
+PY
+# metadata_upload <name> <want card> <want defaulted> <cozy lora upload args…>: the upload, its card and what it said it defaulted.
+metadata_upload() {
+  local name=$1 card=$2 defaulted=$3 model=${account:-e2e}/cl1287-$1-$seed
+  shift 3
+  cozy --json lora upload "$@" "$model" --lane bf16 --on local -y > "$root/$name.ndjson" 2> "$root/$name.err" \
+    || { check "lora metadata: $name: the upload failed: $(tail -c 400 "$root/$name.ndjson") $(tail -c 200 "$root/$name.err")"; return 0; }
+  grep '^{' "$root/$name.ndjson" | jq -s '[.. | objects | select(.after?.display?) | .after.display] | last // {}' > "$root/$name-display.json"
+  cozy --json lora ls "$model" > "$root/$name-card.json" 2>&1 || { check "lora metadata: $name: lora ls $model failed: $(tail -c 300 "$root/$name-card.json")"; return 0; }
+  J --arg m "$model" "[.models[] | select(.model == \$m)] | length == 1 and (.[0] | $card)" "$root/$name-card.json" \
+    || check "lora metadata: $name: its card is not $card: $(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | {triggers, strength, source}]' "$root/$name-card.json")"
+  J "(.defaulted // []) == $defaulted" "$root/$name-display.json" \
+    || check "lora metadata: $name: the upload did not say it defaulted $defaulted: $(jq -c . "$root/$name-display.json")"
+  echo "lora metadata: $name: $(jq -c --arg m "$model" '[.models[]? | select(.model == $m) | {triggers, strength, source}][0]' "$root/$name-card.json"); said $(jq -c '.defaulted // []' "$root/$name-display.json")"
+}
+metadata_upload sourced '(.triggers // []) == ["PEBalloonStyle"] and .strength == 1' \
+  '["strength 1.0: neither its source nor its upload gives one"]' "$balloon"
+metadata_upload bare '(.triggers // []) == [] and .strength == 1' \
+  '["no trigger: neither its source nor its upload gives one", "strength 1.0: neither its source nor its upload gives one"]' "$file" --source-format as-is
+metadata_upload given '(.triggers // []) == ["cl1287 word, kept whole"] and .strength == 0.7' '[]' \
+  "$file" --source-format as-is --trigger 'cl1287 word, kept whole' --strength 0.7
+cozy --json logout > "$root/logout.json" 2>&1 || check "lora metadata: logout: $(tail -c 300 "$root/logout.json")"
+}
+
 # cl-1241 (the coordinator, 11-18, from a review of packages #982): FLUX.3 Klein's, Fibo's and Krea 2's `image` boxes gained a
 # `text_encoder` slot, the one slot each of their requests loads, and a LoRA naming no slot (`cozy run --lora <lora>`, a LoRA
 # dropped on the box) went there and was refused. It goes on the slots whose class takes LoRAs (the interface's `loras`): those

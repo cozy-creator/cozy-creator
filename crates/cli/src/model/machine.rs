@@ -187,7 +187,12 @@ fn display(ctx: &Context, shown: &Displayed) {
     if let Some(strength) = shown.strength {
         said.push(format!("recommended strength {strength}"));
     }
-    output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
+    if !said.is_empty() {
+        output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
+    }
+    for defaulted in &shown.defaulted {
+        output::say(ctx, &format!("{}: {defaulted}", shown.model));
+    }
 }
 
 /// A Hub checkpoint recorded as a checkpoint of another model: no machine pulled it and no byte uploaded.

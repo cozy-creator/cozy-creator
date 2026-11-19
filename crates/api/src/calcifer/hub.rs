@@ -246,6 +246,12 @@ pub struct FoundModel {
     /// Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
+    /// What a LoRA's prompt uses, each entry one trigger kept whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
+    /// The pinned upstream source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "kind")]
@@ -669,6 +675,9 @@ pub struct Displayed {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<String>,
     pub strength: Option<f64>,
+    /// What a LoRA took for want of a value from its source or its uploader: no trigger, strength 1.0.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defaulted: Vec<String>,
     /// Why the Hub did not take them; the upload stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

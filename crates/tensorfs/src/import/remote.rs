@@ -398,6 +398,20 @@ fn next_link(header: &str) -> Option<String> {
 #[derive(Deserialize)]
 struct Revision {
     sha: String,
+    /// Its model card's metadata.
+    #[serde(default, rename = "cardData")]
+    card: serde_json::Value,
+}
+
+impl Revision {
+    /// The trigger its card states: `instance_prompt`, which diffusers' and ai-toolkit's LoRA trainers write.
+    fn trigger(&self) -> Vec<String> {
+        let said = |v: &serde_json::Value| v.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+        match &self.card["instance_prompt"] {
+            serde_json::Value::Array(all) => all.iter().filter_map(said).collect(),
+            one => said(one).into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -442,8 +456,8 @@ pub struct Listing {
     pub root: String,
     pub exact: bool,
     pub members: Vec<Member>,
-    /// The words its provider says a LoRA's prompt uses (Civitai's `trainedWords`): display
-    /// metadata for the Hub, never the header.
+    /// The words its provider says a LoRA's prompt uses (Civitai's `trainedWords`, a Hugging Face
+    /// card's `instance_prompt`): display metadata for the Hub, never the header.
     pub trigger: Vec<String>,
 }
 
@@ -462,10 +476,12 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
             path,
         } => {
             let base = access.base(Provider::Hf);
-            let commit = if hex40(revision) {
-                revision.to_ascii_lowercase()
+            let url = format!("{base}/api/models/{org}/{repo}/revision/{revision}");
+            // A pinned commit needs no answer: one that fails leaves the source without its card's trigger.
+            let (commit, trigger) = if hex40(revision) {
+                let card = access.get_json::<Revision>(Provider::Hf, &url).map(|(r, _)| r.trigger());
+                (revision.to_ascii_lowercase(), card.unwrap_or_default())
             } else {
-                let url = format!("{base}/api/models/{org}/{repo}/revision/{revision}");
                 let (r, _): (Revision, _) = access.get_json(Provider::Hf, &url)?;
                 if !hex40(&r.sha) {
                     return refuse(
@@ -473,7 +489,8 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                         format!("hf://{org}/{repo}@{revision} names no commit"),
                     );
                 }
-                r.sha
+                let trigger = r.trigger();
+                (r.sha, trigger)
             };
             let mut page = Some(format!(
                 "{base}/api/models/{org}/{repo}/tree/{commit}?recursive=true"
@@ -526,7 +543,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 root: path.clone(),
                 exact,
                 members,
-                trigger: vec![],
+                trigger,
             })
         }
         Spec::Civitai { version, file } => {

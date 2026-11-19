@@ -256,6 +256,8 @@ fn found(card: &types::ModelCard) -> FoundModel {
         private: release.is_none(),
         author: card.model.author.clone().map(author),
         strength: card.model.strength,
+        triggers: card.model.triggers.clone(),
+        source: card.model.source.clone().filter(|s| !s.is_empty()),
         content_kind: None,
         model_kind: card.model.kind.or_else(|| card.model.role.as_deref().and_then(api::model_ref::ModelKind::from_role)),
         tags: card.model.tags.clone(),
