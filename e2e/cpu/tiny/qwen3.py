@@ -119,18 +119,25 @@ def clip(folder: Path) -> Path:
     return path
 
 
+#: A decode cell's sampling: greedy, no penalty (what its reference was recorded with).
+GREEDY = {"temperature": 0, "presence_penalty": 0}
+
+
 def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list[Cell]:
-    """Each request on the default, then on the mixture of experts (`moe-*`)."""
+    """Each request on the default, then on the mixture of experts (`moe-*`). The decode cells ask greedily without a
+    penalty (`GREEDY`): they check the decode, and Ask's default samples at Qwen's card profile, a new seed each render
+    (cr-346); `sampled` and Write's keep the card's sampling at a fixed seed."""
     plain: list[Cell] = [
-        {"entry": "ask", "name": "text", "payload": {"prompt": "What is two plus two?", "max_tokens": 12},
+        {"entry": "ask", "name": "text", "payload": {"prompt": "What is two plus two?", "max_tokens": 12, **GREEDY},
          "check": answers(1)},
-        {"entry": "ask", "name": "image", "payload": {"prompt": "What is in this picture?", "max_tokens": 12},
+        {"entry": "ask", "name": "image", "payload": {"prompt": "What is in this picture?", "max_tokens": 12, **GREEDY},
          "files": {"images.0": picture}, "check": answers(1)},
-        {"entry": "ask", "name": "video", "payload": {"prompt": "What happens here?", "max_tokens": 12, "max_frames": 4},
+        {"entry": "ask", "name": "video", "payload": {"prompt": "What happens here?", "max_tokens": 12, "max_frames": 4,
+                                                      **GREEDY},
          "files": {"videos.0": clip}, "check": answers(1)},
         {"entry": "ask", "name": "sampled", "payload": {"prompts": [{"text": "Name a color."}, {"text": "Name a fruit."}],
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
-        {"entry": "caption", "name": "image", "payload": {"max_tokens": 12}, "files": {"images.0": picture},
+        {"entry": "caption", "name": "image", "payload": {"max_tokens": 12, **GREEDY}, "files": {"images.0": picture},
          "check": answers(1)},
         # xs-204, Paul 11-16: "attach an LLM (ideally VLLM) to an image node, or a video node, and ask it to produce a
         # caption, and it'll produce text". The box's tool: each mention's picture or video where it's first mentioned.
