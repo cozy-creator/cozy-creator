@@ -8,10 +8,11 @@
 #   min_cpus the fewest CPUs the rental must give for the arms to differ (default 16)
 #   seconds  what the cap must buy (default 1200)
 #   local    true: both arms on the runner's own machine, no rental and no comparison: the fixture's path checked for $0
+#   image    an image arm already measured on this pod type, `{"threads", "cpus", "save_s"}`: only the change's arm runs
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/x264/save.py
-SRC=$(param runtime '') FRAMES=$(param frames 720) MIN=$(param min_cpus 16) LOCAL=$(param local false)
+SRC=$(param runtime '') FRAMES=$(param frames 720) MIN=$(param min_cpus 16) LOCAL=$(param local false) IMAGE=$(param image '')
 [ -f "$FIX" ] || fail "no fixtures/x264/save.py"
 [[ $SRC =~ ^[0-9]+$ ]] || fail "runtime: a cozy-runtime dev-build run id"
 W=$(wheel_from "$OUT/wheel" "$SRC") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $SRC"
@@ -49,7 +50,13 @@ arm() {
   echo "$1: run $n, $threads x264 threads of $cpus CPUs, encoded in $secs s" | tee -a "$R"
 }
 result() { jq -r ".$2" "$OUT/$1.facts"; }
-arm image
+if [ -n "$IMAGE" ]; then
+  jq -e 'has("threads") and has("cpus") and has("save_s")' <<<"$IMAGE" > /dev/null || fail "image: {threads, cpus, save_s}, not $IMAGE"
+  printf '%s\n' "$IMAGE" > "$OUT/image.facts"
+  say "image arm as measured before: $(jq -c . <<<"$IMAGE")"
+else
+  arm image
+fi
 say "image Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
 [ "$LOCAL" = true ] || [ "$(result image cpus)" -ge "$MIN" ] || fail "$NAME gives $(result image cpus) CPUs, under the $MIN the arms need to differ"
 # A machine runs an RC's Runtime only under the RC's cozy (`rc_runtime_needs_rc_cozy`, pod 11-19 taison): its cozy first.
@@ -62,6 +69,7 @@ if [ "$LOCAL" = true ]; then
   say "PASS (local path): image $(result image threads) threads in $(result image save_s) s, change $(result change threads) of $(result change cpus) CPUs in $(result change save_s) s"
   exit "$RC"
 fi
+[ "$(result change cpus)" -ge "$MIN" ] || fail "$NAME gives $(result change cpus) CPUs, under the $MIN the arms need to differ"
 [ "$(result image threads)" -le 8 ] || fail "image: $(result image threads) threads, past its ceiling of 8"
 [ "$(result change threads)" = "$(result change cpus)" ] || fail "change: $(result change threads) threads of $(result change cpus) CPUs"
 awk -v a="$(result image save_s)" -v b="$(result change save_s)" 'BEGIN { exit !(b < a) }' ||
