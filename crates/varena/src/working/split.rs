@@ -473,9 +473,11 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     let free = owner.spare(owner.sample()?);
     let total = owner.total.load(Ordering::Acquire);
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-    // The most any op has held this request, since this op's own weights may not be held yet; but
-    // an op holds only its phase's weights, so an earlier phase's high-water isn't this one's: SDXL's
-    // UNet peak squeezed its VAE decode at 6 GiB into 64 bands (run 32599).
+    // The most any op has held in this phase, since this op's own weights may not be held yet. An op
+    // holds only its phase's weights, so an earlier phase's high-water isn't this one's: it resets as
+    // each phase begins (SDXL's UNet peak squeezed its VAE decode at 6 GiB into 64 bands, run 32599;
+    // PAN2's rewriter's streamed decode sent its DiT to the finest level, var-037). A phase over the
+    // card holds a block or two of it at once, never `phase.bytes`.
     let (now, peak) = owner.note_held();
     let held = phase.as_ref().map_or(peak, |phase| now.max(peak.min(phase.bytes)));
     Ok(Menu { plans, capacity: total.min(owner.capacity()), live: state.working_live() + held })
