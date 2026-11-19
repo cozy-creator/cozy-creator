@@ -91,14 +91,15 @@ h3_second() {
 }
 h3_second
 # xs-199, cr-348 (Paul: "N GPUs must beat 1 on real pods before any release"): LTX-2.5 5 s 1080p on two GPUs is no slower than
-# on one, within the ledger's noise (ledger.py NOISE, Paul 11-15: within 5% is a tie). Gate 44411764104 on 2x rtx-5090 took
-# 44.2 s on two GPUs against 33.1 s on one: every GPU ran every stage, and the base stage's steps are host-bound. Each side warm,
-# every run on its own seed (the call memo). A Runtime with cr-348 C measures each sharded stage at two GPUs, then at one, and
-# keeps the faster; a time measured cold is measured again. So two GPUs run until one of their runs after the first measures
-# nothing, the fifth at the latest (two degrees, each at most cold then warm), and that run is judged.
+# on one, within the ledger's noise (ledger.py NOISE, Paul 11-15: within 5% is a tie), on every two-GPU request (coordinator
+# 11-19). Gate 44411764104 on 2x rtx-5090 took 44.2 s on two GPUs against 33.1 s on one: every GPU ran every stage, and the
+# base stage's steps are host-bound. Each side warm, every run on its own seed (the call memo). A Runtime with cr-348 C measures
+# each sharded stage at one GPU first (GPU 0 alone), tries two once where the link and paging allow, and keeps the faster; so two
+# GPUs run until one of their runs after the first measures nothing, the fifth at the latest. Each of them is judged: the first
+# against one GPU's first, each without its start-up (fixtures/ltx-group/no-slower.jq), every later one against the warm run.
 ltx_one_two() {
   [ -z "$ONLY" ] || [[ $ONLY == *",ltx-gpus-1,"* || $ONLY == *",ltx-gpus-2,"* ]] || return 0
-  local c i hot e1 e2 noise
+  local c i hot noise got runs=()
   local req=("prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind."
     duration_s:=5 resolution=1080p aspect_ratio=16:9 audio:=true --lane int8)
   local rows='[.measurements, .calls[]?.measurements] | map(select(. != null) | .execution.transport.stages // {}) | add // {}'
@@ -113,16 +114,17 @@ ltx_one_two() {
   for i in 1 2 3 4 5; do
     c=ltx-gpus-2-$i
     ltx_run "$c" $((R + 371 + i)) 2 || return 0
+    runs+=("$c.json")
     [ "$i" -gt 1 ] && jq -e "$rows | all(.[]; .steady_ms == null)" "$c.json" > /dev/null && break
   done
   jq -e "$rows | all(.[]; .steady_ms == null)" "$c.json" > /dev/null ||
     { expect ltx-gpus-no-slower FAIL "two GPUs still measured a degree on their run $i: $(jq -c "$rows" "$c.json")"; return 0; }
-  # A GPU held back for heat or by its host's power limit (ledger.py `throttled`) voids the pair, as h3-gpus-faster.
-  hot=$(python3 -I "$HERE/ledger.py" throttled ltx-gpus-1.json "$c.json" | paste -sd' ')
+  # A GPU held back for heat or by its host's power limit (ledger.py `throttled`) voids the row, as h3-gpus-faster.
+  hot=$(python3 -I "$HERE/ledger.py" throttled ltx-gpus-1-warm.json ltx-gpus-1.json "${runs[@]}" | paste -sd' ')
   [ -z "$hot" ] || { expect ltx-gpus-no-slower FAIL "void (hot host): $hot. Run this row again on another host."; return 0; }
-  e1=$(run_get "$OUT" ltx-gpus-1 .execution_ms) e2=$(run_get "$OUT" "$c" .execution_ms)
   noise=$(python3 -I -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["NOISE"])' "$HERE/ledger.py")
-  expect ltx-gpus-no-slower "$(awk -v a="$e1" -v b="$e2" -v n="$noise" 'BEGIN { print (a > 0 && b > 0 && b <= a * (1 + n)) ? "PASS" : "FAIL" }')" \
-    "1 GPU: execution $e1 ms; 2 GPUs ($c): $e2 ms, stage degrees $(jq -c "$rows | with_entries(select(.value.degree) | .value |= .degree)" "$c.json")"
+  got=$(jq -rs --argjson n "$noise" -f "$HERE/sessions/fixtures/ltx-group/no-slower.jq" ltx-gpus-1-warm.json ltx-gpus-1.json "${runs[@]}")
+  expect ltx-gpus-no-slower "$([[ $got == PASS* ]] && echo PASS || echo FAIL)" \
+    "${got:-no record was read}; stage degrees on $c: $(jq -c "$rows | with_entries(select(.value.degree) | .value |= .degree)" "$c.json")"
 }
 ltx_one_two
