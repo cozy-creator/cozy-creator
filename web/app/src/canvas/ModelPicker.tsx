@@ -7,7 +7,7 @@ import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { loraNote } from "./loraNotes"
-import { appended, promptOf } from "./triggers"
+import { added, appended, promptOf } from "./triggers"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
@@ -241,13 +241,13 @@ function Slot({ name, slot, funAcc, showNsfw, legacy }: { name: string; slot: Pi
   const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
   const clearBase = () => changeSlot(store, name, slot, ({ ref: _, ...rest }) => rest)
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
-  // Added, its triggers go after the box's prompt, in the same step (cl-968).
+  // Added, its first trigger goes after the box's prompt, in the same step (cl-968, cl-1287).
   const addLora = async (model: PickerModel) => {
     const adapter = { ref: model.model }
     const on = (held: Entry) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model))
     if (on(entryOf(entryOf(store.valueOf(name, "models"))[slot.slot]))) return
     const triggers = await client.model(model.model).then((detail) => detail.triggers ?? [], () => [])
-    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTriggers(store, name, triggers))
+    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTriggers(store, name, added(triggers)))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>

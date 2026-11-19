@@ -1,0 +1,1 @@
+A LoRA with several trigger words puts only its first after the box's prompt when it's added (picked, dropped, or chosen by a tool's rule); the others stay as chips on its row beneath the box, one click each.
