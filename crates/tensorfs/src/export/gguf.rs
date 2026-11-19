@@ -9,7 +9,7 @@ use std::path::Path;
 
 use super::io;
 use crate::failure::{fail, Kind, Result};
-use crate::format::decode::gguf::Type;
+use crate::format::decode::ggml::Type;
 use crate::format::Body;
 use crate::import::gguf::{self, Meta};
 use crate::import::ROOT_COMPONENT;

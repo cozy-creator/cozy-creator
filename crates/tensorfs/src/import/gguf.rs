@@ -1,7 +1,7 @@
 //! GGUF, ggml's container (v3, ggml `docs/gguf.md`): typed metadata (the KV), tensor infos, then
 //! each tensor's bytes at an aligned offset.
 //!
-//! - A GGUF imports as one component. A ggml block type is the scheme `gguf.<type>`
+//! - A GGUF imports as one component. A ggml block type is the scheme `ggml.<type>`
 //!   (`{block_size}`) whose one part, `blocks`, holds llama.cpp's struct bytes as written
 //!   (spec §6); a plain ggml type is a plain tensor. The logical shape is `ne` reversed (or
 //!   ComfyUI-GGUF's `comfy.gguf.orig_shape.<name>`) and an encoded tensor's dtype is `F32`, what
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::err::{refuse, Code, Result};
-use crate::format::decode::gguf::{blocks_shape, Type};
+use crate::format::decode::ggml::{blocks_shape, Type};
 use crate::format::{Dtype, Encoding};
 
 /// The dtype of an unblocked ggml type, stored as a plain tensor.
@@ -828,7 +828,7 @@ mod tests {
 
     use super::{header, read};
     use crate::err::Code;
-    use crate::format::decode::gguf::Type;
+    use crate::format::decode::ggml::Type;
 
     fn gguf_file(tensors: &[(u64, u64)], payload: &[u8]) -> tempfile::NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().unwrap();
