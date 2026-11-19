@@ -137,7 +137,32 @@ fn max(a: f32, b: f32) -> f32 {
     }
 }
 
+/// A legacy block's input as llama-quantize reads it: gguf-py's bf16 writer (as ggml's `ggml_compute_fp32_to_bf16`) flushes
+/// a subnormal to a zero of its sign, so the GGUF it quantizes holds none. No decoded value changes: a flushed input could
+/// quantize nonzero only in a block whose fp16 scale is zero, which decodes to zeros (Qwen3.6-35B-A3B q8_0: 75 of 443
+/// tensors, 44438135332; a rule zeroing every fp16-zero-scale block broke 9 others, 44500031437).
+fn flushed(x: &[f32]) -> [f32; 32] {
+    let mut out = [0.0f32; 32];
+    for (o, &v) in out.iter_mut().zip(x) {
+        *o = if v.is_subnormal() { f32::from_bits(v.to_bits() & 0x8000_0000) } else { v };
+    }
+    out
+}
+
+/// C's float-to-integer conversion as an x86-64 ggml-base build compiles it (`cvttss2si`): toward zero, and a value that is
+/// not a number or out of range reads as INT_MIN, whose low byte is 0. Rust's `as` saturates instead. A product is non-finite
+/// only where `id` overflowed: `d` is an f32 subnormal, its fp16 scale is zero, and the block decodes to zeros either way
+/// (Qwen3.6-35B-A3B q8_0: 75 of 443 tensors saturated where llama-quantize wrote zeros, 44536371401).
+fn c_low_byte(v: f32) -> u8 {
+    if v.is_finite() && v.abs() < 2_147_483_648.0 {
+        v as i32 as u8
+    } else {
+        0
+    }
+}
+
 fn q8_0(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let mut amax = 0.0f32;
     for v in x {
         amax = max(amax, v.abs());
@@ -146,11 +171,12 @@ fn q8_0(x: &[f32], y: &mut [u8]) {
     let id = if d != 0.0 { 1.0 / d } else { 0.0 };
     y[0..2].copy_from_slice(&fp16(d));
     for (q, v) in y[2..34].iter_mut().zip(x) {
-        *q = (v * id).round() as i8 as u8;
+        *q = c_low_byte((v * id).round());
     }
 }
 
 fn q5_0(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let (mut amax, mut top) = (0.0f32, 0.0f32);
     for &v in x {
         if amax < v.abs() {
@@ -163,8 +189,8 @@ fn q5_0(x: &[f32], y: &mut [u8]) {
     y[0..2].copy_from_slice(&fp16(d));
     let mut qh = 0u32;
     for j in 0..16 {
-        let xi0 = ((x[j] * id + 16.5) as i8).min(31) as u8;
-        let xi1 = ((x[16 + j] * id + 16.5) as i8).min(31) as u8;
+        let xi0 = (c_low_byte(x[j] * id + 16.5) as i8).min(31) as u8;
+        let xi1 = (c_low_byte(x[16 + j] * id + 16.5) as i8).min(31) as u8;
         y[6 + j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
         qh |= u32::from((xi0 & 0x10) >> 4) << j;
         qh |= u32::from((xi1 & 0x10) >> 4) << (j + 16);
@@ -173,6 +199,7 @@ fn q5_0(x: &[f32], y: &mut [u8]) {
 }
 
 fn q5_1(x: &[f32], y: &mut [u8]) {
+    let x = &flushed(x);
     let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
     for &v in x {
         if v < lo {
@@ -188,8 +215,8 @@ fn q5_1(x: &[f32], y: &mut [u8]) {
     y[2..4].copy_from_slice(&fp16(lo));
     let mut qh = 0u32;
     for j in 0..16 {
-        let xi0 = ((x[j] - lo) * id + 0.5) as u8;
-        let xi1 = ((x[16 + j] - lo) * id + 0.5) as u8;
+        let xi0 = c_low_byte((x[j] - lo) * id + 0.5);
+        let xi1 = c_low_byte((x[16 + j] - lo) * id + 0.5);
         y[8 + j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
         qh |= u32::from((xi0 & 0x10) >> 4) << j;
         qh |= u32::from((xi1 & 0x10) >> 4) << (j + 16);
