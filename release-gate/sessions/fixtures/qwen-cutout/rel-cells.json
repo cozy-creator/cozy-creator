@@ -1,0 +1,116 @@
+{
+ "cells": [
+  {
+   "name": "woman-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background. Make this a full body shot. Keep her same pose. Keep her same face and pose and hair and facial expression.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "aspect_ratio:=\"5:8\"",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/woman.webp\"}]"
+   ]
+  },
+  {
+   "name": "man-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  },
+  {
+   "name": "pearl-f-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> remove the background.\"",
+    "turbo:=false",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/pearl.jpg\"}]"
+   ]
+  },
+  {
+   "name": "teapot-transparent-t-a",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> put the teapot on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/ltx-images/teapot.jpg\"}]"
+   ]
+  },
+  {
+   "name": "t2i-dragon-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A cute cartoon dragon sticker on a transparent background.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "gate-qwen-knight",
+   "tree": "a",
+   "target": "qwen-image-2/generate",
+   "args": [
+    "seed:=1000000005",
+    "megapixels:=1",
+    "prompt=This is an RGBA image with transparency. a translucent jellyfish lamp with glowing tendrils, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+   ]
+  },
+  {
+   "name": "plain-fox-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"A red fox in fresh snow at dawn, photo.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526"
+   ]
+  },
+  {
+   "name": "man-blue-shirt-t",
+   "tree": "a",
+   "target": "qwen-image-2/image",
+   "args": [
+    "instructions:=\"<p1> make his shirt blue.\"",
+    "turbo:=true",
+    "megapixels:=2",
+    "seed:=1662846526",
+    "references:=[{\"name\":\"p1\",\"image\":\"{ref}/../sessions/fixtures/qwen-cutout/man.webp\"}]"
+   ]
+  }
+ ],
+ "alpha": [
+  "woman-t-a",
+  "man-t-a",
+  "pearl-f-a",
+  "teapot-transparent-t-a",
+  "t2i-dragon-t",
+  "gate-qwen-knight",
+  "plain-fox-t",
+  "man-blue-shirt-t"
+ ],
+ "order": "one-way",
+ "need_s": 1800,
+ "max_failures": 2,
+ "install": [
+  "a"
+ ],
+ "relock": [
+  "a"
+ ]
+}
