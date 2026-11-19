@@ -25,24 +25,27 @@ ORDER = {"temperature": 1.0, "top_p": 1.0, "top_k": 5, "presence_penalty": 1.5}
 #: Every setting vLLM takes.
 KNOBS = {"temperature": 0.8, "top_p": 0.9, "top_k": 40, "min_p": 0.05, "presence_penalty": 0.5, "frequency_penalty": 0.5,
          "repetition_penalty": 1.2}
-#: `order`'s calls: (name, settings, seed); each claim on its own, so a red says which failed.
-CALLS: list[tuple[str, dict[str, float], int]] = [
-    ("recipe-7", RECIPE, 7), ("recipe-8", RECIPE, 8), ("order", ORDER, 7), ("knobs", KNOBS, 7),
+PROMPT = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <colour>'."
+#: Free prose, long: many steps where several tokens are about as likely, the steps a penalty reorders.
+STORY = "Write a long, rambling story about an old fisherman, his small boat and the sea, in plain words."
+#: `order`'s calls: (name, prompt, settings, seed); each claim on its own, so a red says which failed.
+CALLS: list[tuple[str, str, dict[str, float], int]] = [
+    ("recipe-7", PROMPT, RECIPE, 7), ("recipe-8", PROMPT, RECIPE, 8),
+    *((f"order-{seed}", STORY, ORDER, seed) for seed in (1, 2, 3, 4)),
+    ("knobs", PROMPT, KNOBS, 7),
 ]
 #: `drafted`'s settings: greedy with a penalty, then each of `order`'s.
 DRAFTED = [{"temperature": 0.0, "presence_penalty": 1.5}, RECIPE, ORDER, KNOBS]
 
 
-PROMPT = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <colour>'."
-
 
 class Order(msgspec.Struct):
-    prompt: str = PROMPT
     max_tokens: int = 160
 
 
 class Call(msgspec.Struct):
     name: str
+    prompt: str
     seed: int
     settings: dict[str, float]
     steps: int
@@ -213,16 +216,16 @@ def order(payload: Order, model: VisionLM) -> Ordered:
     tokenizer = processor.tokenizer  # type: ignore[attr-defined]
     tokenizer.padding_side = "left"
     hf = model.pipe.components[vlm.COMPONENT]
-    chat = processor.apply_chat_template(  # type: ignore[attr-defined]
-        [{"role": "user", "content": [{"type": "text", "text": payload.prompt}]}],
-        tokenize=False, add_generation_prompt=True, enable_thinking=False,
-    )
-    inputs = processor(text=[chat], return_tensors="pt").to(hf.device)  # type: ignore[operator]
-    prompt = inputs["input_ids"][0].cpu()
     stops = [t for t in (tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id) if t is not None]
     head = hf.get_output_embeddings()
     calls: list[Call] = []
-    for name, settings, seed in CALLS:
+    for name, text, settings, seed in CALLS:
+        chat = processor.apply_chat_template(  # type: ignore[attr-defined]
+            [{"role": "user", "content": [{"type": "text", "text": text}]}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+        inputs = processor(text=[chat], return_tensors="pt").to(hf.device)  # type: ignore[operator]
+        prompt = inputs["input_ids"][0].cpu()
         seen: list[torch.Tensor] = []
         handle = head.register_forward_hook(lambda _m, _a, out: seen.append(out[0, -1].float().cpu().clone()))
         try:
@@ -230,7 +233,8 @@ def order(payload: Order, model: VisionLM) -> Ordered:
             made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0],
                                seed=seed, **knobs)
         except TypeError as exc:  # a Runtime that takes fewer settings
-            calls.append(Call(name, seed, settings, 0, -1, -1, -1, -1, -1, 0.0, "", error=f"{type(exc).__name__}: {exc}"))
+            calls.append(Call(name, text[:40], seed, settings, 0, -1, -1, -1, -1, -1, 0.0, "",
+                              error=f"{type(exc).__name__}: {exc}"))
             continue
         finally:
             handle.remove()
@@ -261,7 +265,7 @@ def order(payload: Order, model: VisionLM) -> Ordered:
                 old_kept += int(not torch.equal(torch.isfinite(old), torch.isfinite(want)))
                 old_draw += int(int((old + noise).argmax()) != drawn)
         calls.append(Call(
-            name, seed, settings, len(tokens), mismatches, first, kept_equal if has_runtime else -1,
+            name, text[:40], seed, settings, len(tokens), mismatches, first, kept_equal if has_runtime else -1,
             old_kept if rc else -1, old_draw if rc else -1, kept / max(len(tokens), 1),
             str(tokenizer.decode(tokens, skip_special_tokens=True)),
         ))  # fmt: skip
