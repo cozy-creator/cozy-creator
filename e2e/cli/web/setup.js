@@ -21,8 +21,9 @@ const WARM = process.platform === 'linux' ? [
   ['shots.py/echo', 'b=warm'],
   ['../web/heavy.py/heavy', 'instructions=warm'],
 ] : [];
-/** What isolated.sh publishes at the root for every web job: on Linux alone, as no machine elsewhere publishes a default's model (th-412). */
-const SEED = process.platform === 'linux' ? ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'qwen-image', 'ltx-2.5'] : [];
+/** What isolated.sh publishes at the root for every web job: on Linux alone, as no machine elsewhere publishes a default's model (th-412).
+ *  e2e-words is web/words, an image tool that reads no picture (se-175). */
+const SEED = process.platform === 'linux' ? ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'qwen-image', 'ltx-2.5', 'e2e-words'] : [];
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite sets it`); })();
 
