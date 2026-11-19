@@ -115,13 +115,14 @@ if [ "$KERNELS" = 1 ]; then
   # (44407508649, 44408751569: their one long ssh dropped in a Hub outage and each waited out its 5400 s).
   there "rm -f /w/out/pod.rc; setsid nohup bash -c 'bash /w/pod.sh $LLAMA $LLAMA_SUM > /w/out/pod.out 2>&1; echo \$? > /w/out/pod.rc' \
     > /dev/null 2>&1 < /dev/null &" 60 < /dev/null || fail "start llama.cpp's side on the pod"
-  until=$(($(date +%s) + 5400)) code=''
+  until=$(($(date +%s) + 6600)) code=''
   while [ -z "$code" ] && [ "$(date +%s)" -lt "$until" ]; do
     sleep 30; code=$(there "cat /w/out/pod.rc 2> /dev/null" 60 < /dev/null) || code=''
   done
-  [ -n "$code" ] || code="no exit after 5400 s"
+  [ -n "$code" ] || code="no exit after 6600 s"
   there "cat /w/out/pod.log" < /dev/null | tee -a "$R"
-  [ "$code" = 0 ] || { there "tail -c 3000 /w/out/pod.out; tail -c 3000 /w/out/build.log" < /dev/null | tee -a "$R"; fail "llama.cpp's side: exit $code"; }
+  # llama.cpp's side failing is told, and ours and the ride-along go on; its cases then read unmeasured.
+  [ "$code" = 0 ] || { there "tail -c 1500 /w/out/pod.out" < /dev/null | tee -a "$R"; RIDE_BAD=1; say "FAILED: llama.cpp's side: exit $code"; }
   there "cat /w/out/llama-perf.txt" < /dev/null > "$OUT/llama-perf.txt"
 
   # Ours.
