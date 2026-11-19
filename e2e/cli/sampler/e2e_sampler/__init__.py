@@ -272,8 +272,9 @@ def order(payload: Order, model: VisionLM) -> Ordered:
     return Ordered(calls)
 
 
-#: A checkpoint with a draft head (its multi-token-prediction layer), for `drafted`.
-DRAFTING = "qwen/qwen3.5-9b-mtp@0.2.0"
+#: Qwen3.5-9B whole, its multi-token-prediction layer kept (the draft head `vlm.construct` registers), for `drafted`;
+#: `qwen/qwen3.5-9b-mtp` is that layer alone, a drafter for another model.
+DRAFTING = "qwen/qwen3.5-9b@0.2.0"
 
 
 class Drafted(msgspec.Struct):

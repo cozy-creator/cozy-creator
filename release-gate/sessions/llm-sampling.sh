@@ -8,7 +8,7 @@
 # params:
 #   runtime  the cozy-runtime dev-build run id of the Runtime the rental runs (required)
 #   tensorfs the TensorFS wheel beside it (an https URL or artifact:<run>/<name>; required): the Runtime's pair
-#   model    the checkpoint (default: `drafted`'s, qwen/qwen3.5-9b-mtp@0.2.0)
+#   model    the checkpoint (default: `drafted`'s, qwen/qwen3.5-9b@0.2.0)
 #   seconds  what the cap must buy (default 2400)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
