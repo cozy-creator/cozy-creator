@@ -1,0 +1,24 @@
+{
+  "tree": "rc",
+  "cap": "off",
+  "free_gib": 6,
+  "managed": true,
+  "twin_managed": false,
+  "runtime": "44435885416",
+  "tensorfs": "artifact:44449033874/tensorfs-wheel-37aeeca2a06f2eb71f323cbc3246a7bd2f9933e9",
+  "twin_tensorfs": "artifact:44401604386/tensorfs-wheel-ab6e30d9ec5929a11f64b063b7e0e429465c8009",
+  "need_s": 6000,
+  "floor_mb_s": 25,
+  "min_cores": 8,
+  "min_ram_gib": 44,
+  "host_tries": 3,
+  "pin_probe_mib": 1024,
+  "cells": [
+    {
+      "name": "seedvr2-1440p",
+      "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip5}", "resolution=1440p", "aspect_ratio=16:9", "seed:=30018"],
+      "max_s": 3600
+    }
+  ]
+}

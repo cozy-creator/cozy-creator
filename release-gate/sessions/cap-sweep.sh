@@ -31,6 +31,7 @@
 #              `managed_working`: `dev = true`, `[machine] managed_working` in the pod's config.toml)
 #   twin_tensorfs  a second wheel (https…#sha256= or artifact:<run>/<name>): every cell that ran runs again on it, uncapped
 #              and unheld, managed per `twin_managed` (false), with its own seed: another build is no call memo's to answer
+#   pin_probe_mib  that much cuMemHostAlloc is made and freed on the pod before the cells, and what the kernel counted is said
 #   red_tensorfs   a wheel every cell that completed (and each marked `"red": true`, but none marked `"no_red": true`) runs
 #              again on, held, unmanaged: what the release does there. A cell marked `"no_twin": true` has no twin.
 #   The runtime and tensorfs wheels may be artifact:<run>/<name> too (a runtime also a cozy-runtime dev-build run id), and
@@ -237,6 +238,14 @@ pod() {
 }
 say "host: $(pod 'echo "$(nproc) cores, $(awk "/^MemTotal/ {printf \"%.0f\", \$2 / 1048576}" /proc/meminfo) GiB RAM, driver and card MiB $(nvidia-smi --query-gpu=driver_version,memory.total --format=csv,noheader,nounits | head -1)"' 60)"
 . "$(dirname "$0")/gpu-reader.sh"
+# PROOF ONLY (var-030 section 8 W8): pin_probe_mib: what this pod's kernel and driver count for that much cuMemHostAlloc, the
+# host fallback's allocation (hostpin-probe.py), before the holder takes the card: whether the charge varena's host admission
+# reads moves with it. A reading, never the session's failure.
+PROBE=$(param pin_probe_mib '')
+if [[ $PROBE =~ ^[0-9]+$ ]]; then
+  say "$(timeout 120 cozy machine ssh "$NAME" "echo $(base64 -w0 "$(dirname "$0")/hostpin-probe.py") | base64 -d > /var/tmp/hostpin-probe.py && python3 /var/tmp/hostpin-probe.py $((PROBE << 20)) 2>&1 | tail -1" < /dev/null 2> /dev/null | grep -v '^Warning: Permanently added' | tail -1 | grep . || echo 'hostpin-probe: no answer')"
+  say "host before the cells: $(host_use "$NAME")"
+fi
 hold on
 # The pod's own logs leave with it.
 before_end() {
@@ -403,7 +412,7 @@ run() {
   echo "$procmib $hostgrow $hostpeak $hostsys $h2d $d2h" > "$OUT/$name.mem"
   host_use "$NAME" > "$OUT/$name.hostuse"
   mg=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.working_allocator // empty)
-    | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add)" end' "$OUT/$name.json" 2> /dev/null)
+    | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add); host working memory peak \(map(.host_working_peak // 0) | max / 1048576 | floor) MiB in \(map(.host_working_allocs // 0) | add) allocations, \(map(.host_working_bytes // 0) | add / 1048576 | floor) MiB at the end" end' "$OUT/$name.json" 2> /dev/null)
   ceil=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.ceiling.h2d_gbps // empty) | max // "?"' "$OUT/$name.json" 2> /dev/null)
   fills=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.moved // empty | to_entries[] | .value.bytes // 0) | add // 0 | . / 1e9 | . * 10 | floor / 10' "$OUT/$name.json" 2> /dev/null)
   row "$name"
