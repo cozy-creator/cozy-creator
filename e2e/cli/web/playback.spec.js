@@ -4,7 +4,8 @@
 // player's clock, not what's on screen, and only on the page built into cozy, while his laptop serves the page from Vite (dev = true), React's
 // development build. So this reads the screen, on both pages: on the canvas a video's preview moves; in Focus a video plays (its clock runs
 // and its picture moves), an orbit's picture turns with a drag and moves with Spin, and both again after Focus goes from one to the other; and
-// every video in every window plays at once (web-windows, cl-1215).
+// every video in every window plays at once (web-windows, cl-1215). And a video being made in segments (cl-1210) grows on screen in Focus and its
+// take plays on, on both pages: the development build detaches every ref once as it mounts, which emptied a growing video there.
 const { spawn } = require('child_process');
 const { closeSync, existsSync, openSync, readFileSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
@@ -13,6 +14,7 @@ const { test, expect, focus, canvasCard, canvasVisible, hoverBox, fixtureTool, p
 const { ffmpeg, fit, leave, rest } = require('./hands');
 
 const TURN = fixtureTool('orbit.py/turn');
+const SEGMENTS = fixtureTool('segments.py/segments');
 const FRAMES = 48;
 
 /** What's on screen over `box`'s middle (a 16 × 9 grid over its middle 70 % across and 60 % down, clear of an orbit's bar and hint). */
@@ -40,12 +42,15 @@ async function made({ page, project, cli }) {
   const rendered = await cli('--json', 'render', 'turned', '--on', 'local');
   expect(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
   await expect.poll(async () => Boolean((await project.asset('turned'))?.prefixes?.at(-1)?.main?.metadata?.orbit), { message: "turned's orbit take", timeout: 120_000 }).toBe(true);
+  // Two segments of 8 s, the second 4 s after the first: its take lands while the first still plays.
+  const beats = [{ description: 'The cliffs.', duration: 8 }, { description: 'The harbour.', duration: 8 }];
+  await project.add({ name: 'grows', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast.', beats, wait: 4 }, at: { x: 0, y: 400 } });
 }
 
 /** Every check, on the page as it's served now. */
-async function plays(page) {
+async function plays(page, project) {
   const region = page.getByRole('region', { name: 'Focused asset' });
-  for (const name of ['turned', 'walk']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  for (const name of ['turned', 'walk', 'grows']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
 
   await test.step('on the canvas: a video rested on previews, and its picture moves', async () => {
@@ -103,11 +108,36 @@ async function plays(page) {
       await leave(page);
     });
   }
+
+  await test.step('in Focus a video being made grows on screen, and its take plays on from there', async () => {
+    await focus(page, 'grows');
+    const before = (await project.asset('grows'))?.prefixes?.length ?? 0;
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await region.locator('.here-side .take.making').first().click();
+    const glimpse = region.locator('.glimpse video.shown');
+    await expect.poll(() => glimpse.evaluate((el) => el.readyState >= 2).catch(() => false), { message: 'its first segment here', timeout: 120_000 }).toBe(true);
+    await region.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
+    await expect.poll(async () => (await clock(glimpse)).at, { message: "what's made so far plays" }).toBeGreaterThan(0.3);
+    const grew = await look(page, await glimpse.boundingBox());
+    await expect.poll(async () => moved(grew, await look(page, await glimpse.boundingBox())), { message: 'its picture moves on screen' }).toBeGreaterThanOrEqual(MOVES);
+    await expect.poll(async () => (await project.asset('grows'))?.prefixes?.length ?? 0, { message: 'its take', timeout: 120_000 }).toBe(before + 1);
+    const live = region.locator('video.live');
+    await expect.poll(async () => {
+      if (!(await live.count())) return 'no player yet';
+      const now = await clock(live);
+      return !now.paused && now.at > 0.3 && !(await live.evaluate((el) => el.classList.contains('taking'))) ? 'playing' : JSON.stringify(now);
+    }, { message: 'its take plays on', timeout: 60_000 }).toBe('playing');
+    await expect(region.locator('.glimpse'), 'nothing of the glimpse once its take plays').toHaveCount(0);
+    const landed = await look(page, await live.boundingBox());
+    await expect.poll(async () => moved(landed, await look(page, await live.boundingBox())), { message: "its take's picture moves on screen" }).toBeGreaterThanOrEqual(MOVES);
+    await region.locator('.tl-transport').getByRole('button', { name: 'Pause', exact: true }).click();
+    await leave(page);
+  });
 }
 
 test('playback', async ({ page, project, cli }) => {
   await made({ page, project, cli });
-  await plays(page);
+  await plays(page, project);
 });
 
 /** config.toml in dev mode, its page from this Vite (web/access.js's devConfig). */
@@ -141,7 +171,7 @@ test('playback: the page from Vite, as dev = true serves it', { tag: '@solo' }, 
     await page.goto(project.url(), { timeout: 180_000 });
     await expect(page.locator('.stage')).toBeVisible({ timeout: 180_000 });
     expect(await page.evaluate(() => Boolean(document.querySelector('script[src="/@vite/client"]'))), "the page is Vite's").toBe(true);
-    await plays(page);
+    await plays(page, project);
   } finally {
     writeFileSync(test.info().outputPath('console.log'), said.join('\n'));
     // Its server gone under an open page, Vite's client polls for it from a blob SharedWorker (vite client.mjs, waitForSuccessfulPing), which

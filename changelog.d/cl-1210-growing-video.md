@@ -1,0 +1,1 @@
+A video rendered in segments plays as one growing video and never goes blank (cl-1210): each newer revision loads under the one shown and takes its place at the same playhead, playing on if it was, and the take, once its file is here, takes over the same way in Focus. A take on its way here plays on its glimpse. Cell `web-incremental-video`.

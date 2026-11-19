@@ -7,8 +7,8 @@ import { called } from "../panels/machines/words"
 import { bytesKind, countsOf, phaseOf } from "../panels/runs/words"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { useHeldMedia } from "./Media"
 import "./Takes.css"
+import { GrowingVideo } from "./GrowingVideo"
 
 /** What a take on its way is doing, by name, and how far through that alone (Paul, 11-16, cl-1074): its download, then its render, each
  *  with its own share, never one number for both. Waiting, it has none. */
@@ -79,7 +79,8 @@ export function TakeProgress({ view, run }: { view: ElementView; run?: number })
 function TileGlimpse({ glimpse }: { glimpse: NonNullable<ElementView["glimpse"]> }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  // Looping on its tile from the page's memory, holding no connection (cl-1215).
-  const src = useHeldMedia(store.projectId ? client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev) : undefined)
-  return src ? <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" /> : null
+  // Each newer revision's bytes are held in the page's memory first (cl-1215), then it takes over at the playhead: the one shown stays
+  // until then, nothing blank between (cl-1210).
+  const path = store.projectId ? client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev) : undefined
+  return <GrowingVideo path={path} media={client.transport.media} className="take-glimpse-layers" videoClassName="take-glimpse" muted loop autoPlay />
 }

@@ -2169,6 +2169,32 @@ video.preview.on {
   object-fit: cover;
   pointer-events: none;
 }
+.take-glimpse-layers {
+  object-fit: cover;
+  pointer-events: none;
+}
+/* A video that grows (cl-1210): a newer revision loads under the one shown, then takes its place. */
+.growing-video {
+  position: absolute;
+  inset: 0;
+}
+.growing-video > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: inherit;
+}
+.growing-video > video.incoming {
+  z-index: 0;
+}
+.growing-video > video.shown {
+  z-index: 1;
+}
+/* A take's player taking over from its glimpse, unseen until it has its frame where the glimpse is. */
+video.live.taking {
+  opacity: 0;
+}
 .take-glimpse + .take-said {
   position: relative;
   padding: 0 4px;
@@ -4062,7 +4088,8 @@ input[type="checkbox"] {
   background: var(--card);
 }
 .glimpse img,
-.glimpse video {
+.glimpse video,
+.glimpse .growing-video {
   width: 100%;
   height: 100%;
   object-fit: contain;

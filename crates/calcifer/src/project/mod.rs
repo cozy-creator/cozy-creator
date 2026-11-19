@@ -908,7 +908,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
     let folder = Folder::at(project);
     let take = folder.take_run(made.run_id);
     let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured, take).map_err(|e| e.message)?;
-    // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
+    // The file is in `files/` now: an output that grows keeps its next revision's first bytes from there (`outputs::fetch_file`).
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| format!("{} is saved in files/, but Cozy couldn't add it to the project: {}.", made.output, inner(&why.message)));
     Ok((kept, said))

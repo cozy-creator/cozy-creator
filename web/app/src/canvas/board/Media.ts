@@ -1,6 +1,7 @@
 import { Texture, VideoSource } from "pixi.js"
 import type { Client } from "../../api/client"
 import { THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
+import { handoff, letGo } from "../GrowingVideo"
 
 export type MediaSource =
   | { kind: "thumb"; sha256: string }
@@ -17,6 +18,8 @@ export interface LatentHandle {
   release(): void
 }
 export interface VideoHandle { readonly texture?: Texture; release(): void }
+/** A render's video so far at rest (cl-1210): `show` a newer revision, `land` its take's file, `ended` once that has played on to its end. */
+export interface GlimpseHandle extends VideoHandle { readonly ended: boolean; show(rev: number): void; land(path: string): void }
 
 /** Every picture in view is asked for at once (cl-982, cl-1018), at low priority: the browser queues them on its own connections, and the
  *  page's own requests go first. The bound only keeps a 5,000-card view from holding thousands of decodes at once. */
@@ -216,6 +219,88 @@ export class Media {
     this.videos.add(control)
     void load()
     return { get texture() { return texture }, release: control.stop }
+  }
+
+  /**
+   * What a render has made so far, at rest, silent and looping (cl-1210; Paul, 11-18: "they suddenly disappear"): each newer revision
+   * (`show`) opens off screen and takes over at the playhead once it has its frame there (`handoff`), the texture moving to it only then.
+   * `land` hands over to the take's own file the same way, which plays on to its end, no longer looping, then says `ended`. Muted, it holds
+   * no media slot, as a hover preview holds none.
+   */
+  glimpse(source: Extract<MediaSource, { kind: "output" }>, onChange: () => void): GlimpseHandle {
+    // Each layer holds its revision's bytes in the page's memory while it's shown or on its way (cl-1215), and lets go as it's dropped.
+    type Layer = { element: HTMLVideoElement; texture?: Texture; frame: number; taking: AbortController; release(): void }
+    let shown: Layer | undefined, incoming: Layer | undefined, retired: Layer | undefined, stopped = false, ended = false
+    const framed = "requestVideoFrameCallback" in HTMLVideoElement.prototype
+    const drop = (layer: Layer | undefined) => {
+      if (!layer) return
+      layer.taking.abort()
+      if (framed) layer.element.cancelVideoFrameCallback(layer.frame)
+      else cancelAnimationFrame(layer.frame)
+      letGo(layer.element)
+      layer.release()
+      layer.texture?.destroy(true)
+    }
+    // Each decoded frame of the one shown into its texture; the one it took over from goes once its own first frame is drawn.
+    const draw = (layer: Layer) => {
+      const next = () => { layer.frame = framed ? layer.element.requestVideoFrameCallback(() => draw(layer)) : requestAnimationFrame(() => draw(layer)) }
+      if (stopped || layer !== shown) return
+      if (!layer.element.videoWidth) return next()
+      if (!layer.texture) {
+        const resource = new VideoSource({ resource: layer.element, autoLoad: false, autoPlay: false })
+        resource.autoUpdate = false
+        layer.texture = new Texture({ source: resource })
+        drop(retired)
+        retired = undefined
+      } else layer.texture.source.update()
+      this.tell(onChange)
+      next()
+    }
+    // The newest asked for: one whose bytes come after a newer one was asked for is not opened.
+    let asked = 0
+    const open = async (path: string, loop: boolean) => {
+      const mine = ++asked
+      const held = await this.o.client.transport.media(path).catch(() => undefined)
+      if (stopped || !held || mine !== asked) return held?.release()
+      drop(incoming)
+      const element = document.createElement("video")
+      Object.assign(element, { muted: true, loop, playsInline: true, disablePictureInPicture: true, preload: "auto" })
+      const layer: Layer = { element, frame: 0, taking: new AbortController(), release: held.release }
+      incoming = layer
+      element.src = held.url
+      try {
+        if (shown) await handoff(shown.element, element, layer.taking.signal)
+        else {
+          if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) await new Promise((done) => element.addEventListener("loadeddata", done, { once: true }))
+          if (this.visible) await element.play().catch(() => {})
+        }
+      } catch { return }
+      if (stopped || incoming !== layer) return
+      incoming = undefined
+      drop(retired)
+      retired = shown
+      shown = layer
+      if (!loop) element.addEventListener("ended", () => { ended = true; this.tell(onChange) }, { once: true })
+      draw(layer)
+    }
+    const control = {
+      stop: () => {
+        stopped = true
+        for (const layer of [incoming, shown, retired]) drop(layer)
+        this.videos.delete(control)
+      },
+      pause: () => shown?.element.pause(),
+      resume: () => { if (shown && !shown.element.ended) shown.element.play().catch(() => {}) },
+    }
+    this.videos.add(control)
+    void open(this.path(source), true)
+    return {
+      get texture() { return shown?.texture ?? retired?.texture },
+      get ended() { return ended },
+      show: (rev) => void open(this.path({ ...source, rev }), true),
+      land: (path) => void open(this.o.client.file(this.o.project, path), false),
+      release: control.stop,
+    }
   }
 
   setVisible(visible: boolean) {

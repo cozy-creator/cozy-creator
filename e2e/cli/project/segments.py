@@ -10,15 +10,16 @@ segment after the first starts (`seams`, se-130), and it takes a pickup, as H3 d
 renders every segment again."""
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from typing import Annotated
 
 import msgspec
 import numpy as np
-from cozy_runtime.author import App, Context, Outputs, Telemetry
+from cozy_runtime.author import App, Context, Outputs, Telemetry, call
 from cozy_runtime.fields import Audio, Image, Pickup, Prompt, Range, Total, Video
-from cozy_runtime.media import DecodedAudioChunk, DecodedAudioFormat, DecodedMediaHeader, DecodedVideoFormat, DecodedVideoFrame, VideoFile
+from cozy_runtime.media import (DecodedAudioChunk, DecodedAudioFormat, DecodedMediaEvent, DecodedMediaHeader, DecodedVideoFormat, DecodedVideoFrame,
+                                VideoFile)
 
 app = App()
 FPS = 24
@@ -101,3 +102,67 @@ def segments(ctx: Context, payload: Segments, out: Outputs, tel: Telemetry) -> T
             return Take(video, [start * FPS for start in starts[1:]])
         out.publish("video", so_far, label=f"Segments 1-{index + 1} of {count}" if index else f"Segment 1 of {count}")
     raise AssertionError("a shot has at least one segment")
+
+
+class Joins(msgspec.Struct, kw_only=True):
+    seconds: tuple[int, ...] = (2, 3, 2)
+
+
+class Joined(msgspec.Struct):
+    """The same clips, each its own `save_video` (x264's B-frames and all), joined by `save_video_concat` and by `join_video`
+    (cl-1210), each under one tone a clip."""
+
+    concat: VideoFile
+    joined: VideoFile
+    pieces: list[VideoFile]
+
+
+def _pictures(index: int, seconds: int) -> np.ndarray:
+    """`seconds` of clip `index`'s colour with its bar crossing it, as `_clip` draws them."""
+    width, height = SIZE
+    frames = np.empty((seconds * FPS, height, width, 3), dtype=np.uint8)
+    frames[:] = HUES[index % len(HUES)]
+    for frame in range(seconds * FPS):
+        x = frame * 4 % width
+        frames[frame, :, x : x + 6] = 255
+    return frames
+
+
+class Clip(msgspec.Struct, kw_only=True):
+    index: int
+    seconds: int
+
+
+class Clipped(msgspec.Struct):
+    video: VideoFile
+
+
+@app.entrypoint(private=True, accelerator=False)
+def clip(payload: Clip, out: Outputs) -> Clipped:
+    """One clip, its own `save_video`: a child's result is a granted input of its parent, as each H3 segment's is."""
+    return Clipped(out.save_video(_pictures(payload.index, payload.seconds), fps=FPS))
+
+
+@app.entrypoint(accelerator=False)
+async def joins(ctx: Context, payload: Joins, out: Outputs, tel: Telemetry) -> Joined:
+    """Clips with B-frames, joined both ways: their pictures and each clip's tone must come out where they went in."""
+    pieces = [(await call(clip, Clip(index=index, seconds=seconds))).video for index, seconds in enumerate(payload.seconds)]
+
+    def tones(frames: Sequence[int]) -> Iterator[DecodedMediaEvent]:
+        yield DecodedMediaHeader(video=None, audio=SOUND)
+        start = 0
+        for index, count in enumerate(frames):
+            yield _tone(index, start, count * RATE // FPS)
+            start += count * RATE // FPS
+
+    concat = out.save_video_concat(pieces, tones).video
+    join, samples = out.join_video(SOUND), 0
+    for index, piece in enumerate(pieces):
+
+        def stretch(frames: int, index: int = index) -> Iterator[DecodedAudioChunk]:
+            nonlocal samples
+            yield _tone(index, samples, frames * RATE // FPS)
+            samples += frames * RATE // FPS
+
+        join.append(piece, stretch, last=index + 1 == len(pieces))
+    return Joined(concat, join.finish().video, pieces)

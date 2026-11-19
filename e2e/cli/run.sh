@@ -492,6 +492,7 @@ in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local >
 # measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
 WEB_1=(
   video
+  incremental-video
   render
   upload
   mention
@@ -578,6 +579,10 @@ WEB_ENGINES=(
   input
   fullscreen
   play-link
+)
+# The `@engines` cells WebKit's own media stack must pass (web.sh's lane `webkit`): AVFoundation on a Mac.
+WEB_WEBKIT=(
+  incremental-video
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
@@ -919,6 +924,7 @@ case $SHARD in
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
+  web-webkit) web_cells=(${WEB_WEBKIT[@]+"${WEB_WEBKIT[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;

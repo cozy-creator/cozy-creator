@@ -129,7 +129,7 @@ test('video', async ({ page, project, api, guards, cli }) => {
 
   await test.step('played in Focus as it lands: the take takes its place within 2 px and plays on', async () => {
     await region.locator('.here-side .take.making').first().click();
-    const glimpse = region.locator('.glimpse video');
+    const glimpse = region.locator('.glimpse video.shown');
     await expect(region.locator('.glimpse')).toHaveAttribute('data-label', 'Segment 1 of 2');
     // Played with a few seconds of segment 1 left as segment 2 ends: still playing when the take lands.
     await expect.poll(async () => {

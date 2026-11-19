@@ -100,6 +100,49 @@ pub(crate) struct Exports {
     seen: Mutex<HashMap<RunId, (u64, Instant)>>,
     /// Each exporter's task: a lock that goes on past a stalled one ends it, and with it its open files in the project.
     tasks: Mutex<HashMap<RunId, tokio::task::AbortHandle>>,
+    /// The bytes read of each output by attempts that didn't land (a link that dropped, a revision a newer one replaced), by run,
+    /// output and index: counted with its next landing (`Moved`, cl-1210). A restart of cozy forgets them.
+    unlanded: Mutex<HashMap<(RunId, String, u32), u64>>,
+}
+
+/// What one attempt at a revision moved (cl-1210): the bytes it read from its machine and the bytes it kept of the revision this
+/// computer held; and, when bytes in place failed the revision's digest and it was read whole, how many they were and how many of
+/// them were kept ones.
+struct Account {
+    /// What its reads that stopped moved.
+    read: AtomicU64,
+    /// The bytes in place as the read now going began; `IDLE` with none going.
+    began: AtomicU64,
+    reused: AtomicU64,
+    reread: AtomicU64,
+    reread_kept: AtomicU64,
+}
+
+const IDLE: u64 = u64::MAX;
+
+impl Account {
+    fn new() -> Self {
+        Self { read: AtomicU64::new(0), began: AtomicU64::new(IDLE), reused: AtomicU64::new(0), reread: AtomicU64::new(0), reread_kept: AtomicU64::new(0) }
+    }
+
+    /// A read begins with `in_place` bytes there, which `moved` counts on from.
+    fn begin(&self, in_place: u64) {
+        self.began.store(in_place, Ordering::Relaxed);
+    }
+
+    /// It stopped: what `moved` passed since it began was read.
+    fn end(&self, moved: &AtomicU64) {
+        let began = self.began.swap(IDLE, Ordering::Relaxed);
+        if began != IDLE {
+            self.read.fetch_add(moved.load(Ordering::Relaxed).saturating_sub(began), Ordering::Relaxed);
+        }
+    }
+
+    /// What it read, with a read still going, or dropped where it stood for a newer revision.
+    fn read(&self, moved: &AtomicU64) -> u64 {
+        let began = self.began.load(Ordering::Relaxed);
+        self.read.load(Ordering::Relaxed) + if began == IDLE { 0 } else { moved.load(Ordering::Relaxed).saturating_sub(began) }
+    }
 }
 
 /// What a run's results coming here are called, as its progress says them.
@@ -144,6 +187,7 @@ impl Calcifer {
     pub(super) fn retire_exports(&self, ids:&std::collections::HashSet<String>) {
         lock(&self.exports.appended).retain(|(id,..),_|!ids.contains(id.as_str()));
         lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.unlanded).retain(|(id,..),_|!ids.contains(id.as_str()));
         lock(&self.exports.arriving).retain(|id,_|!ids.contains(id.as_str()));
         lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
         lock(&self.exports.seen).retain(|id, _| !ids.contains(id.as_str()));
@@ -562,6 +606,7 @@ impl Calcifer {
             member: String::new(),
         };
         let moved = Arc::new(AtomicU64::new(0));
+        let account = Account::new();
         let key = (run.id.clone(), item.name.clone(), item.index);
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
         // Its project, whose read each write batch holds (cl-1060): a lock and a write never interleave.
@@ -571,16 +616,29 @@ impl Calcifer {
                 Failure::Again(format!("couldn't create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
-                fetch_tree(link, &target, item, &dest, &moved, &gate).await?
+                fetch_tree(link, &target, item, &dest, &moved, &account, &gate).await?
             } else {
                 let appended = (run.id.clone(), item_id(run.number, item), item.rev);
                 let appended = lock(&self.exports.appended).get(&appended).copied();
-                fetch_file(link, &target, item, &dest, appended, &moved, &gate).await?
+                fetch_file(link, &target, item, &dest, appended, &moved, &account, &gate).await?
             };
             let measured = self.measured(item, &staged).await;
             let _batch = batch(&gate).await.map_err(Failure::Again)?;
+            // What this landing moved, with what its attempts that didn't land read.
+            let landing = crate::store::Moved {
+                read: account.read(&moved) + lock(&self.exports.unlanded).get(&key).copied().unwrap_or(0),
+                reused: account.reused.load(Ordering::Relaxed),
+            };
+            // Bytes in place weren't this revision's, and it was read whole: a person sees it (`appended_from` said the kept ones were).
+            let reread = match (account.reread.load(Ordering::Relaxed), account.reread_kept.load(Ordering::Relaxed)) {
+                (0, _) => None,
+                (_, kept) if kept > 0 => Some(format!("{}: the {} kept from the revision before weren't this one's, so all {} were downloaded again",
+                    item.name, crate::bytes(kept as f64), crate::bytes(item.length as f64))),
+                (held, _) => Some(format!("{}: the {} downloaded before weren't this revision's, so all {} were downloaded again",
+                    item.name, crate::bytes(held as f64), crate::bytes(item.length as f64))),
+            };
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
-            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
+            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref(), landing, reread))?;
             remove(&suffixed(&dest, HELD));
             Ok(())
         };
@@ -630,6 +688,12 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        // Landed, its account is recorded; else what this attempt read waits for the landing that follows.
+        match (&done, account.read(&moved)) {
+            (Ok(()), _) => { lock(&self.exports.unlanded).remove(&key); }
+            (Err(_), 0) => {}
+            (Err(_), read) => *lock(&self.exports.unlanded).entry(key.clone()).or_default() += read,
+        }
         if done.is_ok() { self.landed_progress(&run.id); }
         if done.is_ok()
             && let Some(machine) = &run.machine
@@ -723,6 +787,8 @@ impl Calcifer {
         staged: &Path,
         dest: &Path,
         measured: Option<&crate::project::Facts>,
+        moved: crate::store::Moved,
+        reread: Option<String>,
     ) -> Result<(), Failure> {
         let began = Instant::now();
         let old = suffixed(dest, ".old");
@@ -776,10 +842,14 @@ impl Calcifer {
                 height: facts.height as u32,
                 duration_ms: facts.lasts_ms(),
             });
-            let mut events = self.with_run_store(id, |store| store.exported(id, name, index, rev, &kept, measured))?;
+            let mut events = self.with_run_store(id, |store| store.exported(id, name, index, rev, &kept, measured, moved))?;
             if let Some(said) = unlisted {
                 export_warning(run, &said);
                 events.extend(self.with_run_store(id, |store| store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said }))?);
+            }
+            if let Some(said) = reread {
+                export_warning(run, &said);
+                events.extend(self.with_run_store(id, |store| store.warned(id, &::api::calcifer::Warning { code: "output_reread".to_owned(), message: said }))?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
@@ -1019,6 +1089,7 @@ async fn batch(gate: &Option<crate::project::RunOwner>) -> Result<Option<tokio::
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
 /// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_file(
     link: &Link,
     target: &machine_client::OutputAt,
@@ -1026,20 +1097,24 @@ async fn fetch_file(
     dest: &Path,
     appended: Option<u64>,
     moved: &Arc<AtomicU64>,
+    account: &Account,
     gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
     let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
     let mut from = appended.filter(|_| follows).unwrap_or(0);
+    // The revision before, where it is now: a project keeps it in its `files/` once it landed (`project::landed`), and nothing of it
+    // is left at `dest`. Read from there, every revision of a project's run was downloaded whole (cl-1210).
+    let before = item.path.as_deref().and_then(|path| crate::project::vault::resolve_path(path).ok()).unwrap_or_else(|| dest.to_owned());
     loop {
         let prepare_began = Instant::now();
         let prepared = blocking({
-            let (part, dest, length, digest) = (part.clone(), dest.to_owned(), item.length, item.digest.clone());
-            move || prepare(&part, &dest, from, length, &digest)
+            let (part, before, length, digest) = (part.clone(), before.clone(), item.length, item.digest.clone());
+            move || prepare(&part, &before, from, length, &digest)
         })
         .await;
-        let held = match prepared {
-            Ok(held) => held,
+        let (held, copied) = match prepared {
+            Ok(prepared) => prepared,
             Err(e) if from == 0 => {
                 return Err(Failure::Again(format!(
                     "couldn't write {}: {e}",
@@ -1056,12 +1131,21 @@ async fn fetch_file(
             phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
             elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
         moved.store(in_place, Ordering::Relaxed);
-        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved, gate).await?;
+        account.begin(in_place);
+        let fetched = fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved, gate).await;
+        account.end(moved);
+        fetched?;
         match check(&part, item.length, &item.digest).await {
-            Ok(()) => return Ok(part),
-            // What was in place before (an earlier attempt's, the revision this one extends) was
-            // not this revision's: read whole once more.
+            // What it kept of the revision this computer held: none of it read here.
+            Ok(()) => {
+                account.reused.store(copied, Ordering::Relaxed);
+                return Ok(part);
+            }
+            // What was in place before (an earlier attempt's, the bytes kept from the revision
+            // before, `appended_from`) was not this revision's: read whole once more, and its run says so (`land`).
             Err(Failure::Wrong(_)) if in_place > 0 => {
+                account.reread.store(in_place, Ordering::Relaxed);
+                account.reread_kept.store(copied, Ordering::Relaxed);
                 remove(&journal);
                 from = 0;
             }
@@ -1081,8 +1165,11 @@ async fn fetch_tree(
     item: &OutputRow,
     dest: &Path,
     moved: &Arc<AtomicU64>,
+    account: &Account,
     gate: &Option<crate::project::RunOwner>,
 ) -> Result<PathBuf, Failure> {
+    // Nothing of a folder is kept from the revision before: all it moves is read.
+    account.begin(moved.load(Ordering::Relaxed));
     let (stage, manifest) = (suffixed(dest, ".part"), suffixed(dest, ".manifest.part"));
     let unwritable =
         |e: std::io::Error| Failure::Again(format!("couldn't write {}: {e}", stage.display()));
@@ -1126,6 +1213,7 @@ async fn fetch_tree(
         check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
+    account.end(moved);
     Ok(stage)
 }
 
@@ -1141,10 +1229,10 @@ async fn blocking<T: Send + 'static>(
 /// in place, a line as each range stops.
 const HELD: &str = ".part.held";
 
-/// The `part` this revision's `length` bytes are read into, and the stretches of it in place: an
-/// earlier attempt's for the same bytes kept as it left them (its `.held` names `digest`), else a
-/// fresh one, its first `from` copied from `dest`.
-fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<Vec<(u64, u64)>> {
+/// The `part` this revision's `length` bytes are read into, the stretches of it in place, and how many of its first bytes were
+/// copied from `before`, the file of the revision before it (its `.held` says them, `kept <n>`, a line no stretch is): an earlier
+/// attempt's for the same bytes kept as it left them (its `.held` names `digest`), else a fresh one, its first `from` copied.
+fn prepare(part: &Path, before: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<(Vec<(u64, u64)>, u64)> {
     let journal = suffixed(part, ".held");
     let named = format!("{digest} {length}");
     let kept = std::fs::read_to_string(&journal).ok().filter(|kept| kept.lines().next() == Some(named.as_str()));
@@ -1153,12 +1241,13 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> st
             let (start, end) = line.split_once(' ')?;
             Some((start.parse().ok()?, end.parse::<u64>().ok()?.min(length)))
         });
-        return Ok(merged(stretches.collect()));
+        let copied = kept.lines().skip(1).find_map(|line| line.strip_prefix("kept ")?.parse::<u64>().ok()).unwrap_or(0);
+        return Ok((merged(stretches.collect()), copied));
     }
     let _ = std::fs::remove_file(part);
     let mut file = std::fs::File::create(part)?;
     if from > 0 {
-        let copied = std::io::copy(&mut std::fs::File::open(dest)?.take(from), &mut file)?;
+        let copied = std::io::copy(&mut std::fs::File::open(before)?.take(from), &mut file)?;
         if copied != from {
             return Err(std::io::Error::other(
                 "the file is shorter than what extends it",
@@ -1167,9 +1256,9 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> st
     }
     file.set_len(length)?;
     let held = if from > 0 { vec![(0, from)] } else { vec![] };
-    let lines: String = held.iter().map(|(start, end)| format!("{start} {end}\n")).collect();
+    let lines: String = held.iter().map(|(start, end)| format!("{start} {end}\nkept {end}\n")).collect();
     std::fs::write(&journal, format!("{named}\n{lines}"))?;
-    Ok(held)
+    Ok((held, from))
 }
 
 /// `stretches` sorted, those that touch as one.

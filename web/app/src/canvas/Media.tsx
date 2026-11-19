@@ -24,6 +24,7 @@ import type { VideoPlayback } from "./timeline/Player"
 import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
 import { UNSUPPORTED } from "./Unsupported"
+import { GrowingVideo, handoff, wasLetGo } from "./GrowingVideo"
 
 const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
@@ -342,6 +343,8 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
   }
   if (shown?.field !== "video" && shown?.field !== "audio") return null
   if (!shown.absent) return FILE.test(shown.path) ? { path: shown.path } : null
+  // Made and on its way here: it plays on what its render showed, whose last revision it is, until it's here (cl-1210).
+  if (view.glimpse?.media === "video" && view.glimpse.number === shown.run) return null
   return shown.machine && shown.run ? { run: shown.run, output: shown.output } : null
 }
 
@@ -377,7 +380,7 @@ export function viewable(view: ElementView | undefined): boolean {
 /** Played on click, or at once with `auto`: a file Calcifer serves, by its API path, played from this page's memory (cl-1215), or one straight from a machine. */
 /** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own, and a file opens at once to show
  *  its own frame at its own size, not the poster's small one stretched over it (cl-1080; Paul, 11-16). */
-export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
+export function Player({ field, path, machine, seek, auto, from, takeOver, onTakenOver, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; takeOver?: { current: HTMLVideoElement | null }; onTakenOver?(): void; onTime?(seconds: number): void; controller?: VideoPlayback }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -388,6 +391,11 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
   const shows = Boolean(controller) && path !== undefined
   // Opened only to show its frame, until a play or a seek is asked.
   const onlyShown = useRef(shows && !auto)
+  // What it takes over from as it opens: its render's glimpse, playing or paused where it is (cl-1210).
+  const over = useRef({ from: takeOver, told: onTakenOver })
+  over.current = { from: takeOver, told: onTakenOver }
+  // Taking over, it isn't seen: its glimpse shows on under it until it has its frame where the glimpse is.
+  const [taking, setTaking] = useState(false)
   const [drawn, setDrawn] = useState(false)
 
   useEffect(() => () => stopRef.current(), [])
@@ -462,10 +470,39 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     // Every video in every tab plays at once: a file's bytes are in this page's memory, holding no connection to Calcifer (cl-1215; Paul,
     // 11-18: "why can't I have all 3 videos playing at the same time?").
     void (path !== undefined ? client.transport.play(path, el) : fromMachine(client, machine!, el, waiting.signal, failed))
-      .then((opened) => {
+      .then(async (opened) => {
         if (waiting.signal.aborted) return opened.stop()
         playback = opened
         setState("playing")
+        // It opens where its glimpse is and takes its place once its frame is there, playing on if it was: nothing blanks. The glimpse's
+        // element is read now, and again each time: it is whichever revision it shows, and a newer one can take that one's place under
+        // this takeover (its last revision and its take land together), which then goes on from the newer one.
+        let was: { at: number; playing: boolean } | null = null
+        for (let tries = 0; tries < 4 && el instanceof HTMLVideoElement; tries++) {
+          const { from, told } = over.current
+          const glimpsed = from?.current
+          if (!glimpsed?.isConnected || wasLetGo(glimpsed)) break
+          was = { at: glimpsed.currentTime, playing: !glimpsed.paused && !glimpsed.ended }
+          wanted.current = null
+          setTaking(true)
+          const took = await handoff(glimpsed, el, waiting.signal)
+          // Stopped meanwhile: it touches nothing more.
+          if (waiting.signal.aborted) return
+          if (!took) continue
+          setTaking(false)
+          controller?.attach(el)
+          told?.()
+          return
+        }
+        if (was) {
+          // Its glimpse went with nothing in its place: on from where it last was.
+          setTaking(false)
+          el.currentTime = was.at
+          controller?.attach(el)
+          if (was.playing) el.play().catch(() => {})
+          over.current.told?.()
+          return
+        }
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
         // Opened by a scrub, or to show its frame, it shows that frame and waits.
@@ -492,7 +529,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     <>
       <Tag
         ref={element}
-        className={`live canvas-control ${field}`}
+        className={`live canvas-control ${field} ${taking ? "taking" : ""}`}
         controls={!controller}
         playsInline={field === "video"}
         preload={shows ? "auto" : "none"}
@@ -918,7 +955,15 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
-  const glimpsed = Boolean(glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
+  // What its render made so far shows until its take is here and, open, its player has taken over from it at the same playhead
+  // (cl-1210; Paul, 11-18: "they suddenly disappear"): the take is the render's last revision.
+  const continues = Boolean(glimpse && shown && glimpse.media === "video" && shown.run === glimpse.number)
+  const glimpsed = Boolean(glimpse && (!shown ? view.viewed === undefined && (making || asset?.failure) : continues && (shown.absent || open)))
+  const glimpseElement = useRef<HTMLVideoElement | null>(null)
+  // Its take here, at rest: what it showed goes, the take's own poster in its place.
+  useEffect(() => {
+    if (continues && here && !open) store.patch(name, { glimpse: undefined })
+  }, [continues, here, open, store, name])
   // The take its glimpse was playing as, opened, landing: its player plays on from there.
   const playhead = useRef<Playhead | null>(null)
   const playsOn = open && !glimpsed && source && "path" in source && here?.run !== undefined && playhead.current?.run === here.run ? playhead.current.at : undefined
@@ -965,7 +1010,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
           <Icon name={glyph} />
         </span>
       )}
-      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} controller={focused && glimpse.media === "video" ? store.playbackOf(name, FPS) : undefined} />}
+      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making && !continues} open={Boolean(view.here)} playhead={playhead} element={glimpseElement} held={Boolean(here)} controller={focused && glimpse.media === "video" ? store.playbackOf(name, FPS) : undefined} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
@@ -991,6 +1036,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
           onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
           auto={playsOn !== undefined}
           from={playsOn}
+          takeOver={glimpsed ? glimpseElement : undefined}
+          onTakenOver={() => {
+            playhead.current = null
+            store.patch(name, { glimpse: undefined })
+          }}
           controller={focused && field === "video" ? store.playbackOf(name, shown?.fps ?? 24) : undefined}
         />
       )}
@@ -1006,101 +1056,91 @@ interface Playhead {
 }
 
 /**
- * What a render has made so far, its newest revision here, over the box until its take lands, and kept dimmed when it fails. A video (a
- * shot's segments 1..k, joined) plays silent and looping at rest; opened, beside its beats or not, it waits with its controls, to play with
- * its sound and seek. A newer revision (1..k+1) loads where it was, playing on if it was.
+ * What a render has made so far, its newest revision here, over the box until its take is here (open: until the take's player took over
+ * from it), and kept dimmed when it fails. A video (a shot's segments 1..k, joined) plays silent and looping at rest; opened, beside its
+ * beats or not, it waits with its controls, to play with its sound and seek. A newer revision (1..k+1) takes over where it was, playing on
+ * if it was, with nothing blank between (cl-1210).
  */
 /** Where each run's glimpse last was, by its run and the revision it played: a newer revision of it starts there, however its box redrew. */
 const glimpsedAt = new Map<string, { rev: number; at: number; playing: boolean }>()
 
-function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null }; controller?: VideoPlayback }) {
+function Glimpse({ glimpse, failed, open, playhead, element, held, controller }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null }; element: { current: HTMLVideoElement | null }; held: boolean; controller?: VideoPlayback }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
-  // A video revision's bytes in the page's memory (cl-1215); the one before let go once this one is drawn in its place.
-  const [held, setHeld] = useState<{ release(): void } | null>(null)
-  useEffect(() => () => held?.release(), [held])
-  const element = useRef<HTMLVideoElement>(null)
-  const resume = useRef<{ at: number; playing: boolean } | null>(null)
-  // The revision its element plays: the newest may still be on its way.
-  const playing = useRef(0)
+  const [path, setPath] = useState<string>()
+  // The element showing it: each newer revision's takes over from the last at its playhead (cl-1210).
+  const [shown, setShown] = useState<HTMLVideoElement | null>(null)
   const key = `${store.projectId ?? ""}\0${glimpse.run}`
+  // Its take here, it shows what it shows until the take's player takes over: no revision swaps in under that handoff.
+  const holding = useRef(held)
+  holding.current = held
   useEffect(() => {
-    if (!store.projectId) { setSrc(undefined); return }
+    if (!store.projectId) { setSrc(undefined); setPath(undefined); return }
+    if (holding.current && element.current) return
     let live = true
-    const path = client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)
-    void (glimpse.media === "video" ? client.transport.media(path) : client.transport.src(path).then((url) => ({ url, release() {} }))).then(({ url, release }) => {
-      if (!live) return release()
-      // Where it is now, else where it last was: its element redrawn, or a revision before still on its way.
-      const el = element.current
-      const was = glimpsedAt.get(key)
-      resume.current = el?.currentSrc && !resume.current ? { at: el.currentTime, playing: !el.paused }
-        : was && was.rev < glimpse.rev ? { at: was.at, playing: was.playing } : resume.current
-      playing.current = glimpse.rev
-      setHeld({ release })
-      setSrc(url)
-    }, () => {})
+    const at = client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)
+    // A video's revisions go to GrowingVideo by their path: it holds each one's bytes (cl-1215) before that one takes over.
+    if (glimpse.media === "video") { setPath(at); return }
+    void client.transport.src(at).then((url) => live && setSrc(url))
     return () => {
       live = false
     }
-  }, [client, store.projectId, key, glimpse.run, glimpse.output, glimpse.index, glimpse.rev, glimpse.media])
-  // Its new revision starts where the last one was: set before its metadata, it is never read at 0 s in between.
-  useLayoutEffect(() => {
-    const el = element.current
-    if (el && src && resume.current) el.currentTime = resume.current.at
-  }, [src])
+  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev, glimpse.media, element])
+  const opened = useRef(open)
+  opened.current = open
+  const onShown = (el: HTMLVideoElement | null) => {
+    const first = !element.current
+    element.current = el
+    setShown(el)
+    if (!el || !first) return
+    // Its box redrawn: where it last was, playing if it was; at rest it plays on its own.
+    const was = glimpsedAt.get(key)
+    if (was) el.currentTime = Math.min(was.at, Number.isFinite(el.duration) ? el.duration : was.at)
+    el.muted = !opened.current
+    if (!opened.current || was?.playing) void el.play().catch(() => {})
+    else el.pause()
+  }
+  useEffect(() => () => { element.current = null }, [element])
   useEffect(() => {
     const el = element.current
     if (!el) return
     el.muted = !open
     if (open) el.pause()
     else void el.play().catch(() => {})
-  }, [open])
-  // In Focus it plays on the one transport and track a finished take has (cl-965; Paul, 11-12), not the browser's controls.
-  const drawn = Boolean(src)
+  }, [open, element])
+  // In Focus it plays on the one transport and track a finished take has (cl-965; Paul, 11-12), not the browser's controls: the element
+  // shown, each revision's in turn.
   useEffect(() => {
-    if (!controller || !drawn) return
-    controller.attach(element.current)
-    return () => {
-      controller.attach(null)
-    }
-  }, [controller, drawn])
+    if (!controller || !shown) return
+    controller.attach(shown)
+    return () => controller.release(shown)
+  }, [controller, shown])
   const heard = (el: HTMLVideoElement) => {
-    // While a newer revision loads, its element is paused at 0 s: it is where and as it was, and a take landing then plays on from there.
-    const now = resume.current ?? { at: el.currentTime, playing: !el.paused }
-    playhead.current = open && now.playing ? { run: glimpse.number, at: now.at } : null
-    if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
+    if (wasLetGo(el)) return
+    playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+    if (el.readyState >= 1) glimpsedAt.set(key, { rev: glimpse.rev, at: el.currentTime, playing: !el.paused })
   }
   return (
     <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""} data-rev={glimpse.rev}>
-      {src &&
-        (glimpse.media === "video" ? (
-          <video
-            ref={element}
-            src={src}
+      {glimpse.media === "video" ? (
+        path && (
+          <GrowingVideo
+            path={path}
+            media={client.transport.media}
             className={open ? "canvas-control" : undefined}
             muted={!open}
             loop={!open}
             autoPlay={!open}
             controls={open && !controller}
+            onShown={onShown}
+            onTime={heard}
             onClick={open && controller ? (event) => { event.stopPropagation(); controller.toggle() } : undefined}
-            playsInline
-            preload="auto"
-            onLoadedMetadata={(event) => {
-              const was = resume.current
-              resume.current = null
-              if (!was) return
-              const el = event.currentTarget
-              el.currentTime = Math.min(was.at, el.duration || was.at)
-              if (was.playing) void el.play().catch(() => {})
-            }}
-            onTimeUpdate={(event) => heard(event.currentTarget)}
-            onPause={(event) => heard(event.currentTarget)}
-            onSeeked={(event) => heard(event.currentTarget)}
           />
-        ) : (
-          <img src={src} alt="" draggable={false} />
-        ))}
+        )
+      ) : (
+        src && <img src={src} alt="" draggable={false} />
+      )}
       {glimpse.label && <span className="glimpse-label">{glimpse.label}</span>}
     </div>
   )

@@ -1186,8 +1186,8 @@ pub(crate) struct Log {
     after: u64,
     revisions: HashMap<(String, u32), u64>,
     products: Vec<v1::Product>,
-    /// Each item's latest revision as parts (digest, length): a revision whose parts extend
-    /// them appends.
+    /// Each item's latest revision as parts (digest, length): a revision that starts with some of
+    /// them keeps those bytes.
     parts: HashMap<(String, u32), Parts>,
     /// How much of each text output's words it heard (bytes), and how many deltas (xs-209).
     heard: BTreeMap<(String, u32), usize>,
@@ -1293,13 +1293,13 @@ impl Log {
                 let previous = self
                     .parts
                     .insert((product.output.clone(), index), parts.clone());
+                // The leading parts both revisions hold: a growing video keeps all of its last
+                // revision but its index (cl-1210), an appended one all of it.
                 let appended_from = previous
-                    .filter(|before| {
-                        !before.is_empty()
-                            && before.len() <= parts.len()
-                            && parts.starts_with(before)
+                    .map(|before| {
+                        before.iter().zip(&parts).take_while(|(held, new)| held == new).map(|((_, length), _)| length).sum::<u64>()
                     })
-                    .map(|before| before.iter().map(|(_, length)| length).sum());
+                    .filter(|&kept| kept > 0);
                 let converted = v1::Product {
                     output: product.output,
                     checkpoint: product.checkpoint,

@@ -998,7 +998,7 @@ components:
         appended_from:
           type: [integer, 'null']
           format: int64
-          description: These bytes extend the previous revision's, from here.
+          description: These bytes keep the previous revision's up to here; the rest are new.
           minimum: 0
         checkpoint: {oneOf: [{$ref: '#/components/schemas/CheckpointRef'}, {type: 'null'}]}
         digest: {type: string, description: '`sha256:<hex>` of these bytes.'}

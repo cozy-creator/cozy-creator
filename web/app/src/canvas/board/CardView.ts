@@ -1,9 +1,9 @@
 import { Container, Graphics, Rectangle, Sprite, Texture, TilingSprite } from "pixi.js"
 import type { Box } from "../graph"
-import { BODY, FAR, HEAD, nameTopOf, SMALL, SUB_ROW, TITLE, TRASH_TOP, UNDER, UNTOOL, hexOf } from "../shown"
+import { BODY, FAR, HEAD, nameTopOf, SMALL, SUB_ROW, TITLE, TRASH_TOP, UNDER, UNTOOL, hexOf, shownOf } from "../shown"
 import { chipWords, withMentions } from "../text"
 import { pictureBox, type Presentation, type SceneNode, type ScenePicture } from "./presentation"
-import type { LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
+import type { GlimpseHandle, LatentHandle, Media, MediaHandle, MediaSource, VideoHandle } from "./Media"
 import { ellipsis, Label, type LabelStyle, width, wrap } from "./text"
 
 export type Part = "body" | "title" | "delete" | "cancel" | "corner" | "untool" | "dot" | "waits"
@@ -54,6 +54,7 @@ export class CardView {
   private checker?: TilingSprite
   private latent?: { run: number; handle: LatentHandle; sprite: Sprite }
   private video?: { sha: string; handle: VideoHandle; sprite: Sprite }
+  private glimpse?: { run: string; rev: number; landed: boolean; handle: GlimpseHandle; sprite: Sprite }
   private signature = ""
   private inputs: unknown[] = []
   private name = ""
@@ -87,6 +88,7 @@ export class CardView {
   }
   get latentShown() { const latent = this.latent; return latent?.handle.texture ? { width: latent.handle.texture.width, opacity: latent.sprite.alpha } : null }
   get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture), muted: true, loop: true } : null }
+  get glimpseShown() { const glimpse = this.glimpse; return glimpse ? { rev: glimpse.rev, landed: glimpse.landed, ready: Boolean(glimpse.handle.texture) } : null }
 
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
     this.input = { node, show, state, env }
@@ -201,6 +203,7 @@ export class CardView {
     for (const [key, text] of this.texts) if (!used.has(key)) { text.view.visible = false; this.drawn.full.delete(key) }
     for (const [key, picture] of this.pictures) if (!pictures.has(key)) this.dropPicture(key, picture)
     this.syncLatent(env)
+    this.syncGlimpse(env)
     this.syncVideo(state, env)
   }
 
@@ -502,6 +505,31 @@ export class CardView {
     }
   }
 
+  /** What its render has made so far plays at rest, silent, as one growing video (cl-1210; Paul, 11-18: "they suddenly disappear"): each newer
+   *  revision takes over at the playhead, and its take, once here, plays on from there to its end over its poster. Only while the box shows
+   *  no other take: one shown stays as it was (cl-936). */
+  private syncGlimpse(env: CardEnv) {
+    const view = this.input!.node.view, glimpse = view.glimpse, shown = shownOf(view)
+    const own = glimpse?.media === "video" && view.viewed === undefined && (!shown || shown.run === glimpse.number)
+    const wanted = own && glimpse && (!shown || shown.absent || this.glimpse?.run === glimpse.run) ? glimpse : undefined
+    if (this.glimpse && (!wanted || this.glimpse.run !== wanted.run || this.glimpse.handle.ended)) {
+      this.glimpse.handle.release(); this.glimpse.sprite.destroy(); this.glimpse = undefined
+    }
+    if (wanted && !this.glimpse && (!shown || shown.absent)) {
+      const sprite = new Sprite({ texture: Texture.EMPTY, eventMode: "none" })
+      this.pixels.addChild(sprite)
+      const held = { run: wanted.run, rev: wanted.rev, landed: false, sprite, handle: undefined as unknown as GlimpseHandle }
+      held.handle = env.media.glimpse({ kind: "output", run: wanted.run, output: wanted.output, index: wanted.index, rev: wanted.rev },
+        () => { this.fitOver(held.sprite, held.handle.texture); env.invalidate() })
+      this.glimpse = held
+    }
+    const held = this.glimpse
+    if (!held || !wanted) return
+    if (wanted.rev !== held.rev) { held.rev = wanted.rev; held.handle.show(wanted.rev) }
+    if (shown && !shown.absent && shown.path && !held.landed) { held.landed = true; held.handle.land(shown.path) }
+    this.fitOver(held.sprite, held.handle.texture)
+  }
+
   /** A video's preview plays over its poster on hover; the poster stays until its first frame. */
   private syncVideo(state: CardState, env: CardEnv) {
     const { node, show } = this.input!
@@ -652,8 +680,8 @@ export class CardView {
 
   destroy() {
     for (const [key, picture] of [...this.pictures]) this.dropPicture(key, picture)
-    this.latent?.handle.release(); this.video?.handle.release()
-    this.latent = undefined; this.video = undefined
+    this.latent?.handle.release(); this.video?.handle.release(); this.glimpse?.handle.release()
+    this.latent = undefined; this.video = undefined; this.glimpse = undefined
     this.root.destroy({ children: true })
   }
 }
