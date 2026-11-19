@@ -33,6 +33,9 @@ fi
 # reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
 FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
 [[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
+# The quiet window (`quiet_s`, 60 or more): a step with no output that long is judged stuck (`step`).
+QUIET_S=$(param quiet_s 900)
+[[ $QUIET_S =~ ^[0-9]+$ ]] && [ "$QUIET_S" -ge 60 ] || fail "quiet_s $QUIET_S"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 # A Runtime or TensorFS a session is asked for by version is the build of its own tag (tag_built), checked at $0.
@@ -145,7 +148,7 @@ others_busy() {
   done
 }
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
-# stops growing for 15 min cancels it.
+# stops growing for the quiet window (`quiet_s`, 15 min) cancels it, unless its pod's free disk moved meanwhile.
 # A run belongs to this session's working-directory project.
 RUN_PROJECT=$OUT/project
 # A folder is a project once `cozy new` made it one (0.24: `status` reads one, it makes none).
@@ -217,7 +220,8 @@ step() {
   # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
   local kinds=''
   if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
-  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow=''
+  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow='' free='' was=''
+  local look=$((QUIET_S / 2 / 30 * 30)) window="$((QUIET_S / 60)) min"; [ $((QUIET_S % 60)) = 0 ] || window="$QUIET_S s"
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1))
     if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
@@ -230,8 +234,17 @@ step() {
     fi
     [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")
-    if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
-    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
+    if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; was=''; fi
+    # Quiet is not stuck (a run fails only on evidence of a hang): `model install` prints nothing while it saves
+    # (44272502858 killed a 105 GiB pull at 72 GiB), so bytes moving on the pod decide: its free disk (TensorFS takes each
+    # chunk's room, 64 MiB at most, as its fetch starts), read half the window (QUIET_S) into the quiet, then each window.
+    # Its column is squeezed: the key column widens with the listing's longest key (a download's).
+    if [ -n "$NAME" ] && { [ "$still" -ge "$QUIET_S" ] || { [ "$still" = "$look" ] && [ -z "$was" ]; }; }; then
+      free=$(cozy machine show "$NAME" 2> /dev/null | sed -nE 's/^disk free +/disk free /p')
+      if [ "$still" = "$look" ]; then was=$free
+      elif [ -n "$free" ] && [ "$free" != "$was" ]; then say "$n: quiet $window, and its pod moved ($was, now $free)"; still=0; was=$free; fi
+    fi
+    [ "$still" -lt "$QUIET_S" ] || { kill "$p"; say "$n: no output for $window${was:+, the pod still at $was}"; return 124; }
   done
   [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
   wait "$p"; local c=$?
