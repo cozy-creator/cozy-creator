@@ -397,3 +397,11 @@ on_this() {
   sed "s/^/$1: /" "$OUT/$1/results.txt" >> "$R" 2> /dev/null
   [ "$rc" = 0 ] || { say "FAIL: $1 on $NAME"; RC=1; }
 }
+
+# host_bound <name>: "<cores> <GiB>" on the pod, the tightest memory limit on an executor's cgroup path (else TensorD's), as
+# TensorD's `host_memory::read().bound` reads it, or MemTotal; empty when ssh does not answer. host_use <name>: that bound,
+# the container's peak and current charge and the executors' summed RSS (podmem.sh, one copy for every session).
+PODMEM=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/podmem.sh
+podmem() { timeout 90 cozy machine ssh "$1" -- "echo $(base64 -w0 "$PODMEM") | base64 -d | sh -s -- $2" < /dev/null 2> /dev/null | grep -v '^Warning: Permanently added' | tail -1; }
+host_bound() { podmem "$1" bound | grep -E '^[0-9]+ [0-9]+$'; }
+host_use() { podmem "$1" use | grep '^bound '; }

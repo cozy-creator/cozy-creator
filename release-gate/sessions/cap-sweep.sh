@@ -134,14 +134,12 @@ MINC=$(param min_cores 0) MINR=$(param min_ram_gib 0) TRIES=$(param host_tries 3
 for try in $(seq "$TRIES"); do
   hw=''
   for _ in 1 2 3 4 5 6; do
-    hw=$(timeout 90 cozy machine ssh "$NAME" 'echo "$(nproc) $(awk "/^MemTotal/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) $(cat /sys/fs/cgroup/memory.max 2> /dev/null || echo max)"' < /dev/null 2> /dev/null |
-      grep -E '^[0-9]+ [0-9]+ ' | tail -1)
+    hw=$(host_bound "$NAME")
     [ -z "$hw" ] || break; sleep 10
   done
-  read -r cores ram cg <<< "${hw:-0 0 max}"
-  [[ $cg =~ ^[0-9]+$ ]] && [ $((cg >> 30)) -lt "$ram" ] && ram=$((cg >> 30))
+  read -r cores ram <<< "${hw:-0 0}"
   HOST_SIZE="$cores $ram"
-  say "host $NAME: $cores cores, $ram GiB of RAM for the container (asked at least $MINC cores, $MINR GiB)"
+  say "host $NAME: $cores cores, $ram GiB under the tightest limit on TensorD's path (asked at least $MINC cores, $MINR GiB)"
   if [ "$cores" -ge "$MINC" ] && [ "$ram" -ge "$MINR" ]; then break; fi
   [ "$try" -lt "$TRIES" ] || fail "no host with $MINC cores and $MINR GiB in $TRIES rentals"
   timeout 120 cozy machine end "$NAME" -y > "$OUT/end-small-$try.txt" 2>&1
@@ -403,6 +401,7 @@ run() {
   mem=$(pod 'tail -n +"$(cat /var/tmp/cap-sweep.mark)" /var/tmp/ab-gpu.log | awk "\$2 == \"pid\" && \$0 !~ /ab-vram/ {if (\$4 + 0 > p) p = \$4 + 0} \$2 == \"host\" {if (b == \"\") b = \$3; if (\$3 + 0 > h) h = \$3 + 0; if (\$4 + 0 > n) n = \$4 + 0; split(\$1, c, \":\"); s = c[1] * 3600 + c[2] * 60 + c[3]; if (l != \"\" && s > l && s - l < 30) {r += \$5 * (s - l); x += \$6 * (s - l)}; l = s} END {printf \"%d %d %d %d %.1f %.1f\", p, (h - b) / 1048576, h / 1048576, n / 1048576, r / 1000, x / 1000}"')
   read -r procmib hostgrow hostpeak hostsys h2d d2h <<< "${mem:-? ? ? ? ? ?}"
   echo "$procmib $hostgrow $hostpeak $hostsys $h2d $d2h" > "$OUT/$name.mem"
+  host_use "$NAME" > "$OUT/$name.hostuse"
   mg=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats.working_allocator // empty)
     | if length == 0 then "none" else "on \(map(.managed_on // 0) | max), peak \(map(.managed_peak // 0) | max / 1048576 | floor) MiB, past the card \(map(.managed_over_peak // 0) | max / 1048576 | floor) MiB, forced \(map(.managed_forced // 0) | add), host refusals \(map(.managed_host_refusals // 0) | add), rebinds \(map(.managed_rebinds // 0) | add) (\(map(.managed_rebound_bytes // 0) | add / 1073741824 | floor) GiB), discards \(map(.managed_discards // 0) | add) (\(map(.managed_discarded_bytes // 0) | add / 1073741824 | floor) GiB), ooms \(map(.ooms // 0) | add)" end' "$OUT/$name.json" 2> /dev/null)
   ceil=$(jq -r '[.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.ceiling.h2d_gbps // empty) | max // "?"' "$OUT/$name.json" 2> /dev/null)
@@ -435,7 +434,7 @@ run() {
   RUNS[$name]=${N:-}; DONE[$name]=$st
   ran=$((ran + 1))
   case $verdict in completed) completed=$((completed + 1)) ;; UNFINISHED) unfinished=$((unfinished + 1)) ;; *) failed=$((failed + 1)) ;; esac
-  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | host ${HOST_SIZE% *} cores ${HOST_SIZE#* } GiB | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB; the link measured ${ceil:-?} GB/s in) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
+  say "CELL $name | $budget | run ${N:-none} | $verdict (exit $code) | total ${total:-?} s, execution ${ex:-?} s | ${steps:-no steps} | peak ${peak:-?} GiB by its record, $smi MiB on the card by nvidia-smi | host ${HOST_SIZE% *} cores ${HOST_SIZE#* } GiB, $(cat "$OUT/$name.hostuse" 2> /dev/null) | process ${procmib:-?} MiB on the card | host +${hostgrow:-?} MiB over the cell, peak ${hostpeak:-?} MiB in the container, ${hostsys:-?} MiB on the machine | link ${h2d:-?} GB in, ${d2h:-?} GB out (weight fills ${fills:-?} GB; the link measured ${ceil:-?} GB/s in) | managed ${mg:-?} | memoized ${memo:-?} | throttled ${throttled:-?} | at ${stood:-?} | $(printf '%s' "$why" | head -c 900)"
   # The switch must have taken: a managed cell whose record says it was off measures nothing this session is for.
   if [ "$name" = "$k" ] && [ "$MANAGED" = true ] && [[ ${mg:-none} == "on 0,"* ]]; then fail "$name ran with managed working memory off: $mg"; fi
   publish "$name" "$verdict" "$why"
