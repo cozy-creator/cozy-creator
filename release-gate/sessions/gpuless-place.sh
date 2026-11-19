@@ -7,13 +7,19 @@
 #     and none of its weights land here;
 #   - stand-g joins the project: a stand-in that says only its Status (e2e/cli/fakemachine.py), one RTX 4090, so whatever is sent
 #     there is refused. The waiting render goes there by itself (its run's POST in stand-g's log), and still nothing of it lands here.
-#   - With qwen-image-2 in `local` (cl-1286): Qwen is the checkout's, and its `estimate=` formula times it on stand-g from its rows
-#     there (`placed.formula_ms`, basis reference); its interface as cozy reads it is kept (qwen.describe.json) for `needs-plan`.
+#   - With `gpu` naming another box and its package in `local` (cl-1286), the box is the checkout's, and where it declares an
+#     `estimate=` formula, that times it on stand-g from its rows there (`placed.formula_ms`, basis reference); its interface as cozy
+#     reads it is kept (gpu.describe.json) for `needs-plan`.
 # params:
 #   tree   the packages_refs checkout (default pk)
 #   local  the checkout's packages this home takes, space-separated (default birefnet)
+#   gpu    the box of a function with no CPU row, {tool, fields, held: a regex of its models' repositories} (default Qwen Image 2's)
 . "$(dirname "$0")/lib.sh"
 TREE=$(param tree pk) LOCAL=$(param local birefnet)
+GPU=$(param gpu '{"tool": "qwen-image-2/image", "fields": {"instructions": "A red bicycle against a white wall at night.", "prompt_upsampling": false}, "held": "qwen"}')
+GTOOL=$(jq -r .tool <<< "$GPU") GFIELDS=$(jq -c .fields <<< "$GPU") GHELD=$(jq -r .held <<< "$GPU") || fail "gpu $GPU"
+[[ $GTOOL =~ ^[a-z0-9-]+/[a-z0-9_]+$ && $GHELD =~ ^[a-z0-9.|-]+$ ]] || fail "gpu $GPU"
+GPKG=${GTOOL%/*}
 [[ $LOCAL =~ ^[a-z0-9\ -]+$ && $LOCAL == *birefnet* ]] || fail "local $LOCAL"
 logs() {
   cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1
@@ -48,13 +54,13 @@ done
 say "cozy $(cozy --version | awk '{print $2}'), $LOCAL from $TREE ($(git -C "$PACKAGES/$TREE" rev-parse --short HEAD 2> /dev/null)); this runner: $(nproc) CPUs, $(awk '/MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo) GiB RAM"
 
 in_project() { (cd "$RUN_PROJECT" && cozy "$@"); }
-# The checkout's Qwen as cozy reads it (cl-1286), before any box of it: its interface, for `needs-plan`.
-if [[ " $LOCAL " == *" qwen-image-2 "* ]]; then
-  cozy --json --full run "$SOURCE/qwen-image-2/image" --describe > "$OUT/qwen.describe.json" 2> "$OUT/qwen.describe.err" \
-    || fail "cozy can't read the checkout's qwen-image-2: $(tail -c 300 "$OUT/qwen.describe.err")"
-  say "the checkout's qwen-image-2/image estimate: $(jq -c '[.interface.entrypoints[]? | select(.name == "image") | .estimate | {size, ms: (.ms | .[0:120])}][0]' "$OUT/qwen.describe.json" 2> /dev/null)"
+# The checkout's GPU box function as cozy reads it (cl-1286), before any box of it: its interface, for `needs-plan`.
+if [[ " $LOCAL " == *" $GPKG "* ]]; then
+  cozy --json --full run "$SOURCE/$GTOOL" --describe > "$OUT/gpu.describe.json" 2> "$OUT/gpu.describe.err" \
+    || fail "cozy can't read the checkout's $GTOOL: $(jq -c .error "$OUT/gpu.describe.json" 2> /dev/null) $(tail -c 300 "$OUT/gpu.describe.err")"
+  say "the checkout's $GTOOL estimate: $(jq -c --arg f "${GTOOL#*/}" '[.interface.entrypoints[]? | select(.name == $f) | .estimate | {size, ms: (.ms | .[0:160])}][0]' "$OUT/gpu.describe.json" 2> /dev/null)"
 fi
-qwen_held() { cozy --json machine show local 2> /dev/null | jq -c '[.status.models[]? | select(.repository | test("qwen")) | .total_bytes] | add // 0'; }
+qwen_held() { cozy --json machine show local 2> /dev/null | jq -c --arg h "$GHELD" '[.status.models[]? | select(.repository | test($h)) | .total_bytes] | add // 0'; }
 nice -n 19 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1024x1024:rate=1' -frames:v 1 "$OUT/photo.png" || fail "no picture"
 in_project --json machine use local > "$OUT/use.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use.json")"
 run_page import "$OUT/photo.png" --name photo > "$OUT/photo.json" 2>&1 || fail "import photo: $(tail -c 300 "$OUT/photo.json")"
@@ -63,8 +69,7 @@ for _ in $(seq 100); do grep -q '"held"' "$OUT/show.json" 2> /dev/null && break;
 grep -q '"held"' "$OUT/show.json" || fail "no page shows the project: $(tail -c 300 "$OUT/show.err")"
 QWEN0=$(qwen_held)
 run_page add cut --tool birefnet/remove_background --fields '{"image": "<photo>"}' > "$OUT/add-cut.json" 2>&1 || fail "the BiRefNet box: $(tail -c 300 "$OUT/add-cut.json")"
-run_page add q --tool qwen-image-2/image --fields '{"instructions": "A red bicycle against a white wall at night.", "prompt_upsampling": false}' \
-  > "$OUT/add-q.json" 2>&1 || fail "the Qwen box: $(tail -c 300 "$OUT/add-q.json")"
+run_page add q --tool "$GTOOL" --fields "$GFIELDS" > "$OUT/add-q.json" 2>&1 || fail "the $GTOOL box: $(tail -c 300 "$OUT/add-q.json")"
 
 # The guesses, as the board's rows of what each box's machine has ready.
 ahead() { run_page board 2> /dev/null | jq -c --arg n "$1" '[.ahead[]? | select((.names // []) | index($n))] | max_by(.run) // empty' 2> /dev/null; }
@@ -103,7 +108,7 @@ say "q's box: $(jq -c '[.queue[]? | select(.name == "q")]' "$OUT/status-q.json")
 judge 'jq -e --arg l "$LINE" "[.queue[]? | select(.name == \"q\") | .no_gpu.line] | index(\$l) != null" "$OUT/status-q.json" > /dev/null' "Qwen's box says this computer has no GPU, with the rental"
 judge 'jq -e --arg l "q: $LINE" "[.said[]?.message] | map(select(. == \$l)) | length == 1" "$OUT/board-q.json" > /dev/null' "the board says it once"
 judge 'grep -qF "$LINE" "$OUT/render-q.txt"' "cozy render says it"
-judge '[ -z "$(in_project --json run ls --limit 0 | jq -r "[.runs[]? | select(.target | test(\"qwen\"))][0].number // empty")" ]' "no run of Qwen was sent"
+judge '[ -z "$(in_project --json run ls --limit 0 | jq -r --arg p "$GPKG" "[.runs[]? | select(.target | contains(\$p))][0].number // empty")" ]' "no run of $GTOOL was sent"
 judge '[ "$(qwen_held)" = "$QWEN0" ]' "none of Qwen's weights landed here" "$QWEN0 bytes, then $(qwen_held)"
 
 # stand-g joins: a stand-in with one RTX 4090 that only says its Status.
@@ -126,14 +131,14 @@ for _ in $(seq 60); do went && break; sleep 2; done
 say "stand-g was asked: $(grep -oE '"(POST|PUT) [^ ]+' "$OUT/stand-g.log" | sort | uniq -c | tr -s ' ' | paste -sd ';')"
 say "q's job on the board: $(run_page board 2> /dev/null | jq -c '[.jobs[]? | select(.asset == "q")][-1] // {} | {state, machine, run, why}')"
 judge went "the waiting Qwen render went to stand-g by itself once it joined"
-if [[ " $LOCAL " == *" qwen-image-2 "* ]]; then
+if [[ " $LOCAL " == *" $GPKG "* ]] && jq -e --arg f "${GTOOL#*/}" '[.interface.entrypoints[]? | select(.name == $f) | .estimate.ms // empty] | length > 0' "$OUT/gpu.describe.json" > /dev/null 2>&1; then
   QRUN=$(run_page board 2> /dev/null | jq -r '[.jobs[]? | select(.asset == "q") | .run // empty][-1] // empty')
   [ -n "$QRUN" ] && in_project --json --full run watch "$QRUN" --once > "$OUT/runs-q.json" 2>&1
   say "q's run on stand-g: $(jq -c 'def s(a; b): if a != null and b != null then ((b - a) / 100 | round / 10) else null end;
     {number, machine, placed: (.placed | if . then {machine, basis, formula_ms, size, finish_s: s(.quoted_at_ms; .finish_at_ms), prepare_s: (.prepare_ms / 1000)} else null end),
      models: [.spec.models[]? | {model, lane, bytes}]}' "$OUT/runs-q.json" 2> /dev/null)"
   judge 'jq -e ".placed.machine == \"stand-g\" and .placed.basis == \"reference\" and (.placed.formula_ms // 0) > 0" "$OUT/runs-q.json" > /dev/null 2>&1' \
-    "Qwen is quoted on stand-g by its own formula over its RTX 4090 rows (basis reference)"
+    "$GTOOL is quoted on stand-g by its own formula over its RTX 4090 rows (basis reference)"
 fi
 run_page cancel q > "$OUT/cancel-q.txt" 2>&1; kill "$QP" 2> /dev/null; wait "$QP" 2> /dev/null
 sleep 20
