@@ -92,3 +92,47 @@ pod_install() {
   fi
   say "$n: ${dir##*/} is staged on $NAME, its environment's Runtime ${took:-unlisted}${told:+ · $told}"
 }
+# The card a ggml session rents. params: `skus`, the SKUs it accepts, comma-separated (default the dispatch's $SKU), and
+# `quoted`, the micro-USD/h the cheapest of them quoted at dispatch. pick_offer, just before `quote`, makes $SKU the cheapest
+# of them offered now, and refuses when that is above 1.5x `quoted`; offer_rent, in place of `rent`, ends an order whose rate
+# is above that before it boots (lalaru, 44400509329: a $1.511/h 4070 Ti Super where $0.51 was quoted at dispatch and 4090s
+# offered $0.77 to $1.08).
+OFFER_MAX=''
+pick_offer() {
+  local s f price best='' low=0 said='' quoted
+  quoted=$(param quoted '')
+  IFS=, read -ra offers <<<"$(param skus "$SKU")"
+  # Out of stock comes and goes within minutes: every card asked again, six times over about 6 min, as `quote` asks one
+  # (44447068529 asked once: "No provider has a40 right now … last offered at 02:49:58", while others rented).
+  local try=1 pause=15
+  while :; do
+    said=''
+    for s in "${offers[@]}"; do
+      f=$OUT/offer-$s.json
+      cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
+      price=$(jq -R -r 'fromjson? | select(.quote) | .quote.usd_micros_per_hour' "$f" | head -1)
+      said="$said $s ${price:-none}"
+      [[ $price =~ ^[0-9]+$ ]] || continue
+      [ -n "$best" ] && [ "$price" -ge "$low" ] || { best=$s low=$price; }
+    done
+    [ -z "$best" ] && [ "$try" -lt 6 ] || break
+    say "offers: none for$said (attempt $try/6): asking again in ${pause}s"
+    sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
+  done
+  [ -n "$best" ] || fail "offers: none for$said"
+  say "offers$said micro-USD/h ($DISK GB): $best is the cheapest${quoted:+; $quoted quoted at dispatch}"
+  if [ -n "$quoted" ]; then
+    OFFER_MAX=$((quoted * 3 / 2))
+    [ "$low" -le "$OFFER_MAX" ] || fail "offers: the cheapest, $best at $low, is above 1.5x the $quoted quoted at dispatch"
+  fi
+  SKU=$best
+}
+offer_rent() {
+  local got
+  order
+  got=$(cozy machine show "$RID" --json 2> /dev/null | jq -r '.rental.usd_micros_per_hour // empty')
+  say "$RID: $SKU at ${got:-?} micro-USD/h"
+  [ -z "$OFFER_MAX" ] || [ -z "$got" ] || [ "$got" -le "$OFFER_MAX" ] ||
+    fail "$RID rents at $got micro-USD/h, above 1.5x the quoted: ended before it boots"
+  ready
+}

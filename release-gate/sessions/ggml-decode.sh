@@ -20,7 +20,8 @@
 #         only ("engine": each lane through the drive's `engine` (the engine's decoder against today's path on the same
 #         call), then stock llama.cpp; no comparison of lanes, no capped run; xs-213 phase 2),
 #         cases ("": varena drive cases (suites/varena/drive `core`, as kv-tiers.sh runs them) first, on the same pod;
-#         engine-step is the engine's step on a small random Qwen3.5 against Transformers, several rows a bucket).
+#         engine-step is the engine's step on a small random Qwen3.5 against Transformers, several rows a bucket),
+#         skus and quoted (preflight.sh pick_offer: the cheapest of the cards offered now).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
@@ -43,8 +44,9 @@ drive_lock "$FIX/drive"
 [ -z "$CASES" ] || { drive_check "$VARENA" varena_drive; drive_lock "$VARENA"; }
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
+pick_offer
 quote "$(param seconds 3600)"
-rent
+offer_rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
 step candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the pod's TensorFS and Runtime"
 cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
