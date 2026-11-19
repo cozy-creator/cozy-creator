@@ -17,16 +17,24 @@ W=$(wheel_from "$OUT/wheel" "$SRC") && [ -n "$W" ] || fail "no manylinux wheel i
 say "runtime: ${W##*/}"
 quote "$(param seconds 1200)"
 rent
-# arm <name>: the clip saved on $NAME; its record in <name>.json, its threads, CPUs and save seconds said.
+# arm <name>: the clip saved on $NAME and exported; its threads (from the mp4's x264 settings), CPUs and save seconds (the run's
+# start to its settling, its encode included) in <name>.facts, and said.
 arm() {
   step "$1" run "$FIX/save" "arm=$1" "frames:=$FRAMES" --on "$NAME" --output "$OUT/$1" || fail "$1: the save failed: $(tail -c 300 "$OUT/$1.txt")"
-  local n
+  local n mp4 threads cpus secs
   n=$(grep -m1 -oE '^run [A-Z][A-Z0-9]*-[0-9]+' "$OUT/$1.txt" | awk '{print $2}')
   cozy run watch "$n" --once --json --full > "$OUT/$1.json" 2>&1
-  jq -e '.status == "completed"' "$OUT/$1.json" > /dev/null || fail "$1: run $n is $(jq -r .status "$OUT/$1.json")"
-  jq -r --arg a "$1" --arg n "$n" '.result.value // .result | "\($a): run \($n), \(.threads) x264 threads of \(.cpus) CPUs, saved in \(.save_s * 10 | round / 10) s"' "$OUT/$1.json" | tee -a "$R"
+  jq -e '(.run // .).status == "completed"' "$OUT/$1.json" > /dev/null || fail "$1: run $n is $(jq -r '(.run // .).status' "$OUT/$1.json")"
+  mp4=$(find "$OUT/$1" -name '*.mp4' | head -1)
+  [ -n "$mp4" ] || fail "$1: run $n exported no mp4 to $OUT/$1"
+  threads=$(grep -aoE ' threads=[0-9]+' "$mp4" | head -1 | cut -d= -f2)
+  [ -n "$threads" ] || fail "$1: $mp4 carries no x264 settings"
+  cpus=$(jq -r '(.run // .) | .result.value.cpus // .result.cpus' "$OUT/$1.json")
+  secs=$(jq -r '(.run // .) | (.settled_at_ms - .started_at_ms) / 1000' "$OUT/$1.json")
+  printf '{"threads": %s, "cpus": %s, "save_s": %s}\n' "$threads" "$cpus" "$secs" > "$OUT/$1.facts"
+  echo "$1: run $n, $threads x264 threads of $cpus CPUs, saved in $secs s" | tee -a "$R"
 }
-result() { jq -r ".result.value.$2 // .result.$2" "$OUT/$1.json"; }
+result() { jq -r ".$2" "$OUT/$1.facts"; }
 arm image
 say "image Runtime: $(cozy machine show "$NAME" --json | jq -r .status.runtime)"
 [ "$(result image cpus)" -ge "$MIN" ] || fail "$NAME gives $(result image cpus) CPUs, under the $MIN the arms need to differ"
