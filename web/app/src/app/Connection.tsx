@@ -238,9 +238,6 @@ class Bridge {
       for (const listener of this.runListeners) listener(run)
     }
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
-    // An install, a removal or a machine's update that ends can change what a tool reads as, and so does local code's call: the machine's reading
-    // of an install is kept as its call is asked, after the install's own end. The list is read again.
-    if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) void this.queries.invalidateQueries({ queryKey: ["tools"] })
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
     for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["project-runs"] })) {
       if (!list) continue
@@ -313,7 +310,7 @@ class Bridge {
       case "projects.changed":
         void this.queries.invalidateQueries({ queryKey: ["projects"] })
         break
-      // A dev home's first-party package was read from its source (cl-1126): the tools are read again.
+      // What's listed changed (cl-1126): an install, a removal, local code's interface kept anew, a card read. The tools are read again.
       case "tools.changed":
         void this.queries.invalidateQueries({ queryKey: ["tools"] })
         break

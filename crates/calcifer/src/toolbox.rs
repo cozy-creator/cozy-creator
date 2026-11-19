@@ -79,16 +79,17 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let hub = runs::hub(api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let mine = mine(api)?;
-    let local = match asked.project.as_deref() {
+    let (local, named) = match asked.project.as_deref() {
         Some(named) => {
             let root = project::named(api, named).map_err(Refusal)?;
             let scope = private_io::of_output(&project::landing(&root)).map_err(Refusal)?;
             private_io::context(scope, async {
-                let named = project::local_code_named(api, named)?;
-                Ok::<_, Refusal>(Box::pin(read_local(api, &hub, named)).await)
+                let local = project::local_code_named(api, named)?;
+                let tools = project::tools_named(api, named)?;
+                Ok::<_, Refusal>((Box::pin(read_local(api, &hub, local)).await, tools))
             }).await?
         }
-        None => vec![],
+        None => (vec![], BTreeSet::new()),
     };
     // A dev home's checkout's first-party packages are their source's, not the Hub's (xs-195), read once per state of it (cl-1126).
     let source = crate::source_tools::listed(api, &hub);
@@ -98,8 +99,9 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let listed = catalog.iter().filter(|tool| !installed.contains(&tool.package) && !checkout::holds(&tool.package)).cloned();
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(source).chain(held).chain(listed).collect();
     tools.extend(on_your_list(api, &hub, &mine, &tools));
-    // Taken off is off at rest, and a search still finds it, as what a box of it asks for must.
-    tools.retain(|tool| q.map_or_else(|| !mine.without.contains(&tool.id), |q| says(tool, q)));
+    tools.extend(named_by_boxes(api, &hub, &named, &tools));
+    // Taken off is off at rest, but not for a project whose boxes name it; a search still finds it.
+    tools.retain(|tool| q.map_or_else(|| !mine.without.contains(&tool.id) || named.contains(&tool.id), |q| says(tool, q)));
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
         // A Hub that doesn't answer leaves the search with what's listed.
@@ -176,16 +178,28 @@ pub(crate) async fn browse(State(api): State<Arc<Api>>, query: Result<Query<Brow
     Ok(Json(Browsed { packages, older }))
 }
 
-/// The tools of each package you added that `listed` lacks, by its newest card kept here: nothing's installed by listing it, and the list
-/// never waits on the Hub. One with none kept is read behind the list (`read_newest`), and joins it once read.
+/// The tools of each package you added that `listed` lacks (`newest_tools`).
 fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool]) -> Vec<Tool> {
-    let root = api.machines.hubs.home().root();
     let lacking = mine.packages.iter().filter(|package| !is_local(package) && !listed.iter().any(|tool| tool.package == shown(package)));
+    newest_tools(api, hub, lacking.cloned())
+}
+
+/// The packages of the tools a project's boxes name that `listed` lacks, each a box's tool once more (`newest_tools`): a box of a package
+/// the Hub doesn't list is drawn as its tool, with no search per box.
+fn named_by_boxes(api: &Arc<Api>, hub: &str, named: &BTreeSet<String>, listed: &[Tool]) -> Vec<Tool> {
+    let lacking = named.iter().filter(|id| !listed.iter().any(|tool| &tool.id == *id)).filter_map(|id| api::target::Published::parse(id).ok());
+    newest_tools(api, hub, lacking.map(|published| published.package).collect::<BTreeSet<_>>())
+}
+
+/// Each package's tools by its newest card kept here: nothing's installed by listing it, and the list never waits on the Hub. One with
+/// none kept is read behind the list (`read_newest`), and joins it once read (`tools.changed`).
+fn newest_tools(api: &Arc<Api>, hub: &str, packages: impl IntoIterator<Item = String>) -> Vec<Tool> {
+    let root = api.machines.hubs.home().root();
     let mut wanted = vec![];
-    for package in lacking {
-        match newest_by(cards::kept_releases(root, hub, package), |release| release) {
-            Some(release) => wanted.push((package.clone(), release)),
-            None => read_newest(api, hub, package),
+    for package in packages {
+        match newest_by(cards::kept_releases(root, hub, &package), |release| release) {
+            Some(release) => wanted.push((package, release)),
+            None => read_newest(api, hub, &package),
         }
     }
     kept_tools(api, hub, wanted)

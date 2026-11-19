@@ -2165,6 +2165,23 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
     Ok(named.into_iter().map(|(path, written)| (written, path)).collect())
 }
 
+/// The published tools its boxes name, as a tool's `id` is written (`[org/]package/function`, no release): the list holds each, whatever
+/// the Hub lists or you took off it, as the local code they name (`local_code_named`).
+pub(crate) fn tools_named(api: &Arc<Api>, id: &str) -> Result<BTreeSet<String>, Refusal> {
+    let project = api.projects.get(api, id)?;
+    let folder = &project.folder;
+    let doc = Doc::load(folder).map_err(Refusal)?;
+    let home = &api.machines.user_home;
+    let local = |with: &str| is_local(with) || crate::local_code::target(with, Some(&folder.dir), home).is_some();
+    Ok((0..doc.assets.len()).map(|i| doc.target(i))
+        .filter(|with| !with.trim().is_empty() && !local(with))
+        .filter_map(|with| {
+            let id = with.trim().split('@').next().unwrap_or_default().to_owned();
+            api::target::Published::parse(&id).ok().filter(|published| published.function.is_some()).map(|_| id)
+        })
+        .collect())
+}
+
 /// What can be said of each asset whose published package has been heard of: what makes it, its tags. A read waits on no
 /// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
 fn unmade(doc: &Doc, known: &HeardOf, lock: &Lock) -> Vec<ProjectWarning> {
