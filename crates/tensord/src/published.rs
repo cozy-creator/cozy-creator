@@ -2064,11 +2064,22 @@ fn apply_adapters(
     let object = |header: &str| {
         storage::held(store, header).map_err(|e| ("model_download_failed", format!("checkpoint {header} is not held: {e}")))
     };
-    let mut selections = vec![];
+    let (mut selections, mut names, mut unread) = (vec![], vec![], vec![]);
     for adapter in &choice.adapters {
+        let mut name = if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() };
+        // The Hub model whose card says its recommended strength: a named one's, or a held one's as it was pulled.
+        let mut carded = (adapter.source.is_empty() && !adapter.model.starts_with("local/")).then(|| adapter.model.clone());
         let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
             // One this machine holds by name (`cozy model install … local/<name>`).
             held_local(store, &adapter.model)?.header.id()
+        } else if adapter.source.is_empty() && adapter.model.is_empty() && !adapter.manifest.is_empty() {
+            // A caller's own LoRA slot handed to its call (`Weights.ref`, cl-1281): the checkpoint this machine holds, by its header,
+            // named as it was pulled.
+            let held = object(&adapter.manifest)?;
+            let pulled = Pulled::of(store, &held).ok().flatten();
+            name = pulled.as_ref().map_or_else(|| adapter.manifest.clone(), |pulled| format!("{}@{}", pulled.model, pulled.release));
+            carded = pulled.map(|pulled| pulled.model);
+            held.id()
         } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).
             if adapter.model.is_empty() {
@@ -2085,7 +2096,8 @@ fn apply_adapters(
                 tree,
                 ..Named::default()
             })?;
-            // An adapter is small and its view composes from all of it: it comes whole.
+            // An adapter is small and its view composes from all of it (its α are read): it comes whole. A list item's comes while it
+            // plans, ahead of Render, and stops when its list drops it before it is in line (`ahead::admit`, cl-1281).
             let _download = job.within(crate::activity::Kind::Download, &adapter.model);
             publisher.ensure(source, &named, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
             named.header()?.id()
@@ -2100,8 +2112,16 @@ fn apply_adapters(
             job.stage(format!("{} for an adapter of {}", made.format, grant.slot));
             made.header.id()
         };
+        // Given none (a call's `Lora(ref)`), its release's recommended strength, else 1 (cl-1281; Calcifer fills a request's).
         let strength = if adapter.scale.is_empty() {
-            1.0
+            match carded.zip(source).map(|(model, source)| release_strength(source, &model)) {
+                Some(Ok(strength)) => strength.unwrap_or(1.0),
+                Some(Err(why)) => {
+                    unread.push(format!("{name}: its release's strength wasn't read ({why}), so it ran at 1"));
+                    1.0
+                }
+                None => 1.0,
+            }
         } else {
             adapter.scale.parse::<f64>().map_err(|_| {
                 (
@@ -2110,6 +2130,7 @@ fn apply_adapters(
                 )
             })?
         };
+        names.push(name);
         selections.push(crate::adapter::Selection {
             checkpoint: object(&header)?,
             component: adapter.component.clone(),
@@ -2126,24 +2147,41 @@ fn apply_adapters(
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
     // The run's record names the base model and what each LoRA adapts (`Plan::models`).
-    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
-        .map(|(((adapter, selection), components), layers)| crate::gpu_service::Applied {
-            model: if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() },
+    let adapters = (names.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
+        .map(|(((name, selection), components), layers)| crate::gpu_service::Applied {
+            model: name.clone(),
             strength: selection.strength,
             components: components.clone(),
             layers: *layers,
         })
         .collect();
-    let warnings = (choice.adapters.iter().zip(&composed.warnings))
-        .flat_map(|(adapter, said)| {
-            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
-            said.iter().map(move |w| format!("{named}: {w}"))
-        })
+    let warnings = (names.iter().zip(&composed.warnings))
+        .flat_map(|(named, said)| said.iter().map(move |w| format!("{named}: {w}")))
+        .chain(unread)
         .collect();
     let base = std::mem::replace(&mut grant.model, composed.name);
     grant.adapted = Some(crate::gpu_service::Adapted { model: base, adapters });
     grant.manifest = composed.checkpoint.id().id();
     Ok(warnings)
+}
+
+/// A LoRA's recommended strength, as its Hub card says (none: unread, or none set), kept 10 minutes: its owner can change it.
+/// A pull records no card (`held_models::Pulled`: model, release, lane, tree), so this is the one read of it. Ok(None): the card names
+/// none. A failed read is kept the same 10 minutes (Err: why), so a run in them asks the Hub once and its notes say why it ran at 1.
+fn release_strength(source: &hub::Source, model: &str) -> Result<Option<f64>, String> {
+    type Read = (Instant, Result<Option<f64>, String>);
+    static READ: std::sync::LazyLock<Mutex<HashMap<String, Read>>> = std::sync::LazyLock::new(Default::default);
+    let key = format!("{} {model}", source.origin);
+    if let Some((_, strength)) = READ.lock().unwrap().get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(600)) {
+        return strength.clone();
+    }
+    let read = (|| {
+        let (org, name) = model.split_once('/').ok_or_else(|| format!("{model} names no org"))?;
+        let card = hub::Catalog::new(source).map_err(|e| e.0)?.model(org, name).map_err(|e| e.to_string())?;
+        Ok(card.model.strength.filter(|strength| strength.is_finite()))
+    })();
+    READ.lock().unwrap().insert(key, (Instant::now(), read.clone()));
+    read
 }
 
 /// A catalog read the Hub answered 404 to is the thing named absent there; any other failure

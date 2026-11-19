@@ -4648,6 +4648,8 @@ impl Walk {
         let asking = Asking::of(self.folder());
         let request = asking.as_ref().and_then(|asking| asking.request(asset, &package, &renderer.function));
         let mut spec = predicted(&renderer, made, request, self.project.draft_seed(asset), source)?;
+        // Its LoRAs at the strengths its render's record gives them (cl-1281).
+        crate::hub::models::recommended(&self.host.api().machines.hubs, hub, &mut spec.models).await;
         // Its files as its run lists them, which that run writes there: the item is its request to the byte (cl-1123).
         if let Some(asking) = &asking {
             spec.inputs = predicted_inputs(self.folder(), &asking.lock, &spec).0;

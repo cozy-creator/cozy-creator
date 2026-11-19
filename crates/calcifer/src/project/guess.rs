@@ -520,6 +520,8 @@ async fn item(api: &Arc<Api>, host: &Host, project: &Project, hub: &str, (name, 
     };
     lock(&MADE).insert((dir.to_string_lossy().into_owned(), name.to_owned()), made_of);
     let mut spec = super::predicted(&renderer, made, request, seed, source)?;
+    // Its LoRAs at the strengths its render's record gives them (cl-1281: 44394166400's styled differed in `models`, so wasn't adopted).
+    crate::hub::models::recommended(&api.machines.hubs, hub, &mut spec.models).await;
     // Its files as its run lists them (cl-1123), for every project, an encrypted one's too: the item is its render's request to the byte.
     // They go to its machine behind the item, its plan reading none of them (44065133454: a first write held the edit's guess 1.4 s),
     // and behind every run's carry, by a run's link and through a run's check, an encrypted project's only to one of this account's own
