@@ -44,7 +44,8 @@
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref, `{clip}` a 4 s 640x360 24 fps clip of its seed.jpg panned (made on
 #              the runner, for a video tool's input), `{clip1}` 1 s of seed.jpg at 768 high, 24 fps (the gate's seedvr2
-#              clip, products.sh) and `{out:<cell>}` an earlier cell's image or video;
+#              clip, products.sh), `{clip25}` 2.5 s of 1344x768 at 24 fps with a tone (cap-sweep's) and `{out:<cell>}` an
+#              earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
@@ -78,6 +79,12 @@ fi
 CLIP1=$OUT/clip1.mp4
 if jq -e 'any(.[].args[]?; contains("{clip1}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p "$CLIP1" || fail "the 1 s clip"
+fi
+CLIP25=$OUT/clip2.5.mp4
+if jq -e 'any(.[].args[]?; contains("{clip25}"))' <<<"$CELLS" > /dev/null; then
+  ffmpeg -nostdin -v error -y -loop 1 -i "$REF/seed.jpg" -f lavfi -i "sine=frequency=440:duration=2.5" \
+    -vf "scale=1792:-2,crop=1344:768:'(iw-1344)*t/2.5':'(ih-768)/2',fps=24,format=yuv420p" -t 2.5 -c:v libx264 -crf 18 -c:a aac \
+    -shortest "$CLIP25" || fail "the 2.5 s clip"
 fi
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
@@ -259,7 +266,7 @@ for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip1\}/$CLIP1}; a=${a//\{clip\}/$CLIP}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip1\}/$CLIP1}; a=${a//\{clip25\}/$CLIP25}; a=${a//\{clip\}/$CLIP}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
       a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}

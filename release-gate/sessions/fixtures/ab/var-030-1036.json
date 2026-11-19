@@ -1,0 +1,36 @@
+{
+  "order": "one-way",
+  "need_s": 2000,
+  "compare": [["c-a6", "c-b6"], ["c-aoff", "c-boff"]],
+  "cells": [
+    {
+      "name": "w-rc", "tree": "rc", "target": "seedvr2/upscale", "warmup": true,
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30041"],
+      "update": {"runtime": "44555002832", "tensorfs": "artifact:44554277554/tensorfs-wheel-a462ddfb167ff054a2f355f42ac97698420332d6", "tensord": true, "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "w-pr", "tree": "pr", "target": "seedvr2/upscale", "warmup": true,
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30042"]
+    },
+    {
+      "name": "c-a6", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip25}", "seed:=30043"],
+      "update": {"runtime": "44555002832", "tensorfs": "artifact:44554277554/tensorfs-wheel-a462ddfb167ff054a2f355f42ac97698420332d6", "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "c-b6", "tree": "pr", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip25}", "seed:=30043"],
+      "update": {"runtime": "44555002832", "tensorfs": "artifact:44554277554/tensorfs-wheel-a462ddfb167ff054a2f355f42ac97698420332d6", "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "c-aoff", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip25}", "seed:=30044"],
+      "update": {"runtime": "44555002832", "tensorfs": "artifact:44554277554/tensorfs-wheel-a462ddfb167ff054a2f355f42ac97698420332d6", "gpu_memory_limit": "off"}
+    },
+    {
+      "name": "c-boff", "tree": "pr", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip25}", "seed:=30044"],
+      "update": {"runtime": "44555002832", "tensorfs": "artifact:44554277554/tensorfs-wheel-a462ddfb167ff054a2f355f42ac97698420332d6", "gpu_memory_limit": "off"}
+    }
+  ]
+}
