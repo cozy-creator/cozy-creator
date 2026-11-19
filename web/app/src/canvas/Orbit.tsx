@@ -198,6 +198,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   return (
     <div
       className={`orbit canvas-control ${ready ? "ready" : ""}`}
+      data-looked-at=""
       role="slider"
       tabIndex={0}
       aria-label="Turn"
@@ -232,7 +233,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
         onEnded={() => setSpinning(false)}
       />
       {!used && onTop(<span className="orbit-hint">Drag to turn</span>)}
-      {onTop(<div className="orbit-bar">
+      {onTop(<div className="orbit-bar canvas-control">
         <Dial angle={shownAngle} />
         <span className="orbit-deg">{Math.round(shownAngle) % 360}°</span>
         <button type="button" className="orbit-act canvas-control" aria-pressed={spinning} onClick={spin}>

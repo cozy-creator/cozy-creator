@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { isControl } from "../ui/press"
 import { createPortal } from "react-dom"
 import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
@@ -205,7 +206,7 @@ export function usePreview(video: boolean, initialHover?: PreviewHover) {
     const underPointer = () => {
       const element = target.current
       const hit = document.elementFromPoint(initialHover.x, initialHover.y)
-      return Boolean(element && hit && element.contains(hit) && !hit.closest("button,input,select,textarea,[contenteditable],.nm"))
+      return Boolean(element && hit && element.contains(hit) && !isControl(hit))
     }
     initialHover.signal.addEventListener("abort", end, { once: true })
     if (resting.current === undefined && underPointer()) {
@@ -493,6 +494,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
       <Tag
         ref={element}
         className={`live canvas-control ${field}`}
+        data-looked-at={field === "video" ? "" : undefined}
         controls={!controller}
         playsInline={field === "video"}
         preload={shows ? "auto" : "none"}
@@ -1079,6 +1081,7 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
             ref={element}
             src={src}
             className={open ? "canvas-control" : undefined}
+            data-looked-at={open ? "" : undefined}
             muted={!open}
             loop={!open}
             autoPlay={!open}

@@ -44,8 +44,8 @@ export function ClipRange({ sha256, frames, fps, from, to, width, label, onSet }
       <Thumb sha256={sha256} cardWidth={width} strip={STRIP} className="clip-strip" />
       <span className="clip-out" style={{ left: 0, width: at(now.from) }} />
       <span className="clip-out" style={{ right: 0, width: `${((frames - now.to) / frames) * 100}%` }} />
-      <span className="clip-handle" role="slider" tabIndex={0} aria-label={`${label}: in`} aria-valuemin={0} aria-valuemax={frames} aria-valuenow={now.from} aria-valuetext={timecode(now.from, fps)} style={{ left: at(now.from) }} {...grab("from")} />
-      <span className="clip-handle out" role="slider" tabIndex={0} aria-label={`${label}: out`} aria-valuemin={0} aria-valuemax={frames} aria-valuenow={now.to} aria-valuetext={timecode(now.to, fps)} style={{ left: at(now.to) }} {...grab("to")} />
+      <span className="clip-handle canvas-control" role="slider" tabIndex={0} aria-label={`${label}: in`} aria-valuemin={0} aria-valuemax={frames} aria-valuenow={now.from} aria-valuetext={timecode(now.from, fps)} style={{ left: at(now.from) }} {...grab("from")} />
+      <span className="clip-handle out canvas-control" role="slider" tabIndex={0} aria-label={`${label}: out`} aria-valuemin={0} aria-valuemax={frames} aria-valuenow={now.to} aria-valuetext={timecode(now.to, fps)} style={{ left: at(now.to) }} {...grab("to")} />
       <span className="clip-tc">
         {timecode(now.from, fps)}–{timecode(now.to, fps)}
       </span>

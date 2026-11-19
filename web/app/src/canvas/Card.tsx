@@ -39,7 +39,8 @@ function kindOf(view: ElementView): string {
   return asset.kind === "video" ? "shot" : asset.kind
 }
 
-/** A button on a card does its one thing, and a field takes the click: neither selects it. */
+/** A button on a card does its one thing, and a field takes the click: neither selects it. Only those: a click on the card's panels
+ *  (its fields, its takes) goes on up, as a drawer open beside it closes on a click that began outside it (Paul's click-off rule). */
 export function buttonsOnly(event: MouseEvent) {
   if ((event.target as Element).closest("button, input, select, .mention-text")) event.stopPropagation()
 }

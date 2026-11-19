@@ -30,7 +30,7 @@ import { Placer } from "./place"
 import { leadsTo } from "./RunFace"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bandOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
-import { pressBeganOutside } from "../ui/press"
+import { isControl, pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
@@ -933,7 +933,7 @@ function Canvas({
     [store, flow, writeHere, navigate, to],
   )
   const nodeDoubleClicked = useCallback((event: MouseEvent, node: ElementNode) => {
-    if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
+    if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey || isControl(event.target)) return
     focusNode(node.data.name)
   }, [focusNode])
   // A click on open canvas leaves the box worked on, unless its press began on a box: a selection or a drag let go out here.
