@@ -76,6 +76,14 @@ class PlanFacts(TypedDict):
     phases: list[PlanPhase]
 
 
+class CacheStats(TypedDict):
+    reserved_bytes: int
+    mapped_bytes: int
+    live_bytes: int
+    pending_bytes: int
+    ready_bytes: int
+
+
 class CacheOwnerFacts(TypedDict):
     id: int
     registered: bool

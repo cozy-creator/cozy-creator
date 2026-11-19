@@ -7,13 +7,18 @@ Applications use the canonical tensorfs.varena Gpu interface.
 
 from __future__ import annotations
 
+import operator
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .. import _ext
-from ._facts import CacheOwnerFacts, DeviceStats, PagesStats, PhaseControllerFacts, PlanFacts
+from ._facts import CacheOwnerFacts, CacheStats, DeviceStats, PagesStats, PhaseControllerFacts, PlanFacts
+from .sources import dtype_descriptor
+
 if TYPE_CHECKING:
+    import torch
     from torch import Tensor
     from typing_extensions import Buffer, CapsuleType
 
@@ -105,8 +110,91 @@ class Device:
         model component it belongs to; its small regions share pages (cr-317)."""
         return Region(self._native.region(bytes, source._native, set))
 
+    def cache(self, reserve: int, shrink: Callable[[int], bool] | None = None) -> Cache:
+        """A Cache of `reserve` bytes of this GPU's address space, nothing mapped (`Cache`)."""
+        return Cache(self, reserve, shrink)
+
     def stats(self) -> DeviceStats:
         return self._native.stats()
+
+
+#: every Cache not yet closed (`cache_ranges`)
+_CACHES: weakref.WeakSet[Cache] = weakref.WeakSet()
+
+
+class Cache:
+    """A reserved range of a GPU's address space whose owner maps and unmaps exact pages: where an
+    engine keeps what it writes and reads every step (K/V, state). `base` never changes, so a CUDA
+    graph may hold addresses inside it. The core never picks a page to drop: short of memory it
+    asks `shrink(requested_bytes)`, on its own worker thread with the GIL, which releases what it
+    chooses (claiming its own locks without blocking) and returns False to decline. Only completed
+    releases count as memory. The Cache keeps `shrink`; the core holds it weakly."""
+
+    def __init__(
+        self, device: Device, reserve: int, shrink: Callable[[int], bool] | None = None
+    ) -> None:
+        self._shrink = shrink
+        self._native = _ext._VarenaCache(device._native, reserve, shrink)
+        self.device = device.device
+        _CACHES.add(self)
+
+    @property
+    def base(self) -> int:
+        return self._native.base
+
+    @property
+    def granularity(self) -> int:
+        """The page size: every `commit` and `release` is whole pages at a page offset."""
+        return self._native.granularity
+
+    @property
+    def reserved_bytes(self) -> int:
+        return self._native.reserved_bytes
+
+    def commit(self, offset: int, bytes: int) -> None:
+        """Map `bytes` at `offset`, none of it mapped before: all or none. Short of room the core
+        reclaims in its one order first; a refusal (torch's out-of-memory type) leaves the pages
+        mapped before it as they were."""
+        self._native.commit(offset, bytes)
+
+    def release(self, offset: int, bytes: int, stream: int) -> None:
+        """Give `bytes` at `offset` back, every reader and writer of them joined into `stream`
+        (`torch.cuda.Stream.cuda_stream`). They are memory again once `stream` passes this point."""
+        self._native.release(offset, bytes, stream)
+
+    def tensor(
+        self, dtype: str | torch.dtype, shape: Sequence[int], byte_offset: int = 0
+    ) -> Tensor:
+        """A tensor of `shape` at `byte_offset`, anywhere in the reservation. It owns no page: read
+        and write only what is committed (a kernel that touches a page that isn't faults the
+        device). The Cache cannot close while one is alive."""
+        from torch.utils.dlpack import from_dlpack
+
+        code, bits, _ = dtype_descriptor(dtype)
+        dims = [operator.index(value) for value in shape]
+        view: Tensor = from_dlpack(self._native.dlpack(code, bits, dims, operator.index(byte_offset)))
+        return view
+
+    def stats(self) -> CacheStats:
+        """Its bytes by state, completed releases collected first."""
+        return self._native.stats()
+
+    def close(self) -> None:
+        """Return the address space. Refused, changing nothing, while a page is live or its release
+        hasn't passed, while a tensor of it is alive, and from its own shrink callback."""
+        self._native.close()
+        _CACHES.discard(self)
+
+
+def cache_ranges(device: int) -> list[tuple[int, int, Cache]]:
+    """Each open Cache's reservation on `device` as (first address, end, Cache), by address: what
+    an observer of device writes classes as an owner's state, not working memory."""
+    rows = [
+        (cache.base, cache.base + cache.reserved_bytes, cache)
+        for cache in list(_CACHES)
+        if cache.device == device
+    ]
+    return sorted(rows, key=lambda row: row[0])
 
 
 class Plan:

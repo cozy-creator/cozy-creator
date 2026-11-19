@@ -30,8 +30,10 @@ struct Managed {
     deleter: Option<unsafe extern "C" fn(*mut Managed)>,
 }
 
-struct Held {
-    _storage: varena::abi::TensorExport,
+/// What an exported tensor keeps until its consumer's storage goes: its owner, and the layout
+/// its DLPack tensor points at.
+struct Held<T> {
+    _owner: T,
     shape: Vec<i64>,
     strides: Option<Vec<i64>>,
     pid: u32,
@@ -43,7 +45,7 @@ fn invalid(message: &'static str) -> PyErr {
 
 /// Return the number of addressed bytes relative to the layout's byte offset.
 /// This is a span, rather than numel * itemsize: views may overlap or contain holes.
-fn layout_span(code: u8, bits: u8, shape: &[i64], strides: Option<&[i64]>) -> PyResult<u64> {
+pub(super) fn layout_span(code: u8, bits: u8, shape: &[i64], strides: Option<&[i64]>) -> PyResult<u64> {
     let supported = match code {
         0 | 1 => matches!(bits, 8 | 16 | 32 | 64),
         2 => matches!(bits, 16 | 32 | 64),
@@ -94,28 +96,96 @@ fn layout_span(code: u8, bits: u8, shape: &[i64], strides: Option<&[i64]>) -> Py
         .ok_or_else(|| invalid("tensor byte span overflow"))
 }
 
-unsafe extern "C" fn delete(tensor: *mut Managed) {
+unsafe extern "C" fn delete<T>(tensor: *mut Managed) {
     if tensor.is_null() {
         return;
     }
     // SAFETY: DLPack transfers this allocation and its context to exactly one consumer.
     let tensor = unsafe { Box::from_raw(tensor) };
     // SAFETY: export creates this context from one Held allocation.
-    let held = unsafe { Box::from_raw(tensor.context.cast::<Held>()) };
+    let held = unsafe { Box::from_raw(tensor.context.cast::<Held<T>>()) };
     if held.pid != std::process::id() {
         // Forked children must not enter inherited native registries or owner mutexes.
         std::mem::forget(held);
     }
-    // On the creating process, TensorExport records final consumer tails and hands
-    // remaining Source/GPU owners to native retirement. No Python attachment or wait.
+    // On the creating process the owner's own drop runs: a TensorExport records final consumer
+    // tails and hands remaining Source/GPU owners to native retirement. No Python attachment or wait.
 }
 
-unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
+unsafe extern "C" fn capsule_delete<T>(capsule: *mut ffi::PyObject) {
     // SAFETY: Python calls with a live capsule; a consumed capsule has a different name.
     unsafe {
         if ffi::PyCapsule_IsValid(capsule, c"dltensor".as_ptr()) == 1 {
-            delete(ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr()).cast::<Managed>());
+            delete::<T>(ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr()).cast::<Managed>());
         }
+    }
+}
+
+/// DLPack's device kind for a CUDA device's memory.
+pub(super) const CUDA: i32 = 2;
+
+/// A DLPack capsule of a tensor of `shape` at `pointer`, of `kind` on `device`. Its consumer's
+/// storage keeps `owner` until it goes; `owner` drops on whichever thread that is, with no Python
+/// attached.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capsule<'py, T: 'static>(
+    py: Python<'py>,
+    owner: T,
+    pointer: usize,
+    kind: i32,
+    device: i32,
+    code: u8,
+    bits: u8,
+    shape: Vec<i64>,
+    strides: Option<Vec<i64>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let ndim = shape.len() as i32; // Checked by layout_span.
+    let mut held = Box::new(Held {
+        _owner: owner,
+        shape,
+        strides,
+        pid: std::process::id(),
+    });
+    let shape = if ndim == 0 {
+        std::ptr::null_mut()
+    } else {
+        held.shape.as_mut_ptr()
+    };
+    let strides = held
+        .strides
+        .as_mut()
+        .filter(|_| ndim != 0)
+        .map_or(std::ptr::null_mut(), Vec::as_mut_ptr);
+    let tensor = Box::into_raw(Box::new(Managed {
+        tensor: Tensor {
+            data: pointer as *mut c_void,
+            device: Device {
+                kind,
+                ordinal: device,
+            },
+            ndim,
+            dtype: Dtype {
+                code,
+                bits,
+                lanes: 1,
+            },
+            shape,
+            strides,
+            byte_offset: 0,
+        },
+        context: Box::into_raw(held).cast(),
+        deleter: Some(delete::<T>),
+    }));
+    // SAFETY: the capsule uniquely owns tensor until consumption. Failure releases
+    // the owner through the same native deleter, including unconsumed capsule teardown.
+    unsafe {
+        let capsule =
+            ffi::PyCapsule_New(tensor.cast(), c"dltensor".as_ptr(), Some(capsule_delete::<T>));
+        if capsule.is_null() {
+            delete::<T>(tensor);
+            return Err(PyErr::fetch(py));
+        }
+        Ok(Bound::from_owned_ptr(py, capsule))
     }
 }
 
@@ -166,53 +236,7 @@ fn _varena_public_use_dlpack(
     let pointer = usize::try_from(pointer)
         .map_err(|_| invalid("tensor pointer exceeds the host address width"))?;
     let device = storage.device();
-    let ndim = shape.len() as i32; // Checked by layout_span.
-    let mut held = Box::new(Held {
-        _storage: storage,
-        shape,
-        strides,
-        pid: std::process::id(),
-    });
-    let shape = if ndim == 0 {
-        std::ptr::null_mut()
-    } else {
-        held.shape.as_mut_ptr()
-    };
-    let strides = held
-        .strides
-        .as_mut()
-        .filter(|_| ndim != 0)
-        .map_or(std::ptr::null_mut(), Vec::as_mut_ptr);
-    let tensor = Box::into_raw(Box::new(Managed {
-        tensor: Tensor {
-            data: pointer as *mut c_void,
-            device: Device {
-                kind: 2,
-                ordinal: device,
-            },
-            ndim,
-            dtype: Dtype {
-                code,
-                bits,
-                lanes: 1,
-            },
-            shape,
-            strides,
-            byte_offset: 0,
-        },
-        context: Box::into_raw(held).cast(),
-        deleter: Some(delete),
-    }));
-    // SAFETY: the capsule uniquely owns tensor until consumption. Failure releases
-    // storage through the same native deleter, including unconsumed capsule teardown.
-    unsafe {
-        let capsule = ffi::PyCapsule_New(tensor.cast(), c"dltensor".as_ptr(), Some(capsule_delete));
-        if capsule.is_null() {
-            delete(tensor);
-            return Err(PyErr::fetch(py));
-        }
-        Ok(Bound::from_owned_ptr(py, capsule))
-    }
+    capsule(py, storage, pointer, CUDA, device, code, bits, shape, strides)
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
