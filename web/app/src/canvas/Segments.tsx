@@ -6,6 +6,7 @@ import { useConnection } from "../app/Connection"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
+import { timedList } from "./controls"
 import { useFullScreen } from "./FullScreen"
 import { WalkedFrames } from "./Media"
 import { orbitOf } from "./Orbit"
@@ -177,7 +178,7 @@ export function LeadIn({ name, view }: { name: string; view: ElementView }) {
       : `Redoes ${take} from ${cutClock(going.out_frame / fps)}`
     : going.out_frame >= end ? `Continues ${take} from its end · ${cutClock(going.out_frame / fps)}` : `Continues ${take} from ${cutClock(going.out_frame / fps)}`
   // The new part runs from the beats' clock at the cut to their end.
-  const beats = tools.get(view.asset?.tool ?? "")?.fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total))
+  const beats = tools.get(view.asset?.tool ?? "")?.fields.find(timedList)
   const timing = beats?.members?.find((member) => member.total)
   const total = beats && timing ? rowsIn(store.valueOf(name, beats.field)).reduce((sum, row) => sum + (Number(row[timing.field] ?? timing.default) || 0), 0) : 0
   const gone = version?.latents && held && !held.has(version.latents) ? version.latents : null

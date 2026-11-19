@@ -44,6 +44,9 @@ export function fromFields(fields: Record<string, unknown>): ToolField[] {
 const NEGATIVE = /^neg(ative)?(_|$)/i
 const negative = (field: ToolField) => NEGATIVE.test(field.field)
 
+/** A box's timed list: a list of rows with a member that adds up its length (`Total()`), as H3's beats. */
+export const timedList = (field: ToolField) => field.type === "group" && Boolean(field.list) && Boolean(field.members?.some((member) => member.total))
+
 /** A box's main text, where it's written and a LoRA's triggers go: its first prompt, else its first words (SDXL's and Ideogram 4's `str`);
  *  never a negative prompt. */
 export function mainText(fields: ToolField[]): ToolField | undefined {
