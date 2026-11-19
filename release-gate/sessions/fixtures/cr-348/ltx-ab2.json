@@ -260,7 +260,7 @@
     "--gpus=2"
    ],
    "update": {
-    "runtime": "44455277380",
+    "runtime": "44459325049",
     "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
     "tensord": true,
     "gpu_memory_limit": "off"
@@ -379,7 +379,7 @@
     "--gpus=2"
    ],
    "update": {
-    "runtime": "44455277380",
+    "runtime": "44459325049",
     "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
     "tensord": true,
     "gpu_memory_limit": "off"
@@ -547,6 +547,45 @@
     "aspect_ratio=16:9",
     "audio:=true",
     "seed:=35018",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "w1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35020",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44459325049",
+    "tensorfs": "artifact:44458303819/tensorfs-wheel-f712f2c6f359cf455d29b93640c53bc022bc1176",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "w1-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35021",
     "--lane",
     "int8",
     "--gpus=2"
