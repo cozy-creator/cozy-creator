@@ -64,6 +64,7 @@ parse "$@"
 . "$(dirname "$0")/hubdown.sh"
 . "$(dirname "$0")/overhead.sh"
 . "$(dirname "$0")/walheld.sh"
+. "$(dirname "$0")/installfail.sh"
 . "$(dirname "$0")/grants.sh"
 . "$(dirname "$0")/heldmemo.sh"
 
@@ -826,6 +827,8 @@ case $SHARD in
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # What a request with two prompt enhancers fetches, and when (cl-1101): the one its function's rule names (cl-1103).
   ondemand-enhancers) parts="ondemand_enhancers logs" ;;
+  # An install's failure judged from the machine's own facts: another architecture's lock, a host that doesn't answer, a full disk (xs-220).
+  install-failures) parts="install_failures logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # A machine's GPU use followed across its restart and update, never refused for it (cl-1117).
