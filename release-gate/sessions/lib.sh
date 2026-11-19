@@ -75,6 +75,10 @@ finish() {
   # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
   if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
+  # An order a refused rent left standing that `order` did not record (the session ended first): ended by its handle too.
+  for r in $(standing "$OUT"/rent*.out "$OUT"/rent*.err); do
+    grep -qsxF "$r" "$OUT/rental" || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; }
+  done
   for r in "${RIDS[@]}"; do
     local tries=0
     until gone "$r"; do
@@ -315,11 +319,22 @@ quote() {
 # An order waiting for capacity has it long before its machine has a name (cl-979).
 accepted() { grep -m1 '"type":"rental.accepted"' "$1" 2>/dev/null | jq -r '.rental_id // empty' 2>/dev/null; }
 
+# standing <file>...: each order a refused rent left standing, by the handle its refusal says to end (`next`: `cozy machine end
+# rent-…`), when this computer's Calcifer minted it (its key, as machines.sh `own` finds them). 44499990978: the Hub didn't answer
+# the order in time, the rent's retry was refused `rental_order_pending`, and the order went on with nothing to end it (cl-1311).
+standing() {
+  local h
+  for h in $(cat "$@" 2> /dev/null | jq -Rr 'fromjson? | .error.next[]? | strings | capture("^cozy machine end (?<h>rent-[0-9a-f]+)$").h' | sort -u); do
+    [ ! -f ~/.cozy/keys/"rental-$h.pem" ] || echo "$h"
+  done
+}
+
 # order [SKU]: one rental ($SKU by default) ordered, its boot followed in the background; `ready` waits for it. rent =
 # order + ready. Its rental id goes into RIDS and $OUT/rental once its Hub accepts it, so the trap, the guard (the first
-# order starts it) and the workflow's cleanup end it whether or not it was ever placed.
+# order starts it) and the workflow's cleanup end it whether or not it was ever placed. A rent refused while its order stands
+# (`standing`) is the same order: its handle goes there at once, and it is followed until its Hub accepts it.
 order() {
-  local i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15 r
+  local i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15 r h
   # A SKU no provider has is often offered again within minutes: the order is placed again, six times over about 6 min.
   while :; do
     # The rent never holds a session's rent lock (fd 9): the session does, until its Hub accepts the order.
@@ -328,12 +343,22 @@ order() {
     [ -n "$r" ] || r=$(accepted "$OUT/rent$i.out")
     [ -z "$r" ] || break
     wait "$RP"
+    h=$(standing "$OUT/rent$i.out" "$OUT/rent$i.err" | head -1)
+    if [ -n "$h" ]; then
+      RIDS[i]=$h RP=; echo "$h" >> "$OUT/rental"
+      say "the rent was refused ($(jq -Rr 'fromjson? | .error.code // empty' "$OUT/rent$i.out" | head -1)), but its order $h stands: following it"
+      until r=$(cozy machine show "$h" --json 2> /dev/null | jq -r '.rental_id // empty'); [ -n "$r" ]; do
+        [ "$(state "$h")" = booting ] || fail "the order $h ended with no rental: $(cozy machine show "$h" 2>&1 | tail -c 300)"
+        sleep 10
+      done
+      break
+    fi
     [ "$try" -lt 6 ] && grep -qs sku_out_of_stock "$OUT/rent$i.out" "$OUT/rent$i.err" ||
       fail "the order was not accepted: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; printf -v "SKU_$i" %s "$sku"
+  RID=$r; RIDS[i]=$RID; echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"; printf -v "SKU_$i" %s "$sku"
   say "rental $RID ordered"
   guard
 }
@@ -343,8 +368,12 @@ order() {
 ready() {
   local i=${1:-$((${#RIDS[@]} - 1))} p RRC
   RID=${RIDS[$i]}; p=RP_$i
-  wait "${!p}"; RRC=$?
-  [ "$RRC" = 0 ] || fail "boot failed: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
+  if [ -n "${!p}" ]; then
+    wait "${!p}"; RRC=$?
+    [ "$RRC" = 0 ] || fail "boot failed: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
+  else  # a standing order (`order`): no rent follows its boot, so its state does
+    while [ "$(state "$RID")" = booting ]; do sleep 10; done
+  fi
   [ "$(state "$RID")" = ready ] || fail "$RID is $(state "$RID"), not ready"
   cozy machine show "$RID" --json > "$OUT/show$i.json" 2> "$OUT/show$i.err"; cozy machine show "$RID" > "$OUT/show$i.txt" 2>&1
   [ "$i" != 0 ] || { cp "$OUT/show0.json" "$OUT/show.json"; cp "$OUT/show0.txt" "$OUT/show.txt"; }
@@ -356,6 +385,8 @@ ready() {
   # GPU, or none for the CPU machine, as `cozy machine show` counts them (belgrieve, 44192794516: "0 GPUs, not the 1").
   local s=SKU_$i asked got sku
   asked=$(grep -m1 '"type":"rental.accepted"' "$OUT/rent$i.out" | jq -r '.gpus // empty')
+  # A standing order printed no acceptance: it asked RENT_ARGS' --gpus, else one.
+  [ -n "${!p}" ] || { [[ " $RENT_ARGS " =~ \ --gpus\ ([0-9]+)\  ]] && asked=${BASH_REMATCH[1]} || asked=1; }
   ! jq -e '(.rental.accelerator // "") | ascii_downcase == "cpu"' "$OUT/show$i.json" > /dev/null || asked=0
   got=$(jq '.status.gpus // [] | length' "$OUT/show$i.json") sku=$(jq -r '.sku // .rental.sku // empty' "$OUT/show$i.json")
   [ -z "$sku" ] || [ "$sku" = "${!s}" ] || fail "$NAME is $sku, not the ${!s} asked for"

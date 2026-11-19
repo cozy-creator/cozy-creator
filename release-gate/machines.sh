@@ -12,10 +12,11 @@ machines_json() {
   return 1
 }
 
-# listed <rental id or machine name> [cli]: a machine of that rental id or name that has not ended, or no listing.
+# listed <rental id, machine name or alias> [cli]: a machine so called that has not ended, or no listing. An order's handle
+# (`rent-…`) stays its machine's alias once its Hub names it.
 listed() {
   local j; j=$(machines_json "${2:-cozy}") || return 0
-  jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r) and .state != "ended")' <<<"$j" > /dev/null
+  jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r or .alias == $r) and .state != "ended")' <<<"$j" > /dev/null
 }
 
 # own [cli]: what this computer's Calcifer ordered and has not ended, a line each: its rental id, else (an order its Hub
