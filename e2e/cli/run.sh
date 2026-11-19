@@ -203,6 +203,19 @@ if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry gui
 fi
 }
 
+# An observation keeps eight fields (xs-220, hack audit runtime #12; xs-142): a row with more keeps its first eight and says, in a
+# warn log row, which it dropped, never cutting them silently; once for its name, however often it is logged.
+observation_cap() {
+step "an observation past its field cap says which fields it dropped"
+cell observed-cap "$here/script/observed.py" times:=3 || return 0
+local logs='[inputs | select(.type? == "run.log")]'
+grep '^{' "$OUT/observed-cap.ndjson" | jq -en "$logs | any(.text | startswith(\"many fields field_0=0\"))" > /dev/null \
+  || { check "observed-cap: its log row isn't in the run's lines"; return 0; }
+grep '^{' "$OUT/observed-cap.ndjson" | jq -en "$logs | map(select((.level == \"warn\" or .level == \"warning\")
+    and (.text | startswith(\"many fields: 10 fields, past the 8 a row keeps\")) and (.text | contains(\"dropped=field_8,field_9\")))) | length == 1" > /dev/null \
+  || check "observed-cap: not exactly one warn line naming the dropped fields for its three rows: $(grep '^{' "$OUT/observed-cap.ndjson" | jq -cn "$logs | map({level, text})" | head -c 600)"
+}
+
 # An on-demand model slot whose model the Hub doesn't have (xs-186): a request that never reads it completes, and one that
 # reads it is refused with one line naming the slot, the model and why.
 lazy_slots() {
@@ -751,6 +764,8 @@ case $SHARD in
   " ;;
   # A warm run's time outside its compute (cl-1172), alone.
   overhead) parts="run_overhead logs" ;;
+  # An observation past its field cap says which fields it dropped (xs-220, hack audit runtime #12), alone.
+  observation-cap) parts="observation_cap logs" ;;
   executors) parts="
     second_executor
     lifetime
@@ -956,6 +971,7 @@ case $SHARD in
     script_package
     one_name_two_paths
     image_ratio
+    observation_cap
     lazy_slots
     run_follow
     time_left

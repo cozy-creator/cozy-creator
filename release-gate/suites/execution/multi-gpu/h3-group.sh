@@ -27,7 +27,7 @@ h3_group() {
   # every sparse step dense (46678: dense_building 1152 of 1152, cr-268). A first call may run some while its per-length
   # object builds; a warm one (`*warm*`) runs none dense for that.
   sol=$(jq -c '[.calls[]?.measurements.observations[]? | select(.name == "attention.sol.calls") | .fields]
-    | {sparse: (map(.sparse // 0) | add // 0), building: (map(.dense_building // 0) | add // 0), ranks: length}' "$n.json" 2>/dev/null)
+    | {sparse: (map(.sparse // 0) | add // 0), building: (map(.dense_building // 0) | add // 0), ranks: (map(.rank) | unique | length)}' "$n.json" 2>/dev/null)
   if jq -e '.ranks > 0' <<< "$sol" >/dev/null 2>&1; then
     ok=PASS; jq -e '.sparse > 0' <<< "$sol" >/dev/null || ok=FAIL
     [[ $n != *warm* ]] || jq -e '.building == 0' <<< "$sol" >/dev/null || ok=FAIL
