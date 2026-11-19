@@ -48,6 +48,12 @@ done
 say "cozy $(cozy --version | awk '{print $2}'), $LOCAL from $TREE ($(git -C "$PACKAGES/$TREE" rev-parse --short HEAD 2> /dev/null)); this runner: $(nproc) CPUs, $(awk '/MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo) GiB RAM"
 
 in_project() { (cd "$RUN_PROJECT" && cozy "$@"); }
+# The checkout's Qwen as cozy reads it (cl-1286), before any box of it: its interface, for `needs-plan`.
+if [[ " $LOCAL " == *" qwen-image-2 "* ]]; then
+  cozy --json --full run "$SOURCE/qwen-image-2/image" --describe > "$OUT/qwen.describe.json" 2> "$OUT/qwen.describe.err" \
+    || fail "cozy can't read the checkout's qwen-image-2: $(tail -c 300 "$OUT/qwen.describe.err")"
+  say "the checkout's qwen-image-2/image estimate: $(jq -c '[.interface.entrypoints[]? | select(.name == "image") | .estimate | {size, ms: (.ms | .[0:120])}][0]' "$OUT/qwen.describe.json" 2> /dev/null)"
+fi
 qwen_held() { cozy --json machine show local 2> /dev/null | jq -c '[.status.models[]? | select(.repository | test("qwen")) | .total_bytes] | add // 0'; }
 nice -n 19 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1024x1024:rate=1' -frames:v 1 "$OUT/photo.png" || fail "no picture"
 in_project --json machine use local > "$OUT/use.json" 2>&1 || fail "machine use local: $(tail -c 300 "$OUT/use.json")"
@@ -121,7 +127,6 @@ say "stand-g was asked: $(grep -oE '"(POST|PUT) [^ ]+' "$OUT/stand-g.log" | sort
 say "q's job on the board: $(run_page board 2> /dev/null | jq -c '[.jobs[]? | select(.asset == "q")][-1] // {} | {state, machine, run, why}')"
 judge went "the waiting Qwen render went to stand-g by itself once it joined"
 if [[ " $LOCAL " == *" qwen-image-2 "* ]]; then
-  cozy --json --full run "$SOURCE/qwen-image-2/image" --describe > "$OUT/qwen.describe.json" 2> "$OUT/qwen.describe.err" || say "qwen describe: $(tail -c 300 "$OUT/qwen.describe.err")"
   QRUN=$(run_page board 2> /dev/null | jq -r '[.jobs[]? | select(.asset == "q") | .run // empty][-1] // empty')
   [ -n "$QRUN" ] && in_project --json --full run watch "$QRUN" --once > "$OUT/runs-q.json" 2>&1
   say "q's run on stand-g: $(jq -c 'def s(a; b): if a != null and b != null then ((b - a) / 100 | round / 10) else null end;
