@@ -624,7 +624,8 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   index, builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and
   finalizes (`yanked`: committed yanked, never the newest release). Its `benchmarks.json`, beside its pyproject.toml when it has
   one, goes with the release as its benchmarks (cl-1024): every row whole and naming one of its functions, refused by row
-  (`benchmarks_invalid`) before anything uploads. Its result is `Published` (`status: already published` for a version the Hub
+  (`benchmarks_invalid`) before anything uploads. A field this cozy doesn't read is left out of its rows, which publish, and
+  warned of once, naming its rows (cl-1279). Its result is `Published` (`status: already published` for a version the Hub
   holds).
 
 **Packages.**
