@@ -529,7 +529,7 @@ impl Projects {
         // What it shows of the old landing folder, if that waits for it to be read (cl-1036), held first.
         crate::old_outputs::opened(&api.machines.hubs.home().calcifer(), &project.id, &project.root);
         // What the legacy cut held for it in this computer's TensorFS store, copied in now it can be read (cl-1003).
-        if crate::store::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
+        if crate::old_outputs::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
             match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
                 Ok(Some(0)) | Ok(None) => {}
                 Ok(Some(gone)) => { let _ = api.calcifer.store().note_lost(&project.root, gone as u64); }
@@ -1015,7 +1015,7 @@ pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
     let store = crate::runs::files::store().map_err(|_| "this computer's file store can't be opened")?;
     // The project's own machine store, looked at by path only: opening it could write its layout under a running TensorD.
     let own = physical.join(".vault-machine").join("objects").join("blobs");
-    let record = crate::store::kept_path(calcifer, root).with_extension("release");
+    let record = crate::old_outputs::kept_path(calcifer, root).with_extension("release");
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| "it couldn't be written")?;
     let nonce = hex::encode(nonce);
@@ -1086,7 +1086,7 @@ pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
 /// (noted by `keep_left_on_local`) let go of there too; what the store keeps yet (another project's hold, a reader) is let go of at
 /// a later start (`release_kept`).
 fn release_left(root: &FsPath, calcifer: &FsPath) {
-    let kept = crate::store::kept_path(calcifer, root);
+    let kept = crate::old_outputs::kept_path(calcifer, root);
     if kept.exists() && std::fs::remove_file(&kept).is_err() {
         tracing::warn!(target: "cozy.service_health", code = "legacy_hold_kept", "a hold of the legacy cut stays until the next open");
         return;

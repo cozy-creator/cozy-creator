@@ -36,7 +36,6 @@ parse "$@"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
-. "$(dirname "$0")/hardcut.sh"
 . "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
@@ -1032,7 +1031,6 @@ case $SHARD in
     project_traces
     open_unlocks
     projectvault
-    hard_cut
     vault_leftovers
     kept_latents
     export_gone
@@ -1075,9 +1073,6 @@ case $SHARD in
   # A lock passing over a release no rental can install (cl-1011).
   lock-platforms) parts="lock_platforms logs" ;;
   # The legacy hard cut on a home 0.25.0 made and used, and on its store fenced as a 0.26 RC's (cl-1003).
-  hardcut) parts="hard_cut logs" ;;
-  hardcut-v8) export CUT_FROM=8; parts="hard_cut logs" ;;
-  hardcut-scale) parts="hard_cut_scale logs" ;;
   # A project an earlier import left with runs pending custody (Paul's lab) takes new work (cl-1003).
   projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).

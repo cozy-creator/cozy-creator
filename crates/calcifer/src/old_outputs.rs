@@ -30,6 +30,24 @@ fn list(calcifer: &Path) -> PathBuf {
 
 type Waiting = BTreeSet<(String, String)>;
 
+/// Where a project's files left on `local` are held in this computer's TensorFS store until its next open copies them in
+/// (`project::keep_left_on_local`): a header of just those objects, beside the store in `kept/`, which TensorFS roots while the
+/// file is there, whatever its uses' ages. Named by the project's folder, so nothing else records which project it is.
+pub(crate) fn kept_path(calcifer: &Path, root: &Path) -> PathBuf {
+    let folder = root.components().collect::<PathBuf>().to_string_lossy().into_owned();
+    calcifer.join("kept").join(format!("{}.cozytensors", crate::store::key_digest(&format!("cozy: files a locked project left on local\n{folder}"))))
+}
+
+/// `objects` held by TensorFS under `at` (`kept_path`) until that file is removed. Err: why it couldn't be, in a person's words.
+fn hold(store: &tensorfs::store::Store, at: &Path, objects: Vec<ObjectRef>) -> Result<(), &'static str> {
+    let header = Header::new(objects, None, vec![], Default::default()).map_err(|_| "its record couldn't be made")?;
+    let bytes = header.to_cbor().map_err(|_| "its record couldn't be made")?;
+    let dir = at.parent().expect("kept/");
+    platform::durable::private_dir(dir).map_err(|error| crate::project::write_cause(&error))?;
+    platform::durable::replace(at, &bytes, 0o600).map_err(|error| crate::project::write_cause(&error))?;
+    store.root_file(at, &ObjectRef::of(&bytes)).map_err(|error| crate::project::write_cause(&error))
+}
+
 /// A folder as one key, however its path was written (`lab` and `lab/`).
 fn key(root: &Path) -> String {
     crate::project::vault::logical(root).components().collect::<PathBuf>().to_string_lossy().into_owned()
@@ -117,7 +135,7 @@ fn hold_shown(calcifer: &Path, root: &Path, dirs: &[PathBuf]) -> Result<bool, &'
     if shown.is_empty() { return Ok(true); }
     let cache = crate::runs::files::store().map_err(|_| "this computer's file store can't be opened")?;
     let origin = tensorfs::store::Store::open(cache.root()).map_err(|error| crate::project::write_cause(&error))?.origin();
-    let held = crate::store::kept_path(calcifer, root);
+    let held = kept_path(calcifer, root);
     let mut objects: Vec<ObjectRef> = match std::fs::read(&held) {
         Ok(bytes) => Header::from_cbor(&bytes).map_err(|_| "its hold couldn't be read")?.objects().cloned().collect(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
@@ -128,7 +146,7 @@ fn hold_shown(calcifer: &Path, root: &Path, dirs: &[PathBuf]) -> Result<bool, &'
         let object = origin.put(file, None).map_err(|error| crate::project::write_cause(&error))?;
         if !objects.contains(&object) { objects.push(object); }
     }
-    crate::store::hold(cache, &held, objects)?;
+    hold(cache, &held, objects)?;
     Ok(true)
 }
 

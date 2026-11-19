@@ -11,8 +11,6 @@ use std::{
 };
 
 use crate::project::vault;
-mod hard_cut;
-pub(crate) use hard_cut::{hold, kept_path};
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Retry, Run, Status, Warning},
     config::Origin,
@@ -190,6 +188,8 @@ pub(crate) enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Calcifer's store is at version {0}, written by a newer cozy (this one reads {current}): run `cozy update` to go forward", current = VERSION)]
     Version(i64),
+    #[error("Calcifer's store is at version {0}, from a cozy before 0.26, which this one doesn't read: move it aside to start a new one")]
+    Older(i64),
     #[error("idempotency key {0:?} already names another submission")]
     Conflict(String),
     #[error("no machine named {0:?}")]
@@ -206,8 +206,6 @@ pub(crate) enum StoreError {
     ProjectKey(String),
     #[error("Calcifer's store could not flush its journal: {0}")]
     Flush(std::io::Error),
-    #[error("the legacy cut stopped and left Calcifer's store as it was: {0}")]
-    Cut(String),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
@@ -661,7 +659,7 @@ impl Drop for Reader<'_> {
 /// whose flush takes seconds a write waits one or two of them, not one per write queued ahead.
 /// The purger's due times are kept from the first start with `purge_due` on: that once, every known plaintext project is due, as each
 /// was at every start before; an encrypted one's never is (`project::purge`). Marked done by its own row, in the transaction that makes
-/// them due, so a store rebuilt with the table (the 0.25 hard cut) still takes them up once.
+/// them due.
 fn due_once(writer: &mut Connection) -> Result<()> {
     const STEP: &str = "purge_due";
     if writer.query_row("SELECT EXISTS (SELECT 1 FROM steps_done WHERE step = ?1)", [STEP], |row| row.get::<_, bool>(0))? {
@@ -783,7 +781,7 @@ fn keep_warm_set(tx: &Transaction<'_>, row: &RunRow) -> Result<()> {
     Ok(())
 }
 
-fn key_digest(key: &str) -> String {
+pub(crate) fn key_digest(key: &str) -> String {
     use sha2::{Digest as _, Sha256};
     hex::encode(Sha256::digest(key.as_bytes()))
 }
@@ -2003,9 +2001,6 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
-        // A 0.24/0.25 store, or a 0.26 RC's: written again with its old history cut, before anything opens it (cl-1003).
-        let found = if path.exists() { Connection::open(path)?.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? } else { 0 };
-        if matches!(found, 7 | 8) { hard_cut::rebuild(path, found)?; }
         let mut writer = Connection::open(path)?;
         register_owner(&writer,None)?;
         let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
@@ -2026,7 +2021,8 @@ impl Store {
             }
             // One an RC build cut before cl-1028 has no job type on its runs.
             VERSION => task_column(&mut writer)?,
-            other => return Err(StoreError::Version(other)),
+            older if older < VERSION => return Err(StoreError::Older(older)),
+            newer => return Err(StoreError::Version(newer)),
         }
         run_list_indexes(&writer)?;
         writer.execute_batch("CREATE INDEX IF NOT EXISTS machines_live ON machines (name) WHERE state <> 'ended';")?;
@@ -2048,16 +2044,6 @@ impl Store {
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         crate::state::project_used(&writer)?;
-        // What older Calcifers kept beside the store, at every start until none is left (cl-1003): a cut stopped after its rename
-        // still loses them.
-        if let Some(home) = path.parent() {
-            let admitted: std::collections::HashSet<String> = {
-                let mut stmt = writer.prepare("SELECT tree FROM maintenance_source_admissions")?;
-                let trees = stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
-                trees
-            };
-            crate::legacy_cleanup::retire(home, &admitted);
-        }
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
         private(path);
         let readers = Readers::open(path)?;
