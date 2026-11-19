@@ -35,7 +35,7 @@ export function hitOf(target: Container | null): Hit | null {
   return null
 }
 
-interface Picture { sprite: Sprite; key: string; handle?: MediaHandle; next?: MediaHandle; nextKey?: string; shownKey?: string; crop?: Texture; cover: boolean; box: Box; main: boolean; local: boolean }
+interface Picture { sprite: Sprite; key: string; handle?: MediaHandle; next?: MediaHandle; nextKey?: string; shownKey?: string; crop?: Texture; cover: boolean; box: Box; main: boolean; local: boolean; aspect?: number }
 
 /** One card's display objects, made once and changed in place: a hover, a store echo or a move never rebuilds them. */
 export class CardView {
@@ -422,6 +422,7 @@ export class CardView {
       this.pictures.set(key, picture)
     }
     picture.box = box; picture.cover = cover
+    picture.aspect = source.kind === "video" && !cover ? source.shape : undefined
     const wanted = JSON.stringify([request.source, request.width])
     if (picture.key !== wanted) {
       picture.key = wanted
@@ -460,8 +461,10 @@ export class CardView {
       shown = picture.crop!
     }
     picture.sprite.texture = shown
-    const fit = Math.min(picture.box.w / shown.width, picture.box.h / shown.height)
-    picture.sprite.width = shown.width * fit
+    // A poster is decoded to square pixels by the image loader, which ignores a video's pixel shape.
+    const width = picture.aspect ? shown.height * picture.aspect : shown.width
+    const fit = Math.min(picture.box.w / width, picture.box.h / shown.height)
+    picture.sprite.width = width * fit
     picture.sprite.height = shown.height * fit
     picture.sprite.position.set(picture.box.x + (picture.box.w - picture.sprite.width) / 2, picture.box.y + (picture.box.h - picture.sprite.height) / 2)
     if (revealed && picture.main && this.input) env.onRevealed(this.input.node.name, picture.handle?.aspect, picture.local)
@@ -512,21 +515,22 @@ export class CardView {
       const sprite = new Sprite({ texture: Texture.EMPTY, eventMode: "none" })
       this.pixels.addChild(sprite)
       const video = { sha, sprite, handle: undefined as unknown as VideoHandle }
-      video.handle = env.media.video(sha, () => { this.fitOver(video.sprite, video.handle.texture); env.invalidate() })
+      video.handle = env.media.video(sha, () => { this.fitOver(video.sprite, video.handle.texture, this.input?.show.picture?.shape); env.invalidate() })
       this.video = video
     }
-    if (this.video) this.fitOver(this.video.sprite, this.video.handle.texture)
+    if (this.video) this.fitOver(this.video.sprite, this.video.handle.texture, show.picture?.shape)
   }
 
-  private fitOver(sprite: Sprite, texture: Texture | undefined) {
+  private fitOver(sprite: Sprite, texture: Texture | undefined, aspect?: number) {
     if (!this.input) return
     sprite.visible = Boolean(texture)
     if (!texture) return
     const body = pictureBox(this.input.node)
     body.x -= this.input.node.box.x; body.y -= this.input.node.box.y
     sprite.texture = texture
-    const fit = Math.min(body.w / texture.width, body.h / texture.height)
-    sprite.width = texture.width * fit; sprite.height = texture.height * fit
+    const width = aspect ? texture.height * aspect : texture.width
+    const fit = Math.min(body.w / width, body.h / texture.height)
+    sprite.width = width * fit; sprite.height = texture.height * fit
     sprite.position.set(body.x + (body.w - sprite.width) / 2, body.y + (body.h - sprite.height) / 2)
   }
 

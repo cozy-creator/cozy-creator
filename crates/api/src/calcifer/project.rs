@@ -655,6 +655,9 @@ pub struct MainFile {
     pub width: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u64>,
+    /// A video's displayed width divided by its height, including pixel aspect and rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_aspect: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// A video's frames per second, for timecode.
@@ -789,6 +792,9 @@ pub struct Asset {
     pub width: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u64>,
+    /// A video's displayed width divided by its height, including pixel aspect and rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_aspect: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// Part of that file is fully transparent.

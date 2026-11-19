@@ -58,7 +58,7 @@ pub(super) struct Asked {
     w: Option<u32>,
     /// How many frames of a video, side by side. Held to 1 to 32.
     strip: Option<u32>,
-    /// A video's preview.
+    /// A video's brief preview or an audio file's browser-playable copy.
     #[serde(default)]
     preview: bool,
     /// A video's sound as a waveform: none if it has no sound.
@@ -91,6 +91,7 @@ impl Drawing {
         let hex = folder::hex_of(&self.sha256).to_ascii_lowercase();
         let front = if self.front { "-front" } else { "" };
         match (self.preview, self.field, self.frames) {
+            (true, "audio", _) => format!("{hex}-audio-playback"),
             (true, ..) => format!("{hex}-preview{front}"),
             _ if self.wave => format!("{hex}-{}-wave", self.width),
             (false, "video", 0) => format!("{hex}-{}-poster{front}", self.width),
@@ -149,7 +150,7 @@ pub(super) async fn thumb(
     if !matches!(field, "image" | "video" | "audio") {
         return Err(Refusal(Error::new(Kind::Validation, "thumb_unsupported", format!("{named} is {field}, and Cozy makes thumbnails only of pictures, videos and sounds."))));
     }
-    let preview = asked.preview && field == "video";
+    let preview = asked.preview && matches!(field, "video" | "audio");
     let wave = asked.wave && field == "video" && !preview;
     let frames = asked.strip.filter(|_| field == "video" && !preview && !wave).map_or(0, |n| n.clamp(1, MOST_FRAMES));
     let private = super::vault::encrypted(&project.root);
@@ -323,7 +324,7 @@ fn admitted(drawing: &Drawing) -> Result<Option<Option<super::vault::Read>>, Err
 
 /// The thumbnail called `name` in `dir`, if it is there.
 fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
-    ["png", "jpg", "mp4"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
+    ["png", "jpg", "mp4", "flac"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
 }
 
 /// `drawing` drawn into its project's store, unless it's there already. `None`: a lock waits for its project, or holds it.
@@ -399,6 +400,11 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
         Ok((out, "png"))
     };
     let (out, ext) = match drawing.field {
+        "audio" if drawing.preview => {
+            let out = part("flac")?;
+            run(ffmpeg, &input(&source), &strs(&["-map", "0:a:0", "-c:a", "flac"]), out.path())?;
+            (out, "flac")
+        }
         "audio" => wave()?,
         // No sound in it: a flat line, kept like any other, so it isn't asked of ffmpeg again.
         "video" if drawing.wave => match wave() {

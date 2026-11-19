@@ -6,7 +6,7 @@ import { ratioWords } from "../ratios"
 import { faceOf as runFace, faceSettles, short, type Face } from "../RunFace"
 import { orbitOf } from "../Orbit"
 import { type NodeState, viewState } from "../StateDot"
-import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, sentPictures, shownOf, toolName, valueIn, valuesOf } from "../shown"
+import { aspectOf, displayAspect, HEAD, hexOf, isPicture, makes, ratioOf, sentPictures, shownOf, toolName, valueIn, valuesOf } from "../shown"
 import { streamedWords } from "../streamed"
 import { clock, lineAt, mentionsIn } from "../text"
 
@@ -98,7 +98,7 @@ function pictureOf(view: ElementView): ScenePicture | undefined {
   if (own && view.preview) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
   // A file kept on another computer has no thumbnail here: it says where it is instead (as the RC's canvas did; asking 404s).
   if (shown && !shown.absent && ["image", "video", "audio"].includes(shown.field)) {
-    return { sha256: shown.sha256, path: shown.path, kind: shown.field, alpha: shown.alpha ?? undefined }
+    return { sha256: shown.sha256, path: shown.path, kind: shown.field, alpha: shown.alpha ?? undefined, shape: shown.display_aspect ?? undefined }
   }
   if (!shown && view.glimpse?.media === "image" && view.viewed === undefined) {
     return { kind: "image", glimpse: view.glimpse }
@@ -117,7 +117,8 @@ function shapeOf(view: ElementView, tools: Map<string, Tool>): string {
   const shown = shownOf(view)
   const asked = asset.prefixes?.find((version) => version.number === shown?.number)?.aspect_ratio
   if (asked && ratioOf(asked)) return ratioWords(asked)
-  if (shown?.width && shown.height) return ratioWords(shown.width / shown.height)
+  const measured = displayAspect(shown)
+  if (measured) return ratioWords(measured)
   if (!field) return ""
   if (field.auto) return view.auto ? `Auto · ${ratioWords(view.auto)}${view.autoFrom ? ` from ${view.autoFrom}` : ""}` : "Auto"
   return ratioWords(typeof field.default === "string" && ratioOf(field.default) ? field.default : String(field.ratios?.[0] ?? "1:1"))

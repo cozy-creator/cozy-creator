@@ -87,7 +87,7 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
         project.require_view()?;
         return Ok(model.clone());
     }
-    let (api, read, reading, began) = (api.clone(), project.clone(), access.clone(), Instant::now());
+    let (reading_api, read, reading, began) = (api.clone(), project.clone(), access.clone(), Instant::now());
     let answer = tokio::task::spawn_blocking(move || {
         // Dropping a canceled request's JoinHandle cannot stop a blocking worker.
         // Its own clone keeps the mounted view leased until this read ends.
@@ -95,7 +95,7 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
         // Held by this blocking task now: its own reads of the project (a tool it starts) are granted beside it.
         let _here = _reading.share();
         read.require_view()?;
-        read_model(&api, &read, rev, heard)
+        read_model(&reading_api, &read, rev, heard)
     }).await;
     let model = Arc::new(answer.map_err(|why| Error::new(Kind::Internal, "project_read", why.to_string()))??);
     let read_ms = began.elapsed().as_secs_f64() * 1000.0;
@@ -103,6 +103,15 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
         info!(phase = "project_read", wait_ms, read_ms);
     }
     project.require_view()?;
+    // Measurements from older builds lack display geometry or corrected audio timing.
+    // Refresh them after the first read so an existing project needn't wait to open.
+    if model.lock.files.values().any(|file| file.here && match file.field() {
+        "video" => file.fps > 0.0 && file.display_aspect.is_none(),
+        "audio" => file.duration_ms > 0 && !file.audio_measured,
+        _ => false,
+    }) {
+        super::measure_soon(api, project);
+    }
     *held = Some(model.clone());
     Ok(model)
 }

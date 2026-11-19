@@ -130,9 +130,10 @@ export interface HeldPreview {
 /**
  * `project`'s preview of `sha256`, Calcifer's `path`, in this page's memory (`Transport.media`) and handed to `then` once it's there, asked
  * for as every file is (`asking`): a `202` waits for the file's `thumb` event, and one that failed or that nothing answered is asked again.
+ * `gone` is told when it is unavailable.
  */
 export function heldPreview(transport: Pick<Transport, "media">, project: string, sha256: string, path: string,
-  then: (held: HeldMedia) => void): HeldPreview {
+  then: (held: HeldMedia) => void, gone?: () => void): HeldPreview {
   let stopped = false
   const ask = () => {
     transport.media(path).then((held) => {
@@ -145,7 +146,7 @@ export function heldPreview(transport: Pick<Transport, "media">, project: string
       else asked.failed()
     })
   }
-  const asked = asking(project, sha256, path, ask)
+  const asked = asking(project, sha256, path, ask, gone)
   asked.start()
   return {
     failed: () => asked.failed(),

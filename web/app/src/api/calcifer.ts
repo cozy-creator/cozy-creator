@@ -227,7 +227,11 @@ path?: string | null,
 /**
  * The hash of that file, the field that names one of its type, and what is measured of it.
  */
-sha256?: string | null, field?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null,
+sha256?: string | null, field?: string | null, width?: number | null, height?: number | null,
+/**
+ * A video's displayed width divided by its height, including pixel aspect and rotation.
+ */
+display_aspect?: number | null, duration_ms?: number | null,
 /**
  * Part of that file is fully transparent.
  */
@@ -1670,7 +1674,11 @@ field: string,
 /**
  * A box of words' version: its words, as its file holds them (xs-204).
  */
-text?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null,
+text?: string | null, width?: number | null, height?: number | null,
+/**
+ * A video's displayed width divided by its height, including pixel aspect and rotation.
+ */
+display_aspect?: number | null, duration_ms?: number | null,
 /**
  * A video's frames per second, for timecode.
  */

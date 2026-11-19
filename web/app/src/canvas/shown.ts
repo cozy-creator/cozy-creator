@@ -25,8 +25,8 @@ export function shownOf(view: ElementView, selectedOnly = false): Shown | null {
   const held = (selectedOnly ? undefined : version(watch?.number) ?? version(view.viewed)) ?? version(asset.version)
   if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
-    const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
-    return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine, ...(asset.kind === "image" ? { number: 1 } : {}) }
+    const { path, sha256, field, width, height, display_aspect, duration_ms, alpha, absent, machine } = asset
+    return { output: field, path, sha256, field, width, height, display_aspect, duration_ms, alpha, absent, machine, ...(asset.kind === "image" ? { number: 1 } : {}) }
   }
   const newest = versions.at(-1)
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
@@ -223,15 +223,18 @@ export function sentShape(view: ElementView, number?: number): number | undefine
   return makes(view) ? madeShape(view) : view.aspect
 }
 
+export function displayAspect(file?: Pick<MainFile, "width" | "height" | "display_aspect"> | null): number | undefined {
+  return file?.display_aspect ?? (file?.width && file.height ? file.width / file.height : undefined)
+}
+
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? makingShape(view) : undefined
   if (made) return made
   // Showing a take, its own shape, whatever the last one measured was. A take just landed and not measured yet (its file on its way here)
   // keeps the shape of the newest one that is: a box never changes size because a render landed (cl-936).
   const shown = shownOf(view)
-  const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  const before = [...(view.asset?.prefixes ?? [])].reverse().find((held) => held.main?.width && held.main.height)?.main
-  return measured ?? view.aspect ?? (before ? before.width! / before.height! : undefined) ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  const before = [...(view.asset?.prefixes ?? [])].reverse().find((held) => displayAspect(held.main))?.main
+  return displayAspect(shown) ?? view.aspect ?? displayAspect(before) ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 /** Image navigation keeps the height established by v1 and the saved canvas width.
