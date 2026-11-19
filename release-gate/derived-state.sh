@@ -18,7 +18,7 @@ memos=$({ echo "$G/stage-memo"; find /var/lib/cozy -maxdepth 7 -type d -name sta
 files() { n=0; for d in "$@"; do [ -d "$d" ] && n=$((n + $(find "$d" -mindepth 1 -type f 2>/dev/null | wc -l))); done; echo "$n"; }
 if [ "${1:-census}" = reset ] || [ "${1:-census}" = settle ]; then
   # shellcheck disable=SC2086 # boot directories, none with spaces
-  rm -rf $D; D=
+  rm -rf $D "$S/derived"; D=  # the store's: where a TensorFS before cl-1318 kept them
   caches=; [ "$1" = settle ] || caches="$G/kernels $G/jit"
   # shellcheck disable=SC2086 # one path a line, none with spaces
   for d in $memos "$G/peaks" $caches; do [ -d "$d" ] && find "$d" -mindepth 1 -delete 2>/dev/null; done
