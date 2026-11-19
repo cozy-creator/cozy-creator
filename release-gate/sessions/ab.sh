@@ -92,6 +92,14 @@ for tree in $(param install '[]' | jq -r '.[]'); do
     fail "tree $tree's qwen-image-2 did not install here: $(grep -v '^ *$' "$OUT/install-$tree.txt" | tail -5 | tr '\n' ' ' | cut -c1-600)"
   say "tree $tree's qwen-image-2 installed here: $(tail -3 "$OUT/install-$tree.txt" | tr '\n' ' ' | cut -c1-400)"
 done
+# se-154 (this proof branch only): the account's machines, and each `inspect` rental, before anything is ordered.
+if [ "$(param machines false)" = true ]; then
+  cozy machine ls --json > "$OUT/machines.json" 2>&1; cozy machine ls > "$OUT/machines.txt" 2>&1
+  say "machines: $(head -c 1500 "$OUT/machines.txt" | tr '\n' ';')"
+  for r in $(param inspect '[]' | jq -r '.[]'); do
+    cozy machine show "$r" > "$OUT/inspect-$r.txt" 2>&1; say "inspect $r: $(head -c 600 "$OUT/inspect-$r.txt" | tr '\n' ';')"
+  done
+fi
 i=0
 for ref in $(param show '[]' | jq -r '.[]'); do
   i=$((i + 1))
