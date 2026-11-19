@@ -1,62 +1,61 @@
 {
- "tree": "rc",
- "cap": "6GiB",
- "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
- "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
- "need_s": 9000,
- "twin_s": 1200,
- "stall_s": 1800,
- "quiet_s": 10800,
- "floor_mb_s": 25,
- "provider": "runpod",
- "cells": [
-  {
-   "name": "qi2-turbo-hardest",
-   "target": "qwen-image-2/generate_turbo",
-   "args": [
-    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
-    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
-    "megapixels:=4",
-    "prompt_upsampling:=true",
-    "seed:=30024"
-   ],
-   "max_s": 1800
-  },
-  {
-   "name": "qi2-gen-hardest",
-   "target": "qwen-image-2/generate",
-   "args": [
-    "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
-    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
-    "megapixels:=4",
-    "prompt_upsampling:=true",
-    "seed:=30023"
-   ],
-   "max_s": 2400
-  },
-  {
-   "name": "krea-raw-edit-control",
-   "target": "krea-2/generate",
-   "args": [
-    "prompt=<P1>, <P2> side by side on a quay at dusk, photo",
-    "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"}]",
-    "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"}]",
-    "megapixels:=2",
-    "seed:=30069"
-   ],
-   "max_s": 2400
-  },
-  {
-   "name": "ideo-gen-hardest",
-   "target": "ideogram-4/generate",
-   "args": [
-    "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing; a hand-lettered card in the foreground reads \"FRESH TODAY\", photo",
-    "regions:=[{\"box\":[0.05,0.6,0.45,0.95],\"prompt\":\"a hand-lettered card\",\"text\":\"FRESH TODAY\"},{\"box\":[0.55,0.05,0.95,0.4],\"prompt\":\"a paper banner\",\"text\":\"WELCOME\"},{\"box\":[0.3,0.3,0.7,0.7],\"prompt\":\"a white lighthouse\"}]",
-    "megapixels:=4",
-    "prompt_upsampling:=true",
-    "seed:=30036"
-   ],
-   "max_s": 2400
-  }
- ]
+  "tree": "rc",
+  "cap": "6GiB",
+  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2388%2Bg69d526d2-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2d51d47ab12dedf779a83a19da825359e1bd638a599bdcb89ccdb27ae65ce5ac",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3523%2Bg09527fd3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=e9cdd9ff1e58c8d8b1b8ffffc839c9b93adcf438b04d041b64edd8e8a6a2e8ff",
+  "need_s": 9000,
+  "twin_s": 1200,
+  "stall_s": 1800,
+  "quiet_s": 10800,
+  "floor_mb_s": 25,
+  "cells": [
+    {
+      "name": "qi2-turbo-hardest",
+      "target": "qwen-image-2/generate_turbo",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30024"
+      ],
+      "max_s": 1800
+    },
+    {
+      "name": "qi2-gen-hardest",
+      "target": "qwen-image-2/generate",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30023"
+      ],
+      "max_s": 2400
+    },
+    {
+      "name": "krea-raw-edit-control",
+      "target": "krea-2/generate",
+      "args": [
+        "prompt=<P1>, <P2> side by side on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"}]",
+        "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"}]",
+        "megapixels:=2",
+        "seed:=30069"
+      ],
+      "max_s": 2400
+    },
+    {
+      "name": "ideo-gen-hardest",
+      "target": "ideogram-4/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing; a hand-lettered card in the foreground reads \"FRESH TODAY\", photo",
+        "regions:=[{\"box\":[0.05,0.6,0.45,0.95],\"prompt\":\"a hand-lettered card\",\"text\":\"FRESH TODAY\"},{\"box\":[0.55,0.05,0.95,0.4],\"prompt\":\"a paper banner\",\"text\":\"WELCOME\"},{\"box\":[0.3,0.3,0.7,0.7],\"prompt\":\"a white lighthouse\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30036"
+      ],
+      "max_s": 2400
+    }
+  ]
 }
