@@ -1,0 +1,540 @@
+{
+ "gpus": 2,
+ "need_s": 7800,
+ "order": "one-way",
+ "compare": [
+  [
+   "b1-5s-g2",
+   "s1-5s-g2"
+  ],
+  [
+   "b1-20s-g2",
+   "s1-20s-g2"
+  ],
+  [
+   "s2-5s-g2",
+   "b2-5s-g2"
+  ],
+  [
+   "s2-20s-g2",
+   "b2-20s-g2"
+  ],
+  [
+   "s1-5s-g2",
+   "d2-5s-g2"
+  ],
+  [
+   "s1-20s-g2",
+   "d2-20s-g2"
+  ]
+ ],
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "a1-warm1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35001",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2347+g24fb6ecc-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "a1-5s-g1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35002",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "a1-20s-g1",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35003",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "a1-warm2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35004",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "warmup": true
+  },
+  {
+   "name": "a1-5s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35005",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "a1-20s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35006",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "b1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35007",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448204207",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "b1-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35100",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "b1-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35101",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "s1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35008",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448211168",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "s1-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35100",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "s1-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35101",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35009",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448218079",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "d1-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35010",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d1-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35011",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d1-20s-g2b",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35012",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d2-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35013",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448218079",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "keep_state": true,
+   "warmup": true
+  },
+  {
+   "name": "d2-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35100",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "d2-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35101",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "s2-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35014",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448211168",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "s2-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35200",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "s2-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35201",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "b2-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35015",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "44448204207",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "b2-5s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35200",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "b2-20s-g2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35201",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "a2-warm",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35016",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ],
+   "update": {
+    "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.27.0/cozy_runtime-0.48.0.dev2347+g24fb6ecc-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3418+g42fb656b-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "a2-5s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=5",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35017",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "a2-20s-g2",
+   "tree": "rc",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A potter shapes a tall vase on a spinning wheel in a sunlit workshop; the camera pushes in slowly on wet clay and steady hands. Sound: the hum of the wheel, wet clay, soft radio music.",
+    "duration_s:=20",
+    "resolution=1080p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=35018",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  }
+ ]
+}
