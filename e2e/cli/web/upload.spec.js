@@ -216,9 +216,10 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
     await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
     await canvasIdle(page);
     await expect(page.getByRole('button', { name: /more zoom options$/ })).toHaveText('33%');
-    // Five across, four down, as the page lays a drop of twenty out: room for them all, clear of the boxes there.
+    // Nine across, three down, as the page lays a drop of twenty out nearest 16:9 (homes.ts `tile`, cl-1319): room for them all, clear of the
+    // boxes there.
     const zoom = 0.33;
-    const spot = await room(page, Math.ceil(5 * 272 * zoom) + 40, Math.ceil(2300 * zoom) + 40);
+    const spot = await room(page, Math.ceil(2700 * zoom) + 40, Math.ceil(1600 * zoom) + 40);
     const at = { x: spot.x + Math.ceil(120 * zoom) + 4, y: spot.y + Math.ceil(16 * zoom) + 4 };
     await watch(page, pictures);
     await dropFiles(page, TWENTY.map(({ file, type, bytes }) => ({ name: file, type, bytes })), at);
