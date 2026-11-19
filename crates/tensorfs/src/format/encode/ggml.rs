@@ -137,13 +137,25 @@ fn max(a: f32, b: f32) -> f32 {
     }
 }
 
+/// A legacy block's `id` (`d ? 1/d : 0`), and 0 where `d` rounds to an fp16 zero: that block decodes to zeros whatever its
+/// quants, which are then zeros too, never `x / d` saturated from an infinite `id`. Its input is subnormal bf16 (~1e-39),
+/// which gguf-py's bf16 writer flushes to zero, so llama-quantize's file holds the same zero quants (Qwen3.6-35B-A3B's
+/// expert stacks, 44438135332). Every decoded value is unchanged.
+fn inverse(d: f32) -> f32 {
+    if d != 0.0 && f16(fp16(d)) != 0.0 {
+        1.0 / d
+    } else {
+        0.0
+    }
+}
+
 fn q8_0(x: &[f32], y: &mut [u8]) {
     let mut amax = 0.0f32;
     for v in x {
         amax = max(amax, v.abs());
     }
     let d = amax / 127.0;
-    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+    let id = inverse(d);
     y[0..2].copy_from_slice(&fp16(d));
     for (q, v) in y[2..34].iter_mut().zip(x) {
         *q = (v * id).round() as i8 as u8;
@@ -159,7 +171,7 @@ fn q5_0(x: &[f32], y: &mut [u8]) {
         }
     }
     let d = top / -16.0;
-    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+    let id = inverse(d);
     y[0..2].copy_from_slice(&fp16(d));
     let mut qh = 0u32;
     for j in 0..16 {
@@ -183,7 +195,7 @@ fn q5_1(x: &[f32], y: &mut [u8]) {
         }
     }
     let d = (hi - lo) / 31.0;
-    let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+    let id = inverse(d);
     y[0..2].copy_from_slice(&fp16(d));
     y[2..4].copy_from_slice(&fp16(lo));
     let mut qh = 0u32;
