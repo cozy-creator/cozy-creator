@@ -543,14 +543,27 @@ if [ -z "$ON" ]; then
       RID=; rm -f acquisition.jsonl rental
       continue
     fi
+    # An order that ended unfilled under the market (`rental_ended` "…; above it the cheapest costs X", or "…; the cheapest that
+    # fits costs X") bills nothing, and one at the market's price can place: ordered again, as a repriced one. 44499695629: an
+    # order agreed 1.513 USD/h on offers whose provider's balance was short (th-425), ended under 1.536, and the gate failed.
+    ended=
+    if [ "$rc" != 0 ] && grep -qs '"code":"rental_ended"' rent.out rent.err; then
+      grep -ohsE '[^"(]*cheapest (that fits )?costs [0-9.]+ USD per hour' rent.out rent.err | head -1 > acquisition.repriced
+      [ ! -s acquisition.repriced ] || ended=1
+    fi
     [ -s acquisition.repriced ] || break
-    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
-    cat rent.err >> rent-orders.err
+    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*|^no .*' acquisition.repriced | head -1)"
+    cat rent.out rent.err >> rent-orders.err
     if [ "$order" = "$REORDERS" ]; then
       echo "$REORDERS orders, each under the market by the time it could place" > acquisition.stuck
       break
     fi
-    "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
+    # One that ended is checked gone; one still waiting is ended first.
+    if [ -n "$RID" ] && [ -n "$ended" ]; then
+      ! listed "$RID" "$CLI" || { log "rent failed: $RID ended unfilled, yet is still listed"; exit 1; }
+    elif [ -n "$RID" ]; then
+      "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
+    fi
     RID=; rm -f acquisition.repriced acquisition.jsonl rental
   done
   acquired
