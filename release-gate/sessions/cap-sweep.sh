@@ -25,6 +25,7 @@
 #   twin_s     an uncapped twin's time cap (2400)
 #   provider   the GPU provider the rental is ordered from (runpod or vast; empty: the Hub's choice)
 #   quiet_s    lib.sh's quiet window; set it above stall_s, which judges a quiet run here by the pod's GPU and disk
+#   host_free_gib  optional: a ballast leaves cozy this much host memory, as a smaller computer would
 #   file       a JSON file in this checkout holding all of these (lib.sh)
 # A cell that completed under the cap runs once more uncapped on the same pod (`<cell>-uncapped`, another seed) unless its
 # `twin` is false: what the cap costs in time. Every record must name the Runtime and TensorFS the pod was moved to: a cell
@@ -156,6 +157,26 @@ pod() {
 say "host: $(pod 'echo "$(nproc) cores, $(awk "/^MemTotal/ {printf \"%.0f\", \$2 / 1048576}" /proc/meminfo) GiB RAM, driver and card MiB $(nvidia-smi --query-gpu=driver_version,memory.total --format=csv,noheader,nounits | head -1)"' 60)"
 # The host bounds TensorD's executors meet (W5's number is the tightest on their path): every memory.max under the root.
 say "host bounds: $(pod 'for f in /sys/fs/cgroup/memory.max $(find /sys/fs/cgroup -mindepth 2 -maxdepth 6 -name memory.max 2> /dev/null | head -40); do v=$(cat "$f" 2> /dev/null); [ "$v" = max ] || [ -z "$v" ] || printf "%s=%s " "${f#/sys/fs/cgroup}" "$v"; done' 60)"
+# host_free_gib (optional): a computer whose own programs leave cozy this many GiB of host memory (a 32 GB desktop): a
+# ballast on the pod's root shell holds the rest of what the kernel says is available, touched, until the session ends.
+HOSTFREE=$(param host_free_gib '')
+if [ -n "$HOSTFREE" ]; then
+  [[ $HOSTFREE =~ ^[0-9]+$ ]] || fail "host_free_gib $HOSTFREE"
+  say "host ballast: $(pod "nohup python3 -c 'import mmap, time
+avail = int(open(\"/proc/meminfo\").read().split(\"MemAvailable:\")[1].split()[0]) * 1024
+cap = open(\"/sys/fs/cgroup/memory.max\").read().strip()
+if cap != \"max\":
+    avail = min(avail, int(cap) - int(open(\"/sys/fs/cgroup/memory.current\").read()))
+want = avail - $HOSTFREE * (1 << 30)
+held = []
+while want > 0:
+    n = min(want, 1 << 30); m = mmap.mmap(-1, n)
+    for o in range(0, n, 4096): m[o] = 1
+    held.append(m); want -= n
+open(\"/var/tmp/ballast.ready\", \"w\").write(str(len(held)))
+time.sleep(1 << 30)' > /var/tmp/ballast.log 2>&1 & echo \$! > /var/tmp/ballast.pid; for i in \$(seq 900); do [ -f /var/tmp/ballast.ready ] && break; sleep 2; done; echo \"\$(cat /var/tmp/ballast.ready 2> /dev/null || echo none) GiB held; MemAvailable \$(awk '/^MemAvailable/ {print int(\$2 / 1048576)}' /proc/meminfo) GiB\"" 1900)"
+  say "host bounds with the ballast: $(pod 'for f in /sys/fs/cgroup/memory.max $(find /sys/fs/cgroup -mindepth 2 -maxdepth 6 -name memory.max 2> /dev/null | head -40); do v=$(cat "$f" 2> /dev/null); [ "$v" = max ] || [ -z "$v" ] || printf "%s=%s " "${f#/sys/fs/cgroup}" "$v"; done' 60)"
+fi
 . "$(dirname "$0")/gpu-reader.sh"
 # The pod's own logs leave with it.
 before_end() {

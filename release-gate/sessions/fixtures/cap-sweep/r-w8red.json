@@ -1,0 +1,26 @@
+{
+  "tree": "rc",
+  "cap": "6GiB",
+  "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2399%2Bg0d19c555-cp312-abi3-manylinux_2_28_x86_64.whl#sha256=2607c8847e87c9865def855602369e884b3d8e6329591f608589a1b5be98cd4a",
+  "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529%2Bg021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=48605c68b9699cb65434cdef7700d470f2c0715980bddd9049dc01d3ec5d769c",
+  "need_s": 2400,
+  "twin_s": 600,
+  "stall_s": 1800,
+  "quiet_s": 10800,
+  "floor_mb_s": 100,
+  "cells": [
+    {
+      "name": "ltx-i2v-5s",
+      "target": "ltx-2.5/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+        "--file",
+        "first_frame={pic1}",
+        "seed:=30070"
+      ],
+      "max_s": 900,
+      "twin": false
+    }
+  ],
+  "host_free_gib": 36
+}
