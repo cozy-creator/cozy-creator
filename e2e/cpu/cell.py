@@ -43,6 +43,10 @@ class Cell(TypedDict):
     #: this cell's thumbnail keeps from that one's: the same request without its adapter or with another map, which an
     #: adapter zeroed or not applied (or a map not read) comes within.
     apart: NotRequired[dict[str, float]]
+    #: A group's sharded stages' degree keys (`execution.transport.stages[*].key`, cr-348) against another cell's, run here
+    #: first (`entry/name`): True, the same stages with the same keys; False, no key in common. A key is the stage's first
+    #: sharded call's tensor shapes, so a request's length changes it and its seed does not.
+    keys: NotRequired[dict[str, bool]]
     #: where `apart` is judged, `[x0, y0, x1, y1]` of the picture (0-1): it steers there, and the rest keeps within a
     #: reference's tolerance of the other cell's (an inpaint's area)
     region: NotRequired[tuple[float, float, float, float]]

@@ -965,6 +965,26 @@ def twin_gap(mine: Files, theirs: Files, result: Json) -> tuple[str, float]:
     return where, worst
 
 
+def degree_keys(reply: Reply) -> dict[str, str]:
+    """Each sharded stage's degree key in the attempt's record, by its row (`execution.transport.stages`)."""
+    transport = cast(dict[str, Json], cast(dict[str, Json], reply.get("execution") or {}).get("transport") or {})
+    stages = cast(dict[str, dict[str, Json]], transport.get("stages") or {})
+    return {name: str(row["key"]) for name, row in stages.items() if row.get("key")}
+
+
+def keyed(mine: dict[str, str], other: str, same: bool, theirs: dict[str, str] | None) -> None:
+    """`Cell.keys`: this cell's degree keys against `other`'s."""
+    if theirs is None:
+        raise Failed(f"no degree keys of {other} to judge against: run it first")
+    if not mine or not theirs:
+        where = f"{other}'s record" if mine else "this record"
+        raise Failed(f"no sharded stage's degree key in {where}")
+    if same and mine != theirs:
+        raise Failed(f"degree keys {mine} differ from {other}'s {theirs}")
+    if not same and set(mine.values()) & set(theirs.values()):
+        raise Failed(f"degree keys {mine} share one with {other}'s {theirs}")
+
+
 def steered(seen: Seen, other: str, least: float, theirs: Seen | None,
             region: tuple[float, float, float, float] | None = None) -> str:
     """How far this output's thumbnail is from `other`'s (its run here, else its reference): at least `least` of 255
@@ -1248,6 +1268,8 @@ def main() -> int:
     ran: dict[str, Seen] = {}
     #: and its output files, for a twin compared sample by sample
     kept: dict[str, Files] = {}
+    #: and its sharded stages' degree keys (`Cell.keys`)
+    keys: dict[str, dict[str, str]] = {}
     shared_inputs: InputHistory = {cell["same_as"]: None for cell in cells if "same_as" in cell}
     try:
         for cell in cells:
@@ -1333,7 +1355,9 @@ def main() -> int:
                     raise Failed(f"no output of {same_as or key} to judge against: run it too, or record (run.sh --record)")
                 items = executor.items
                 seen, named = judge(cell, reply, spool, against, lambda: written(cell, items, store))
-                ran[key], kept[key] = seen, named
+                ran[key], kept[key], keys[key] = seen, named, degree_keys(reply)
+                for other, same in cell.get("keys", {}).items():
+                    keyed(keys[key], other, same, keys.get(other))
                 # The checkpoint it wrote is a model a later cell binds by this cell's key (`Cell.models`).
                 for output in cell.get("weights", {}):
                     manifests[key] = next(item["revision"] for item in reversed(items) if item["output"] == output)

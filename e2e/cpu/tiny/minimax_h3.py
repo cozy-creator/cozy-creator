@@ -330,6 +330,13 @@ CELLS: list[Cell] = [
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "empty": _EMPTY},
     {"entry": "fl2va_segment", "name": "text-2-ranks", "payload": _SEGMENT, "ranks": 2, "empty": _EMPTY,
      "same_as": "fl2va_segment/text"},
+    # cr-348 C: a group's sharded stage keys its degree on its first sharded call's tensor shapes. Another seed is the
+    # same key; another length is another (the degree branch first keyed H3 on its stages' PipelineState, one key a
+    # function, and refine's seed made a key a seed).
+    {"entry": "fl2va_segment", "name": "text-2-ranks-seed", "payload": {**_SEGMENT, "seed": 8}, "ranks": 2,
+     "empty": _EMPTY, "keys": {"fl2va_segment/text-2-ranks": True}},
+    {"entry": "fl2va_segment", "name": "text-2-ranks-short", "payload": {**_SEGMENT, "duration_s": 3}, "ranks": 2,
+     "empty": _EMPTY, "keys": {"fl2va_segment/text-2-ranks": False}},
     {"entry": "fl2va_segment", "name": "turbo-2-ranks", "payload": {**_SEGMENT, "steps": None, "turbo": True},
      "ranks": 2, "empty": _EMPTY, "same_as": "fl2va_segment/turbo"},
     {"entry": "ref2va_segment", "name": "reference-2-ranks", "payload": {**_REF2VA, "assets": [{"label": "fox"}]},
