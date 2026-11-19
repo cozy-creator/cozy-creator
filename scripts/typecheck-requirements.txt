@@ -7,7 +7,7 @@ certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.1
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/ed1bebf4da1b4f0eb473153cec2135e89d0ef3ed.tar.gz
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/3ae37b548b3c684ab2e6b6010fa23c0c26b2fbfa.tar.gz
 cryptography==50.0.2
 cuda-bindings==13.5.0
 cuda-core==1.2.2
@@ -56,7 +56,7 @@ safetensors==0.8.0
 setuptools==84.2.1
 shellingham==1.5.4
 sympy==1.14.0
-tensorfs==0.26.0
+tensorfs @ https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3399+g1d8eaf3b-cp311-abi3-manylinux_2_28_x86_64.whl
 tokenizers==0.23.3
 tomli-w==1.2.0
 torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl

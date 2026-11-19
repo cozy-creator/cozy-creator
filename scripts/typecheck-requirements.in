@@ -5,7 +5,9 @@ mypy
 cryptography
 h2
 # The Runtime of the open RC with the author API the fixtures use: its pure wheel, built from this commit.
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/ed1bebf4da1b4f0eb473153cec2135e89d0ef3ed.tar.gz
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/3ae37b548b3c684ab2e6b6010fa23c0c26b2fbfa.tar.gz
+# The TensorFS build that Runtime floors on (tensorfs>=0.27.0.dev3387, xs-216): the one its own [tool.uv.sources] names.
+tensorfs @ https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.27.0/tensorfs-0.27.0.dev3399+g1d8eaf3b-cp311-abi3-manylinux_2_28_x86_64.whl
 msgspec
 numpy
 pillow
