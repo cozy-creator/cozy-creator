@@ -42,13 +42,19 @@ for r in "${REFS[@]}"; do
   ref=${r%|*} lane=${r#*|} k=$((k + 1))
   label=rows-$k-$lane
   if ! step "$label" run "$FIX/check" "model.weights=$ref" "seed:=$((SEED + k))" "per_scheme:=$PER" --on "$NAME"; then
-    say "FAIL $label ($ref): $(tail -n 3 "$OUT/$label.txt" | paste -sd' ' | cut -c1-300)"; RC=1; continue
+    n=$(runno "$label")
+    [ -z "$n" ] || (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$label.json" 2> "$OUT/$label.err"
+    say "FAIL $label ($ref), run ${n:-none}: $(tail -n 3 "$OUT/$label.txt" | paste -sd' ' | cut -c1-300) $(jq -c '.error // empty' "$OUT/$label.json" 2> /dev/null | cut -c1-900)"
+    RC=1; continue
   fi
   n=$(runno "$label")
   (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$label.json" 2> "$OUT/$label.err"
   jq -r '.result.report // empty' "$OUT/$label.json" > "$OUT/$label.report.json"
   jq -e . "$OUT/$label.report.json" > /dev/null 2>&1 || { say "FAIL $label: run $n has no report"; RC=1; continue; }
-  say "$label: run $n, $ref, memoized $(jq -r '.memoized // false' "$OUT/$label.json")"
+  # The call memo answers a repeated request with no read made (as ab.sh's cellstate tells it): such a run proves nothing.
+  memo=$(jq -r '(.memo.memoized // false) or ([.calls[]?.memoized] | any)' "$OUT/$label.json")
+  say "$label: run $n, $ref, memoized $memo"
+  [ "$memo" = false ] || { say "FAIL $label: run $n was answered from the call memo"; RC=1; continue; }
   jq -r '.lines[]' "$OUT/$label.report.json" | while read -r line; do say "$label $line"; done
   say "$label speed: $(jq -c .speed "$OUT/$label.report.json")"
   [ "$(jq -r .failed "$OUT/$label.report.json")" = false ] || RC=1
