@@ -12,9 +12,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use tensorfs::format::ObjectRef;
@@ -25,6 +25,8 @@ use crate::storage::{self, Store};
 const READERS: usize = 4;
 /// Each reader's buffer, and how much it reads between looks at whether to stop.
 const PIECE: usize = 8 << 20;
+/// How long what the page cache holds of it is taken as said (`resident`): a Status read each second looks at hundreds of files.
+const LOOKED: Duration = Duration::from_secs(1);
 
 /// One read of a load's chunks into the page cache.
 pub(crate) struct Stage {
@@ -40,6 +42,8 @@ pub(crate) struct Stage {
     short: AtomicBool,
     began: Instant,
     took_ms: AtomicU64,
+    /// What `resident` said last, and when.
+    looked: Mutex<Option<(Instant, u64)>>,
 }
 
 impl Stage {
@@ -72,9 +76,17 @@ impl Stage {
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
-    /// What of it the page cache holds now (the kernel may have taken some back since).
+    /// What of it the page cache holds now (the kernel may have taken some back since), as looked at within `LOOKED`.
     pub(crate) fn resident(&self) -> u64 {
-        self.chunks.iter().map(|(path, length)| in_cache(path, *length)).sum()
+        let mut looked = self.looked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, bytes)) = *looked {
+            if at.elapsed() < LOOKED {
+                return bytes;
+            }
+        }
+        let bytes = self.chunks.iter().map(|(path, length)| in_cache(path, *length)).sum();
+        *looked = Some((Instant::now(), bytes));
+        bytes
     }
 }
 
@@ -127,6 +139,7 @@ pub(crate) fn start(
         short: AtomicBool::new(false),
         began: Instant::now(),
         took_ms: AtomicU64::new(0),
+        looked: Mutex::new(None),
     });
     let owner = stage.clone();
     let started = std::thread::Builder::new().name("stage".into()).spawn(move || {
