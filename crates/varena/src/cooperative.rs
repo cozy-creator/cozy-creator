@@ -10,8 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use varena_ledger::{Donor, Look, Recovery, Row, Table};
 
-/// The room a process needs to come up: its CUDA context and first stream (xs-112: 2 to 3 GB).
-const BRING_UP_BYTES: usize = 3 << 30;
 /// How long an ask waits on peers that have stopped answering.
 const PEER_WAIT: Duration = Duration::from_secs(2);
 /// How long a donor waits on its own cache owners, which may need a GIL someone holds.
@@ -62,20 +60,28 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
         Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
     };
-    // One ask for the context and the first stream together: Torch creates that stream, where a
-    // refusal reaches nobody who could give room.
+    // The context's cost on this card and driver, measured as it comes up: what was free before it
+    // less what is free after. Torch's runtime and first stream come next, where a refusal reaches
+    // nobody who could give room (run 31653: an idle H3 left under 700 MiB), and they take about as
+    // much again: short of that much free, peers are asked for the rest. A refused context asks
+    // for what peers can give. 3 GiB was asked of them before, on any card.
+    let before = card_free(device);
+    let mut cost = None;
     let mut last = false;
     loop {
         let started = working::initialize(device);
         let short = match &started {
-            Err(Error::Cuda { code: 2, .. }) => true,
-            Ok(()) => working::peer::memory_info(device).is_ok_and(|(free, _)| free < BRING_UP_BYTES),
-            Err(_) => false,
+            Err(Error::Cuda { code: 2, .. }) => Some(0),
+            Ok(()) => card_free(device).and_then(|free| {
+                let cost = *cost.get_or_insert_with(|| before.map_or(0, |before| before.saturating_sub(free)));
+                (free < cost).then(|| cost - free)
+            }),
+            Err(_) => None,
         };
-        if !short || last {
-            break started;
+        match short {
+            Some(short) if !last => last = recover(device, short, Instant::now() + PEER_WAIT) == Recovery::Final,
+            _ => break started,
         }
-        last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
     // What other programs hold as this process begins: a wait is only ever for what they took since.
     let _ = others_came(device);
@@ -124,6 +130,13 @@ fn nvml_device<'a>(nvml: &'a Nvml, b: &[u8; 16]) -> Option<nvml_wrapper::Device<
 }
 
 static NVML: std::sync::OnceLock<Option<Nvml>> = std::sync::OnceLock::new();
+
+/// The card's free bytes as NVML reads them, which needs no context of ours. None where it can't.
+fn card_free(device: i32) -> Option<usize> {
+    let uuid = cuda::device_uuid(device).ok()?;
+    let nvml = NVML.get_or_init(|| Nvml::init().ok()).as_ref()?;
+    Some(nvml_device(nvml, &uuid)?.memory_info().ok()?.free as usize)
+}
 /// Each device's least memory other programs held, NVML's, from this process's start.
 static OTHERS: Mutex<BTreeMap<i32, u64>> = Mutex::new(BTreeMap::new());
 
