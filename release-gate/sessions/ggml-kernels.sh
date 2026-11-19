@@ -169,6 +169,17 @@ if [ -n "$DECODE$MAKE" ]; then
     c=$(made "make-$lane"); [ -n "$c" ] || { RIDE_BAD=1; say "FAILED: quantize $lane made no checkpoint"; continue; }
     pairs+=("$lane=${from%@*}@$c"); say "$lane: ${from%@*}@$c"
   done
+  # A decode whose first steps meet a kernel still opening on the card completes (cozy-runtime#2315): once, cold, on the
+  # first lane, a 20 s probe primed before it.
+  if [ "${#pairs[@]}" -gt 0 ]; then
+    step fresh-opening machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD"
+    if step opening run "$DFIX/drive/opening_kernel" --model "model=${pairs[0]#*=}" --on "$NAME"; then
+      n=$(runno opening)
+      say "opening kernel: $( (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) 2> /dev/null | jq -r '.result.detail // ""')"
+    else
+      RIDE_BAD=1; say "FAILED: opening_kernel: $(grep -m1 -E '^Run .* failed|^error' "$OUT/opening.txt" | cut -c1-300)"
+    fi
+  fi
   for pair in "${pairs[@]}"; do
     label=${pair%%=*} ref=${pair#*=}
     step "fresh-$label" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $label"
