@@ -34,7 +34,7 @@ import { VideoPlayback } from "./timeline/Player"
 import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
-import { type Box, warningsOf } from "./graph"
+import { type Box, readsOf, warningsOf } from "./graph"
 import { homesFor } from "./homes"
 import { fieldsOf, fullRows, heldTo, mainText, startingFields } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
@@ -1148,7 +1148,7 @@ export class CanvasStore {
       return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view) }]
     }))
     const names = left.map((element) => element.name)
-    const placed = homesFor(names, [...boxes.values()], (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
+    const placed = homesFor(names, boxes, (name) => sizes.get(name)!, (name) => readsOf(this.state!, name), boxes.size ? this.onScreen() : undefined)
     return new Map([...placed].map(([name, row]) => {
       const view = views.get(name)!
       const box = canvasBox(view, { x: row.x, y: row.y, w: row.w ?? sizes.get(name)!.w, h: sizes.get(name)!.h })

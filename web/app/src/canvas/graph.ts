@@ -1,6 +1,6 @@
 import type { Entity, Project } from "../types"
 
-// What a project's names anchor to, from the state alone: where what reading it said is shown.
+// What a project's names anchor to and read, from the state alone: where what reading it said is shown, and where a new box first sits.
 
 function subsOf(entities: Entity[]): Map<string, string> {
   const owner = new Map<string, string>()
@@ -33,6 +33,17 @@ export function warningsOf(state: Project): { byElement: Map<string, string[]>; 
     else ofProject.push(message)
   }
   return { byElement, ofProject }
+}
+
+/** The boxes `name` reads: its reads, or its links, each where it sits. Never drawn: a box given no place sits right of it (homes.ts). */
+export function readsOf(state: Project, name: string): string[] {
+  const anchor = anchors(state)
+  const entity = state.entities?.find((one) => one.name === name)
+  const said = [
+    ...(state.assets.find((one) => one.name === name)?.reads ?? []).map((read) => read.name),
+    ...(entity ? [entity, ...(entity.subs ?? [])].flatMap((held) => Object.values(held.links ?? {})) : []),
+  ]
+  return [...new Set(said.flatMap((read) => anchor(read)?.element ?? []))].filter((element) => element !== name)
 }
 
 export interface Box {

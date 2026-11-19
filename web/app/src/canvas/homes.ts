@@ -4,6 +4,7 @@ import type { Box } from "./graph"
 // Where boxes go that are given no place (cl-1319; Paul, 11-19: "automatically find a home for this box"): what `cozy apply` and another
 // writer add, laid out as one block, and the boxes of a drop laid out about its point. One rule for all of them: in their order, in rows
 // that wrap, "tiled out both right and left, along a 2D grid", as near a screen's shape as they make ("most people's screens are 16:9").
+// The one exception: a single box that reads one already there goes right of it, as the page puts a box made from another (cl-759).
 
 /** Between the columns of boxes laid out together. */
 export const GAP_X = 64
@@ -84,13 +85,26 @@ function beside(placed: Box[], block: Size): Point {
   return right <= under ? { x: left + w + GAP_X, y: top } : { x: left, y: top + h + GAP_Y }
 }
 
+/** Right of the rightmost of `reads`, at its top, else down that side to the first spot clear of `placed`. */
+function rightOf(reads: Box[], { w, h }: Size, placed: Box[]): Point {
+  const read = reads.reduce((most, one) => (one.x + one.w > most.x + most.w ? one : most))
+  return roomIn({ x: read.x + read.w + GAP_X, y: read.y, w, h: Infinity }, w, h, placed)!
+}
+
 /**
- * A home for each name with none, once, laid out together (`tile`) clear of `placed`: with `on`, what's on screen, where the whole first
- * lies clear in it, so what arrives while someone looks is where they look (cl-885); else beside everything there.
+ * A home for each name with none, once, clear of `placed`. One alone that reads a box there goes right of it (`rightOf`). Otherwise they're
+ * laid out together (`tile`): with `on`, what's on screen, where the whole first lies clear in it, so what arrives while someone looks is
+ * where they look (cl-885); else beside everything there.
  */
-export function homesFor(names: string[], placed: Box[], size: (name: string) => Size, on?: Box): Map<string, Card> {
+export function homesFor(names: string[], placed: Map<string, Box>, size: (name: string) => Size, reads: (name: string) => string[], on?: Box): Map<string, Card> {
+  const boxes = [...placed.values()]
   const sizes = names.map(size)
+  const read = names.length === 1 ? reads(names[0]).flatMap((name) => placed.get(name) ?? []) : []
+  if (read.length) {
+    const at = rightOf(read, sizes[0], boxes)
+    return new Map([[names[0], { x: Math.round(at.x), y: Math.round(at.y), w: sizes[0].w }]])
+  }
   const block = tile(sizes)
-  const from = (on && roomIn(on, block.w, block.h, placed)) ?? beside(placed, block)
+  const from = (on && roomIn(on, block.w, block.h, boxes)) ?? beside(boxes, block)
   return new Map(names.map((name, i) => [name, { x: Math.round(from.x + block.at[i].x), y: Math.round(from.y + block.at[i].y), w: sizes[i].w }]))
 }
