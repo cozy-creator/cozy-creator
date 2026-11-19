@@ -103,13 +103,22 @@ pick_offer() {
   local s f price best='' low=0 said='' quoted
   quoted=$(param quoted '')
   IFS=, read -ra offers <<<"$(param skus "$SKU")"
-  for s in "${offers[@]}"; do
-    f=$OUT/offer-$s.json
-    cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
-    price=$(jq -R -r 'fromjson? | select(.quote) | .quote.usd_micros_per_hour' "$f" | head -1)
-    said="$said $s ${price:-none}"
-    [[ $price =~ ^[0-9]+$ ]] || continue
-    [ -n "$best" ] && [ "$price" -ge "$low" ] || { best=$s low=$price; }
+  # Out of stock comes and goes within minutes: every card asked again, six times over about 6 min, as `quote` asks one
+  # (44447068529 asked once: "No provider has a40 right now … last offered at 02:49:58", while others rented).
+  local try=1 pause=15
+  while :; do
+    said=''
+    for s in "${offers[@]}"; do
+      f=$OUT/offer-$s.json
+      cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2> "${f%.json}.err" || true
+      price=$(jq -R -r 'fromjson? | select(.quote) | .quote.usd_micros_per_hour' "$f" | head -1)
+      said="$said $s ${price:-none}"
+      [[ $price =~ ^[0-9]+$ ]] || continue
+      [ -n "$best" ] && [ "$price" -ge "$low" ] || { best=$s low=$price; }
+    done
+    [ -z "$best" ] && [ "$try" -lt 6 ] || break
+    say "offers: none for$said (attempt $try/6): asking again in ${pause}s"
+    sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
   [ -n "$best" ] || fail "offers: none for$said"
   say "offers$said micro-USD/h ($DISK GB): $best is the cheapest${quoted:+; $quoted quoted at dispatch}"
