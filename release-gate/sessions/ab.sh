@@ -19,6 +19,10 @@
 #   first arm that runs each function once: the arm after it starts cold with every weight on disk.
 # - Two builds compared run in both orders (A B B A), checked before renting, unless params say `"order": "one-way"`
 #   (an output-only proof).
+# - TensorD's call memo answers a memoizable request it has answered before on the same Runtime and TensorFS, whatever the
+#   memory cap or TensorD (call_memo.rs; no reset reaches it): a cell asking what an earlier one asked of the same pair takes
+#   the next seed (each `seed:=N` + the times it was asked), a compared pair asking the same of the same pair is refused
+#   before renting, and any cell the memo still answered fails the session: its seconds are no measure.
 # Each cell also keeps the pod's model listing before and after it (<cell>-models-before/after.json), its run's
 # has/needs/extras, and the pod's TensorD log after it (<cell>-tensord.log); tensord-now.log is that log as it stood a minute ago.
 # params:
@@ -101,6 +105,18 @@ oneway=$(jq -r --argjson a "$ARMS" '[.[] | [$a[.[0]], $a[.[1]]] | select(.[0].bu
   | . as $seen | map(select([.[1], .[0]] as $r | any($seen[]; . == $r) | not) | "\(.[0]) before \(.[1])") | join("; ")' <<<"$COMPARE")
 [ -z "$oneway" ] || [ "$ORDER" = one-way ] ||
   fail "builds compared in one order only (run them A B B A, or say order one-way): $oneway"
+# memokey <cell> [arg...]: what TensorD's call memo keys the cell's request on, as far as a session can say: its Runtime and
+# TensorFS (not the cap, not TensorD), its packages tree, target and arguments (its own, or those given).
+memokey() {
+  local k=$1 p='[]'; shift
+  # The arguments as one JSON list (NUL-separated): jq would read one that starts with `--` (`--lane`) as its own option.
+  [ $# = 0 ] || p=$(printf '%s\0' "$@" | jq -Rsc 'split("\u0000")[:-1]')
+  jq -r --arg k "$k" --argjson a "$ARMS" --argjson p "$p" 'map(select(.name == $k)) | first
+    | [($a[$k].build | fromjson | del(.tensord) | tojson), (.tree // ""), .target,
+       ((if ($p | length) > 0 then $p else .args end) | join("\u0001"))] | join("\u0002")' <<<"$CELLS"
+}
+same=$(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE" | while read -r a b; do [ "$(memokey "$a")" != "$(memokey "$b")" ] || echo "$a vs $b"; done | paste -sd';')
+[ -z "$same" ] || fail "compared pairs ask the same request of the same Runtime and TensorFS, which TensorD's call memo answers from the first (it keys no memory cap): $same"
 # Each update's wheels, fetched before renting so a missing one costs nothing.
 wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
@@ -249,8 +265,8 @@ cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(s
      ($v | map(.baked_pages.persisted // 0) | max // 0), (($r.memo.memoized // false) or ([$r.calls[]?.memoized] | any) | tostring)] | @tsv' \
   "$OUT/$1.json" 2>/dev/null; }
 printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$OUT/states.tsv"
-fails=0
-declare -A MADE=() SEEN=()
+fails=0 memoized=0
+declare -A MADE=() SEEN=() ASKED=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
@@ -300,6 +316,19 @@ for k in "${names[@]}"; do
   held "$k" before
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
+  # A request this session already asked of this Runtime and TensorFS, as asked (a moved seed counts), takes the next seed none
+  # of them asked: the call memo would answer it.
+  key=$(memokey "$k" "${args[@]}"); [ -n "$key" ] || fail "$k: no call-memo key for its request"
+  if [ -n "${ASKED[$key]:-}" ] && ! printf '%s\n' "${args[@]}" | grep -q '^seed:=[0-9][0-9]*$'; then
+    say "$k: asked before of this Runtime and TensorFS, with no seed to move: the call memo may answer it"
+  elif [ -n "${ASKED[$key]:-}" ]; then
+    while [ -n "${ASKED[$key]:-}" ]; do
+      mapfile -t args < <(printf '%s\n' "${args[@]}" | awk '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + 1; next} {print}')
+      key=$(memokey "$k" "${args[@]}"); [ -n "$key" ] || fail "$k: no call-memo key for its request"
+    done
+    say "$k: asked before of this Runtime and TensorFS: $(printf '%s\n' "${args[@]}" | grep -m1 '^seed:=')"
+  fi
+  ASKED[$key]=1
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
@@ -342,6 +371,7 @@ for k in "${names[@]}"; do
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$(jq -r --arg k "$k" '.[$k].arm' <<<"$ARMS")" "$temp" "${bake:-0}" "${derived:-0}" \
     "${persisted:-0}" "${memo:-false}" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2>/dev/null)" "$fetched" >> "$OUT/states.tsv"
   say "$k state: $temp, bake ${bake:-0}, derived $(( ${derived:-0} / 1000000000 )) GB, persisted ${persisted:-0}, memoized ${memo:-false}, fetched weights $fetched"
+  [ "${memo:-false}" != true ] || { memoized=$((memoized + 1)); say "$k: MEMOIZED: the call memo answered it, so its seconds are no measure"; }
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
@@ -408,4 +438,5 @@ done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
 for t in cold warm; do
   say "$t pairs (a s, b s, b vs a): $(awk -F'\t' -v t="$t" '$1 == t && $7 == "yes" {printf "%s %s %s %s %s; ", $2, $3, $4, $5, $6}' "$OUT/pairs.tsv")"
 done
-[ "$fails" = 0 ] && [ "$differ" = 0 ] && [ "$unfair" = 0 ] || fail "$fails cells did not complete, $differ pairs differ, $unfair pairs not comparable"
+[ "$fails" = 0 ] && [ "$differ" = 0 ] && [ "$unfair" = 0 ] && [ "$memoized" = 0 ] ||
+  fail "$fails cells did not complete, $differ pairs differ, $unfair pairs not comparable, $memoized cells answered by the call memo"

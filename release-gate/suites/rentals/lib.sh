@@ -43,7 +43,7 @@ gone() {
 # keepalive now; each update sets the mode it has (`--mode dedicated`), which drains and restarts its service as an RC
 # update does, whatever the open RC's builds are. Red before cl-1203: each update restarted the idle clock.
 rental_idle_through_updates() {
-  local m=$1 r=$2 d0 now moved= updated=0
+  local m=$1 r=$2 d0 now moved= updated=0 used= i n q
   "$CLI" machine keepalive "$m" >"$RT/keepalive.out" 2>&1
   # Its Status carries the new deadline a moment later.
   for _ in 1 2 3 4 5 6; do
@@ -62,10 +62,21 @@ rental_idle_through_updates() {
       [ -z "$d" ] || [ "$d" = 0 ] || [ "$d" = "$d0" ] || { moved=$d; log "rental-idle-through-updates: an update moved $m's deadline to $(date -u -d "@$((d / 1000))" +%T)"; }
     fi
     gone "$r" && break
-    sleep 180
+    # A run anyone sends the rental is use, which restarts its clock: then the cell measures nothing (44413790657, a job
+    # from 22:59:19 to 23:04:29 on the account's shared pool). Its machine's own count, every 15 s.
+    for i in $(seq 12); do
+      n=$(show "$m" running) q=$(show "$m" queued); [[ $n =~ ^[0-9]+$ ]] || n=0; [[ $q =~ ^[0-9]+$ ]] || q=0; n=$((n + q))
+      [ "$n" = 0 ] || [ -n "$used" ] || { used="$n at $(date -u +%T)"; log "rental-idle-through-updates: $m holds $n runs at $(date -u +%T), none of this cell's"; }
+      gone "$r" && break 2
+      sleep 15
+    done
   done
   for _ in $(seq 12); do gone "$r" && break; sleep 10; done
-  if (( updated < 3 )); then
+  if [ -n "$used" ] && ! gone "$r"; then
+    # Void, never a FAIL nor a PASS: the escaped row still needs a pass (verify.sh --release).
+    expect "rental-idle-through-updates" SKIP "void: a run that isn't this cell's used $m in its idle window ($used), which restarts its clock by design: run it again"
+    "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
+  elif (( updated < 3 )); then
     expect "rental-idle-through-updates" FAIL "only $updated of its updates went through, so the cell proves nothing: $(tail -c 200 "$RT/updates.out")"
     gone "$r" || "$CLI" machine end "$m" -y >>"$RT/end.out" 2>&1
   elif gone "$r"; then
