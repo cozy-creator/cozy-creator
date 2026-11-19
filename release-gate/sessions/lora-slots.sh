@@ -12,12 +12,14 @@
 #   old, new   the packages_refs checkouts (`-f packages_refs="old=rc/0.27.0 new=proof/cl-1281-lora-slots"`)
 #   runtime    a cozy-runtime dev-build run id for the pod's Runtime (empty: the open RC's)
 #   seed       every box's seed (default 20260926)
+#   phases     all (default), or overrides: only step 3, on `new` (steps 1 and 2 ran in an earlier session; their frames compare there)
 . "$(dirname "$0")/lib.sh"
 fail() {
   [ -z "${NAME:-}" ] || cozy machine logs "$NAME" --since 240m -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
   say "FAIL: $*"; RC=1; exit 1
 }
-OLD=$PACKAGES/$(param old old) NEW=$PACKAGES/$(param new new) SEED=$(param seed 20260926) RT=$(param runtime '') NEED=$(param need_s 5400)
+OLD=$PACKAGES/$(param old old) NEW=$PACKAGES/$(param new new) SEED=$(param seed 20260926) RT=$(param runtime '') NEED=$(param need_s 5400) PHASES=$(param phases all)
+[[ $PHASES =~ ^(all|overrides)$ ]] || fail "phases $PHASES: all or overrides"
 OTHER_H3=alissonerdx/minimax-h3-vfx-edit@0.1.0 OTHER_MOSS=thedeoxen/moss-image-canny-controlnet@0.1.0
 for t in "$OLD" "$NEW"; do for p in orbit moss-image minimax-h3; do [ -f "$t/$p/pyproject.toml" ] || fail "no $t/$p"; done; done
 V=$(cozy --version | awk '{print $2}')
@@ -38,7 +40,7 @@ tree() {
   cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
   say "packages: $1 ($(git -C "$1" rev-parse --short=8 HEAD 2> /dev/null))"
 }
-for t in "$OLD" "$NEW"; do kernels "$t/minimax-h3"; kernels "$t/moss-image"; done
+for t in "$OLD" "$NEW"; do [ "$PHASES" = all ] || [ "$t" = "$NEW" ] || continue; kernels "$t/minimax-h3"; kernels "$t/moss-image"; done
 
 # Inputs: the picture, a 5 s plate panning over it, and a depth map (near is white) of its size.
 cp "$REF/seed.jpg" "$OUT/inputs/pic.jpg"
@@ -70,7 +72,8 @@ took() { jq -c '{status, placed: (.placed | {fetch_bytes, prepare_ms}), weights:
 # frames <box>: a video's frames at 0, 1/4, 1/2 and 3/4 of it, or the picture, into $OUT/frames.
 frames() {
   local f
-  f=$(run_page asset "$1" | jq -r '.versions[-1].files | to_entries[0].value.path // empty')
+  # Its picture or video, not a latents file an edit keeps beside it.
+  f=$(run_page asset "$1" | jq -r '[.versions[-1].files | to_entries[] | .value.path // empty | select(test("[.](mp4|png|jpe?g|webp)$"))] | first // empty')
   [ -n "$f" ] && [ -s "$RUN_PROJECT/$f" ] || { say "$1: no file"; return 0; }
   case $f in
     *.mp4) local n q
@@ -88,12 +91,16 @@ rendered() {
   frames "$1"
 }
 
-tree "$OLD"
-say "cozy $V; boxes before: turn, restyle, depth, moss_edit"
-add turn_old orbit/orbit "$(turn)"
-add restyle_old minimax-h3/edit "$(restyle "")"
-add depth_old moss-image/image "$(depth 1)"
-add moss_edit_old moss-image/image "$(moss_edit)"
+if [ "$PHASES" = all ]; then
+  tree "$OLD"
+  say "cozy $V; boxes before: turn, restyle, depth, moss_edit"
+  add turn_old orbit/orbit "$(turn)"
+  add restyle_old minimax-h3/edit "$(restyle "")"
+  add depth_old moss-image/image "$(depth 1)"
+  add moss_edit_old moss-image/image "$(moss_edit)"
+else
+  tree "$NEW"
+fi
 # One quote and one order: an out-of-stock answer ends the session, never ordered again.
 say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
 ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live"
@@ -125,8 +132,9 @@ step rc machine update "$NAME" -y || fail "$NAME didn't move to the open RC's bu
 [ -z "$W" ] || step runtime machine update "$NAME" --runtime "$W" -y || fail "$NAME refused the Runtime $W"
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "$NAME refused the session's TensorD"
 say "$NAME: $(cozy --json machine show "$NAME" | jq -c '{v: .status.version, runtime: .status.runtime}')"
-for b in turn_old restyle_old depth_old moss_edit_old; do rendered "$b"; done
+[ "$PHASES" = all ] && for b in turn_old restyle_old depth_old moss_edit_old; do rendered "$b"; done
 
+[ "$PHASES" = all ] && {
 tree "$NEW"
 say "the same boxes on the new packages; the edit's trigger in its summary and beat as the page puts it"
 add turn_new orbit/orbit "$(turn)"
@@ -148,16 +156,23 @@ done
 cozy machine logs "$NAME" --since 240m -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
 grep -E "cozy:prepare:[^ ]*: its request" "$OUT/tensord-$NAME.log" | cut -c1-1200 | while read -r line; do say "plan: $line"; done
 for b in turn_new restyle_new depth_new moss_edit_new; do rendered "$b"; done
+}
 
 say "overrides, the twin without a LoRA, nested calls, and a package with no LoRA slot"
 add turn_other orbit/orbit "$(turn | jq -c --arg l "$OTHER_H3" '. + {models: {lora: {ref: $l}}}')"
 add restyle_other minimax-h3/edit "$(restyle "" | jq -c --arg l "$OTHER_H3" '. + {models: {style_transfer: {ref: $l}}}')"
 add depth_other moss-image/image "$(depth 1 | jq -c --arg l "$OTHER_MOSS" '. + {models: {depth: {ref: $l}}}')"
 add depth_none moss-image/image "$(depth 0)"
-add shot_turbo minimax-h3/generate "$(jq -nc --argjson s "$SEED" --arg l "$OTHER_H3" '{summary: "<pic> turns slowly to the camera.", seed: $s,
-  beats: [{duration: 5, description: "<pic> turns slowly to face the camera."}], models: {turbo_lora: {ref: $l}}}')"
+# A Shot box's turbo_lora reaches its nested segment calls: an edit LoRA there is refused by the segment's own slot (it keeps no
+# fl2va_turbo), named `fl2va_segment.models.turbo_lora`, before anything runs (44506869385). No other LoRA fits that slot.
+if run_page add shot_turbo --tool minimax-h3/generate --fields "$(jq -nc --argjson s "$SEED" --arg l "$OTHER_H3" '{summary: "<pic> turns slowly to the camera.", seed: $s,
+  beats: [{duration: 5, description: "<pic> turns slowly to face the camera."}], models: {turbo_lora: {ref: $l}}}')" > "$OUT/add-shot_turbo.json" 2>&1; then
+  say "shot_turbo: an edit LoRA on turbo_lora was taken: $(tail -c 300 "$OUT/add-shot_turbo.json")"; RC=1
+else
+  say "shot_turbo refused, as its nested segment call's slot reads it: $(grep -o '"message":"[^"]*"' "$OUT/add-shot_turbo.json" | head -1 | cut -c1-300)"
+fi
 add plain birefnet/remove_background "$(jq -nc '{image: "<pic>"}')"
-for b in turn_other restyle_other depth_other depth_none shot_turbo plain; do rendered "$b"; done
+for b in turn_other restyle_other depth_other depth_none plain; do rendered "$b"; done
 # Same seed, before and after: identical bytes, or the mean pixel difference.
 for p in "turn_old turn_new" "restyle_old restyle_new" "depth_old depth_new" "moss_edit_old moss_edit_new" "depth_new depth_other" \
   "depth_new depth_none" "turn_new turn_other" "restyle_new restyle_other"; do
