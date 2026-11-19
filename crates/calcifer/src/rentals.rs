@@ -892,13 +892,12 @@ impl Machines {
                 .iter()
                 .map(|e| format!("{} ×{}: {}", e.name, e.accelerator_count, e.reason))
                 .collect();
+            // A Hub that excluded nothing says no reason, and the sentence ends there.
+            let why = if why.is_empty() { String::new() } else { format!(": {}", why.join("; ")) };
             return Err(Error::new(
                 Kind::Capacity,
                 "placement_none_fits",
-                format!(
-                    "No machine the Hub rents right now can run this: {}.",
-                    why.join("; ")
-                ),
+                format!("No machine the Hub rents right now can run this{why}."),
             )
             .next("cozy machine rent"));
         };

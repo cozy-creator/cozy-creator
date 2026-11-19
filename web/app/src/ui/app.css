@@ -2871,6 +2871,10 @@ button:disabled {
 .onmachine .check .field {
   max-width: 230px;
 }
+/* A priced button too long for the row goes under it, never past the drawer's edge. */
+.onmachine > .row {
+  flex-wrap: wrap;
+}
 .onmachine p {
   margin: 6px 0 0;
 }
