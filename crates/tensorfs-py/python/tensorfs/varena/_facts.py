@@ -62,6 +62,7 @@ class PagesStats(TypedDict):
     persisted_bytes: int
     persist_skipped: int
     persist_failed: int
+    persist_ns: int
 
 
 class PlanPhase(TypedDict):
