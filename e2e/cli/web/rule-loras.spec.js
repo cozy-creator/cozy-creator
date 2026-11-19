@@ -40,14 +40,18 @@ test('rule-loras', async ({ page, project, api, guards }) => {
   });
   /** Box `name` open in Focus, from wherever the page is. */
   const open = async (name) => {
+    await canvasIdle(page);
     if ((await region.count()) && (await region.getAttribute('data-focused-asset')) === name) return;
     if (await region.count()) await leave(page);
     await fit(page);
     await focus(page, name);
   };
+  /** A reload from the canvas: one from Focus opens it again as the page settles, under a zoom menu being asked for (44427960225). */
   const reload = async () => {
+    if (await region.count()) await leave(page);
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
+    await canvasIdle(page);
   };
   /** Box `name` open at 1440×900 on paper, and with `all` at 1920×1080 and in dark too, each a reload: the page and its card kept for a
    *  person to look at. */
@@ -152,7 +156,6 @@ test('rule-loras', async ({ page, project, api, guards }) => {
   await test.step("H3 Edit: VFX edit's trigger comes with its Edit, and goes with it", async () => {
     await project.add({ name: 'plate', tool: 'minimax-h3/edit', kind: 'video', fields: { edit: 'head_swap', summary: WORDS, beats: [{ description: 'Boats come in.', duration: 5 }] }, at: { x: 520, y: 0 } });
     await expect.poll(() => chosenOf('plate'), { message: "plate's rule chose head swap's LoRA", timeout: 120_000 }).toEqual(['alissonerdx/minimax-h3-head-swap']);
-    await expect.poll(() => canvasVisible(page, 'plate')).toBe(true);
     await open('plate');
     await editOf.selectOption({ label: 'VFX edit' });
     await expect.poll(() => chosenOf('plate'), { message: 'VFX edit chosen' }).toEqual([VFX]);
