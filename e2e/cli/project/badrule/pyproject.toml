@@ -7,7 +7,7 @@ name = "e2e-badrule"
 version = "0.1.0"
 description = "A rule that reads a field its request doesn't have (cl-1103): the ondemand_rules cell's"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
+dependencies = ["cozy-runtime>=0.49.0.dev0,<0.50", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_badrule:app"
