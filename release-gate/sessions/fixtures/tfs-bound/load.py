@@ -223,7 +223,14 @@ class Card:
         uses = self.varena.fill(regions, [s for s, _ in chosen], self.s)
         self.stream.synchronize()
         together = time.perf_counter() - began
-        alone = [r.use(self.s) for r, u in zip(regions, uses) if u is None]
+        alone, refused = [], ""
+        for r, u in zip(regions, uses):
+            if u is None:
+                try:
+                    alone.append(r.use(self.s))
+                except Exception as error:  # noqa: BLE001
+                    refused = f"{type(error).__name__}: {error}"[:200]
+                    break
         self.stream.synchronize()
         took = time.perf_counter() - began
         rows = self.pages.drain()
@@ -234,7 +241,7 @@ class Card:
             row[1] += ns
             row[2] += 1
         out = {"blocks": len(chosen), "gb": round(total / GB, 2), "s": round(took, 3), "gb_s": round(total / took / GB, 2),
-               "together_s": round(together, 3), "alone": len(alone),
+               "together_s": round(together, 3), "alone": len(alone), "refused": refused,
                "rows": {k: {"gb": round(v[0] / GB, 2), "read_s": round(v[1] / 1e9, 3), "n": int(v[2])} for k, v in by.items()}}
         del uses, alone, regions
         gc.collect()
@@ -242,32 +249,41 @@ class Card:
         return out
 
 
-def fill(ckid: str, comps: Sequence[str]) -> dict[str, object]:
+def pick(ckids: str, comps: Sequence[str]) -> object:
+    """Of the comma-joined checkpoints a run read, the one holding every component in `comps`."""
     import tensorfs
 
-    ck = tensorfs.open(ckid, local_files_only=True)
-    files = chunk_files([ckid])
+    for ckid in ckids.split(","):
+        ck = tensorfs.open(ckid, local_files_only=True)
+        if all(c in ck.components for c in comps):
+            return ck
+    raise SystemExit(json.dumps({"error": f"none of {ckids} holds {list(comps)}"}))
+
+
+def fill(ckids: str, comps: Sequence[str], reserve: float) -> dict[str, object]:
+    ck = pick(ckids, comps)
+    files = chunk_files([ck.id])  # type: ignore[attr-defined]
     blocks = blocks_of(ck, comps)
     card = Card()
-    limit = card.room() - (2 << 30)
+    free = card.room()
+    limit = free - int(reserve * (1 << 30))
     evict(files)
-    report: dict[str, object] = {"checkpoint": ck.id, "components": list(comps), "blocks": len(blocks),
-                                 "cached_before_cold": cached_share(files)}
+    report: dict[str, object] = {"checkpoint": ck.id, "components": list(comps), "blocks": len(blocks),  # type: ignore[attr-defined]
+                                 "gpu_free_gb": round(free / GB, 2), "cached_before_cold": cached_share(files)}
     report["cold"] = card.fill(card.sources(ck, blocks, "cold", False), "cold", limit)
     report["cached_after_cold"] = cached_share(files)
     report["warm"] = card.fill(card.sources(ck, blocks, "warm", False), "warm", limit)
     return report
 
 
-def paged(ckid: str, comp: str) -> dict[str, object]:
-    import tensorfs
-
-    ck = tensorfs.open(ckid, local_files_only=True)
-    files = chunk_files([ckid])
+def paged(ckids: str, comp: str, reserve: float) -> dict[str, object]:
+    ck = pick(ckids, [comp])
+    files = chunk_files([ck.id])  # type: ignore[attr-defined]
     blocks = blocks_of(ck, [comp])
     card = Card()
     torch = card.torch
-    report: dict[str, object] = {"checkpoint": ck.id, "component": comp, "blocks": len(blocks)}
+    report: dict[str, object] = {"checkpoint": ck.id, "component": comp, "blocks": len(blocks),  # type: ignore[attr-defined]
+                                 "gpu_free_gb": round(card.room() / GB, 2)}
     # Each block's stored bytes read whole into pinned RAM by its Source (the store read a page is made by).
     evict(files)
     biggest = max(placed(p)[1] for _, p in blocks)
@@ -303,9 +319,8 @@ def paged(ckid: str, comp: str) -> dict[str, object]:
                             "gb_s": round(last / took / GB, 2) if took > 0 else None, "refused": int(st["read_ahead_refused"]),
                             "host_room_gb": round(int(st["room"]) / GB, 2)}
     # Those pages onto the card: pinned RAM to the device, as far as the card holds them.
-    held = [(s, n) for s, n in kept]
-    limit = min(card.room() - (2 << 30), int(last))
-    report["from_pages"] = card.fill(held, "kept", limit)
+    limit = min(card.room() - int(reserve * (1 << 30)), int(last))
+    report["from_pages"] = card.fill(kept, "kept", limit)
     return report
 
 
@@ -332,9 +347,9 @@ def main() -> None:
         elif mode == "disk":
             out.update(disk(args))
         elif mode == "fill":
-            out.update(fill(args[0], args[1].split(",")))
+            out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0))
         elif mode == "paged":
-            out.update(paged(args[0], args[1]))
+            out.update(paged(args[0], args[1], float(args[2]) if len(args) > 2 else 2.0))
         else:
             out["error"] = f"no mode {mode}"
     except Exception as error:  # noqa: BLE001
