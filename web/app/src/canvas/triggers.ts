@@ -4,9 +4,13 @@ import { useConnection } from "../app/Connection"
 import type { CanvasStore } from "./CanvasStore"
 import { mainText } from "./controls"
 
-// A LoRA's triggers (Paul, 11-12): its Hub card's, appended to a box's prompt when it's added, shown on its row beneath the box, and
-// drawn in a token colour wherever a prompt of that box says them. They stay plain text, sent as written. Each is one entry, as Civitai's
-// trainedWords are (cl-971): a word, a few words or a whole prompt, kept whole.
+// A LoRA's triggers (Paul, 11-12): its Hub card's, shown on its row beneath the box and drawn in a token colour wherever a prompt of that
+// box says them; the first is appended to a box's prompt when it's added. They stay plain text, sent as written. Each is one entry, as
+// Civitai's trainedWords are (cl-971): a word, a few words or a whole prompt, kept whole.
+
+/** What adding a LoRA puts after the prompt: its first trigger. Paul, 11-19: "you can have loras with many trigger words, sure. Just include
+ *  one though when you add it to the user's prompt in the webui" (cl-1287). The rest are one click away on its row. */
+export const added = (triggers: string[]) => triggers.slice(0, 1)
 
 type Entry = Record<string, unknown>
 const entryOf = (value: unknown): Entry => value && typeof value === "object" && !Array.isArray(value) ? value as Entry : {}
@@ -76,7 +80,7 @@ export const promptOf = (tool: Tool | undefined): string | undefined => mainText
 
 // A LoRA a tool's rule chose (cl-1281; Paul, 11-18: "when you add in lora-A in the webui, it modifies your prompt to append the trigger word
 // for that lora … which you as an author (the end user) can remove"): the change this page made that brings one in (an edit's type, a tool
-// put on, a box made) puts its triggers after the prompt as adding a LoRA does, and takes the one it replaced off where the page put it. A
+// put on, a box made) puts its first trigger after the prompt as adding a LoRA does, and takes the one it replaced off where the page put it. A
 // load, a reload or another writer's change brings nothing, so a trigger deleted stays deleted.
 
 const seen = new WeakMap<CanvasStore, Map<string, string[]>>()
@@ -107,7 +111,7 @@ async function retrigger(store: CanvasStore, name: string, brought: string[], le
   const [cards, staying] = await Promise.all([Promise.all([...brought, ...left].map(async (model) => [model, await triggersOf([model])] as const)), triggersOf(lorasOn(store, name))])
   // As the box stands once its cards are read: it may have moved on, and the next change says the rest.
   const now = chosenOf(store.get(name)?.asset?.chosen ?? [])
-  const adding = cards.filter(([model]) => brought.includes(model) && now.includes(model)).flatMap(([, words]) => words)
+  const adding = cards.filter(([model]) => brought.includes(model) && now.includes(model)).flatMap(([, words]) => added(words))
   const removing = cards.filter(([model]) => left.includes(model) && !now.includes(model)).flatMap(([, words]) => words)
   const field = promptOf(store.tools.get().get(store.get(name)?.asset?.tool ?? ""))
   if (!field) return
