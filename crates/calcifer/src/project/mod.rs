@@ -6960,7 +6960,7 @@ pub(crate) async fn queued_on(api: &Arc<Api>, set: &[On], row: &crate::store::Ru
     match placement::soonest(&offers, now) {
         Some(soonest) => Ok(well_placed(api, &offers, soonest, &hub, read.as_ref(), function, &Map::new(), now)),
         // None of its machines can run it (cl-1175, cl-1279): why, with the rental.
-        None if !offers.is_empty() && offers.iter().all(Offer::unable) => Err(placement::unable(&offers).map(|held| placement::unable_line(held, "run")).unwrap_or_default()),
+        None if !offers.is_empty() && offers.iter().all(Offer::unable) => Err(Unplaced::Waits(placement::unable(&offers).map(|held| placement::unable_line(held, "run")).unwrap_or_default())),
         None => {
             // Every machine that answered refuses the request itself (`origin: request`): the same answer for good, so it fails with it.
             let request: Vec<&v1::Reason> = offers.iter().filter_map(|offer| offer.refusal.as_ref().filter(|reason| reason.origin == "request")).collect();
