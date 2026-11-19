@@ -18,6 +18,9 @@ events() { sed 's/^[0-9.]* {/{/' "$1" 2> /dev/null | grep '^{'; }
 # started <ndjson>: `yes` once its machine began executing it. last <ndjson>: the run as its last event carrying it says.
 started() { events "$1" | jq -se 'any(.[]; .run.started_at_ms != null)' > /dev/null 2>&1 && echo yes || echo no; }
 last() { events "$1" | jq -sc 'map(select(.run != null)) | last | .run'; }
+# taken <ndjson>: `yes` once its machine took it (`unpin` needs no more: what it cancels is the machine's, installing or running).
+taken() { events "$1" | jq -se 'any(.[]; .type == "run.in_progress")' > /dev/null 2>&1 && echo yes || echo no; }
+far() { if [ "$leg" = unpin ]; then taken "$1"; else started "$1"; fi; }
 record() { last "$1" | jq -c '{status, machine, reason: {code: .reason.code, message: .reason.message}}' | cut -c1-400; }
 for leg in $LEGS; do
   [[ $leg == lost || $leg == unpin ]] || fail "leg $leg"
@@ -30,12 +33,12 @@ for leg in $LEGS; do
     > "$OUT/$leg.ndjson" 2> "$OUT/$leg.err" & P=$!
   h=
   for _ in $(seq 1 120); do
-    h=$(handle "$OUT/$leg.ndjson"); [ "$(started "$OUT/$leg.ndjson")" = yes ] && break
+    h=$(handle "$OUT/$leg.ndjson"); [ "$(far "$OUT/$leg.ndjson")" = yes ] && break
     kill -0 "$P" 2> /dev/null || fail "$leg: the run ended before it ran: $(tail -c 300 "$OUT/$leg.err") $(tail -c 300 "$OUT/$leg.ndjson")"
     sleep 5
   done
-  [ "$(started "$OUT/$leg.ndjson")" = yes ] || fail "$leg: run $h never ran on $NAME"
-  say "$leg: run $h${GPUS_ASKED:+ (--gpus=$GPUS_ASKED)} is running on $(last "$OUT/$leg.ndjson" | jq -r '.machine // empty'); ending $NAME under it"
+  [ "$(far "$OUT/$leg.ndjson")" = yes ] || fail "$leg: run $h never reached $NAME"
+  say "$leg: run $h${GPUS_ASKED:+ (--gpus=$GPUS_ASKED)} is on $(last "$OUT/$leg.ndjson" | jq -r '.machine // empty'); ending $NAME under it"
   if [ "$leg" = unpin ]; then unpin "$RID"; cozy machine end "$RID" -y > "$OUT/end-$leg.txt" 2>&1 || fail "unpin: end $NAME: $(tail -c 300 "$OUT/end-$leg.txt")"
   else cozy machine end "$NAME" -y --force > "$OUT/end-$leg.txt" 2>&1 || fail "lost: end $NAME: $(tail -c 300 "$OUT/end-$leg.txt")"; fi
   for _ in $(seq 1 60); do
