@@ -310,8 +310,7 @@ body:has(.focus-viewport) .zoom {
   font-size: 18px;
 }
 .focus-card .here-all .num,
-.focus-card .here-all .reset,
-.focus-card .here-all .more-toggle {
+.focus-card .here-all .reset {
   font-size: 17px;
 }
 .focus-card .here-all input[type="checkbox"] {
