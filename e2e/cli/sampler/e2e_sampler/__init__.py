@@ -17,12 +17,20 @@ from cozy_runtime.vlm import VisionLM
 app = App()
 
 MODEL = "huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0"
-#: Qwen-Image-2.1's t2i enhancer (prompt_rewrite/pe_core.py PROFILES), which the RC's order ran wrong; then every setting.
-SETTINGS: list[dict[str, float]] = [
-    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
-    {"temperature": 0.8, "top_p": 0.9, "top_k": 40, "min_p": 0.05, "presence_penalty": 0.5,
-     "frequency_penalty": 0.5, "repetition_penalty": 1.2},
+#: Qwen-Image-2.1's t2i enhancer (prompt_rewrite/pe_core.py PROFILES), which the RC's order ran wrong.
+RECIPE = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5}
+#: A top-k that binds at every step (its nucleus is all of what top-k keeps), so the order changes the kept set wherever a
+#: generated token is among the likeliest: the order's own case.
+ORDER = {"temperature": 1.0, "top_p": 1.0, "top_k": 5, "presence_penalty": 1.5}
+#: Every setting vLLM takes.
+KNOBS = {"temperature": 0.8, "top_p": 0.9, "top_k": 40, "min_p": 0.05, "presence_penalty": 0.5, "frequency_penalty": 0.5,
+         "repetition_penalty": 1.2}
+#: `order`'s calls: (name, settings, seed); each claim on its own, so a red says which failed.
+CALLS: list[tuple[str, dict[str, float], int]] = [
+    ("recipe-7", RECIPE, 7), ("recipe-8", RECIPE, 8), ("order", ORDER, 7), ("knobs", KNOBS, 7),
 ]
+#: `drafted`'s settings: greedy with a penalty, then each of `order`'s.
+DRAFTED = [{"temperature": 0.0, "presence_penalty": 1.5}, RECIPE, ORDER, KNOBS]
 
 
 PROMPT = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <colour>'."
@@ -31,10 +39,11 @@ PROMPT = "List twenty fruits, one per line, each as 'Fruit: <name>, colour: <col
 class Order(msgspec.Struct):
     prompt: str = PROMPT
     max_tokens: int = 160
-    seed: int = 7
 
 
 class Call(msgspec.Struct):
+    name: str
+    seed: int
     settings: dict[str, float]
     steps: int
     #: steps whose token is not vLLM's draw from the same logits and noise, and the first
@@ -213,15 +222,15 @@ def order(payload: Order, model: VisionLM) -> Ordered:
     stops = [t for t in (tokenizer.convert_tokens_to_ids("<|im_end|>"), tokenizer.eos_token_id) if t is not None]
     head = hf.get_output_embeddings()
     calls: list[Call] = []
-    for settings in SETTINGS:
+    for name, settings, seed in CALLS:
         seen: list[torch.Tensor] = []
         handle = head.register_forward_hook(lambda _m, _a, out: seen.append(out[0, -1].float().cpu().clone()))
         try:
             knobs = {k: int(v) if k == "top_k" else v for k, v in settings.items()}
             made = lm.generate(hf, inputs, max_new_tokens=payload.max_tokens, stop=stops, pad=stops[0],
-                               seed=payload.seed, **knobs)
+                               seed=seed, **knobs)
         except TypeError as exc:  # a Runtime that takes fewer settings
-            calls.append(Call(settings, 0, -1, -1, -1, -1, -1, 0.0, "", error=f"{type(exc).__name__}: {exc}"))
+            calls.append(Call(name, seed, settings, 0, -1, -1, -1, -1, -1, 0.0, "", error=f"{type(exc).__name__}: {exc}"))
             continue
         finally:
             handle.remove()
@@ -236,7 +245,7 @@ def order(payload: Order, model: VisionLM) -> Ordered:
         for t, token in enumerate(tokens):
             logits, output = seen[t][None], tokens[:t]
             want = vllm_order(logits, prompt, output, settings)
-            noise = gumbel(payload.seed, t, int(logits.shape[-1]))
+            noise = gumbel(seed, t, int(logits.shape[-1]))
             drawn = int((want + noise).argmax())
             kept += int(torch.isfinite(want).sum())
             if drawn != token:
@@ -252,7 +261,7 @@ def order(payload: Order, model: VisionLM) -> Ordered:
                 old_kept += int(not torch.equal(torch.isfinite(old), torch.isfinite(want)))
                 old_draw += int(int((old + noise).argmax()) != drawn)
         calls.append(Call(
-            settings, len(tokens), mismatches, first, kept_equal if has_runtime else -1,
+            name, seed, settings, len(tokens), mismatches, first, kept_equal if has_runtime else -1,
             old_kept if rc else -1, old_draw if rc else -1, kept / max(len(tokens), 1),
             str(tokenizer.decode(tokens, skip_special_tokens=True)),
         ))  # fmt: skip
@@ -312,7 +321,7 @@ def drafted(payload: Drafted, model: VisionLM) -> Pairs:
         return made[: end + 1]
 
     pairs: list[Pair] = []
-    for settings in [{"temperature": 0.0, "presence_penalty": 1.5}, *SETTINGS]:
+    for settings in DRAFTED:
         lm.release(hf)
         lm.HEADS.pop(hf, None)
         try:
