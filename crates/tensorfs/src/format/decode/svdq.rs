@@ -3,6 +3,8 @@
 //! branch.
 
 use super::grid::Grid;
+use super::mxfp8::blocks;
+use super::rows::Follows;
 use super::nvfp4::{self, PARAMS};
 use super::plan::{Elems, Post};
 use super::{logical, one, Ctx, Dtypes, Part, Plan, Scheme, Shape, View};
@@ -15,14 +17,14 @@ pub(crate) static SVDQ_NVFP4: Scheme = Scheme {
     view: View::Matrix,
     params: PARAMS,
     parts: &[
-        Part::req("weight", &["F4"], matrix),
-        Part::req("scale", &["F8_E4M3"], nvfp4::scale),
-        Part::req("scale_2", &["F32"], one),
-        Part::opt("input_scale", &["F32"], one),
-        Part::req("pre_quant_scale", &["F32", "BF16", "F16"], |c| Grid::Col.shape(c)),
-        Part::opt("channel_scale", &["F32", "F8_E4M3"], |c| Grid::Row.shape(c)),
-        Part::req("lowrank_down", FACTORS, |c| Ok(Shape::Exact(vec![rank(c)?, c.cols as u64]))),
-        Part::req("lowrank_up", FACTORS, |c| Ok(Shape::Exact(vec![c.rows as u64, rank(c)?]))),
+        Part::req("weight", &["F4"], matrix).rows(Follows::Logical),
+        Part::req("scale", &["F8_E4M3"], nvfp4::scale).rows(Follows::Grid(blocks)),
+        Part::req("scale_2", &["F32"], one).rows(Follows::Whole),
+        Part::opt("input_scale", &["F32"], one).rows(Follows::Whole),
+        Part::req("pre_quant_scale", &["F32", "BF16", "F16"], |c| Grid::Col.shape(c)).rows(Follows::Whole),
+        Part::opt("channel_scale", &["F32", "F8_E4M3"], |c| Grid::Row.shape(c)).rows(Follows::Grid(|_| Grid::Row)),
+        Part::req("lowrank_down", FACTORS, |c| Ok(Shape::Exact(vec![rank(c)?, c.cols as u64]))).rows(Follows::Whole),
+        Part::req("lowrank_up", FACTORS, |c| Ok(Shape::Exact(vec![c.rows as u64, rank(c)?]))).rows(Follows::Logical),
     ],
     decode,
 };

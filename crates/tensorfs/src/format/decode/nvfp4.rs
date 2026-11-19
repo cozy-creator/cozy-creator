@@ -5,6 +5,7 @@ use super::affine::{Fill, Order, Packing, BYTES};
 use super::grid::Grid;
 use super::mxfp8::{blocks, SCALE_LAYOUT};
 use super::plan::{Codes, Core, Post};
+use super::rows::Follows;
 use super::{elem, logical, one, Allowed, Ctx, Dtypes, Param, Part, Plan, Scheme, Shape, View};
 use crate::format::Result;
 
@@ -15,13 +16,14 @@ pub(crate) const NVFP4: Scheme = Scheme {
     view: View::Matrix,
     params: PARAMS,
     parts: &[
-        Part::req("weight", &["F4"], logical),
-        Part::req("scale", &["F8_E4M3"], scale),
-        Part::req("scale_2", F32, |c| per_matrix(c, "scale_2")),
-        Part::opt("input_scale", F32, |c| per_matrix(c, "input_scale")),
+        Part::req("weight", &["F4"], logical).rows(Follows::Logical),
+        Part::req("scale", &["F8_E4M3"], scale).rows(Follows::Grid(blocks)),
+        Part::req("scale_2", F32, |c| per_matrix(c, "scale_2")).rows(Follows::PerMatrix),
+        Part::opt("input_scale", F32, |c| per_matrix(c, "input_scale")).rows(Follows::PerMatrix),
         Part::opt("pre_quant_scale", &["F32", "BF16", "F16"], |c| {
             Grid::Col.shape(c)
-        }),
+        })
+        .rows(Follows::Whole),
     ],
     decode,
 };

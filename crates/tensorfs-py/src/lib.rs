@@ -33,6 +33,8 @@ mod verification;
 #[cfg(feature = "store")]
 #[allow(unsafe_code)]
 mod resident_decode;
+#[cfg(feature = "store")]
+mod rows;
 
 use pyo3::prelude::*;
 

@@ -7,6 +7,7 @@
 use super::affine::{Codes, Fill, Order, Packing};
 use super::grid::{Grid, ScaleLayout};
 use super::int8::{ROTATION, ROTATION_SIZE};
+use super::rows::Follows;
 use super::plan::{Codes as PlanCodes, Core, Elems, Plan, Post, RequantCodes, RequantPacking};
 use super::{elem, Allowed, Ctx, Dtypes, Param, Part, Scheme, Shape, View};
 use crate::format::{Result, Value};
@@ -50,10 +51,10 @@ pub(crate) static W4A8_CONVROT: Scheme = Scheme {
         ROTATION_SIZE,
     ],
     parts: &[
-        Part::req("weight", I8, |c| packed(c, 4, true)),
-        Part::req("group_scale", &["F8_E4M3"], |c| groups(c).shape(c)),
-        Part::req("scale", F32, |c| Grid::Row.shape(c)),
-        Part::opt("codebook", F32, |_| Ok(Shape::Count(16))),
+        Part::req("weight", I8, |c| packed(c, 4, true)).rows(Follows::Logical),
+        Part::req("group_scale", &["F8_E4M3"], |c| groups(c).shape(c)).rows(Follows::Grid(groups)),
+        Part::req("scale", F32, |c| Grid::Row.shape(c)).rows(Follows::Grid(|_| Grid::Row)),
+        Part::opt("codebook", F32, |_| Ok(Shape::Count(16))).rows(Follows::Whole),
     ],
     decode: |c| grouped(c, 4),
 };

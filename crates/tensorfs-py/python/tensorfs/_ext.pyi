@@ -286,6 +286,25 @@ class Component:
         folder the cache manages and evicts like its other entries."""
 
 @final
+class RowCut:
+    """How a stored tensor cuts by rows: `count` along its first dimension; a range starts on a
+    multiple of `tile`, read from its encoding, and stops on one or at `count`."""
+
+    @property
+    def count(self) -> int: ...
+    @property
+    def tile(self) -> int: ...
+    @property
+    def tile_bytes(self) -> dict[str, int | None]:
+        """Each stored part's bytes per tile of rows (per row where `tile` is 1), or None for a
+        part every range reads whole (nvfp4's `scale_2`, w4a8's `codebook`). `""`: plain data."""
+    def nbytes(self, start: int, stop: int) -> dict[str, int]:
+        """Each part's bytes for rows `[start, stop)`: what its `read_rows` out holds."""
+
+#: `(component, key, start, stop, {role: out})`: rows `[start, stop)` of a tensor's parts.
+RowRead: TypeAlias = tuple[str, str, int, int, dict[str, Buffer | _DLPackArray]]
+
+@final
 class Checkpoint:
     """One cozytensors read from a store."""
 
@@ -334,6 +353,13 @@ class Checkpoint:
         """The chunks and assets of `components` (all when None) not here."""
     def download(self, components: Sequence[str] | None = None, *, priority: int = 0,
               progress: Callable[[str, int, int], object] | None = None) -> None: ...
+    def rows(self, component: str, key: str) -> RowCut | None:
+        """How `component/key` cuts by rows, from its encoding; None where it does not."""
+    def read_rows(self, reads: Sequence[RowRead], *, stream: int | None = None) -> None:
+        """Only those rows' stored bytes, from the store (fetched where missing), in one read. Each
+        out is a writable C-contiguous Buffer or CPU/CUDA DLPack array of `RowCut.nbytes`'s length
+        for its role; a role left out is not read. CUDA outs are written on `stream` (a CUstream)
+        after its earlier work. Returns when every byte has landed."""
 
 @final
 class _CheckpointFile:
@@ -550,6 +576,7 @@ class _VarenaSource:
                  parts: Sequence[tuple[str, int, int]] = ..., page: str | None = None,
                  derive: Callable[[Tensor], object] | None = None, slot: str | None = None) -> _VarenaSource: ...
     def read_host(self, out: Buffer, *, stored: bool = False) -> None: ...
+    def read_rows(self, reads: Sequence[RowRead], *, stream: int | None = None) -> tuple[int, int]: ...
 
 @final
 class _VarenaAllocatorCapture:

@@ -38,6 +38,8 @@ pub(super) fn take_failure(py: Python<'_>) -> Option<PyErr> {
 
 struct Stored {
     items: Vec<Item>,
+    /// Each part's offset in the Region, by `component/key#role` (`#value`: plain data).
+    places: BTreeMap<String, usize>,
     /// Chunks on this machine only: all a worker may touch.
     local: Arc<Store>,
     /// Fetches what it lacks, for a caller who is waiting.
@@ -862,9 +864,10 @@ impl PySource {
         let stored = match checkpoint {
             Some(checkpoint) if !parts.is_empty() => {
                 let core = checkpoint.core(py)?;
+                let places = parts.iter().map(|(name, offset, _)| (name.clone(), *offset)).collect();
                 let items = items_of(&core, parts, bytes)?;
                 let (local, fetching) = pages.tier.stores(&core);
-                Some(Stored { items, local, fetching, checkpoint: core })
+                Some(Stored { items, places, local, fetching, checkpoint: core })
             }
             _ => None,
         };
@@ -901,6 +904,83 @@ impl PySource {
         // SAFETY: as above.
         py.detach(|| unsafe { stored.fetching.read_items(&stored.items, 0, dst, READERS, Mode::Buffered, &IoTally::default()) })
             .map(drop).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    }
+
+    /// Rows of the tensors it places, as `Checkpoint.read_rows` reads them (tfs-303): by DMA from
+    /// its kept page where that page holds its stored bytes (a CUDA out on the tier's device),
+    /// else from the store. Its page is never made here (`Pages.read_ahead` keeps one). Returns
+    /// the bytes served from its page and from the store.
+    #[pyo3(signature = (reads, *, stream = None))]
+    fn read_rows(&self, py: Python<'_>, reads: &Bound<'_, PyAny>, stream: Option<usize>) -> PyResult<(u64, u64)> {
+        let this = &self.inner;
+        let stored = this.stored.as_ref().ok_or_else(|| PyRuntimeError::new_err("a Source with no stored bytes"))?;
+        let parsed = crate::rows::Reads::parse(py, stored.checkpoint.header(), reads, stream)?;
+        let mut at = Vec::with_capacity(parsed.wants.len());
+        for want in &parsed.wants {
+            let role = if want.role.is_empty() { "value" } else { want.role.as_str() };
+            let name = format!("{}/{}#{role}", want.component, want.key);
+            let place = stored.places.get(&name).ok_or_else(|| PyRuntimeError::new_err(format!("this Source does not place {name}")))?;
+            at.push(*place as u64 + want.offset);
+        }
+        let page = py.detach(|| {
+            let key = this.page.as_ref().filter(|_| this.stored_bytes())?;
+            this.tier.take(key, &this.set, this.bytes, false)
+        });
+        let (mut copies, mut windows, mut moved) = (Vec::new(), Vec::new(), (0u64, 0u64));
+        for (want, &at) in parsed.wants.iter().zip(&at) {
+            let len = want.dst.len();
+            let here = match want.dst {
+                Dst::Host { .. } => true,
+                Dst::Device { device, .. } => device == this.tier.device(),
+            };
+            match page.as_ref().filter(|_| here) {
+                Some(page) => {
+                    // No copy spans two of the page's registered windows: CUDA refuses it.
+                    let mut done = 0;
+                    while done < len {
+                        let offset = at as usize + done;
+                        let n = (WINDOW - offset % WINDOW).min(len - done);
+                        // SAFETY: `offset..offset + n` lies inside the page, which is held through the read.
+                        let src = Src::Host(unsafe { page.ptr().add(offset) });
+                        copies.push(io::Copy { src, dst: part(want.dst, done, n) });
+                        done += n;
+                    }
+                    moved.0 += len as u64;
+                }
+                None => {
+                    windows.push((window(&stored.items, at, len as u64), at, want.dst));
+                    moved.1 += len as u64;
+                }
+            }
+        }
+        let read = py.detach(|| -> Result<(), String> {
+            if !copies.is_empty() {
+                // SAFETY: each out is exclusive and held exported by `parsed`; the page is held.
+                unsafe { io::read(&copies, &ReadOpts::default()) }.map_err(|error| error.to_string())?;
+            }
+            if !windows.is_empty() {
+                let placements: Vec<Placement> = (windows.iter())
+                    .map(|(items, origin, dst)| Placement { items, origin: *origin, dst: *dst })
+                    .collect();
+                // SAFETY: as above; each window's items lie inside its out.
+                unsafe { stored.fetching.read_placements(&placements, READERS, Mode::Buffered, &IoTally::default(), None) }
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        drop(copies);
+        py.detach(|| drop(page)); // Its last holder unregisters it, which waits on the device.
+        let finished = parsed.finish(py, read.is_ok());
+        read.map_err(PyRuntimeError::new_err)?;
+        finished.map(|()| moved)
+    }
+}
+
+/// `len` bytes of `dst` from `at`.
+fn part(dst: Dst, at: usize, len: usize) -> Dst {
+    match dst {
+        Dst::Host { ptr, .. } => Dst::Host { ptr: ptr.wrapping_add(at), len },
+        Dst::Device { device, ptr, stream, .. } => Dst::Device { device, ptr: ptr + at as u64, len, stream },
     }
 }
 

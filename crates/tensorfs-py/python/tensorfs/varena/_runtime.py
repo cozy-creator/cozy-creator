@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from torch import Tensor
     from typing_extensions import Buffer, CapsuleType
 
+    from .._ext import RowRead
+
 
 def activate(device: int, *, shared: bool) -> None:
     """This GPU's context and this process's row in its ledger. `shared` is the machine's mode: it
@@ -352,6 +354,13 @@ class Source:
     def read_host(self, out: Buffer, *, stored: bool = False) -> None:
         """Its bytes in a writable host buffer: its kept page unless `stored`, else the store."""
         self._native.read_host(out, stored=stored)
+
+    def read_rows(self, reads: Sequence[RowRead], *, stream: int | None = None) -> tuple[int, int]:
+        """`Checkpoint.read_rows` over the tensors it places: by DMA from its kept page where that
+        page holds its stored bytes (a CUDA out on the tier's device), else from the store. Its
+        page is never made here (`Pages.read_ahead` keeps one). Returns the bytes served from its
+        page and from the store."""
+        return self._native.read_rows(reads, stream=stream)
 
 
 class Region:

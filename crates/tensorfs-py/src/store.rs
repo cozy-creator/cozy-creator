@@ -948,6 +948,55 @@ impl PyCheckpoint {
     fn source_format(&self) -> Option<String> {
         tensorfs::import::SourceFormat::read(&self.header.metadata).map(|f| f.to_string())
     }
+
+    /// How `component/key` cuts by rows (tfs-303), from its encoding; None where it does not.
+    fn rows(&self, py: Python<'_>, component: &str, key: &str) -> PyResult<Option<crate::rows::PyRowCut>> {
+        crate::rows::cut(py, &self.header, component, key)
+    }
+
+    /// Rows `[start, stop)` of each `(component, key, start, stop, {role: out})`, only their stored
+    /// bytes, from the store (fetched where missing), in one read (`RowCut.nbytes` sizes each
+    /// out). CUDA outs are written on `stream` (a CUstream) after its earlier work. Returns when
+    /// every byte has landed.
+    #[pyo3(signature = (reads, *, stream = None))]
+    fn read_rows(&self, py: Python<'_>, reads: &Bound<'_, PyAny>, stream: Option<usize>) -> PyResult<()> {
+        let access = self.access(py)?;
+        let parsed = crate::rows::Reads::parse(py, &self.header, reads, stream)?;
+        let mut fetches: Vec<(&str, Vec<FetchTensor<'_>>)> = Vec::new();
+        for want in &parsed.wants {
+            let fetch = FetchTensor {
+                key: want.key.as_str(),
+                role: Some(want.role.as_str()),
+                range: Some(want.offset..want.offset + want.dst.len() as u64),
+            };
+            match fetches.iter_mut().find(|(component, _)| *component == want.component) {
+                Some((_, list)) => list.push(fetch),
+                None => fetches.push((want.component.as_str(), vec![fetch])),
+            }
+        }
+        for (component, fetch) in &fetches {
+            access.fetch_tensors(py, component, fetch)?;
+        }
+        let targets: Vec<tensorfs::io::Target<'_>> = (parsed.wants.iter())
+            .map(|want| tensorfs::io::Target {
+                component: &want.component,
+                key: &want.key,
+                role: &want.role,
+                offset: want.offset,
+                dst: want.dst,
+            })
+            .collect();
+        let checkpoint: &Checkpoint = &access;
+        // SAFETY: each destination is an out `parsed` holds exported, sized to its range, until `finish`.
+        let read = py.detach(|| unsafe {
+            tensorfs::raw::read_into(checkpoint, &targets, &tensorfs::io::ReadOpts::default())
+        });
+        drop(targets);
+        drop(fetches);
+        let finished = parsed.finish(py, read.is_ok());
+        read.or_raise(py)?;
+        finished
+    }
 }
 
 // ---------------------------------------------------------------- arrays
@@ -1378,6 +1427,9 @@ impl PyArray {
 /// worker, after native operations and Writer locks have ended.
 struct DlpackRelease {
     stream: Option<tensorfs::io::cuda::Stream>,
+    /// A CUDA array written on its consumer's stream (no stream of ours): after an engine error,
+    /// this device's engine drains before it is released.
+    device: Option<i32>,
     producer: Option<Py<PyAny>>,
     capsule: Option<Py<PyAny>>,
     managed: Option<usize>,
@@ -1406,6 +1458,11 @@ impl DlpackRelease {
                 stream.drain()
             };
             if let Err(error) = checked {
+                self.retain();
+                return Err(error.into());
+            }
+        } else if let (Some(device), true) = (self.device, self.engine_error) {
+            if let Err(error) = tensorfs::io::drain(device) {
                 self.retain();
                 return Err(error.into());
             }
@@ -1477,6 +1534,8 @@ impl Drop for DlpackLifetime {
 /// Validated legacy capsules are consumed once and retain a unique managed deleter.
 pub(crate) struct Dlpack {
     lifetime: DlpackLifetime,
+    /// The consumer stream a CUDA array is written on, when it is the caller's (`on`).
+    consumer: Option<usize>,
     pub(crate) device: (i32, i32),
     pub(crate) dtype: Dtype,
     pub(crate) shape: Vec<u64>,
@@ -1491,9 +1550,29 @@ impl Dlpack {
         dtype: Option<String>,
         shape: Option<Vec<u64>>,
     ) -> PyResult<Self> {
+        Self::parse(py, data, dtype, shape, None)
+    }
+
+    /// A destination written on `stream`, the caller's CUstream (0: the legacy default stream),
+    /// for a CUDA array: the writes follow that stream's earlier work, and no stream of ours
+    /// is made or drained. A CPU array as `of`.
+    pub(crate) fn on(py: Python<'_>, data: &Bound<'_, PyAny>, stream: usize) -> PyResult<Self> {
+        // DLPack's and the driver's legacy default stream: 0 is no stream to either.
+        Self::parse(py, data, None, None, Some(if stream == 0 { 1 } else { stream }))
+    }
+
+    fn parse(
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        dtype: Option<String>,
+        shape: Option<Vec<u64>>,
+        consumer: Option<usize>,
+    ) -> PyResult<Self> {
         let device: (i32, i32) = data.call_method0("__dlpack_device__")?.extract()?;
+        let consumer = consumer.filter(|_| device.0 == KDL_CUDA);
         let stream = match device {
             (KDL_CPU, _) => None,
+            (KDL_CUDA, device) if device >= 0 && consumer.is_some() => None,
             (KDL_CUDA, device) if device >= 0 => Some(
                 py.detach(|| tensorfs::io::cuda::Stream::new(device))
                     .or_raise(py)?,
@@ -1510,15 +1589,19 @@ impl Dlpack {
         };
         let mut lifetime = DlpackLifetime(Some(DlpackRelease {
             stream,
+            device: consumer.map(|_| device.1),
             producer: Some(data.clone().unbind()),
             capsule: None,
             managed: None,
             engine_error: false,
             quiescent: false,
         }));
-        let exported = if let Some(stream) = &lifetime.0.as_ref().unwrap().stream {
+        let ordered = (lifetime.0.as_ref().unwrap().stream.as_ref())
+            .map(|stream| stream.raw())
+            .or(consumer);
+        let exported = if let Some(stream) = ordered {
             let kwargs = PyDict::new(py);
-            kwargs.set_item("stream", stream.raw())?;
+            kwargs.set_item("stream", stream)?;
             data.call_method("__dlpack__", (), Some(&kwargs))
         } else {
             data.call_method0("__dlpack__")
@@ -1630,6 +1713,7 @@ impl Dlpack {
         release.managed = Some(managed);
         Ok(Self {
             lifetime,
+            consumer,
             device,
             dtype,
             shape,
@@ -1671,12 +1755,12 @@ impl Dlpack {
     }
 
     pub(crate) fn destination(&self) -> tensorfs::io::Dst {
-        match self.stream() {
+        match self.stream().map(|stream| stream.raw()).or(self.consumer) {
             Some(stream) => tensorfs::io::Dst::Device {
                 device: self.device.1,
                 ptr: self.address as u64,
                 len: self.len,
-                stream: stream.raw(),
+                stream,
             },
             None => tensorfs::io::Dst::Host {
                 ptr: self.address as *mut u8,
@@ -2136,6 +2220,7 @@ pub(crate) fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyComponentWriter>()?;
     m.add_class::<PyTensorMetadata>()?;
     m.add_class::<PyEncoding>()?;
+    m.add_class::<crate::rows::PyRowCut>()?;
     let raw = PyModule::new(m.py(), "raw")?;
     raw.add_class::<PyPart>()?;
     raw.add_function(wrap_pyfunction!(raw_parts, &raw)?)?;

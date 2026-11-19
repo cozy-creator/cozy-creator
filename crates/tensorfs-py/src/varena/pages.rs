@@ -372,6 +372,11 @@ impl Tier {
         tier
     }
 
+    /// The GPU whose context its pages are registered with.
+    pub(super) fn device(&self) -> i32 {
+        self.device
+    }
+
     /// `source`'s stored object ranges, so other fills can find its bytes.
     pub(super) fn place(&self, source: &Arc<Inner>, items: &[Item]) {
         let mut objects = self.objects.lock().unwrap_or_else(|error| error.into_inner());
