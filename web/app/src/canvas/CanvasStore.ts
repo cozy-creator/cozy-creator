@@ -42,7 +42,7 @@ import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, make
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
-import { comingOff, goingOn, holdsPictures, readsBox, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
+import { comingOff, goingOn, holdsPictures, readsBox, readsFrom, startsFrom, type ToolStep, wontGoOn } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { endTrimmed, mergeValue, same, spliceOf, wordsChanged } from "./words"
 import { plainProject } from "../app/view"
@@ -693,19 +693,20 @@ export class CanvasStore {
   }
 
   /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. The words are those last written, word
-   * for word (cl-909), from the take looked at: their first take of its own is that one, `<self.N>` (Paul 11-06). Words with none stay as they are; `lead`
-   * puts it first. */
+   * for word (cl-909), from the take looked at: their first take of its own is that one, `<self.N>` (Paul 11-06), where its tool reads it (`selfOf`).
+   * Words with none stay as they are; `lead` puts it first. A slot holds the take, or what was put there by hand unless it's the take that's edited. */
   writeNext(name: string, lead = false) {
     const view = this.get(name)
     const asset = view?.asset
     if (!view || !asset?.tool) return
     if (this.inPlace?.name === this.resolveName(name)) this.focusFit?.()
-    const field = this.promptOf(asset.tool)
+    const { field, slot } = this.selfOf(asset)
     const said = this.valueOf(name, field)
     const words = typeof said === "string" ? said : ""
     const number = shownOf(view)?.number
     const self = `<${SELF}.${number}>`
-    const next = /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : /<self\.\d+>/i.test(words) ? words.replace(/<self\.\d+>/i, self) : lead ? `${self} ${words}` : words
+    const next = slot ? (!words.trim() || /^\s*<self\.\d+>\s*$/i.test(words) || lead ? self : words)
+      : /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : /<self\.\d+>/i.test(words) ? words.replace(/<self\.\d+>/i, self) : lead ? `${self} ${words}` : words
     if (number !== undefined && next !== words) this.setDraft(name, field, next)
     this.focusing = name
     this.patch(name, { hereWords: true })
@@ -719,6 +720,14 @@ export class CanvasStore {
   /** The field a tool's next take is written in: its main text. */
   private promptOf(tool: string): string {
     return mainText(this.tools.get().get(tool)?.fields ?? [])?.field ?? "instructions"
+  }
+
+  /** Where a box's take, `<self.N>`, goes in its tool's fields: where the tool reads a box of its kind, as putting it on one starts it there
+   *  (`readsFrom`, Calcifer's `with_tool`): its first required slot of that kind (Upscale's `image`), else its main text (Qwen Image's). */
+  private selfOf(asset: Asset): { field: string; slot: boolean } {
+    const tool = this.tools.get().get(asset.tool ?? "")
+    const read = tool ? readsFrom(tool, asset.kind) : undefined
+    return read?.type === "slot" ? { field: read.field, slot: true } : { field: this.promptOf(asset.tool ?? ""), slot: false }
   }
 
   /** The boxes whose fields mention `key`. */
@@ -1425,7 +1434,7 @@ export class CanvasStore {
     this.view(name, number === asset.version ? undefined : number)
     if (asset.kind === "image") return
     if (!asset.tool || asset.timeline) return
-    const field = this.promptOf(asset.tool)
+    const { field } = this.selfOf(asset)
     const words = this.valueOf(name, field)
     if (typeof words !== "string") return
     const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
@@ -1446,7 +1455,7 @@ export class CanvasStore {
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select that version of", edit)
     if (view?.hereWords && asset.tool) {
-      const field = this.promptOf(asset.tool)
+      const { field } = this.selfOf(asset)
       const words = this.valueOf(key, field)
       if (typeof words === "string") {
         const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
