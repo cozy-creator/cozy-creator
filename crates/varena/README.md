@@ -49,16 +49,17 @@ unplanned, and other phases' loops go after every single pass's.
 The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
 Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map leaves
 the room it is still expected to take for this process free, read from the driver at the map: the most
-any process on this card held outside its books (NVML's figure for the process less varena's books),
-learned on this machine (a file beside the GPU's ledger page) or, before any process here measured it,
-the release's figure for the card and driver (`out-of-books.tsv`, from the release gate's run records:
-`release-gate/ledger.py out-of-books`), less what this process holds there now; with neither, the
-context's own measured cost. It is measured as the process comes up and at each request's boundaries,
-and learned as each request ends. A process coming up asks its peers for it once its context is up,
+a process running the same model set (its plan's phase shapes) on this card held outside its books,
+learned on this machine (`/var/tmp/cozy-varena-<uid>`, kept across boots), less what this process
+holds there now. That is NVML's figure for the process less varena's books, or, where NVML can't name
+it (a container's nested PID namespace), read from the card: its context and what lies outside its
+books now past the least it did. A set this card never ran leaves its context's measured cost. It is
+measured as the process comes up, as a plan becomes active and at each request's boundaries, and
+learned as each request ends. A process coming up asks its peers for it once its context is up,
 before Torch's runtime and first stream, where a refusal reaches no one.
 
-The room is soft: kept only from idle, finished bytes, it never fails a demand or evicts weights a pass
-needs. Pages that fit, but not beside it, take what is idle and finished for it (no wait on our own
+The room is soft: it is kept only by evicting what is idle and finished, with no wait, and never fails a
+demand. Pages that fit, but not beside it, take what is idle and finished for it (no wait on our own
 work, no owner), an idle peer's before our weights, and short of that take the room. One the driver
 still refuses goes through the whole order.
 

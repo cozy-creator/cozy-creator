@@ -19,6 +19,11 @@ pub struct Plan {
     device: &'static Device,
     pid: u32,
     phases: Vec<Phase>,
+    /// What it runs, the same in every process: FNV-1a over each phase's Region count and bytes, sorted
+    /// (its names carry this process's addresses). What the driver allocates for a process is learned
+    /// by it (`cooperative::plan_seen`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    set: u64,
 }
 
 pub(crate) struct Active {
@@ -93,11 +98,16 @@ impl Plan {
             }
             phases.push(phase);
         }
+        let mut shapes: Vec<[u64; 2]> = phases.iter().map(|phase| [phase.regions.len() as u64, phase.bytes as u64]).collect();
+        shapes.sort_unstable();
+        let set = shapes.iter().flatten().flat_map(|value| value.to_le_bytes())
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3));
         Ok(Arc::new(Self {
             id: crate::next_identity()?,
             device: crate::gpu(ordinal)?,
             pid: std::process::id(),
             phases,
+            set,
         }))
     }
 
@@ -135,7 +145,10 @@ impl Plan {
         drop(active);
         // A new plan or phase is the boundary: what ran before it is no longer in its loop.
         crate::gate(self.device())?.not_capturing()?;
-        self.device.enter_plan_phase(Some(&self.phases[phase].name))
+        let entered = self.device.enter_plan_phase(Some(&self.phases[phase].name));
+        #[cfg(target_os = "linux")]
+        crate::cooperative::plan_seen(self.device(), self.set);
+        entered
     }
 
     pub fn deactivate(&self) -> Result<()> {
