@@ -420,9 +420,10 @@ export type BoxEstimate = { name: string, machine: string,
  */
 card: string,
 /**
- * The run itself there, at the GPUs it would take: no queue, install, download or load. 0: unknown.
+ * The run itself there, at the GPUs it would take: no queue, install, download or load. None: unknown, nothing measured timing it
+ * there.
  */
-run_ms: number, basis: Basis,
+run_ms: number | null, basis: Basis,
 /**
  * The tool's recommended GPU (the Hub's pick for its release), when a rented one runs it more than 3× faster and a minute sooner,
  * or it would run here on a CPU.
@@ -2369,9 +2370,9 @@ beats_from?: number | null, };
  */
 export type Placed = { machine: string,
 /**
- * When it was quoted, and the finish the quote said, on this computer's clock.
+ * When it was quoted, and the finish the quote said, on this computer's clock. None: unknown, nothing measured timing it there.
  */
-quoted_at_ms: number, finish_at_ms: number, basis: Basis,
+quoted_at_ms: number, finish_at_ms?: number | null, basis: Basis,
 /**
  * Its time is the function's warm one there.
  */

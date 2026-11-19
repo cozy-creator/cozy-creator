@@ -3,7 +3,8 @@
 //! estimator it packs its own queue by (`placement::quote`), so trying an assignment costs no network. Each job, in dependency order,
 //! goes where it finishes soonest after the jobs placed before it, beginning no sooner than what it reads ends; then single jobs move to
 //! another machine while that ends the whole sooner. A job whose machine already fetches its weights ahead stays there unless another
-//! finishes it clearly sooner.
+//! finishes it clearly sooner. A finish unknown (nothing measured times it) is never sooner than a known one, and what waits for it
+//! starts at a time unknown too.
 use api::{calcifer::On, machine as v1};
 
 use crate::placement::{Offer, Picture};
@@ -23,7 +24,7 @@ pub(crate) const STAY_MS: i64 = 30_000;
 /// One job to place.
 #[derive(Clone, Debug)]
 pub(crate) struct Job {
-    /// What it asks of a machine; its `prior_ms` and `after_ms` are set here.
+    /// What it asks of a machine; its `prior` and `after_ms` are set here.
     pub ask: v1::EstimateJob,
     /// Its time on one GPU of each picture's kind from runs elsewhere, by picture.
     pub priors: Vec<crate::placement::Prior>,
@@ -31,8 +32,9 @@ pub(crate) struct Job {
     pub machines: Vec<usize>,
     /// The jobs of this plan whose output it reads.
     pub needs: Vec<usize>,
-    /// When what it reads that was sent already ends, on this computer's clock.
+    /// When what it reads that was sent already ends, on this computer's clock; and whether one of those ends at a time unknown.
     pub after_at_ms: Option<i64>,
+    pub after_untimed: bool,
     /// The picture fetching its weights ahead.
     pub stay: Option<usize>,
     /// Its request as its function's estimate reads it (`placement::Job::cost`, cl-1286).
@@ -48,14 +50,18 @@ pub(crate) struct Placement {
     pub offers: Vec<Offer>,
 }
 
+/// Each job's end where it was placed, on this computer's clock: none, it isn't; `Some(None)`, at a time unknown.
+type Ends = Vec<Option<Option<i64>>>;
+
 /// Where each of `jobs` goes, in their order.
 pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placement> {
     let order = ordered(jobs);
+    let based = &based(pictures, jobs);
     let mut quotes = 0;
     let mut assigned: Vec<Option<usize>> = vec![None; jobs.len()];
     // First each job where it ends soonest after those before it.
     let mut asks: Vec<Vec<v1::EstimateJob>> = vec![vec![]; pictures.len()];
-    let mut ends: Vec<Option<i64>> = vec![None; jobs.len()];
+    let mut ends: Ends = vec![None; jobs.len()];
     let mut offered: Vec<Vec<Offer>> = vec![vec![]; jobs.len()];
     for &j in &order {
         let after = after_ms(&jobs[j], &ends, now);
@@ -63,23 +69,23 @@ pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placemen
             .map(|&m| {
                 quotes += 1;
                 let mut tried = asks[m].clone();
-                tried.push(ask(&jobs[j], m, &pictures[m], after));
+                tried.push(ask(&based[j][&m], after));
                 (m, crate::placement::quote(&pictures[m], &tried, now).pop().expect("one quoted"))
             })
             .collect();
         if let Some((m, offer)) = choose(&offers, jobs[j].stay, now) {
-            asks[m].push(ask(&jobs[j], m, &pictures[m], after));
+            asks[m].push(ask(&based[j][&m], after));
             ends[j] = Some(offer.finish_at_ms);
             assigned[j] = Some(m);
         }
         offered[j] = offers.into_iter().map(|(_, offer)| offer).collect();
     }
-    let mut best = evaluate(pictures, jobs, &order, &assigned, now, &mut quotes);
+    let mut best = evaluate(pictures, jobs, based, &order, &assigned, now, &mut quotes);
     // Then single moves, the latest finish first, while the whole ends sooner and quotes are left.
     for _ in 0..PASSES {
         let mut moved = false;
         let mut latest: Vec<usize> = (0..jobs.len()).filter(|&j| best.0[j].is_some()).collect();
-        latest.sort_by_key(|&j| std::cmp::Reverse(best.0[j].as_ref().map_or(0, |(_, offer)| offer.finish_at_ms)));
+        latest.sort_by_key(|&j| std::cmp::Reverse(best.0[j].as_ref().map(|(_, offer)| (offer.finish_at_ms.is_none(), offer.finish_at_ms))));
         for j in latest {
             let others: Vec<usize> = jobs[j].machines.iter().copied().filter(|&m| Some(m) != assigned[j]).collect();
             for m in others {
@@ -88,7 +94,7 @@ pub(crate) fn plan(pictures: &[Picture], jobs: &[Job], now: i64) -> Vec<Placemen
                 }
                 let mut tried = assigned.clone();
                 tried[j] = Some(m);
-                let trial = evaluate(pictures, jobs, &order, &tried, now, &mut quotes);
+                let trial = evaluate(pictures, jobs, based, &order, &tried, now, &mut quotes);
                 if better(&trial, &best) && stays(&jobs[j], &best.0[j], &trial.0[j], now) {
                     (assigned, best, moved) = (tried, trial, true);
                 }
@@ -128,28 +134,47 @@ fn ordered(jobs: &[Job]) -> Vec<usize> {
     order
 }
 
-/// The soonest `job` can start, ms from `now`: once what it reads ends.
-fn after_ms(job: &Job, ends: &[Option<i64>], now: i64) -> u64 {
-    let needs = job.needs.iter().filter_map(|&need| ends.get(need).copied().flatten());
-    needs.chain(job.after_at_ms).map(|at| (at - now).max(0) as u64).max().unwrap_or(0)
+/// The soonest `job` can start, ms from `now`: once what it reads ends. None: one of those ends at a time unknown.
+fn after_ms(job: &Job, ends: &Ends, now: i64) -> Option<u64> {
+    let needs: Option<Vec<i64>> = job.needs.iter().filter_map(|&need| ends.get(need).copied().flatten()).collect();
+    let after = needs?.into_iter().chain(job.after_at_ms).map(|at| (at - now).max(0) as u64).max().unwrap_or(0);
+    (!job.after_untimed).then_some(after)
 }
 
-fn ask(job: &Job, picture: usize, pictured: &Picture, after_ms: u64) -> v1::EstimateJob {
-    let prior = job.machines.iter().position(|&m| m == picture).and_then(|at| job.priors.get(at)).copied().unwrap_or_default();
-    let mut ask = v1::EstimateJob { prior_ms: prior.ms, prior_runs: prior.runs, after_ms, ..job.ask.clone() };
-    crate::placement::formula(&mut ask, job.cost.as_deref(), pictured);
-    ask
+/// Each job's ask of each picture it may go to, by picture: its runs there and its formula's times read once (`placement::formula`),
+/// whatever it waits for.
+fn based(pictures: &[Picture], jobs: &[Job]) -> Vec<std::collections::HashMap<usize, v1::EstimateJob>> {
+    (jobs.iter())
+        .map(|job| {
+            (job.machines.iter().enumerate())
+                .map(|(at, &m)| {
+                    let prior = job.priors.get(at).cloned().unwrap_or_default();
+                    let mut ask = v1::EstimateJob { prior: prior.runs, prior_runs: prior.own, ..job.ask.clone() };
+                    crate::placement::formula(&mut ask, job.cost.as_deref(), &pictures[m]);
+                    (m, ask)
+                })
+                .collect()
+        })
+        .collect()
 }
+
+/// `based` beginning once what it reads ends, `after_ms` from now (none: at a time unknown).
+fn ask(based: &v1::EstimateJob, after_ms: Option<u64>) -> v1::EstimateJob {
+    v1::EstimateJob { after_ms: after_ms.unwrap_or(0), after_untimed: after_ms.is_none(), ..based.clone() }
+}
+
+/// A plan's finish: how many of its jobs finish at a time unknown, then when the last known one does and all of them summed, ms from now.
+type Score = (usize, i64, i64);
 
 /// Each job's picture and offer with `assigned`, and the plan's (latest, summed) finish: each machine's jobs in dependency order,
 /// each beginning once what it reads ends there or elsewhere.
 #[allow(clippy::type_complexity)]
-fn evaluate(pictures: &[Picture], jobs: &[Job], order: &[usize], assigned: &[Option<usize>], now: i64, quotes: &mut usize) -> (Vec<Option<(usize, Offer)>>, (i64, i64)) {
+fn evaluate(pictures: &[Picture], jobs: &[Job], based: &[std::collections::HashMap<usize, v1::EstimateJob>], order: &[usize], assigned: &[Option<usize>], now: i64, quotes: &mut usize) -> (Vec<Option<(usize, Offer)>>, Score) {
     let mut asks: Vec<Vec<(usize, v1::EstimateJob)>> = vec![vec![]; pictures.len()];
-    let mut ends: Vec<Option<i64>> = vec![None; jobs.len()];
+    let mut ends: Ends = vec![None; jobs.len()];
     for &j in order {
         let Some(m) = assigned[j] else { continue };
-        asks[m].push((j, ask(&jobs[j], m, &pictures[m], after_ms(&jobs[j], &ends, now))));
+        asks[m].push((j, ask(&based[j][&m], after_ms(&jobs[j], &ends, now))));
         *quotes += 1;
         let tried: Vec<v1::EstimateJob> = asks[m].iter().map(|(_, ask)| ask.clone()).collect();
         let offer = crate::placement::quote(&pictures[m], &tried, now).pop().expect("one quoted");
@@ -164,17 +189,18 @@ fn evaluate(pictures: &[Picture], jobs: &[Job], order: &[usize], assigned: &[Opt
             placed[*j] = offer.fits.then_some((m, offer));
         }
     }
-    let finishes: Vec<i64> = placed.iter().flatten().map(|(_, offer)| offer.finish_at_ms - now).collect();
-    let score = (finishes.iter().copied().max().unwrap_or(0), finishes.iter().sum());
+    let finishes: Vec<i64> = placed.iter().flatten().filter_map(|(_, offer)| offer.finish_at_ms).map(|at| at - now).collect();
+    let untimed = placed.iter().flatten().filter(|(_, offer)| offer.finish_at_ms.is_none()).count();
+    let score = (untimed, finishes.iter().copied().max().unwrap_or(0), finishes.iter().sum());
     (placed, score)
 }
 
-/// Whether plan `trial` beats `best`: it places more of the jobs, or as many and ends the whole sooner. A job a plan leaves unplaced
-/// (its machine can't run it: no room on its disk, cl-1269) never counts as finishing early.
+/// Whether plan `trial` beats `best`: it places more of the jobs, or as many and fewer at a time unknown, or ends the whole sooner. A
+/// job a plan leaves unplaced (its machine can't run it: no room on its disk, cl-1269) never counts as finishing early.
 #[allow(clippy::type_complexity)]
-fn better(trial: &(Vec<Option<(usize, Offer)>>, (i64, i64)), best: &(Vec<Option<(usize, Offer)>>, (i64, i64))) -> bool {
+fn better(trial: &(Vec<Option<(usize, Offer)>>, Score), best: &(Vec<Option<(usize, Offer)>>, Score)) -> bool {
     let placed = |plan: &[Option<(usize, Offer)>]| plan.iter().flatten().count();
-    match placed(&trial.0).cmp(&placed(&best.0)) {
+    match placed(&trial.0).cmp(&placed(&best.0)).then(best.1.0.cmp(&trial.1.0)) {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => sooner(&trial.1, &best.1),
@@ -182,9 +208,9 @@ fn better(trial: &(Vec<Option<(usize, Offer)>>, (i64, i64)), best: &(Vec<Option<
 }
 
 /// Whether `trial` ends the whole sooner than `best`, by more than a tie.
-fn sooner(trial: &(i64, i64), best: &(i64, i64)) -> bool {
+fn sooner(trial: &Score, best: &Score) -> bool {
     let tie = |ms: i64| ((ms.max(0) as f64 * TIE) as i64).max(1000);
-    trial.0 + tie(best.0) < best.0 || (trial.0 <= best.0 + tie(best.0) && trial.1 + tie(best.1) < best.1)
+    trial.1 + tie(best.1) < best.1 || (trial.1 <= best.1 + tie(best.1) && trial.2 + tie(best.2) < best.2)
 }
 
 /// Whether a move of a job fetching ahead somewhere keeps to `STAY`: it leaves only for a finish that much sooner.
@@ -200,21 +226,24 @@ pub(crate) fn clearly_sooner(sooner: &Offer, than: &Offer, now: i64) -> bool {
     finishes_clearly_sooner(sooner.finish_at_ms, than.finish_at_ms, now)
 }
 
-/// A finish at `sooner` is clearly before one at `than` (`clearly_sooner`).
-pub(crate) fn finishes_clearly_sooner(sooner: i64, than: i64, now: i64) -> bool {
-    let gain = than - sooner;
-    gain >= STAY_MS && gain as f64 >= STAY * (than - now).max(0) as f64
+/// A finish at `sooner` is clearly before one at `than` (`clearly_sooner`): a known one before an unknown one; an unknown one never.
+pub(crate) fn finishes_clearly_sooner(sooner: Option<i64>, than: Option<i64>, now: i64) -> bool {
+    match (sooner, than) {
+        (Some(sooner), Some(than)) => {
+            let gain = than - sooner;
+            gain >= STAY_MS && gain as f64 >= STAY * (than - now).max(0) as f64
+        }
+        (sooner, than) => sooner.is_some() && than.is_none(),
+    }
 }
 
-/// Of `offers`, where a job goes: the soonest finish of those that can run it, of those tied a machine that serves before one on its
-/// way, one measured before one not, a rental before this computer, the one holding fewest runs, then the sooner (`placement::soonest`); and the machine fetching
-/// ahead for it unless another is clearly sooner.
+/// Of `offers`, where a job goes: as `placement::soonest` chooses; and the machine fetching ahead for it unless another is clearly
+/// sooner.
 fn choose(offers: &[(usize, Offer)], stay: Option<usize>, now: i64) -> Option<(usize, Offer)> {
+    let only: Vec<Offer> = offers.iter().map(|(_, offer)| offer.clone()).collect();
+    let soonest = crate::placement::soonest(&only, now)?;
+    let soonest = offers.iter().find(|(_, offer)| offer.machine == soonest.machine)?;
     let fits = || offers.iter().filter(|(_, offer)| offer.fits);
-    let first = fits().map(|(_, offer)| offer.finish_at_ms).min()?;
-    let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
-    let rank = |offer: &Offer| (offer.ready_at_ms.is_some(), offer.basis != v1::Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
-    let soonest = fits().filter(|(_, offer)| offer.finish_at_ms <= first + tie).min_by_key(|(_, offer)| rank(offer))?;
     let kept = stay.and_then(|stay| fits().find(|(m, _)| *m == stay)).filter(|(_, held)| !clearly_sooner(&soonest.1, held, now));
     kept.or(Some(soonest)).cloned()
 }

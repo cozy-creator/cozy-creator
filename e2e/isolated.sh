@@ -179,17 +179,20 @@ oldcall() {
 
 # fields (bench_fields, cl-1279): the hub suite's weightless echo as the admin's account's `e2e-fields` 0.1.0, its benchmarks.json
 # carrying a field no cozy reads, `e2e_unread`, in rows 0, 1 and 3 and in row 1's `ran_on`, as 0.28's rows (`lane`, `cold_ms`) came to a
-# 0.27 cozy. What publishing it said is exported, a refusal too, for the cell to judge.
+# 0.27 cozy; and in row 2 a 300-byte note, over the Hub's 200, its 200th byte inside a 2-byte character (packages #1063's 401-byte
+# note). What publishing it said is exported, a refusal too, for the cell to judge.
 fields() {
   local copy=$seed/packages/e2e-fields account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
   sed -i 's/^name = "ci-hub-pkg"$/name = "e2e-fields"/' "$copy/pyproject.toml"
-  cat > "$copy/benchmarks.json" <<'JSON'
+  local note
+  note="x$(printf 'é%.0s' $(seq 149))y"
+  cat > "$copy/benchmarks.json" <<JSON
 [
   {"function": "echo", "gpu": "NVIDIA GeForce RTX 4090", "gpus": 1, "request": {}, "warm_ms": 20, "e2e_unread": 1},
   {"function": "echo", "gpu": "NVIDIA GeForce RTX 5090", "gpus": 1, "request": {}, "warm_ms": 15, "e2e_unread": 2, "ran_on": {"cozy": "0.28.0", "e2e_unread": "x"}},
-  {"function": "echo", "gpu": "NVIDIA L4", "gpus": 1, "request": {}, "warm_ms": 60},
+  {"function": "echo", "gpu": "NVIDIA L4", "gpus": 1, "request": {}, "warm_ms": 60, "note": "$note"},
   {"function": "echo", "gpu": "NVIDIA A100-SXM4-80GB", "gpus": 1, "request": {}, "warm_ms": 18, "e2e_unread": 3}
 ]
 JSON

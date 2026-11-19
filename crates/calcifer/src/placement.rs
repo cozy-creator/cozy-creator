@@ -2,8 +2,9 @@
 //! quotes every machine itself (cl-967, Paul 11-12) from the Status it pushes (`Picture`), with the estimator the machine packs its own
 //! queue by (`api::estimate::quote`): the jobs a machine may take packed with its queue as if all were sent there now; each job goes to
 //! the soonest finish of those that can run it at all, on a tie one measured before one not and a rental before this computer (Paul,
-//! 11-05). Only a machine on this cozy's minor is quoted (`Machines::current`). A quote reserves nothing: two clients that pick one
-//! machine are settled by its queue. This computer's `local`, which stops after 15 idle minutes, starts to be quoted, so its finish counts
+//! 11-05). A machine whose finish is unknown (nothing measured times it there) never competes with one whose finish is known; with no
+//! machine known, the one that starts soonest (cl-1279, 11-19). Only a machine on this cozy's minor is quoted (`Machines::current`). A
+//! quote reserves nothing: two clients that pick one machine are settled by its queue. This computer's `local`, which stops after 15 idle minutes, starts to be quoted, so its finish counts
 //! its start (cl-894). A rental on its way is quoted as it will picture itself once it serves (`coming`, cl-915): a job may wait for one
 //! that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
 use std::{
@@ -63,8 +64,9 @@ pub(crate) struct Offer {
     /// Its disk lacks this much for its weights, after all its store could free (cl-1175): it can't run it there.
     pub short_bytes: u64,
     pub width: u32,
-    pub start_at_ms: i64,
-    pub finish_at_ms: i64,
+    /// When it would start and finish there. None: unknown, as its time there is, or that of a run it waits for.
+    pub start_at_ms: Option<i64>,
+    pub finish_at_ms: Option<i64>,
     pub prepare_ms: u64,
     pub queue_position: u32,
     /// The runs its machine holds now, running or waiting, every client's (and those already sent to one on its way): of machines
@@ -102,14 +104,14 @@ impl Offer {
         Some(format!("waits for {}, ready {}", self.machine, within(at - now)))
     }
 
-    /// How long past its preparation it waits for GPUs, from `now`.
-    pub(crate) fn waits_ms(&self, now: i64) -> i64 {
-        (self.start_at_ms - now - self.prepare_ms as i64).max(0)
+    /// How long past its preparation it waits for GPUs, from `now`. None: unknown.
+    pub(crate) fn waits_ms(&self, now: i64) -> Option<i64> {
+        self.start_at_ms.map(|start| (start - now - self.prepare_ms as i64).max(0))
     }
 
     /// As `POST /v1/run-estimates` answers it, from `now`: one that can't run there has no times.
     pub(crate) fn shown(&self, now: i64) -> MachineEstimate {
-        let from = |at: i64| self.fits.then(|| (at - now).max(0) as u64);
+        let from = |at: Option<i64>| at.filter(|_| self.fits).map(|at| (at - now).max(0) as u64);
         MachineEstimate {
             machine: self.machine.to_string(),
             job: 0,
@@ -144,7 +146,8 @@ impl Offer {
     }
 
     pub(crate) fn quoted(&self) -> crate::eta::Quoted {
-        crate::eta::Quoted { start_at: self.start_at_ms as f64, finish_at: self.finish_at_ms as f64, basis: self.basis }
+        let at = |ms: Option<i64>| ms.map(|ms| ms as f64);
+        crate::eta::Quoted { start_at: at(self.start_at_ms), finish_at: at(self.finish_at_ms), basis: self.basis }
     }
 }
 
@@ -315,27 +318,29 @@ pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now:
     .await
 }
 
-/// A job's time on one GPU of a machine's kind where that machine's frame times none of it (`prior`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// This computer's runs of a job's function at one GPU on a machine, else on others of its kind (`prior`): what it is timed by where
+/// that machine's frame times none of it.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Prior {
-    pub ms: u64,
-    /// How many of that machine's own runs it is (a project's, which its frame never times, cl-1047): its quote is Measured. 0: runs
+    pub runs: Vec<v1::TimedRun>,
+    /// How many of them are that machine's own (a project's, which its frame never times, cl-1047): its quote is Measured. 0: runs
     /// elsewhere.
-    pub runs: u32,
+    pub own: u32,
 }
 
-/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took: what it is timed by where its frame times none of it.
-/// In its project's scope (`Job::scope`), whose runs here only it keeps (cl-1047).
+/// The runs like `job` this computer has on `picture`'s machine, else on its card: what it is timed by where its frame times none of it,
+/// scaled to its size as the machine's own runs are (`api::estimate::time`). In its project's scope (`Job::scope`), whose runs here only
+/// it keeps (cl-1047).
 pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> Prior {
     let timed = async {
         match &picture.ready_at_ms {
             Some(_) => match api.machines.coming(&picture.name, now_ms()) {
-                Some(coming) => Prior { ms: crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64, runs: 0 },
+                Some(coming) => Prior { runs: api.calcifer.card_runs(&job.target, &coming.way.card), own: 0 },
                 None => Prior::default(),
             },
             None => {
-                let (ms, runs) = api.calcifer.prior_ms(&job.target, &picture.name, &job.size);
-                Prior { ms, runs }
+                let (runs, own) = api.calcifer.prior_runs(&job.target, &picture.name);
+                Prior { runs, own }
             }
         }
     };
@@ -365,8 +370,8 @@ pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
         size: job.size.clone(),
         gpus: job.gpus,
         gpu: job.gpu,
-        prior_ms: prior.ms,
-        prior_runs: prior.runs,
+        prior: prior.runs,
+        prior_runs: prior.own,
         ..Default::default()
     }
 }
@@ -389,15 +394,25 @@ pub(crate) fn card(picture: &Picture, models: &[v1::ModelRef]) -> ::needs::Card 
 }
 
 /// `ask` timed on `picture`'s machine by its function's own formula (`cost`, cl-1286), where it declares one that gives a time there;
-/// else the quote's own default times it, as `Cost::on`'s does.
+/// else the quote's own default times it, as `Cost::on`'s does. And that formula's time there at each size its runs ran (on this
+/// machine, on the caller's others, and this computer's: `prior`), which they are scaled to its size by, as its rows are (`Shape`).
 pub(crate) fn formula(ask: &mut v1::EstimateJob, cost: Option<&::needs::Cost>, picture: &Picture) {
-    if let Some(cost) = cost.filter(|cost| cost.timed()) {
-        let estimated = cost.on(&ask.function, &card(picture, &ask.models), &picture.references);
-        (ask.formula_ms, ask.formula_basis) = match estimated.declared {
-            true => (estimated.ms, Some(estimated.basis)),
-            false => (None, None),
-        };
+    let Some(cost) = cost.filter(|cost| cost.timed()) else { return };
+    let card = card(picture, &ask.models);
+    let estimated = cost.on(&ask.function, &card, &picture.references);
+    (ask.formula_ms, ask.formula_basis) = match estimated.declared {
+        true => (estimated.ms, Some(estimated.basis)),
+        false => (None, None),
+    };
+    ask.formula_at = vec![];
+    if ask.formula_ms.is_none() {
+        return;
     }
+    let timed_as = api::estimate::timed_as(&picture.frame, &ask.function, &picture.references);
+    let here = picture.frame.times.iter().flatten().filter(|timed| !timed_as.is_empty() && timed.function == timed_as);
+    let away = picture.references.timed.get(&timed_as).into_iter().flatten().map(|(_, runs)| runs);
+    let sizes = here.flat_map(|timed| &timed.runs).chain(away.flatten()).chain(&ask.prior).map(|run| &run.size);
+    ask.formula_at = cost.formula_at(&ask.function, &card, &picture.references, sizes);
 }
 
 /// When `picture`'s machine would run each of `jobs` were they all sent there now, after its queue and what is ahead of it there; one on
@@ -417,8 +432,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             refusal: quote.refusal,
             short_bytes: quote.short_bytes,
             width: quote.width,
-            start_at_ms: at(quote.start_ms),
-            finish_at_ms: at(quote.finish_ms),
+            start_at_ms: quote.start_ms.map(at),
+            finish_at_ms: quote.finish_ms.map(at),
             prepare_ms: quote.prepare_ms,
             queue_position: quote.queue_position,
             load,
@@ -534,13 +549,19 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
 /// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
 /// computer, the one holding fewest runs (every client's, cl-1224), then the sooner: never the first listed for being first (cl-1073).
+/// A finish unknown never competes with a known one (Paul, 11-19: no made-up number): only where no machine's finish is known, the
+/// soonest start of those, tied as finishes are (fit, free soonest, rentals before local), else the first that can run it.
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
-    let first = fits().map(|offer| offer.finish_at_ms).min()?;
+    let timed: Vec<&Offer> = fits().filter(|offer| offer.finish_at_ms.is_some()).collect();
+    let (pool, when): (Vec<&Offer>, fn(&Offer) -> Option<i64>) = match timed.is_empty() {
+        false => (timed, |offer| offer.finish_at_ms),
+        true => (fits().collect(), |offer| offer.start_at_ms),
+    };
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.load);
+    let Some(first) = pool.iter().filter_map(|offer| when(offer)).min() else { return pool.into_iter().min_by_key(rank) };
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
-    let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.load, offer.finish_at_ms);
-    tied().min_by_key(rank)
+    pool.into_iter().filter(|offer| when(offer).is_some_and(|at| at <= first + tie)).min_by_key(|offer| (rank(offer), when(offer)))
 }
 
 /// Where a job goes that no machine of `on` quoted a finish for. A run named to one place goes there, which refuses it as it does;
@@ -641,7 +662,11 @@ pub(crate) fn said(offer: &Offer, now: i64) -> String {
         0 => String::new(),
         s => format!("; {s} s preparing{fetch}"),
     };
-    format!("{} finishes in {} s ({:?}{warm}{preparing}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+    match (offer.finish_at_ms, offer.start_at_ms) {
+        (Some(finish), _) => format!("{} finishes in {} s ({:?}{warm}{preparing}){ready}", offer.machine, (finish - now).max(0) / 1000, offer.basis),
+        (None, Some(start)) => format!("{} starts in {} s, its time unknown ({:?}{warm}{preparing}){ready}", offer.machine, (start - now).max(0) / 1000, offer.basis),
+        (None, None) => format!("{}: when unknown, after a run untimed ({:?}{warm}{preparing}){ready}", offer.machine, offer.basis),
+    }
 }
 
 /// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.

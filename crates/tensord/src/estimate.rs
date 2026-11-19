@@ -32,9 +32,11 @@ pub(crate) fn whole_ms(engine: &Engine, record: &Execution) -> io::Result<Option
         true => vec![],
         false => engine.run_times(&function_key(&invocation.package, &invocation.entrypoint), HISTORY)?,
     };
-    // A started run is its function's first call here when none ran before it (cold), else a later one (warm).
-    let time = estimate::time(&runs, &JobSize::of(&invocation.input), 0.0, None, !runs.is_empty());
-    Ok((time.basis != v1::Basis::None).then(|| time.at(held_width(record))))
+    // A started run is its function's first call here when none ran before it (cold), else a later one (warm); its size as its
+    // record keeps it, as its runs here are kept. This machine knows no release's rows, so its runs scale in proportion.
+    let size = record.size.clone().unwrap_or_else(|| JobSize::of(&invocation.input));
+    let time = estimate::time(&runs, &size, &estimate::Shape::default(), None, !runs.is_empty());
+    Ok(time.at(held_width(record)))
 }
 
 /// A root the machine gives its width as it starts: no count asked, and more than one width.
@@ -262,7 +264,7 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         nvlink,
         times,
         now_ms: crate::machine::lifecycle::now_ms(),
-        // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is a minute; Calcifer's quotes know them.
+        // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is untimed; Calcifer's quotes know them.
         references: None,
         named: HashMap::new(),
     };
@@ -271,6 +273,6 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
     let placed = estimate::pack(machine.gpus, &jobs);
     Ok((roots.into_iter().zip(jobs).zip(placed))
         .filter(|((root, job), place)| job.running.is_none() && root.queued.chooses && place.width > 0)
-        .map(|((root, _), place)| (root.id, Start { width: place.width, wait_ms: place.known.then_some(place.start_ms.max(0.0) as u64) }))
+        .map(|((root, _), place)| (root.id, Start { width: place.width, wait_ms: place.start_ms.map(|ms| ms.max(0.0) as u64) }))
         .collect())
 }

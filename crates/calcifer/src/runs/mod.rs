@@ -181,7 +181,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
     let now = crate::store::now_ms();
     let shown = offers.iter().enumerate().flat_map(|(job, offers)| offers.iter().map(move |offer| MachineEstimate { job: job as u32, ..offer.shown(now) }));
     let mut machines: Vec<MachineEstimate> = shown.collect();
-    machines.sort_by_key(|machine| (machine.job, !machine.fits, machine.finish_ms));
+    machines.sort_by_key(|machine| (machine.job, !machine.fits, machine.finish_ms.is_none(), machine.finish_ms));
     if machines.is_empty() {
         notes.push(Note { level: NoteLevel::Warning, message: format!("There's no estimate for {}, because only a machine that's running or starting can give one.", submit.on) });
     }
@@ -718,20 +718,32 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;
     let way = crate::rentals::OnItsWay { ready_at_ms: 0, card: rental.card.clone(), gpus: rental.gpus };
-    // Its time on that card: this computer's runs there, else its release's benchmarks (cl-1024), else a minute.
+    // Its time on that card: this computer's runs there, else its release's benchmarks (cl-1024). A machine whose finish is known wins
+    // over a rental whose time is unknown, and one whose finish is unknown never over a rental's known one (Paul, 11-19); with both
+    // unknown, what is up now goes before a new rental.
     let target = format!("{}/{}@{}", run.package, run.function, run.release);
-    let one_ms = api.calcifer.typical_ms(&target, &way.card, &run.size).map_or(api::estimate::UNKNOWN_MS, |(ms, _)| ms);
+    let one_ms = api.calcifer.typical_ms(&target, &way.card, &run.size).map(|(ms, _)| ms);
     let prepare_ms = api::estimate::prepare_ms(false, rental.weight_bytes, api::estimate::LINK, 0.0);
     let now = crate::store::now_ms();
-    let new_finish = now + rental.boot_ms + (prepare_ms + one_ms) as i64;
-    if offer.finish_at_ms >= new_finish {
-        return None;
-    }
-    let (here, there) = (crate::placement::within(offer.finish_at_ms - now), crate::placement::within(new_finish - now));
+    let new_finish = one_ms.map(|one_ms| now + rental.boot_ms + (prepare_ms + one_ms) as i64);
     let card = rental.card.to_uppercase();
+    let (finish, new_finish) = match (offer.finish_at_ms, new_finish) {
+        (Some(finish), Some(new_finish)) if finish >= new_finish => return None,
+        (None, Some(_)) => return None,
+        (Some(finish), new_finish) => (finish, new_finish),
+        (None, None) => {
+            let said = format!("{chosen} can run it, and neither its time there nor a new {card}'s is known, so the run goes there and nothing new is rented.");
+            return Some((chosen, said, offers));
+        }
+    };
+    let here = crate::placement::within(finish - now);
+    let than = match new_finish {
+        Some(at) => format!("sooner than a new {card} ({})", crate::placement::within(at - now)),
+        None => format!("and a new {card}'s time is unknown"),
+    };
     let said = match offer.waits_for(now) {
-        Some(waits) => format!("{chosen} is on its way and would finish it {here}, sooner than a new {card} ({there}). The run {waits}, and nothing new is rented."),
-        None => format!("{chosen} would finish it {here}, sooner than a new {card} ({there}), so the run goes there and nothing new is rented."),
+        Some(waits) => format!("{chosen} is on its way and would finish it {here}, {than}. The run {waits}, and nothing new is rented."),
+        None => format!("{chosen} would finish it {here}, {than}, so the run goes there and nothing new is rented."),
     };
     Some((chosen, said, offers))
 }

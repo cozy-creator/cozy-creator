@@ -9,6 +9,7 @@
 //!   relates to the machine; `measured(machine, "function", {…})`, that map instead: a placeholder until a row of it exists.
 //! - `pow(x, y)`: x to the power y.
 //! - `sum(list)`: its numbers added; `min(x, y, …)`, `max(x, y, …)`: the least and the greatest.
+//! - `words(text)`: how many words it has, as whitespace parts them (a prompt's length: Qwen Image 2's rewrite grows with it).
 //!
 //! One evaluation of a request on a machine gives its size and its outputs. A function that declares no `ms` is timed by the platform's
 //! own default from the same row (`References::estimate`); one that declares no `size` is sized by `JobSize::of`'s guess. On a machine
@@ -164,6 +165,20 @@ impl Cost {
         Cost { size, size_unanswered, faults, request, declared }
     }
 
+    /// Its formula's time on `card` at each of `sizes` but its own, once each (cl-1286): what a past run of it at that size is scaled
+    /// from to its own (`api::estimate::Shape`). None where it declares no `ms`, or that gives none there.
+    pub fn formula_at<'s>(&self, function: &str, card: &Card, references: &References, sizes: impl IntoIterator<Item = &'s JobSize>) -> Vec<(JobSize, f64)> {
+        let mut at: Vec<(JobSize, f64)> = vec![];
+        for size in sizes.into_iter().filter(|_| self.timed()) {
+            if size.values == self.size.values || at.iter().any(|(had, _)| had.values == size.values) {
+                continue;
+            }
+            let there = Cost { size: size.clone(), ..self.clone() }.on(function, card, references);
+            at.extend(there.ms.filter(|_| there.declared).map(|ms| (size.clone(), ms)));
+        }
+        at
+    }
+
     /// Its function declares its own size variables.
     pub fn sized(&self) -> bool {
         !self.declared.size.is_empty()
@@ -293,6 +308,12 @@ fn context(request: &Value, machine: Option<(&JobSize, &Card)>, rows: HashMap<St
     let _ = context.add_function("sum", |Arguments(args): Arguments| -> Result<cel::Value, cel::ExecutionError> {
         let Some(cel::Value::List(items)) = args.first() else { return Err(cel::ExecutionError::function_error("sum", "sum(list) adds a list")) };
         items.iter().map(real).sum::<Option<f64>>().map(cel::Value::Float).ok_or_else(|| cel::ExecutionError::function_error("sum", "sum(list) adds numbers"))
+    });
+    let _ = context.add_function("words", |Arguments(args): Arguments| -> Result<cel::Value, cel::ExecutionError> {
+        match args.first() {
+            Some(cel::Value::String(text)) => Ok(cel::Value::Float(text.split_whitespace().count() as f64)),
+            _ => Err(cel::ExecutionError::function_error("words", "words(text) counts a text's words")),
+        }
     });
     let _ = context.add_function("measured", move |Arguments(args): Arguments| -> Result<cel::Value, cel::ExecutionError> {
         let function = match args.get(1) {

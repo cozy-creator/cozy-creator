@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use api::{
     calcifer::{EtaBasis, Progress},
-    machine::{Basis, JobSize},
+    machine::{Basis, JobSize, TimedRun},
 };
 use serde::Deserialize;
 
@@ -20,8 +20,6 @@ use serde::Deserialize;
 const RECENT: usize = 5;
 /// A run within this share of another's megapixels is its size.
 const SAME_SIZE: f64 = 0.15;
-/// The size variables a prior's stages scale by themselves: the picture (`Took::at`) and the steps (`Prior::with_steps`).
-const SCALED: [&str; 2] = ["megapixels", "steps"];
 /// What a prior weighs against a run's own steps, in steps: from this machine, from another of its GPU.
 const MACHINE_WEIGHT: f64 = 3.0;
 const GPU_WEIGHT: f64 = 2.0;
@@ -42,7 +40,8 @@ pub(crate) struct Took {
     pub stages: Vec<StageTook>,
     /// From its last stage's end to its own: its outputs encoded and sent.
     pub tail_ms: f64,
-    /// What its input asked, as `JobSize::of` reads it: its media's seconds, frames and tokens scale a prior from it (cl-1004).
+    /// Its size as its machine kept it (its function's own variables, cl-1286), else as `JobSize::of` reads its input: what a quote
+    /// scales it from (`like`).
     pub size: JobSize,
 }
 
@@ -74,6 +73,8 @@ struct Measured {
     attribution: Attribution,
     #[serde(default)]
     execution: Execution,
+    #[serde(default)]
+    size: JobSize,
 }
 
 #[derive(Deserialize, Default)]
@@ -129,7 +130,7 @@ impl Took {
             (Some((_, first)), Some(last)) => ((first.started_unix_ms - started).clamp(0.0, end - started), (end - last).max(0.0)),
             _ => (end - started, 0.0),
         };
-        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms, size: JobSize::default() })
+        Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms, size: measured.size })
     }
 
     pub(crate) fn total_ms(&self) -> f64 {
@@ -190,8 +191,6 @@ pub(crate) struct Prior {
     pub confidence: f64,
     /// What it weighs against the run's own steps, in steps.
     weight: f64,
-    /// Its runs' media seconds, frames and tokens, each the median of those that asked it.
-    pub extent: JobSize,
 }
 
 impl Prior {
@@ -237,10 +236,6 @@ impl Prior {
         let middle = median(&totals).unwrap_or(0.0);
         let spread = median(&totals.iter().map(|total| (total - middle).abs()).collect::<Vec<_>>()).unwrap_or(0.0) / middle.max(1.0);
         let (weight, trust) = if scaled { (weight / 2.0, trust * 0.8) } else { (weight, trust) };
-        let of_size = |pick: &dyn Fn(&JobSize) -> Option<f64>| median(&tooks.iter().filter_map(|took| pick(&took.size)).collect::<Vec<_>>());
-        // Every variable but those its stages scale by themselves (`at`, `with_steps`), each its runs' median.
-        let names: std::collections::BTreeSet<&String> = tooks.iter().flat_map(|took| took.size.values.keys()).filter(|name| !SCALED.contains(&name.as_str())).collect();
-        let extent = JobSize { values: names.into_iter().filter_map(|name| Some((name.clone(), of_size(&|size| size.get(name))?))).collect(), refs: None };
         Some(Prior {
             basis,
             runs: tooks.len(),
@@ -249,14 +244,13 @@ impl Prior {
             tail_ms: of(&|took| Some(took.tail_ms)).unwrap_or(0.0),
             confidence: trust * (1.0 - spread.min(0.5)),
             weight,
-            extent,
         })
     }
 
     /// A whole run's time and nothing of its phases: its machine's quote, standing on `basis`.
     fn whole(ms: f64, basis: EtaBasis) -> Self {
         let confidence = if basis == EtaBasis::Machine { 0.6 } else { 0.4 };
-        Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT, extent: JobSize::default() }
+        Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT }
     }
 
     /// Another card's runs as this card's: each time `factor` times as long (the Hub's speed of that card over this one's), trusted
@@ -304,35 +298,33 @@ impl Prior {
     }
 }
 
-/// What a run of `size` takes on one GPU, by the runs like it at one width on `machine`, else on its GPU: a machine's
-/// estimate's `prior_ms`, used where that machine ran none of it. Its media's seconds, frames and tokens scale it from what those
-/// runs asked (cl-1004: a 5 s shot after 15 s ones).
-pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<f64> {
-    one_gpu(history, machine, gpu, size).map(|(ms, _)| ms)
-}
-
-/// `one_gpu_ms`, and how many of `machine`'s own runs it stands on (cl-1047): those it took by `machine`'s name, every one on `gpu`, the
-/// card it has now (a run's record names its machine and GPU, nothing more: a rental's name is used again, and `local` changes card or
-/// moves with its project's folder). 0: other machines' of its GPU, or any of its own on another card.
-pub(crate) fn one_gpu(history: &[Took], machine: &str, gpu: &str, size: &JobSize) -> Option<(f64, u32)> {
-    let one: Vec<Took> = history.iter().filter(|took| took.width <= 1).cloned().collect();
-    let prior = Prior::of(&one, machine, gpu, size.get("megapixels"))?;
-    let asked = JobSize { values: size.values.iter().filter(|(name, _)| !SCALED.contains(&name.as_str())).map(|(name, n)| (name.clone(), *n)).collect(), refs: None };
-    let mine: Vec<&Took> = one.iter().filter(|took| took.machine == machine).take(RECENT).collect();
-    let here = match prior.basis == EtaBasis::Machine && mine.iter().all(|took| took.gpu == gpu) {
-        true => mine.len() as u32,
-        false => 0,
+/// The runs that time a run on one GPU of `machine` where it ran none of them itself (`EstimateJob::prior`), newest first, each its size
+/// and its whole time, which a quote scales to the size asked as the machine's own runs (`api::estimate::time`): at one width,
+/// `machine`'s, else other machines' of its GPU. And how many of `machine`'s own they are (cl-1047): those it took by `machine`'s name,
+/// every one on `gpu`, the card it has now (a run's record names its machine and GPU, nothing more: a rental's name is used again, and
+/// `local` changes card or moves with its project's folder). 0: other machines' of its GPU, or any of its own on another card. None:
+/// none.
+pub(crate) fn like(history: &[Took], machine: &str, gpu: &str) -> Option<(Vec<TimedRun>, u32)> {
+    let one = || history.iter().filter(|took| took.width <= 1);
+    let mine: Vec<&Took> = one().filter(|took| took.machine == machine).take(api::estimate::HISTORY).collect();
+    let (runs, here) = match mine.is_empty() {
+        false => {
+            let here = if mine.iter().all(|took| took.gpu == gpu) { mine.len() as u32 } else { 0 };
+            (mine, here)
+        }
+        true if !gpu.is_empty() => (one().filter(|took| took.gpu == gpu).take(api::estimate::HISTORY).collect(), 0),
+        true => return None,
     };
-    let steps = size.get("steps").map(|n| n as u64);
-    Some((prior.clone().with_steps(steps).total_ms(steps) * asked.ratio(&prior.extent), here))
+    let timed = runs.iter().map(|took| TimedRun { width: 1, size: took.size.clone(), ms: took.total_ms(), load_ms: 0.0, cold: false }).collect::<Vec<_>>();
+    (!timed.is_empty()).then_some((timed, here))
 }
 
 /// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that
-/// stands on.
+/// stands on. Either unknown where nothing measured times it there.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Quoted {
-    pub start_at: f64,
-    pub finish_at: f64,
+    pub start_at: Option<f64>,
+    pub finish_at: Option<f64>,
     pub basis: Basis,
 }
 
@@ -405,7 +397,7 @@ impl Clock {
         Self { prior, ..Self::default() }
     }
 
-    /// What its machine quoted: with no runs like it here, its run's time is the prior, unless that stands on nothing.
+    /// What its machine quoted: with no runs like it here, its run's time is the prior, unless that stands on nothing (unknown).
     pub(crate) fn quoted(&mut self, quoted: Quoted) {
         let basis = match quoted.basis {
             Basis::Measured => Some(EtaBasis::Machine),
@@ -413,8 +405,8 @@ impl Clock {
             Basis::Scaled => Some(EtaBasis::Card),
             Basis::None => None,
         };
-        if let (None, Some(basis)) = (&self.prior, basis) {
-            self.prior = Some(Prior::whole((quoted.finish_at - quoted.start_at).max(0.0), basis));
+        if let (None, Some(basis), Some(start), Some(finish)) = (&self.prior, basis, quoted.start_at, quoted.finish_at) {
+            self.prior = Some(Prior::whole((finish - start).max(0.0), basis));
         }
         self.quoted = Some(quoted);
     }
@@ -577,7 +569,7 @@ impl Clock {
         // What's left of the phase it's in, and how well that phase keeps to what was expected of it.
         let ((current, fit), rest) = match (self.started, &self.stage, whole) {
             (None, ..) => {
-                let queued = self.quoted.map_or(0.0, |quoted| quoted.finish_at - here);
+                let queued = self.quoted.and_then(|quoted| quoted.finish_at).map_or(0.0, |finish| finish - here);
                 let fetching = self.fetching_ms.unwrap_or(0.0);
                 ((fetching, 1.0), (prior?.total_ms(None)).max(queued - fetching))
             }

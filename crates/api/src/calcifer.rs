@@ -418,9 +418,10 @@ pub enum Status {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Placed {
     pub machine: String,
-    /// When it was quoted, and the finish the quote said, on this computer's clock.
+    /// When it was quoted, and the finish the quote said, on this computer's clock. None: unknown, nothing measured timing it there.
     pub quoted_at_ms: i64,
-    pub finish_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_at_ms: Option<i64>,
     pub basis: crate::machine::Basis,
     /// Its time is the function's warm one there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

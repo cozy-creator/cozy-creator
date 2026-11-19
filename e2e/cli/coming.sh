@@ -1,9 +1,10 @@
 # coming_machine (cl-915, Paul 11-12: "the planner … should take into account what machines are coming online"): a project's machines
 # are a stand-in (stand-c, another user's cozy on this runner) and a rental on the isolated Hub's docker provider, which never serves
 # here (its Hub's ingress is on loopback), so it stays on its way: a typical boot from its order, then its preparation and a minute's
-# run, as its Hub has no times of them (about 6 min in all). stand-c first runs the `wait` tool for 8 min, so it knows that's what the
-# tool takes there. A still of another tool (`slow`, which stand-c hasn't run: its install and a minute) finishes sooner on stand-c and
-# goes there at once: a rental that will be later doesn't hold it. `wait` again would take stand-c 8 min, so it waits for the rental,
+# run, as the `wait` tool's CPU row says (about 6 min in all; a time nothing measures is unknown and never competes with a known one,
+# cl-1279, 11-19). stand-c first runs `wait` for 8 min, so it knows that's what the tool takes there. A still of another tool (`slow`,
+# which nothing times on either: its install, then a time unknown) starts sooner on stand-c and goes there at once: a rental that will be
+# later doesn't hold it. `wait` again would take stand-c 8 min, so it waits for the rental,
 # nothing sent, its box saying "waits for <rental>, ready in …"; the rental ended, it goes to stand-c. `--on new` of a run stand-c
 # finishes sooner than a new rental would rents nothing and runs there. On a GitHub runner the machines run CPU work side by side, so
 # stand-c is late by its own measured time, not by a queue: placement compares the same finish. Its own shard (`coming`), on every RC run: it
@@ -38,7 +39,16 @@ coming_done() {
 }
 
 coming_cell() {
-local P=$OUT/coming tool=$here/project/waits.py/wait rental='' name='' pid board
+local P=$OUT/coming waits=$OUT/coming-waits tool rental='' name='' pid board
+# waits.py as a package with its benchmarks.json: `wait` a minute at its stills' 0.25 MP on the docker provider's rental, whose
+# accelerator its Hub names `CPU`, one of it.
+rm -rf "$waits" && mkdir -p "$waits/e2e_coming_waits" && cp "$here/project/waits.py" "$waits/e2e_coming_waits/__init__.py"
+printf '%s\n' '[build-system]' 'requires = ["uv_build>=0.12.7,<0.13"]' 'build-backend = "uv_build"' '' '[project]' 'name = "e2e-coming-waits"' \
+  'version = "0.1.0"' 'requires-python = ">=3.12"' 'dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]' '' \
+  '[project.entry-points."cozy.application"]' 'default = "e2e_coming_waits:app"' '' '[tool.uv.build-backend]' 'module-name = "e2e_coming_waits"' 'module-root = ""' \
+  > "$waits/pyproject.toml"
+echo '[{"function": "wait", "gpu": "CPU", "gpus": 1, "request": {"megapixels": 0.25}, "warm_ms": 60000, "note": "coming_machine: a minute"}]' > "$waits/benchmarks.json"
+tool=$waits/wait
 cozy --json machine show local > "$OUT/set-local.json" || { check "coming: machine show local"; return; }
 stand_in stand-c || return
 signin "$E2E_HUB_EMAIL" > "$OUT/coming-login.json" || { check "coming: cozy login: $(tail -c 300 "$OUT/coming-login.json")"; return; }
@@ -108,8 +118,9 @@ J '[.runs[] | select(.kind == "call" and .machine == "stand-c" and .status == "c
 # `--on new`, stand-c sooner than a new rental: nothing rented (no quote to agree to), it runs there and says why.
 in_project "$P" --json run minimax-h3-tools/echo text=coming --on new > "$OUT/coming-new-run.ndjson" 2> "$OUT/coming-new-run.err" \
   || check "coming: run --on new: $(tail -c 300 "$OUT/coming-new-run.ndjson") $(tail -c 300 "$OUT/coming-new-run.err")"
-grep -q 'stand-c would finish it .*nothing new is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
-  || check "coming: run --on new didn't say stand-c finishes it sooner: $(tail -c 300 "$OUT/coming-new-run.err")"
+# Nothing times echo on either, so stand-c, up now, goes first (cl-1279, 11-19: no minute assumed).
+grep -qE 'stand-c (would finish it|can run it).*nothing new is rented' "$OUT/coming-new-run.ndjson" "$OUT/coming-new-run.err" \
+  || check "coming: run --on new didn't say stand-c takes it, nothing rented: $(tail -c 300 "$OUT/coming-new-run.err")"
 in_project "$P" --json run ls --limit 0 > "$OUT/coming-new-runs.json"
 J '[.runs[] | select(.target | test("/echo"))] | .[0].machine == "stand-c"' "$OUT/coming-new-runs.json" \
   || check "coming: run --on new didn't run on stand-c: $(jq -c '[.runs[] | {number, target, machine, status}]' "$OUT/coming-new-runs.json")"

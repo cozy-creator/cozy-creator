@@ -804,7 +804,7 @@ case $SHARD in
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
   # A request's size by its function's own variables, in its plan and its run's record; a broken one refused (cl-1286).
-  estimate) parts="estimate_plan logs" ;;
+  estimate) parts="estimate_plan estimate_scaled logs" ;;
   # A benchmarks.json field this cozy doesn't read warns and publishes (cl-1279), alone.
   bench-fields) parts="bench_fields logs" ;;
   # Status answers while the journal's commits wait for the disk (cl-1202): about 3 min.
@@ -875,7 +875,8 @@ case $SHARD in
   # A capability redemption the Hub never answers: each attempt said, then an anonymous read (cl-1189). Its own shard for a dispatch.
   grants) parts="grant_silent logs" ;;
   # A busy machine's runs ahead in its quote, replayed on two stand-ins that say only their Status (cl-1107): a few minutes.
-  queue) parts="plan_queue logs" ;;
+  # A machine with an estimate wins over one with none, and with none anywhere a job is still placed, its time unknown (cl-1279).
+  queue) parts="plan_queue plan_unknown logs" ;;
   # A box's tool gets its machine ready before Render (cl-1104): a guess switched, a request sent meanwhile, a box deleted; two boxes
   # of one function quoted each by its own checkpoint; a guess moved when its machine's load changes; on a short disk a guess
   # evicts nothing, goes first, says so and comes again, and its install gives the line to a run's; local code is carried to a fresh

@@ -1470,7 +1470,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             run: pending.run,
             earlier_ms: pending.version.execution_ms,
             shot: job.is_some_and(|job| job.shot),
-            ends_at_ms: walker.sent.get(id).map(|offer| offer.finish_at_ms),
+            ends_at_ms: walker.sent.get(id).and_then(|offer| offer.finish_at_ms),
             gpus: walker.sent.get(id).map(|offer| offer.width).filter(|width| *width > 0),
         }
     });
@@ -1502,8 +1502,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
                 why: Some(held.as_ref().map_or(why, |(said, _)| said.clone())),
                 machine: held.map(|(_, machine)| machine),
                 gpus: placed.map(|placed| placed.soonest.width).filter(|width| *width > 0),
-                starts_at_ms: placed.map(|placed| placed.soonest.start_at_ms),
-                ends_at_ms: placed.map(|placed| placed.soonest.finish_at_ms),
+                starts_at_ms: placed.and_then(|placed| placed.soonest.start_at_ms),
+                ends_at_ms: placed.and_then(|placed| placed.soonest.finish_at_ms),
                 ..Job::default()
             };
             (row, job.shot)
@@ -1578,8 +1578,8 @@ struct Walker {
     /// Jobs waiting for another's output whose quote reads their package statically, off the plan (`Done::Foreseen`), by key: asked
     /// once while they wait, however long that takes; one that failed is asked again at its turn.
     foreseeing: HashSet<String>,
-    /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
-    starts: HashMap<String, (i64, Vec<String>)>,
+    /// Each job's planned start (none: unknown) and the machines that can run it, by its key, as the last plan said.
+    starts: HashMap<String, (Option<i64>, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
     items: HashMap<(String, String), Option<(String, v1::Predicted, String)>>,
     /// Items being made.
@@ -4679,7 +4679,7 @@ impl Walk {
             for (key, asset, wanted) in jobs {
                 let On::Machine(name) = &wanted.machine else { continue };
                 let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
-                let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
+                let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((None, vec![]));
                 let listed = crate::prefetch::Listed {
                     project: self.project.clone(),
                     asset: asset.clone(),
@@ -4861,6 +4861,7 @@ impl Walk {
                     picture.frame.queue.get_or_insert_default().retain(|root| crate::store::calcifer_id(&root.run) != id.as_str());
                 }
                 let mut ask = placement::asked(&job, placement::prior(&api, &picture, &job).await);
+                placement::formula(&mut ask, job.cost.as_deref(), &picture);
                 api::estimate::learn_reads(&frames, &mut ask);
                 offers.extend(placement::quote(&picture, &[ask], now));
             }
@@ -4917,7 +4918,7 @@ impl Walk {
                 .take(plan::PLANNED)
                 .collect();
             // When the jobs they read that went already end, as their machines were quoted.
-            let ends: HashMap<usize, i64> = (unsent.iter().flat_map(|unsent| unsent.needs.iter().copied()))
+            let ends: HashMap<usize, Option<i64>> = (unsent.iter().flat_map(|unsent| unsent.needs.iter().copied()))
                 .filter_map(|need| Some((need, walker.sent.get(&graph.jobs[need].key)?.finish_at_ms)))
                 .collect();
             (unsent, ends, walker.foreseen.clone())
@@ -5009,7 +5010,8 @@ impl Walk {
                 priors,
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
-                after_at_ms: unsent.needs.iter().filter_map(|need| ends.get(need).copied()).max(),
+                after_at_ms: unsent.needs.iter().filter_map(|need| ends.get(need).copied().flatten()).max(),
+                after_untimed: unsent.needs.iter().any(|need| ends.get(need).is_some_and(Option::is_none)),
                 // Where its weights are fetched ahead: for this walk, else for its box's guess (cl-1104), so the machine a guess made
                 // ready is where its render goes unless another finishes it clearly sooner.
                 stay: (foreseen.get(&unsent.key).cloned().flatten())
@@ -5337,7 +5339,7 @@ impl Walk {
                 // With several machines it stays here while its planned machine has no GPU for it, or is still on its way (a rental
                 // booting, whose boot counts as its preparation: no wait past it), so nothing commits early to the wrong queue or to a
                 // machine that may never serve; it is placed again as their Status moves, or once that machine serves or ends.
-                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) > 0) {
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) != Some(0)) {
                     acts.push(Act::Held { id });
                     continue;
                 }

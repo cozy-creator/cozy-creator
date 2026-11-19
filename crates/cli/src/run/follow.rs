@@ -470,7 +470,8 @@ pub(super) fn keyed(basis: &str) -> &'static str {
     }
 }
 
-/// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
+/// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`;
+/// `local, its time unknown: nothing measured times it there (none)`.
 fn placed_words(placed: &api::calcifer::Placed) -> String {
     let basis = match placed.basis {
         api::machine::Basis::Scaled => "estimated".to_owned(),
@@ -485,8 +486,10 @@ fn placed_words(placed: &api::calcifer::Placed) -> String {
         0 => String::new(),
         s => format!("; {s} s preparing{fetch}"),
     };
-    let finish = (placed.finish_at_ms - placed.quoted_at_ms).max(0) / 1000;
-    format!("{}, to finish in {finish} s ({basis}{warm}{preparing})", placed.machine)
+    match placed.finish_at_ms {
+        Some(finish) => format!("{}, to finish in {} s ({basis}{warm}{preparing})", placed.machine, (finish - placed.quoted_at_ms).max(0) / 1000),
+        None => format!("{}, its time unknown: nothing measured times it there ({basis}{warm}{preparing})", placed.machine),
+    }
 }
 
 /// The record's fields, for a person.
