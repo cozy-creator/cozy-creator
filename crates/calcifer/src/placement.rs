@@ -388,11 +388,15 @@ pub(crate) fn card(picture: &Picture, models: &[v1::ModelRef]) -> ::needs::Card 
     }
 }
 
-/// `ask` timed on `picture`'s machine by its function's own formula (`cost`, cl-1286), where it declares one.
+/// `ask` timed on `picture`'s machine by its function's own formula (`cost`, cl-1286), where it declares one that gives a time there;
+/// else the quote's own default times it, as `Cost::on`'s does.
 pub(crate) fn formula(ask: &mut v1::EstimateJob, cost: Option<&::needs::Cost>, picture: &Picture) {
     if let Some(cost) = cost.filter(|cost| cost.timed()) {
         let estimated = cost.on(&ask.function, &card(picture, &ask.models), &picture.references);
-        (ask.formula_ms, ask.formula_basis) = (estimated.ms, estimated.ms.map(|_| estimated.basis));
+        (ask.formula_ms, ask.formula_basis) = match estimated.declared {
+            true => (estimated.ms, Some(estimated.basis)),
+            false => (None, None),
+        };
     }
 }
 

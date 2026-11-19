@@ -103,7 +103,8 @@ pub struct Estimated {
     /// As `References::estimate`'s row: `Reference`, the card's own (a CPU row with no GPU); `Scaled`, another card's; `None`: no row
     /// relates to the card. A formula that reads none stands on its author (`Reference`), on a machine with a GPU only.
     pub basis: Basis,
-    /// It is the function's own formula's, not the platform's default.
+    /// Its time is the function's own formula's, not the platform's default: false where it declares none, or where its formula gives
+    /// none on this card (`unanswered` says why).
     pub declared: bool,
     /// Each declared output that gave no value, and why.
     pub unanswered: Vec<(String, String)>,
@@ -174,8 +175,8 @@ impl Cost {
     }
 
     /// What it costs on `card`, its function (`[org/]package/function`, as `References` keys it) timed by its rows in `references`: its
-    /// declared outputs; with no `ms` declared, the platform's default (`References::estimate`), a warm call's; and its row's peaks and
-    /// first call where it declares none.
+    /// declared outputs; where it declares no `ms`, or its `ms` gives none here, the platform's default (`References::estimate`), a
+    /// warm call's; and its row's peaks and first call where it declares none.
     pub fn on(&self, function: &str, card: &Card, references: &References) -> Estimated {
         on(&self.declared, function, &self.request, &self.size, card, references)
     }
@@ -217,6 +218,8 @@ fn on(declared: &Declared, function: &str, request: &Value, size: &JobSize, card
         estimated.ms = None;
         estimated.unanswered.push(("ms".to_owned(), "this machine has no GPU, and it reads no CPU row".to_owned()));
     }
+    // A formula that gives no time here leaves it to the platform's default, as the quote does.
+    estimated.declared &= estimated.ms.is_some();
     if !estimated.declared {
         estimated.ms = own.map(|pick| pick.ms);
         estimated.basis = own.map_or(Basis::None, |pick| pick.basis);
