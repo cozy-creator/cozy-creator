@@ -1,0 +1,27 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "engine-vision"
+version = "0.1.0"
+description = "engine-vision's drives: CozyEngine's pictures and videos held against Transformers' forward, and Caption's time on both engines"
+requires-python = ">=3.12"
+# As qwen3's: the drives load the same VisionLM, a Transformers model.
+dependencies = [
+    "cozy-runtime[media]>=0.49.0.dev0,<0.50",
+    "msgspec>=0.19",
+    "numpy>=1.26",
+    "pillow>=12",
+    "tokenizers>=0.23",
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "transformers>=5.17",
+]
+
+[project.entry-points."cozy.application"]
+default = "engine_vision:app"
+
+[tool.uv.build-backend]
+module-name = "engine_vision"
+module-root = ""
