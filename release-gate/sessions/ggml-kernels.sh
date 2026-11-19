@@ -29,7 +29,7 @@ say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version
 # not on a pod (44297995601). `arch` names the card's target where the SKU doesn't.
 arch_of() {
   case $1 in
-    rtx-5090* | rtx-5080* | rtx-5070* | rtx-5060* | rtx-pro-6000*) echo 120a-real ;;
+    rtx-5090* | rtx-5080* | rtx-5070* | rtx-5060* | rtx-pro-*) echo 120a-real ;;  # every RTX PRO SKU is Blackwell
     rtx-4090* | rtx-4080* | rtx-4070* | rtx-4060* | rtx-6000-ada | l4 | l40*) echo 89-real ;;
     rtx-3090* | rtx-3080* | rtx-3070* | rtx-3060* | rtx-a4000 | rtx-a5000 | rtx-a6000 | a40) echo 86-real ;;
     *) return 1 ;;
