@@ -548,6 +548,7 @@ WEB_2=(
   swap-words
   playback
   steady-face
+  rule-loras
 )
 WEB_3=(
   focus

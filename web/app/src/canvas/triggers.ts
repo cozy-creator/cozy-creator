@@ -1,5 +1,5 @@
 import { useQueries } from "@tanstack/react-query"
-import type { Tool } from "../api/calcifer"
+import type { Chosen, Tool } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import type { CanvasStore } from "./CanvasStore"
 import { mainText } from "./controls"
@@ -13,10 +13,12 @@ const entryOf = (value: unknown): Entry => value && typeof value === "object" &&
 const refsIn = (value: unknown): string[] => Array.isArray(value) ? value.flatMap((held) => typeof entryOf(held).ref === "string" ? [entryOf(held).ref as string] : []) : []
 const identityOf = (ref: string) => ref.split("@")[0]
 
-/** The LoRAs on box `name`: each slot's and its own. */
+/** The LoRAs on box `name`: each slot's, its own, and what its tool's rules chose for it (`chosen`, cl-1281: a base model's card has
+ *  no triggers). */
 export function lorasOn(store: CanvasStore, name: string): string[] {
   const slots = Object.values(entryOf(store.valueOf(name, "models"))).flatMap((held) => refsIn(entryOf(held).lora))
-  return [...new Set([...slots, ...refsIn(store.valueOf(name, "lora"))].map(identityOf))]
+  const chosen = store.get(name)?.asset?.chosen?.map((held) => held.model) ?? []
+  return [...new Set([...slots, ...refsIn(store.valueOf(name, "lora")), ...chosen].map(identityOf))]
 }
 
 /** The triggers of the LoRAs on box `name`, as their Hub cards say them. */
@@ -57,8 +59,64 @@ export function appended(text: string, triggers: string[]): string | null {
   }, text)
 }
 
+/** `text` without the `triggers` it ends with as `appended` put them, each after the comma or space it went after, or null when it ends
+ *  with none of them so: one typed over or typed after is the person's. */
+export function unappended(text: string, triggers: string[]): string | null {
+  let said = text.trimEnd()
+  for (let word = triggers.find((held) => held && said.endsWith(held)); word; word = triggers.find((held) => held && said.endsWith(held))) {
+    const kept = said.slice(0, -word.length)
+    if (kept && !kept.endsWith(", ") && !(kept.endsWith(" ") && /[.,;:!?]$/.test(kept.slice(0, -1)))) break
+    said = kept.endsWith(", ") ? kept.slice(0, -2) : kept.trimEnd()
+  }
+  return said === text.trimEnd() ? null : said
+}
+
 /** A tool's prompt: its main text (`mainText`). */
 export const promptOf = (tool: Tool | undefined): string | undefined => mainText(tool?.fields ?? [])?.field
+
+// A LoRA a tool's rule chose (cl-1281; Paul, 11-18: "when you add in lora-A in the webui, it modifies your prompt to append the trigger word
+// for that lora … which you as an author (the end user) can remove"): the change this page made that brings one in (an edit's type, a tool
+// put on, a box made) puts its triggers after the prompt as adding a LoRA does, and takes the one it replaced off where the page put it. A
+// load, a reload or another writer's change brings nothing, so a trigger deleted stays deleted.
+
+const seen = new WeakMap<CanvasStore, Map<string, string[]>>()
+const turns = new WeakMap<CanvasStore, Map<string, Promise<void>>>()
+const chosenOf = (chosen: Chosen[]) => [...new Set(chosen.map((held) => identityOf(held.model)))]
+
+/** Box `name` read with `now` chosen, its view having held `was` (none: not known); `mine`, a read of this page's own write. */
+export function chose(store: CanvasStore, name: string, was: Chosen[] | null | undefined, now: Chosen[] | null | undefined, mine: boolean) {
+  let held = seen.get(store)
+  if (!held) seen.set(store, (held = new Map()))
+  // What it last held as this page knew it: a read that didn't know says nothing of it.
+  const key = `${store.projectId}\u0000${name}`
+  const before = was ? chosenOf(was) : held.get(key)
+  if (!now) return void (before && held.set(key, before))
+  const after = chosenOf(now)
+  held.set(key, after)
+  if (!mine || !before) return
+  const brought = after.filter((model) => !before.includes(model))
+  const left = before.filter((model) => !after.includes(model))
+  if (!brought.length && !left.length) return
+  let queue = turns.get(store)
+  if (!queue) turns.set(store, (queue = new Map()))
+  queue.set(name, (queue.get(name) ?? Promise.resolve()).then(() => retrigger(store, name, brought, left)).catch(() => undefined))
+}
+
+async function retrigger(store: CanvasStore, name: string, brought: string[], left: string[]) {
+  const triggersOf = async (models: string[]) => (await Promise.all(models.map((model) => store.modelDetail(model).then((card) => card.kind === "lora" ? card.triggers ?? [] : [], () => [])))).flat()
+  const [cards, staying] = await Promise.all([Promise.all([...brought, ...left].map(async (model) => [model, await triggersOf([model])] as const)), triggersOf(lorasOn(store, name))])
+  // As the box stands once its cards are read: it may have moved on, and the next change says the rest.
+  const now = chosenOf(store.get(name)?.asset?.chosen ?? [])
+  const adding = cards.filter(([model]) => brought.includes(model) && now.includes(model)).flatMap(([, words]) => words)
+  const removing = cards.filter(([model]) => left.includes(model) && !now.includes(model)).flatMap(([, words]) => words)
+  const field = promptOf(store.tools.get().get(store.get(name)?.asset?.tool ?? ""))
+  if (!field) return
+  const said = store.valueOf(name, field)
+  const text = typeof said === "string" ? said : ""
+  const without = unappended(text, removing.filter((word) => !adding.includes(word) && !staying.includes(word))) ?? text
+  const next = appended(without, adding) ?? without
+  if (next !== text) store.putOn(name, { [field]: next })
+}
 
 // The highlight: ranges over each prompt's own text nodes (never its chips), one CSS highlight for the page, so nothing a person types moves.
 

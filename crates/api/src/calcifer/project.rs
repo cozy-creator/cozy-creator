@@ -418,6 +418,16 @@ impl Unused {
     }
 }
 
+/// A model a box's tool chose for it by its own rule (cl-1281): a slot of its function whose `needs` rule holds for the box's request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Chosen {
+    /// Its key in the box's `models`.
+    pub slot: String,
+    /// What it holds: the box's `models.<slot>.ref`, else the slot's default.
+    pub model: String,
+}
+
 /// An asset the project keeps versions of that it no longer names: the bytes `reclaim`
 /// would free of it (none that anything else names, and each file once across the orphans), and,
 /// when the project has exactly one new asset of its kind with none, that asset: renamed, it would
@@ -818,6 +828,10 @@ pub struct Asset {
     /// What its text mentions that its tool can't use, where: never sent, and shown struck through. Known once its package is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unused: Vec<Unused>,
+    /// The models its tool's rules chose for it (cl-1281): the page draws a LoRA's triggers among them as it draws those of a LoRA put
+    /// on it. None until its package is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chosen: Option<Vec<Chosen>>,
     /// An Edit's: its clips as they read now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline: Option<TimelineNow>,

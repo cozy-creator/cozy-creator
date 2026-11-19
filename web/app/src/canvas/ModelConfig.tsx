@@ -6,10 +6,11 @@ import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { modelChoiceLabel, type PickerSlot, slotsOf, withTriggers } from "./ModelPicker"
 import { insertAtCaret } from "./triggers"
+import "./ModelConfig.css"
 
 type Entry = Record<string, unknown>
-/** A LoRA's place: `models[slot].lora[index]`, or the box's own `lora[index]` when `slot` is null. */
-type Row = { ref: string; slot: string; lora: boolean; strength: unknown; at?: { slot: string | null; index: number } }
+/** A LoRA's place: `models[slot].lora[index]`, or the box's own `lora[index]` when `slot` is null. `ruled`: its tool's rule chose it. */
+type Row = { ref: string; slot: string; lora: boolean; strength: unknown; at?: { slot: string | null; index: number }; ruled?: boolean }
 const entryOf = (value: unknown): Entry => value && typeof value === "object" && !Array.isArray(value) ? value as Entry : {}
 const entries = (value: unknown): Entry[] => Array.isArray(value) ? value.map(entryOf) : []
 const isDefault = (ref: string, declared?: string | null) => ref === declared || (!ref.includes("@") && ref === declared?.split("@")[0])
@@ -36,6 +37,13 @@ export function ModelConfig({ name }: { name: string }) {
   entries(store.valueOf(name, "lora")).forEach((held, index) => {
     if (typeof held.ref === "string") rows.push({ ref: held.ref, slot: slots[0]?.slot ?? "model", lora: true, strength: held.strength, at: { slot: null, index } })
   })
+  // A LoRA its tool's rule chose (cl-1281), at its release's strength.
+  for (const held of view?.asset?.chosen ?? []) {
+    if (slots.find((slot) => slot.slot === held.slot)?.kind !== "lora") continue
+    const shown = rows.find((row) => !row.at && row.slot === held.slot && row.ref === held.model)
+    if (shown) Object.assign(shown, { lora: true, ruled: true })
+    else rows.push({ ref: held.model, slot: held.slot, lora: true, strength: undefined, ruled: true })
+  }
   if (!rows.length) return null
   /** One LoRA's strength, written at once: one step in the box's history. */
   const setStrength = (at: NonNullable<Row["at"]>, strength: number) => {
@@ -47,12 +55,21 @@ export function ModelConfig({ name }: { name: string }) {
   }
   return <div className="active-models" aria-label="Active models and LoRAs">{[false, true].map((lora) => {
     const group = rows.filter((row) => row.lora === lora)
-    return group.length ? <section key={String(lora)}><h4>{lora ? "LoRAs:" : "Models:"}</h4><ul>{group.map((row, index) => <li key={`${row.slot}:${row.ref}:${index}`} className={row.at ? "active-lora" : undefined}>
+    return group.length ? <section key={String(lora)}><h4>{lora ? "LoRAs:" : "Models:"}</h4><ul>{group.map((row, index) => <li key={`${row.slot}:${row.ref}:${index}`} className={row.at || row.ruled ? "active-lora" : undefined}>
       <span className="active-model-name" title={row.ref}>{modelChoiceLabel(row.ref)}</span>
       {row.at && <Strength name={modelChoiceLabel(row.ref)} reference={row.ref} value={row.strength} onChange={(strength) => setStrength(row.at!, strength)} />}
+      {row.ruled && <ReleaseStrength reference={row.ref} />}
       {lora && <Triggers box={name} reference={row.ref} />}
     </li>)}</ul></section> : null
   })}</div>
+}
+
+/** A LoRA a tool's rule chose runs at its release's strength, which nothing in a request sets (cl-1281): said, not a control. */
+function ReleaseStrength({ reference }: { reference: string }) {
+  const { client } = useConnection()
+  const id = reference.split("@")[0]
+  const { data } = useQuery({ queryKey: ["model", id], queryFn: ({ signal }) => client.model(id, signal), staleTime: 60_000, retry: false })
+  return <span className="active-lora-strength muted">Strength {data?.strength ?? 1} (its release's)</span>
 }
 
 /** A LoRA's strength: a slider from 0 to 2, its number (exact, or beyond 2), and the LoRA's recommended strength back. */
