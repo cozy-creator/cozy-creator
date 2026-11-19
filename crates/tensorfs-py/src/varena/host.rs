@@ -195,6 +195,11 @@ mod imp {
     pub(super) fn peers_running() -> bool {
         host().is_some_and(|host| host.table.peers_running(host.row))
     }
+
+    /// What every process on the host page says it holds.
+    pub(super) fn held_everywhere() -> u64 {
+        host().map_or(0, |host| host.table.held())
+    }
 }
 
 /// `tier` gives and asks through this process's row; `shared`, on a person's computer.
@@ -236,6 +241,37 @@ pub(super) fn ask_idle(bytes: u64) -> bool {
         let _ = bytes;
         false
     }
+}
+
+/// PROOF ONLY (var-030 section 8): room for `bytes` more host memory this process will hold (a managed segment's
+/// pages, a pinned whole): the machine's number less what every executor holds (the kernel's charge under the tightest
+/// limit, or the host page's sum where that is more), after idle executors trim their tiers when it is short. Err: the
+/// one line that refuses it, before the kernel would end anything.
+pub(super) fn admit(bytes: u64) -> Result<(), String> {
+    use varena_ledger::host::{Budget, budget};
+    fn room(now: &Budget) -> i64 {
+        #[cfg(target_os = "linux")]
+        let ledger = imp::held_everywhere();
+        #[cfg(not(target_os = "linux"))]
+        let ledger = 0u64;
+        now.total - now.held.max(i64::try_from(ledger).unwrap_or(i64::MAX)) - now.headroom
+    }
+    let want = i64::try_from(bytes).unwrap_or(i64::MAX);
+    let first = budget();
+    if first.total <= 0 || room(&first) >= want {
+        return Ok(());
+    }
+    ask_idle(u64::try_from(want - room(&first)).unwrap_or(0));
+    let now = budget();
+    if room(&now) >= want {
+        return Ok(());
+    }
+    let gib = |bytes: i64| bytes.max(0) as f64 / f64::from(1u32 << 30);
+    Err(format!(
+        "this call needs {:.1} GiB more of host memory and the machine has {:.1} GiB free under its limit of {:.1} GiB, \
+         every executor's holdings counted and idle ones asked to give pages back",
+        gib(want), gib(room(&now)), gib(now.total)
+    ))
 }
 
 /// Another process on this machine is in a request: an idle tier pins nothing meanwhile.

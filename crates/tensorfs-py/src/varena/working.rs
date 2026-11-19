@@ -361,11 +361,26 @@ fn _varena_public_keep(object: Py<PyAny>) -> (usize, usize) {
 
 #[pyfunction]
 fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
+    #[cfg(feature = "store")]
+    varena::set_host_admit(super::host::admit);
     py.detach(|| {
         check()?;
         varena::activate(device, shared)
     })
     .map_err(|e| super::raise(py, e))
+}
+
+/// PROOF ONLY (var-030 section 8): None when the machine's host memory takes `nbytes` more (asking idle executors
+/// first), else the line that refuses it.
+#[pyfunction]
+fn _varena_host_admit(py: Python<'_>, nbytes: u64) -> Option<String> {
+    #[cfg(feature = "store")]
+    return py.detach(|| super::host::admit(nbytes).err());
+    #[cfg(not(feature = "store"))]
+    {
+        let _ = (py, nbytes);
+        None
+    }
 }
 
 #[pyfunction]
@@ -939,6 +954,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_managed, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_host_admit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_fail_create_after, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_arm, module)?)?;

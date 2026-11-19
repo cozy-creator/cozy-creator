@@ -135,6 +135,18 @@ impl Books {
         if need <= room {
             return true;
         }
+        // The machine's one host admission (tensorfs-py `host.rs`, the host page): every executor's holdings counted,
+        // idle executors asked to trim their tiers, else a refusal in one line.
+        if let Some(admitted) = crate::host_admit(need) {
+            return match admitted {
+                Ok(()) => true,
+                Err(line) => {
+                    self.host_refusals.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("varena: GPU {device}: {bytes} bytes refused: {line}");
+                    false
+                }
+            };
+        }
         self.host_refusals.fetch_add(1, Ordering::Relaxed);
         eprintln!(
             "varena: GPU {device}: {bytes} bytes refused: this working memory fits neither the card nor host memory: \

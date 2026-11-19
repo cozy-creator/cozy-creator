@@ -951,7 +951,7 @@ impl Device {
         if over.saturating_sub(yields) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
-        if managed != 0 && !self.paged.host_admits(self.ordinal, 0, managed, over) {
+        if managed != 0 && !self.paged.host_admits(self.ordinal, bytes, managed, over) {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
         if over != 0 {
@@ -2125,6 +2125,18 @@ fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
 pub fn fail_create_after(device: i32, n: u64, times: u64) -> Result<()> {
     gpu(device)?.driver.get().ok_or(Error::Invalid("device not opened"))?.fail_create_after(n, times);
     Ok(())
+}
+
+/// PROOF ONLY (var-030 section 8): the machine's host admission, for `bytes` more host memory this process will hold:
+/// set once by the frontend that owns the host page (tensorfs-py), Err the one line that refuses it.
+static HOST_ADMIT: std::sync::OnceLock<fn(u64) -> std::result::Result<(), String>> = std::sync::OnceLock::new();
+
+pub fn set_host_admit(admit: fn(u64) -> std::result::Result<(), String>) {
+    let _ = HOST_ADMIT.set(admit);
+}
+
+pub(crate) fn host_admit(bytes: u64) -> Option<std::result::Result<(), String>> {
+    HOST_ADMIT.get().map(|admit| admit(bytes))
 }
 
 /// PROOF ONLY (var-030 section 8), development only: this GPU's eager working memory as CUDA managed memory, which
