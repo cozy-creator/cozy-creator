@@ -506,7 +506,8 @@ def routes(ctx: Context, payload: Route, model: VisionLM) -> Agreement:
     elif payload.case == "ceiling":  # the engine serves it, its length clamped at the start, with a warning
         from cozy_runtime.engine.decoder import Decoder
 
-        model.engine.decoder = Decoder(model.pipe.components["model"], max_rows=16, max_tokens=256)  # type: ignore[attr-defined]  # CozyEngine's
+        model.engine.decoder = Decoder(model.pipe.components["model"], max_rows=16, max_tokens=256,  # type: ignore[attr-defined]  # CozyEngine's
+                                       run=model.engine.run)  # type: ignore[attr-defined]  # its kernel set
         question = Question(text=PROMPT.split("\n")[1].removesuffix("<|im_end|>"))
     else:
         raise ValueError(f"no route '{payload.case}'")

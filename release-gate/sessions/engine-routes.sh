@@ -135,7 +135,7 @@ route grammar "no grammar-constrained decode" "$FIX/drive/routes" --model "model
 route grammar-cost "no grammar-constrained decode" "$FIX/drive/routes" --model "model=$Q8" case=grammar-cost
 route ngram "no repeat-n-gram cut" "$FIX/drive/routes" --model "model=$Q8" case=ngram
 route ceiling "by the engine" "$FIX/drive/routes" --model "model=$Q8" case=ceiling
-clamp=$(jq -r '[.. | strings | select(test("clamped to"))] | first // ""' "$OUT/ceiling.json" 2> /dev/null)
+clamp=$(tr '\r' '\n' < "$OUT/ceiling.txt" | grep -a -m1 -o 'warning: max_tokens [^=]*clamped to [0-9]*')  # the run's warnings, as the CLI says them
 say "ceiling: warning: ${clamp:-none}"
 [ -n "$clamp" ] || { say "FAILED: ceiling: no clamp warning in the run"; FAILED+=("ceiling-warning"); }
 step bucket run "$FIX/drive/bucket" --model "model=$Q8" --on "$NAME" || { tail -c 2000 "$OUT/bucket.txt" | tee -a "$R"; FAILED+=("bucket"); }
