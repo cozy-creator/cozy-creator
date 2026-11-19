@@ -79,7 +79,9 @@ run_cell() {
   local t=$1 c=$2 pod=$3 k=$1-$2 n row line st
   cd "$PACKAGES/$t" || fail "no tree $t"
   step "$k" run ./minimax-h3/upscale "video=<plate>" "to=${RES}p" "prompt=$PROMPT" --on "$pod"
-  n=$(runno "$k"); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
+  # A failed run's output names it only on its `run <N> · <target>` line (44440639166's PRO-3).
+  n=$(runno "$k"); [ -n "$n" ] || n=$(awk '$1 == "run" && $3 == "·" && $4 != "install" && $4 != "sync" {n = $2} END {print n}' "$OUT/$k.txt")
+  cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
   [ -n "$n" ] || { say "$k: no run: $(tail -c 400 "$OUT/$k.txt")"; printf '%s\t%s\t%s\t-\tnone\n' "$k" "$t" "$c" >> "$OUT/cells.tsv"; return; }
   cozy run watch "$n" --once --json --full > "$OUT/records/$k.json" 2> /dev/null
   cozy --full run watch "$n" --once > "$OUT/records/$k.log" 2>&1
@@ -88,6 +90,7 @@ run_cell() {
   row=$(python3 -I "$FIX/cellrow.py" "$LEDGER" "$OUT/records/$k.json" 2> /dev/null) || row='{}'
   line=$(LC_ALL=C grep -a -o -m1 -E 'h3 regenerate .*' "$OUT/records/$k.log")
   st=$(jq -r '.status // "none"' <<< "$row")
+  [ "$st" = completed ] || timeout 60 cozy machine logs "$pod" tensord -n 300 > "$OUT/records/$k-tensord.log" 2>&1
   [ "$(jq -r '.memoized' <<< "$row")" != true ] || { say "$k: answered from the call memo, not rendered"; st=memoized; }
   if [ "$st" = completed ] && ! jq -e --arg r "$WANT_RT" --arg f "$WANT_TFS" '.software | length > 0 and all(.[]; .[0] == $r and .[1] == $f)' <<< "$row" > /dev/null; then
     say "$k ran on $(jq -c .software <<< "$row"), not Runtime $WANT_RT TensorFS $WANT_TFS"; st=wrong-pair
