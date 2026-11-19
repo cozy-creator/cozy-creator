@@ -50,9 +50,10 @@
 #              the runner, for a video tool's input) and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
-#              "host_free_gib" (optional: for this cell a root shell's program takes all of the pod's available host RAM
-#              but this many GiB, page cache included, as a computer whose other programs hold its memory: a short host
-#              tier, cr-305; it ends after the cell; a host with over 256 GiB more than that available is refused);
+#              "host_free_gib" (optional: for this cell a root shell's program holds the pod's host RAM but this many GiB
+#              free, as TensorD reads free (the tightest of MemAvailable and each cgroup limit on its path), as a computer
+#              whose other programs hold its memory: a short host tier, cr-305 (see `ram`); it ends after the cell, which
+#              fails if any of it ended before; a host with over 256 GiB more than that free is refused);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -261,57 +262,154 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
-# ram <cell> <GiB|off>: a root shell's program takes the pod's available host RAM but GiB (anonymous pages it wrote, so
-# the page cache goes too, within the container's memory.max where it has one), or ends.
-RAM_HOLDER='import mmap, os, sys, time
-leave, ready = int(float(sys.argv[1]) * (1 << 30)), sys.argv[2]
-def available():
-    free = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable:"))
+# ram <cell> <GiB|off>: a root shell's program holds the pod's host RAM but GiB, or ends. Free is what TensorD reads
+# (platform contain/host_memory_linux.rs `available_outside`): MemAvailable, or less where a cgroup limit on the holder's
+# path (v1 or v2, any parent) leaves less room, inactive clean page cache counted free; the tightest is its bound. It
+# fills against the live reading until free is the target, then holds still through the cell, logging free every 10 s.
+# Each GiB is its own process, far below the score the Runtime gives an executor (>= 500, trampoline.py): the kernel's OOM
+# victim is the run, as on a computer of many smaller programs, not the holder. `off` fails the cell if any of it ended.
+RAM_HOLDER='import mmap, os, signal, sys, time
+GIB, BLOCK = 1 << 30, 64 << 20
+leave, ready, log = int(float(sys.argv[1]) * GIB), sys.argv[2], sys.argv[3]
+def meminfo(field):
+    return next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith(field + ":"))
+def number(path):
     try:
-        limit = open("/sys/fs/cgroup/memory.max").read().strip()
-        if limit != "max":
-            stat = dict(l.split() for l in open("/sys/fs/cgroup/memory.stat"))
-            used = int(open("/sys/fs/cgroup/memory.current").read()) - int(stat["active_file"]) - int(stat["inactive_file"])
-            free = min(free, int(limit) - used)
-    except (OSError, KeyError, ValueError):
-        pass
-    return free
-take, held, chunks, pattern = max(available() - leave, 0), 0, [], b"\1" * (64 << 20)
-if take > 256 << 30:  # writing it takes minutes and can starve the pod: a host this large is the wrong host
-    sys.exit(f"{take >> 30} GiB to hold: rent a host with less memory for this cell")
-while held < take:
-    n = min(1 << 30, take - held)
-    m = mmap.mmap(-1, n)
-    for at in range(0, n, len(pattern)):
-        m[at:at + min(len(pattern), n - at)] = pattern[:min(len(pattern), n - at)]
-    chunks.append(m)
-    held += n
-open(ready + ".tmp", "w").write(f"{os.getpid()} {held} {available()}\n")
+        n = int(open(path).read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return n if 0 < n < 1 << 60 else None
+def cgroups():
+    lines = open("/proc/self/cgroup").read().splitlines()
+    if os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
+        rel = next((l[3:] for l in lines if l.startswith("0::")), None)
+        top, limits, usage = "/sys/fs/cgroup", ("memory.high", "memory.max"), "memory.current"
+    else:
+        rel = next((l.split(":", 2)[2] for l in lines if "memory" in l.split(":", 2)[1].split(",")), None)
+        mount = next(((f[3].rstrip("/"), f[4]) for f in (l.split() for l in open("/proc/self/mountinfo"))
+                      if f[f.index("-") + 1] == "cgroup" and "memory" in f[f.index("-") + 3].split(",")), None)
+        if mount is None or rel is None:
+            return []
+        rel = rel[len(mount[0]):] if rel.startswith(mount[0]) else rel
+        top, limits, usage = mount[1], ("memory.limit_in_bytes",), "memory.usage_in_bytes"
+    if rel is None:
+        return []
+    path, at = [], os.path.normpath(os.path.join(top, rel.lstrip("/")))
+    while True:
+        path.append((at, limits, usage))
+        if at == top or not at.startswith(top + "/"):
+            return path
+        at = os.path.dirname(at)
+def ours(cgroup):  # the machine own containment: its limits are the machine, not the computer
+    return any(c.startswith("cozy-executor-") or (len(c) == 21 and c.startswith("cozy-")
+               and all(x in "0123456789abcdefABCDEF" for x in c[5:])) for c in cgroup.split("/"))
+def cache(cgroup):
+    try:
+        s = dict(l.split()[:2] for l in open(cgroup + "/memory.stat") if len(l.split()) > 1)
+    except OSError:
+        return 0
+    row = lambda *names: next((int(s[k]) for n in names for k in ("total_" + n, n) if k in s), 0)
+    return max(row("inactive_file") - row("file_dirty", "dirty") - row("file_writeback", "writeback"), 0)
+def free():
+    total = meminfo("MemTotal")
+    room, bound = meminfo("MemAvailable"), f"MemAvailable (MemTotal {total / GIB:.1f} GiB)"
+    for cgroup, limits, usage in cgroups():
+        limit = min((n for n in (number(f"{cgroup}/{name}") for name in limits) if n), default=None)
+        if limit is not None and not ours(cgroup):
+            r = max(limit - max((number(f"{cgroup}/{usage}") or 0) - cache(cgroup), 0), 0)
+            if r < room:
+                room, bound = r, f"cgroup {cgroup} limit {limit / GIB:.1f} GiB"
+    return room, bound
+PATTERN, pieces = b"\1" * BLOCK, []
+def end(why):
+    for pid, _ in pieces:
+        os.kill(pid, signal.SIGKILL)
+    sys.exit(why)
+def take(n):
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        m = mmap.mmap(-1, n, flags=mmap.MAP_PRIVATE)
+        for at in range(0, n, BLOCK):
+            m[at:at + min(BLOCK, n - at)] = PATTERN[:min(BLOCK, n - at)]
+        os.write(w, b"1")
+        while True:
+            signal.pause()
+    os.close(w)
+    wrote = os.read(r, 1)
+    os.close(r)
+    if not wrote:
+        os.waitpid(pid, 0)
+        end(f"the kernel ended a holder piece at {sum(n for _, n in pieces) / GIB:.1f} GiB held: a limit under {free()[1]}")
+    pieces.append((pid, n))
+def give(n):
+    while n > 0 and pieces:
+        pid, size = pieces.pop()
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        if size > n:
+            take(size - n)
+        n -= size
+room, bound = free()
+if room - leave > 256 * GIB:  # writing it takes minutes and can starve the pod: a host this large is the wrong host
+    sys.exit(f"{(room - leave) / GIB:.0f} GiB to hold under {bound}: rent a host with less memory for this cell")
+still, until = 0, None
+while still < 3 and (until is None or time.time() < until):
+    room, bound = free()
+    over = (room - leave) // BLOCK * BLOCK
+    if over > 0:
+        take(min(GIB, over))
+    elif over < -BLOCK and pieces:
+        give(-over)
+        until = until or time.time() + 30
+    else:
+        until, still = until or time.time() + 30, still + 1
+        time.sleep(1)
+        continue
+    still = 0
+held, gone = sum(n for _, n in pieces), set()
+open(ready + ".tmp", "w").write(f"{os.getpid()} {held} {room} {len(pieces)} {bound}\n")
 os.replace(ready + ".tmp", ready)
 while True:
-    time.sleep(3600)'
+    gone |= {pid for pid, _ in pieces if pid not in gone and os.waitpid(pid, os.WNOHANG)[0]}
+    with open(log, "a") as f:
+        f.write(f"{int(time.time())} {free()[0]} {sum(n for pid, n in pieces if pid not in gone)}\n")
+    time.sleep(10)'
 ram() {
-  local script try code held='' left=''
+  local script try code held='' left='' pieces='' bound='' state lo hi n lost
   if [ "$2" = off ]; then
-    script='pgrep -f /var/tmp/ab-ram.py | xargs -r kill; rm -f /var/tmp/ab-ram.ready; sleep 2'
+    # the first try's time is the end: a later try after a dropped ssh reads the same
+    script='[ -s /var/tmp/ab-ram.end ] || date +%s > /var/tmp/ab-ram.end
+pgrep -f /var/tmp/ab-ram.py | xargs -r kill; rm -f /var/tmp/ab-ram.ready; cat /var/tmp/ab-ram.end /var/tmp/ab-ram.log 2> /dev/null; sleep 2'
   else
-    script="pgrep -f /var/tmp/ab-ram.py | xargs -r kill; sleep 1
-echo $(base64 -w0 <<< "$RAM_HOLDER") | base64 -d > /var/tmp/ab-ram.py && rm -f /var/tmp/ab-ram.ready
-setsid nohup python3 /var/tmp/ab-ram.py $2 /var/tmp/ab-ram.ready > /var/tmp/ab-ram.out 2>&1 < /dev/null &
+    script="pgrep -f /var/tmp/ab-ram.py | xargs -r kill; i=0; while pgrep -f /var/tmp/ab-ram.py > /dev/null && [ \$i -lt 120 ]; do sleep 0.5; i=\$((i + 1)); done
+echo $(base64 -w0 <<< "$RAM_HOLDER") | base64 -d > /var/tmp/ab-ram.py && rm -f /var/tmp/ab-ram.ready /var/tmp/ab-ram.log /var/tmp/ab-ram.end
+setsid nohup python3 /var/tmp/ab-ram.py $2 /var/tmp/ab-ram.ready /var/tmp/ab-ram.log > /var/tmp/ab-ram.out 2>&1 < /dev/null &
 i=0; while [ ! -s /var/tmp/ab-ram.ready ] && [ \$i -lt 600 ] && pgrep -f /var/tmp/ab-ram.py > /dev/null; do sleep 0.5; i=\$((i + 1)); done
 cat /var/tmp/ab-ram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-ram.out"
   fi
+  gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
   for try in 1 2 3; do
     cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/ram-$1-$2.txt" 2>&1; code=$?
-    if [ "$2" = off ]; then [ "$code" = 0 ] && return 0; else
-      read -r _ held left _ < <(tail -1 "$OUT/ram-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
-      ! grep -q "rent a host" "$OUT/ram-$1-$2.txt" || break
+    if [ "$2" = off ]; then
+      [ "$code" = 0 ] || { say "$1: host holder off, try $try: exit $code $(head -c 200 "$OUT/ram-$1-$2.txt")"; sleep 10; continue; }
+      # Held to the end: a reading within 30 s of it, every piece still there in each.
+      read -r state lo hi n lost < <(awk -v held="$RAM_HELD" '!/^[0-9 ]+$/ { next } NF == 1 && !end { end = $1; next }
+        NF == 3 { n++; f = $2 / 1073741824; if (n == 1 || f < lo) lo = f; if (f > hi) hi = f; if (held - $3 > lost) lost = held - $3; last = $1 }
+        END { printf "%s %.1f %.1f %d %.0f\n", (n && end && end - last <= 30) ? "held" : "ended", lo, hi, n, lost }' "$OUT/ram-$1-$2.txt")
+      [ "$state" = held ] || fail "$1: the host holder ended during the cell: its host tier wasn't short"
+      [ "$lost" = 0 ] || fail "$1: the kernel ended $(gib "$lost") GiB of the host holder during the cell: its host tier wasn't short"
+      say "$1: host holder held all $(gib "$RAM_HELD") GiB through the cell, free $lo to $hi GiB over $n readings"
+      return 0
     fi
+    read -r _ held left pieces bound < <(tail -1 "$OUT/ram-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
+    ! grep -q "rent a host" "$OUT/ram-$1-$2.txt" || break
     say "$1: host holder $2, try $try: exit $code $(head -c 200 "$OUT/ram-$1-$2.txt")"; sleep 10
   done
   [ "$2" != off ] || fail "$1: the host holder did not end"
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no host holder: $(head -c 300 "$OUT/ram-$1-$2.txt")"
-  say "$1: host holder $((held >> 30)) GiB held, $((left >> 30)) GiB left available"
+  RAM_HELD=$held
+  say "$1: host holder $(gib "$held") GiB held in $pieces pieces, $(gib "$left") GiB left free ($2 asked) under $bound"
 }
 # cellstate <name>: the record's LoRA bake blocks, derived bytes filled and persisted pages (the run's own measurements and
 # its calls', every GPU), and whether the call memo answered it, tab-separated.
