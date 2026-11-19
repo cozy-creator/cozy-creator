@@ -139,6 +139,13 @@ case $PART in
     [ $a1 = 0 ] || try a-capped-after "${PKG%%@*}/remove_background@${PKG#*@}" --file "image=$REF/seed.jpg" || red "existing: (a) capped still fails after cozy update"
     [ $a2 = 0 ] || try a-unpinned-after "${PKG%%@*}/remove_background" --file "image=$REF/seed.jpg" || red "existing: (a) unpinned still fails after cozy update"
     [ $b = 0 ] || try b-local-code-after ./draw.py/draw "instructions=Local code after cozy update $RANDOM" || red "existing: (b) still fails after cozy update"
+    # A hand's hold outlives `cozy update` by design; what its refusal names, `cozy machine update local`, lets it go.
+    if [ "$(held)" != none ]; then
+      cozy --json machine update local -y > "$OUT/letgo.json" 2>&1 && ready || red "existing: let go: $(tail -c 300 "$OUT/letgo.json")"
+      say "existing: then \`cozy machine update local\` (the refusal's next): $(grep -oE '"target":"[^"]*"' "$OUT/letgo.json" | tail -1); local $(pair), held: $(held)"
+      try a-unpinned-letgo "${PKG%%@*}/remove_background" --file "image=$REF/seed.jpg" || red "existing: (a) unpinned fails after the let-go"
+      try b-local-code-letgo ./draw.py/draw "instructions=Local code after the let-go $RANDOM" || red "existing: (b) fails after the let-go"
+    fi
     ;;
   *) fail "part is fresh, upgrade, existing or rental, not '$PART'" ;;
 esac
