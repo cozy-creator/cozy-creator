@@ -1,0 +1,199 @@
+{
+ "gpus": 2,
+ "need_s": 1200,
+ "order": "one-way",
+ "compare": [],
+ "max_failures": 2,
+ "cells": [
+  {
+   "name": "r-g1-warm",
+   "tree": "rcb",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37301",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44617721131",
+    "tensorfs": "artifact:44607246583/tensorfs-wheel-95831c3365ff24b4d32d916f37cf368490ba810b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "r-g1",
+   "tree": "rcb",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37302",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "r-g2-1",
+   "tree": "rcb",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37303",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "r-g2-2",
+   "tree": "rcb",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37304",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "x-g1-warm",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37311",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ],
+   "update": {
+    "runtime": "44629308037",
+    "tensorfs": "artifact:44607246583/tensorfs-wheel-95831c3365ff24b4d32d916f37cf368490ba810b",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   },
+   "warmup": true
+  },
+  {
+   "name": "x-g1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37312",
+    "--lane",
+    "int8",
+    "--gpus=1"
+   ]
+  },
+  {
+   "name": "x-g2-1",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37313",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "x-g2-2",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37314",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "x-g2-3",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37315",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "x-g2-4",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37316",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  },
+  {
+   "name": "x-g2-5",
+   "tree": "cr",
+   "target": "ltx-2.5/generate",
+   "args": [
+    "prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind.",
+    "duration_s:=1",
+    "resolution=720p",
+    "aspect_ratio=16:9",
+    "audio:=true",
+    "seed:=37317",
+    "--lane",
+    "int8",
+    "--gpus=2"
+   ]
+  }
+ ]
+}
