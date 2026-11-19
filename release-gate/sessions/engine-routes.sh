@@ -55,7 +55,7 @@ offer_rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
 step candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the pod's TensorFS and Runtime"
 cozy machine show "$NAME" --json > "$OUT/show.json" 2>&1
-say "on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · " + ([.status.gpus[] | .name] | join(", "))' "$OUT/show.json")"
+say "on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · TensorFS \(.status.tensorfs) · " + ([.status.gpus[] | "\(.name), driver \(.driver // "?")"] | join(", "))' "$OUT/show.json")"
 there() { timeout "${2:-600}" cozy machine ssh "$NAME" -- "$1"; }
 (while sleep 480; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done) & BG="$BG $!"
 
@@ -126,6 +126,13 @@ jq -r '.result.detail // ""' "$OUT/bucket.json" > "$OUT/bucket-detail.json" 2> /
 say "bucket: $(jq -c '{declared, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/bucket-detail.json" 2> /dev/null)"
 jq -e '.declared and ([(.drafted // [])[], (.plain // [])[]] | length == 8) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' \
   "$OUT/bucket-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket: not through the declared set, or a clear position disagreed"; FAILED+=("bucket-forced"); }
+# The host-replayed path (`launcher=False`), which a driver whose launcher check refused it serves on: the same check.
+step bucket-replayed run "$FIX/drive/bucket_replayed" --model "model=$Q8" --on "$NAME" || { tail -c 2000 "$OUT/bucket-replayed.txt" | tee -a "$R"; FAILED+=("bucket-replayed"); }
+record bucket-replayed
+jq -r '.result.detail // ""' "$OUT/bucket-replayed.json" > "$OUT/bucket-replayed-detail.json" 2> /dev/null
+say "bucket-replayed: $(jq -c '{declared, launcher, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/bucket-replayed-detail.json" 2> /dev/null)"
+jq -e '.declared and (.launcher | not) and ([(.drafted // [])[], (.plain // [])[]] | length == 8) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' \
+  "$OUT/bucket-replayed-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket-replayed: a clear position disagreed"; FAILED+=("bucket-replayed-forced"); }
 route unknown "which the engine's cells have not passed" "$SOURCE/qwen3/ask" --model "model=$Q4" "prompt=$STORY" \
   max_tokens:=32 temperature:=0
 route rows "at most 16 rows" "$FIX/drive/rows" --model "model=$Q8"
