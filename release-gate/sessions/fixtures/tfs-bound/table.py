@@ -40,7 +40,8 @@ d, h = num(ceiling.get("disk_gbps")), num(ceiling.get("h2d_gbps"))
 cases = [obj(c) for c in disk.get("cases", []) if isinstance(c, dict)]
 dmax = max((num(c.get("gb_s")) for c in cases if c.get("direct")), default=0.0)
 print(f"ceilings: disk {d:.2f} GB/s ({'O_DIRECT' if ceiling.get('disk_direct') else 'buffered'}), pinned H2D {h:.1f} GB/s "
-      f"({ceiling.get('streams')} streams); disk max {dmax:.2f} GB/s (grid below)")
+      f"({ceiling.get('streams')} streams); disk max {dmax:.2f} GB/s (grid below); {ceiling.get('cpus')} CPUs, memcpy GB/s by "
+      f"threads {json.dumps(ceiling.get('memcpy_gbps'))}")
 print()
 print("| disk case | threads | MiB | GB | GB/s |")
 print("|---|---|---|---|---|")
