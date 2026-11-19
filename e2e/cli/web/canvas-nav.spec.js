@@ -138,6 +138,79 @@ const middleOnCanvas = (page) => page.evaluate(() => {
   return { x: ((left + right) / 2 - pane.left - camera.x) / camera.zoom, y: (pane.height / 2 - camera.y) / camera.zoom };
 });
 
+test('empty canvas stays grabbable while panning', async ({ page }) => {
+  const pane = page.locator('canvas.canvas-pixels');
+  await expect(pane).toBeVisible();
+  await expect.poll(() => canvasNames(page)).toEqual([]);
+  const dots = page.locator('.canvas-dots');
+  const pattern = dots.locator('pattern');
+  await expect(pattern).toHaveAttribute('width', /[1-9]/);
+  const step = Number(await pattern.getAttribute('width'));
+  const bounds = await pane.boundingBox();
+  const initial = await camera(page);
+  const dotPhase = () => dots.evaluate((element) => {
+    const { m41, m42 } = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+    return { x: m41, y: m42 };
+  });
+  const firstPhase = await dotPhase();
+  const point = (x, y) => ({
+    x: Math.round(bounds.x + bounds.width * x),
+    y: Math.round(bounds.y + bounds.height * y),
+  });
+  const grab = async ({ x, y }) => {
+    await page.mouse.move(x, y);
+    expect.soft(await page.evaluate(({ x, y }) => {
+      const target = document.elementFromPoint(x, y);
+      return target?.matches('canvas.canvas-pixels') ? getComputedStyle(target).cursor : null;
+    }, { x, y }), `open canvas at ${x}, ${y}`).toBe('grab');
+  };
+  const drag = async (from, to) => {
+    const before = await camera(page);
+    await grab(from);
+    await page.mouse.down();
+    try {
+      const middle = { x: Math.round((from.x + to.x) / 2), y: Math.round((from.y + to.y) / 2) };
+      for (const at of [middle, to]) {
+        await page.mouse.move(at.x, at.y, { steps: 10 });
+        await expect.poll(async () => {
+          const now = await camera(page);
+          return Math.hypot(now.x - before.x - at.x + from.x, now.y - before.y - at.y + from.y);
+        }, { message: `held drag follows the pointer to ${at.x}, ${at.y}`, timeout: 1500 }).toBeLessThan(2);
+      }
+    } finally {
+      await page.mouse.up();
+    }
+    await grab(to);
+  };
+  const left = point(.12, .55), right = point(.88, .55);
+  const top = point(.5, .23), bottom = point(.5, .77);
+  await grab(right);
+  for (let i = 0; i < 3; i++) {
+    await drag(left, right);
+    await drag(bottom, top);
+  }
+  await drag(right, left);
+  await drag(top, bottom);
+  const far = await camera(page);
+  const phase = await dotPhase();
+  for (const axis of ['x', 'y']) {
+    // The visible dot pattern moves with the camera even beyond a full screen by wrapping to the same phase.
+    const shift = firstPhase[axis] + far[axis] - initial[axis] - phase[axis];
+    expect(Math.abs(shift - Math.round(shift / step) * step), `repeating dot phase on ${axis}`).toBeLessThan(1);
+  }
+  const painted = await dots.boundingBox();
+  expect(painted.x).toBeLessThanOrEqual(bounds.x);
+  expect(painted.y).toBeLessThanOrEqual(bounds.y);
+  expect(painted.x + painted.width).toBeGreaterThanOrEqual(bounds.x + bounds.width);
+  expect(painted.y + painted.height).toBeGreaterThanOrEqual(bounds.y + bounds.height);
+  // The vertical drags crossed this control. Starting a click on it still opens the picker.
+  await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: 'Drop a file here' }).click(),
+  ]);
+  await expect.poll(() => canvasNames(page)).toEqual([]);
+});
+
 test('canvas-nav', async ({ context, project, api, signIn }) => {
   // One picture of one colour, 300 boxes of it by one apply, and their places by one canvas patch: 18 across, a gap between each.
   const file = await project.upload(png(0, 320, 200, false, () => [190, 40, 40]));
