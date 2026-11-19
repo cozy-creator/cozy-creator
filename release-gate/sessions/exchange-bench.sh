@@ -22,7 +22,7 @@ kernels "$SOURCE/ltx-2.5"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 PROVIDER=$(param provider)
 RENT_ARGS="--ssh --gpus 2${PROVIDER:+ --provider $PROVIDER}"
-quote 2400
+quote 1800
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
