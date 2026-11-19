@@ -1,6 +1,6 @@
 #!/bin/bash
 # pinned-hold (proof only, cl-1316 cleanup; never merged): a run asked on the session's pod (`--on`), taken there, and then the
-# session holds (900 s) for `gh run cancel` to kill its step before its trap: pod-session.yaml's always() cleanup must stop the
+# session holds (600 s; the run ends itself 300 s in, so one a failed cleanup moved frees itself) for `gh run cancel` to kill its step before its trap: pod-session.yaml's always() cleanup must stop the
 # run's follower, cancel the run (machines.sh `unpin_runs`) and end the pod. Nothing here ends anything.
 . "$(dirname "$0")/lib.sh"
 quote 600
