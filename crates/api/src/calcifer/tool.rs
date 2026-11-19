@@ -25,9 +25,6 @@ pub const EDIT: &str = "cozy/edit";
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tools {
     pub tools: Vec<Tool>,
-    /// Film and media's own aspect ratios (`STANDARD_RATIOS`), what a shape is said as: the page's one list of them.
-    #[serde(default)]
-    pub ratios: Vec<String>,
 }
 
 /// Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
@@ -260,6 +257,7 @@ const EDIT_RATES: [u64; 6] = [EDIT_FPS, 25, 30, 48, 50, 60];
 /// NTSC's rates, each kept exactly (24000/1001, 30000/1001, 60000/1001), and said as people say them.
 const NTSC_RATES: [(f64, &str); 3] = [(24000.0 / 1001.0, "23.976"), (30000.0 / 1001.0, "29.97"), (60000.0 / 1001.0, "59.94")];
 /// Film and media's own ratios (Paul, 11-13): video, TV, photo and social as N:M, cinema as X.XX:1; the more common first, as a tie goes.
+/// What a shape is said as: the page holds them as `calcifer.ts` `STANDARD_RATIOS`, written from this.
 pub const STANDARD_RATIOS: [&str; 19] = ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21", "2:1", "1:2", "2.39:1", "1.85:1", "1.90:1", "1.43:1", "1.37:1", "1.66:1"];
 const EDIT_SIZES: [&str; 4] = ["720p", "1080p", "1440p", "2160p"];
 const FIRST_CLIP: &str = "Same as the first clip";

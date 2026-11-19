@@ -1,3 +1,4 @@
+import { STANDARD_RATIOS } from "../api/calcifer"
 import { ratioOf } from "./shown"
 
 /** Scope, which people also call 2.35:1. */
@@ -10,23 +11,11 @@ const off = (ratio: number, shape: string) => Math.min(...[ratioOf(shape)!, ALSO
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
 
 /** Whole ratios up to 10:10, simplest first (3:1, 5:2), each near no standard one nor a simpler one, so each says itself. */
-const smallOf = (standard: string[]) => Array.from({ length: 100 }, (_, at) => [Math.floor(at / 10) + 1, (at % 10) + 1])
+const SMALL = Array.from({ length: 100 }, (_, at) => [Math.floor(at / 10) + 1, (at % 10) + 1])
   .filter(([w, h]) => gcd(w, h) === 1)
   .sort((a, b) => a[0] + a[1] - (b[0] + b[1]))
   .map(([w, h]) => `${w}:${h}`)
-  .reduce<string[]>((kept, shape) => ([...standard, ...kept].some((near) => off(ratioOf(shape)!, near) <= NEAR) ? kept : [...kept, shape]), [])
-
-/** Film and media's own ratios, as Calcifer lists them with its tools (`Tools.ratios`, Paul 11-13), the more common first, as a tie goes.
- *  Until its list is read, a shape is said as its simplest whole ratio. */
-let STANDARD: string[] = []
-let SMALL = smallOf(STANDARD)
-
-/** Calcifer's standard ratios, read with its tools: what a shape is said as from then on. */
-export function takeStandardRatios(ratios: string[]) {
-  if (ratios.length === STANDARD.length && ratios.every((ratio, at) => ratio === STANDARD[at])) return
-  STANDARD = [...ratios]
-  SMALL = smallOf(STANDARD)
-}
+  .reduce<string[]>((kept, shape) => ([...STANDARD_RATIOS, ...kept].some((near) => off(ratioOf(shape)!, near) <= NEAR) ? kept : [...kept, shape]), [])
 
 const decimal = (ratio: number) => (ratio >= 1 ? `${ratio.toFixed(2)}:1` : `1:${(1 / ratio).toFixed(2)}`)
 
@@ -36,7 +25,7 @@ export function ratioWords(value: number | string, fits: (ratio: number) => bool
   const ratio = typeof value === "number" ? value : ratioOf(value)
   if (!ratio || !Number.isFinite(ratio)) return String(value)
   const named = (at: number) => {
-    const standard = STANDARD.filter((shape) => fits(ratioOf(shape)!) && off(at, shape) <= NEAR)
+    const standard = STANDARD_RATIOS.filter((shape) => fits(ratioOf(shape)!) && off(at, shape) <= NEAR)
     if (standard.length) return standard.reduce((best, shape) => (off(at, shape) < off(at, best) ? shape : best))
     return SMALL.find((shape) => fits(ratioOf(shape)!) && off(at, shape) <= NEAR)
   }
