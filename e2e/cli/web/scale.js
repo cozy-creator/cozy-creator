@@ -560,8 +560,6 @@ async function nativeMemory(base, folder) {
     await here.waitFor();
     // On a take an image tool made, its words are its next take's, behind its +.
     await (await renderOf(page, name)).waitFor();
-    // In Focus every field shows, nothing under More (cl-934); a box worked on elsewhere keeps what it holds under More.
-    if ((await here.locator('.more-toggle').count()) && !(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
   };
   const says = (name, words) => within(`${name} says ${words}`, page.evaluate(([asked, said]) => window.wordsAre(asked, said), [name, words]));

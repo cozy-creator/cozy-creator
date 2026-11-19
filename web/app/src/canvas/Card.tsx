@@ -519,14 +519,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const style: CSSProperties & Record<`--${string}`, string | number> = { width: "100%", "--focus-footer-room": `${!fielded || cut ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
   return (
     <div
-      className={`card focus-card ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""} ${plays ? "plays" : ""}`}
+      className={`card focus-card ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""} ${plays ? "plays" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
       onClick={buttonsOnly}
-      onAnimationEnd={(event) => {
-        if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
-      }}
     >
       {!view.placing && !cut && <FocusActions view={view} name={name} />}
       {cut ? <VideoEditor name={name} settings={here && asset?.tool && <AssetEdit name={name} view={view} editing />} /> : <FocusFrame aspect={aspectOf(view)} pixels={(shown?.field === "image" || shown?.field === "video") && shown.width && shown.height ? { width: shown.width, height: shown.height } : undefined} fitted={asset?.kind !== "text"} full={plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
