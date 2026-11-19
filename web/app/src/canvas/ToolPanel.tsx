@@ -35,7 +35,7 @@ function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean
         <b>{entry.label}</b><span aria-hidden="true">{open ? "⌄" : "›"}</span>
       </button>
       {open && <ul className="tool-implementations">
-        {entry.variants.map((tool) => <ToolRow key={tool.id} entry={entry} tool={tool} label={modelLabel(tool)} />)}
+        {entry.variants.map((tool) => <ToolRow key={tool.id} entry={entry} tool={tool} label={entry.labels.get(tool.id) ?? modelLabel(tool)} />)}
       </ul>}
     </li>
   )

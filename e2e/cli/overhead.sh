@@ -4,7 +4,8 @@
 
 # run_overhead: OVERHEAD_N warm repeats of real functions, each `cozy run` timed from its start to its exit, less its record's
 # execution time: minimax-h3-tools' echo (published, no model), and Qwen3.5 on the real 0.8B (published, a model held): `write`
-# (words from words) and `caption` (a new picture each repeat, as boxes on a page are captioned). Each repeat asks something new,
+# (words from words) and `caption`, the Caption tool (a new picture each repeat, mentioned in its words, as a Caption box on a page reads
+# one, se-151). Each repeat asks something new,
 # so none is answered from the memo. On this computer's machine the median of each is under OVERHEAD_MS; on another computer's
 # (overhead_far), under OVERHEAD_MS plus OVERHEAD_TRIPS round trips of its link: one sends the run and brings its outcome back.
 OVERHEAD_MS=${OVERHEAD_MS:-300}
@@ -19,7 +20,7 @@ local package=qwen3.5
 local qwen=(--model model=${OVERHEAD_MODEL:-huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0} max_tokens:=4 seed:=7 temperature:=0)
 overhead_of echo minimax-h3-tools/echo text
 overhead_of write "$package/write" instructions "${qwen[@]}"
-overhead_of caption "$package/caption" picture "${qwen[@]}"
+overhead_of caption "$package/caption" mention "${qwen[@]}"
 overhead_far "$package"
 }
 
@@ -42,19 +43,20 @@ sudo tc qdisc add dev lo root handle 1: prio \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "overhead far: its link wasn't delayed"; return; }
 local qwen=(--model model=${OVERHEAD_MODEL:-huihui-ai/huihui-qwen3.5-0.8b-abliterated@0.1.0} max_tokens:=4 seed:=7 temperature:=0)
 OVERHEAD_ON=far OVERHEAD_MS=$bar overhead_of far-echo minimax-h3-tools/echo text
-OVERHEAD_ON=far OVERHEAD_MS=$bar overhead_of far-caption "$1/caption" picture "${qwen[@]}"
+OVERHEAD_ON=far OVERHEAD_MS=$bar overhead_of far-caption "$1/caption" mention "${qwen[@]}"
 sudo tc qdisc del dev lo root || check "overhead far: its link wasn't restored"
 timeout 60 cozy --json machine end far --force -y > "$OUT/far-end.json" 2>&1 || true
 }
 
 # overhead_of <name> <target> <field> [more inputs]: one run to install and load, then OVERHEAD_N timed; checks their median. A
-# `text` or `instructions` field asks words, new each repeat; `picture` gives `images` a new picture each repeat.
+# `text` or `instructions` field asks words, new each repeat; `mention` gives `instructions` a new picture each repeat.
 overhead_of() {
-local name=$1 target=$2 field=$3 i input
+local name=$1 target=$2 field=$3 i input terms
 shift 3
 for i in $(seq 0 "$OVERHEAD_N"); do
   input=$(overhead_input "$name" "$field" "$i") || { check "overhead $name: no input for run $i"; return; }
-  timed_run "$name-$i" "$target" "$input" "$@" \
+  mapfile -t terms <<< "$input"
+  timed_run "$name-$i" "$target" "${terms[@]}" "$@" \
     || { check "overhead $name: run $i failed: $(tail -c 400 "$OUT/overhead-$name-$i.err")"; return; }
 done
 python3 -I - "$OUT" "$name" "$OVERHEAD_N" "$OVERHEAD_MS" <<'PY' || check "$(tail -n 1 "$OUT/overhead-$name.txt")"
@@ -81,10 +83,11 @@ PY
 }
 
 # overhead_input <name> <field> <i>: repeat i's input, its own to <name> and i (none is another's memo): words naming both, or a
-# picture of a colour of their own (a 96x64 PNG).
+# picture of a colour of their own (a 96x64 PNG), mentioned in `instructions` and named by the run's own `references`, as a
+# person attaches one (`mention`). One input a line.
 overhead_input() {
 case $2 in
-  picture)
+  mention)
     local file=$OUT/overhead-inputs/$1-$3.png
     mkdir -p "${file%/*}"
     [ -f "$file" ] || python3 -I -c '
@@ -96,7 +99,7 @@ rows = b"".join(b"\0" + pixel * w for _ in range(h))
 chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 ' "$file" "$1-$3" || return 1
-    printf 'images:=["%s"]' "$file" ;;
+    printf 'instructions=<pic>\nreferences:=[{"name": "pic", "image": "%s"}]' "$file" ;;
   *) printf '%s=Say one word about the number %s (%s).' "$2" "$3" "$1" ;;
 esac
 }

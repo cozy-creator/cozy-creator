@@ -146,8 +146,12 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
          "files": {"videos.0": clip}, "check": answers(1)},
         {"entry": "ask", "name": "sampled", "payload": {"prompts": [{"text": "Name a color."}, {"text": "Name a fruit."}],
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
-        {"entry": "caption", "name": "image", "payload": {"max_tokens": 12, **GREEDY}, "files": {"images.0": picture},
-         "check": answers(1)},
+        # se-151, Paul 11-18: "add the caption tool to an image, (2) run it, it produces a caption". Caption's box is Write's: the
+        # picture it describes mentioned in its words.
+        {"entry": "caption", "name": "image",
+         "payload": {"instructions": {"text": "<fox>", "references": [{"key": "fox", "type": "image"}]}, "max_tokens": 12,
+                     "seed": 3},
+         "files": {"instructions.references.0.file": picture}, "check": wrote},
         # xs-204, Paul 11-16: "attach an LLM (ideally VLLM) to an image node, or a video node, and ask it to produce a
         # caption, and it'll produce text". The box's tool: each mention's picture or video where it's first mentioned.
         {"entry": "write", "name": "text", "payload": {"instructions": {"text": "Write one line about the sea."},

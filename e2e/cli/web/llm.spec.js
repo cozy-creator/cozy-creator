@@ -83,10 +83,12 @@ test('llm', async ({ page, project, api }) => {
     const row = await toolRow(page, 'LLM', LLM);
     await expect.soft(row).toHaveAttribute('data-tool-operation', 'llm');
     const text = (await listed()).filter((tool) => tool.makes === 'text');
-    // One tool is that row, called LLM; several, each by its package's title (Qwen3.6, Qwen3.5), with no page of its own for any.
+    // One tool is that row, called LLM; several, each by its package's title (Qwen3.6, Qwen3.5), and its own label where two share one (Qwen3
+    // Caption, Qwen3 Write: se-151), with no page of its own for any.
     const labels = await page.locator('[data-implementation][data-tool-operation="llm"]').evaluateAll((all) => all.map((one) => [one.dataset.tool, one.textContent]));
     expect.soft(labels.map(([id]) => id).sort(), 'every tool that makes text, under LLM').toEqual(text.map((tool) => tool.id).sort());
-    if (text.length > 1) for (const [id, label] of labels) expect.soft(label, `${id}: its package's title`).toBe(text.find((tool) => tool.id === id).package_title);
+    const titled = (tool) => text.filter((other) => other.package_title === tool.package_title).length > 1 ? `${tool.package_title} ${tool.label}` : tool.package_title;
+    if (text.length > 1) for (const [id, label] of labels) expect.soft(label, `${id}: its package's title`).toBe(titled(text.find((tool) => tool.id === id)));
     await look('llm-row', async () => { await toolRow(page, 'LLM', LLM); });
   });
 
