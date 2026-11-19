@@ -100,19 +100,15 @@ function ProjectSync({ id }: { id: string }) {
     return cache.subscribe((event) => { if (event.type === "updated" && event.action.type === "success") take(event.query) })
   }, [queries, store, client, stream, id])
   useEffect(() => {
-    // A tool an asset names that the list didn't hold, asked for by its name, once. Before the list has come, that would be all of them, and a
-    // first read under way can't be asked again. Text is there from the start, so the list has come when there's more.
+    // The project's list holds every tool its boxes name (Calcifer, `GET /v1/tools?project=`): one its boxes name now that it lacks reads the
+    // list once more, for all of them. Before the list has come that would be all of them, and a first read under way can't be asked again.
+    // Text is there from the start, so the list has come when there's more.
     if (tools.size < 2) return
-    for (const { tool, prefixes } of state?.assets ?? []) {
-      // And again with each version it lands: a render can read local code the list couldn't, on a Runtime newer than the one that lists it.
-      const ask = `${tool}@${prefixes?.length ?? 0}`
-      if (!tool || madeHere(tool) || asked.current.has(ask) || tools.has(tool)) continue
-      asked.current.add(ask)
-      // Local code is listed only once something names it, so the list is read again. Anything else can be searched for.
-      if (/^[./~\\]|^\w:[\\/]/.test(tool)) void queries.invalidateQueries({ queryKey: ["tools"] })
-      else client.tools(tool.split("/").slice(0, -1).join(" "), id).then(({ tools }) => store.addTools(tools), () => {})
-    }
-  }, [store, client, id, queries, state, tools])
+    const lacking = [...new Set((state?.assets ?? []).map(({ tool }) => tool).filter((tool): tool is string => Boolean(tool) && !madeHere(tool!) && !tools.has(tool!)))].sort().join(" ")
+    if (!lacking || asked.current.has(lacking)) return
+    asked.current.add(lacking)
+    void queries.invalidateQueries({ queryKey: ["tools"] })
+  }, [queries, state, tools])
   // Gone (its folder deleted, say): said on the canvas (`Unread`) as anything else that stops it being read is, and the page stays where it is
   // (cl-980: sent to `/`, the tabs sent it back, forever). Its tab goes from the list.
   useEffect(() => {

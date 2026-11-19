@@ -37,6 +37,9 @@ pub(crate) enum After {
     /// Local code installed: what its machine's Runtime read of it is kept for that source and Runtime, whatever asked for the
     /// install (a run, `cozy package install`), so what reads it next (the page's tools, `fit`) has what the machine said.
     Keep(crate::local_code::Filed),
+    /// A project's local code installed: its reading stays out of this computer's store (cl-984), but the project's tool list reads the
+    /// new code, so that's told (`tools.changed`).
+    Told,
 }
 
 impl Calcifer {
@@ -86,13 +89,16 @@ impl Calcifer {
                     done.retired = retire(&machines, id, machine, &package, &release).await;
                 }
             }
+            After::Told => {
+                crate::events::tools_changed();
+                return;
+            }
             After::Keep(filed) => {
                 let row = row.machine.as_deref().and_then(|name| machines.named(name).ok().flatten());
-                if let Some(runtime) = row.and_then(|row| machines.frame(&row.name)).map(|frame| frame.runtime).filter(|runtime| !runtime.is_empty()) {
-                    crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"]);
-                }
-                // A public repository's code is listed as installed once its interface is kept (cl-1127).
-                if crate::git_code::origin_of_manifest(&filed.manifest).is_some() {
+                // Local code is listed as its kept interface says, a public repository's too (cl-1127): a reading kept anew is told.
+                if let Some(runtime) = row.and_then(|row| machines.frame(&row.name)).map(|frame| frame.runtime).filter(|runtime| !runtime.is_empty())
+                    && crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"])
+                {
                     crate::events::tools_changed();
                 }
                 return;

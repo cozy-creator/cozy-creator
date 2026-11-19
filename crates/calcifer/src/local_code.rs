@@ -993,15 +993,18 @@ fn synced(home: &Home, filed: &Filed) -> bool {
         .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
 }
 
-/// Keeps `interface` for this source as `runtime` described it, and only the package's newest 16.
-pub(crate) fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value) {
+/// Keeps `interface` for this source as `runtime` described it, and only the package's newest 16. Whether that kept a new reading (a
+/// source, environment or Runtime read for the first time, or read differently), which the install's step tells (`hub::after`).
+pub(crate) fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value) -> bool {
     const KEPT: usize = 16;
     if !self::interface(interface) {
-        return;
+        return false;
     }
-    let (Ok(dir), Ok(path)) = (dir(home, filed), file(home, filed, runtime)) else { return };
+    let (Ok(dir), Ok(path)) = (dir(home, filed), file(home, filed, runtime)) else { return false };
+    let bytes = interface.to_string();
+    let changed = fs::read(&path).map_or(true, |held| held != bytes.as_bytes());
     let kept = durable::private_dir(&dir)
-        .and_then(|()| durable::replace(&path, interface.to_string().as_bytes(), 0o600));
+        .and_then(|()| durable::replace(&path, bytes.as_bytes(), 0o600));
     // An interface that cannot be kept is asked again next time; the run goes on.
     drop(kept);
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = (fs::read_dir(&dir).into_iter().flatten().flatten())
@@ -1011,6 +1014,7 @@ pub(crate) fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value)
     for (_, old) in files.into_iter().skip(KEPT) {
         let _ = fs::remove_file(old);
     }
+    changed
 }
 
 fn interface(document: &Value) -> bool {
@@ -1146,7 +1150,11 @@ pub(crate) async fn prepare(
         return Ok(prepared(Some(interface), None, None, None));
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
-    let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
+    // Its install changes what the tool list reads: told when it ends (`hub::after`), kept here too unless it's a project's.
+    let after = Some(match crate::private_io::current() {
+        None => crate::hub::after::After::Keep(code.filed()),
+        Some(_) => crate::hub::after::After::Told,
+    });
     // Its machine's Runtime moves first to one its requirement admits, as a published release's does (cl-952, cl-1069): the install
     // waits behind that update. Boxed, as their futures are large.
     if fresh
