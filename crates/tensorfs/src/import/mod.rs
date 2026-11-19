@@ -27,6 +27,7 @@ mod compose;
 pub mod base;
 pub(crate) mod carriers;
 pub(crate) mod engine;
+pub(crate) mod experts;
 pub mod gguf;
 mod keep;
 pub(crate) mod lora;
@@ -935,8 +936,15 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let read = |t: &source::Tensor| t.shape.is_empty() || matches!(t.dtype, Dtype::U8 | Dtype::I32 | Dtype::I64);
     set.read_ahead(|_, t| small(t) && read(t))?;
     let as_is = req.converter == Some(AS_IS);
+    // Transformers' stacked experts, one tensor per expert (`experts`), before any table reads the keys.
+    let mut split = false;
     if !as_is {
         carriers::fold(&mut set)?;
+        let experts = experts::split(&mut set)?;
+        if let Some(warning) = experts.warning() {
+            progress(&warning, 0, 0);
+        }
+        split = experts.any;
     }
 
     let tables = tables();
@@ -952,6 +960,7 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         true => vec![AS_IS.to_owned()],
         false => recognized.formats(tables),
     };
+    formats.extend(split.then(|| experts::FORMAT.to_owned()));
     // The source's own Diffusers or Transformers layout is canonical by definition.
     let canonical = set.plain.iter().any(|p| {
         let (folder, name) = p.path.rsplit_once('/').unwrap_or(("", &p.path));
