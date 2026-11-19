@@ -8,8 +8,8 @@
     uv run scripts/keeps.py           # regenerate and compare byte for byte
     uv run scripts/keeps.py --write   # rewrite it
 
-An import stores each F32 tensor at its model's compute width unless the class its component loads into keeps it
-wider (`src/import/keep.rs`). The rule is each class's own: Diffusers' `_keep_in_fp32_modules`, Transformers'
+An import stores a mostly-BF16 component's stray F32 tensors as BF16 unless the class the component loads into
+keeps them wider (`src/import/keep.rs`). The rule is each class's own: Diffusers' `_keep_in_fp32_modules`, Transformers'
 `_keep_in_fp32_modules_strict` (fp16 and bf16) and `_keep_in_fp32_modules` (fp16 only). Read from the installed
 sources by `ast`, nothing imported: a class without its own list takes its nearest base's, and a Transformers class
 also takes every list its modeling file declares (Transformers unites a model's submodels' lists when it builds one,

@@ -1,12 +1,16 @@
-//! An import stores each plain F32 tensor at its model's compute width, BF16 when that is the float holding most of
-//! its weights, unless the class its component loads into keeps it at F32 by its own published rule. The rules are
-//! upstream's, generated into `keeps.json` (`scripts/keeps.py`), and matched as upstream's loaders match them at BF16:
+//! An import decides each plain F32 tensor's width per component, from that component's own stored weights:
+//! - A component whose weights are mostly BF16 stores its stray F32 tensors as BF16, unless the class it loads into
+//!   keeps them at F32 by its own published rule.
+//! - Any other component keeps its F32 as stored: a component stored in F32 is one its authors load in F32, and
+//!   narrowing F32 to F16 can overflow.
+//!
+//! The rules are upstream's, generated into `keeps.json` (`scripts/keeps.py`), and matched as upstream's loaders match
+//! them at BF16:
 //! - Diffusers' `_keep_in_fp32_modules`: an entry equal to one of the key's dot-separated parts.
 //! - Transformers' `_keep_in_fp32_modules_strict`: an entry found in the key, `*` standing for any run. Its
 //!   `_keep_in_fp32_modules` applies at F16 only.
 //!
-//! A class the table does not hold (another library's, an adapter's, none) keeps every tensor as stored, and so does a
-//! model whose weights are mostly F16 or F32: narrowing F32 to F16 can overflow.
+//! A class the table does not hold (another library's, an adapter's, none) keeps every tensor as stored.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -34,7 +38,7 @@ struct Rule {
 
 static TABLE: LazyLock<Table> = LazyLock::new(|| serde_json::from_str(KEEPS).expect("keeps.json is generated"));
 
-/// Whether `class` keeps `key` at F32 in a BF16 model; none for a class the table does not hold.
+/// Whether `class` keeps `key` at F32 when loaded at BF16; none for a class the table does not hold.
 fn kept(class: &ClassRef, key: &str) -> Option<bool> {
     let rule = TABLE.classes.get(&class.library)?.get(&class.name)?;
     Some(match class.library.as_str() {
@@ -58,50 +62,83 @@ fn found(pattern: &str, key: &str) -> bool {
     })
 }
 
-/// Whether BF16 holds more of the planned weights' elements than any other float (an encoded tensor by its logical
-/// dtype).
-fn bf16(planned: &[Planned]) -> bool {
-    let mut held: BTreeMap<&str, u64> = BTreeMap::new();
-    for p in planned.iter().filter(|p| matches!(p.dtype, Dtype::BF16 | Dtype::F16 | Dtype::F32 | Dtype::F64)) {
-        *held.entry(p.dtype.name()).or_default() += p.shape.iter().product::<u64>();
+/// The float holding most of each component's planned elements (an encoded tensor by its logical dtype); of two
+/// holding the same, the wider.
+fn widths(planned: &[Planned]) -> BTreeMap<String, Dtype> {
+    let mut held: BTreeMap<&str, BTreeMap<&Dtype, u64>> = BTreeMap::new();
+    for p in planned.iter().filter(|p| matches!(p.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32 | Dtype::F64)) {
+        *held.entry(p.component.as_str()).or_default().entry(&p.dtype).or_default() += p.shape.iter().product::<u64>();
     }
-    held.into_iter().max_by_key(|(_, n)| *n).is_some_and(|(name, _)| name == Dtype::BF16.name())
+    (held.into_iter())
+        .filter_map(|(c, by)| Some((c.to_owned(), by.into_iter().max_by_key(|(_, n)| *n)?.0.clone())))
+        .collect()
 }
 
-/// Narrows every plain F32 tensor of a BF16 model that its component's class does not keep to BF16, and says what it
-/// did in one line (none when it holds no F32).
+/// What became of one component's plain F32 tensors.
+#[derive(Default)]
+struct Done {
+    narrowed: u64,
+    /// The narrowed tensors' F32 bytes.
+    bytes: u64,
+    /// Kept by the class's rule.
+    ruled: u64,
+    /// Kept: the table holds no rule for the class.
+    unknown: u64,
+    /// Kept: not one range of the source's bytes (`Planned::narrow`).
+    unread: u64,
+    /// Kept: the component's own width isn't BF16.
+    own: u64,
+}
+
+/// Narrows to BF16 every plain F32 tensor of a mostly-BF16 component that its class does not keep, and says in one
+/// line what became of each component's F32 (none for a model with no BF16 component).
 pub(crate) fn narrow(planned: &mut [Planned], components: &[Folder]) -> Option<String> {
-    if !bf16(planned) {
+    let widths = widths(planned);
+    if !widths.values().any(|w| *w == Dtype::BF16) {
         return None;
     }
     let classes: BTreeMap<&str, &ClassRef> = components.iter().map(|c| (c.name.as_str(), &c.class)).collect();
-    // component → (narrowed, their F32 bytes, kept by the rule, kept for want of one)
-    let mut done: BTreeMap<String, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut done: BTreeMap<String, Done> = BTreeMap::new();
     for p in planned.iter_mut().filter(|p| p.dtype == Dtype::F32 && p.encoding.is_none()) {
-        let class = classes.get(p.component.as_str()).map_or_else(ClassRef::default, |c| (*c).clone());
-        let bytes = 4 * p.shape.iter().product::<u64>();
         let entry = done.entry(p.component.clone()).or_default();
-        let rule = kept(&class, &p.key);
-        if rule == Some(false) && p.narrow(&Dtype::BF16) {
-            entry.0 += 1;
-            entry.1 += bytes;
-        } else if rule.is_some() {
-            entry.2 += 1;
-        } else {
-            entry.3 += 1;
+        if widths.get(&p.component) != Some(&Dtype::BF16) {
+            entry.own += 1;
+            continue;
+        }
+        let bytes = 4 * p.shape.iter().product::<u64>();
+        match classes.get(p.component.as_str()).and_then(|c| kept(c, &p.key)) {
+            None => entry.unknown += 1,
+            Some(true) => entry.ruled += 1,
+            Some(false) if p.narrow(&Dtype::BF16) => {
+                entry.narrowed += 1;
+                entry.bytes += bytes;
+            }
+            Some(false) => entry.unread += 1,
         }
     }
-    let class = |c: &str| classes.get(c).map_or_else(String::new, |c| c.name.clone());
     let mb = |b: u64| b as f64 / 1e6;
     let said: Vec<String> = (done.into_iter())
-        .map(|(c, (n, bytes, kept, unknown))| match unknown {
-            0 => format!(
-                "{c}: {n} F32 tensors stored as BF16 ({:.1} MB to {:.1} MB), {kept} kept at F32 by {}'s published rule",
-                mb(bytes),
-                mb(bytes / 2),
-                class(&c)
-            ),
-            _ => format!("{c}: {unknown} F32 tensors kept as stored: no published rule is known for its class ({})", class(&c)),
+        .map(|(c, d)| {
+            let class = classes.get(c.as_str()).map_or("", |c| c.name.as_str());
+            if d.own > 0 {
+                let width = widths.get(&c).map_or("", Dtype::name);
+                return format!("{c}: {} F32 tensors kept as stored, {width} being its component's own width", d.own);
+            }
+            if d.unknown > 0 {
+                let n = d.unknown;
+                return format!("{c}: {n} F32 tensors kept as stored: no published rule is known for its class ({class})");
+            }
+            let mut line = format!(
+                "{c}: {} F32 tensors stored as BF16 ({:.1} MB to {:.1} MB), {} kept at F32 by {class}'s published rule",
+                d.narrowed,
+                mb(d.bytes),
+                mb(d.bytes / 2),
+                d.ruled
+            );
+            if d.unread > 0 {
+                line += &format!(", {} kept as stored (not one range of the source's bytes)", d.unread);
+            }
+            line
         })
         .collect();
     (!said.is_empty()).then(|| format!("width: {}", said.join("; ")))

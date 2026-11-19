@@ -18,8 +18,8 @@
 //!    configs and tokenizers the source lacks (recorded as `filled`).
 //! 5. Check the planned model against its family ([`verify`], [`crate::family`]).
 //! 6. Land the rest of every member (the downloads resume from the headers), convert row by row
-//!    into the [`Sink`], then delete the tmp area. Each F32 tensor is stored at the model's compute width unless its
-//!    class's published rule keeps it ([`keep`]).
+//!    into the [`Sink`], then delete the tmp area. A mostly-BF16 component's stray F32 tensors are stored as BF16
+//!    unless its class's published rule keeps them ([`keep`]).
 //!
 //! A GGUF file is one component of its own (`gguf`).
 
@@ -1087,7 +1087,7 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     for note in &ignored {
         progress(note, 0, 0);
     }
-    // Each F32 tensor at the model's compute width, unless its class's published rule keeps it (`keep`).
+    // A mostly-BF16 component's stray F32 as BF16, unless its class's published rule keeps it (`keep`).
     if let Some(note) = (!as_is).then(|| keep::narrow(&mut planned, &layout.components)).flatten() {
         progress(&note, 0, 0);
     }
