@@ -728,7 +728,7 @@ pub struct Device {
     /// launch, not an allocation of ours, so no reclaim answers it (cr-293: a cold H3 on a full 5090
     /// failed its first `index_select`). What it is still expected to take for this process, measured
     /// (`cooperative::expect`); 0 where nothing is known.
-    /// The room is soft: kept only from idle, finished bytes, it never fails a demand or evicts weights a pass needs.
+    /// The room is soft: kept only by evicting what is idle and finished, with no wait, it never fails a demand.
     driver_room: AtomicUsize,
     /// This process's bytes outside its books, as last measured (`cooperative::expect`).
     out_of_books: AtomicUsize,

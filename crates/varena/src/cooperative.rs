@@ -66,8 +66,6 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     // refused context asks for what peers can give. The context's cost is measured as it comes up:
     // what was free before it less what is free after. 3 GiB was asked of peers before, on any card.
     let before = card_free(device);
-    let seeded = NVML.get_or_init(|| Nvml::init().ok()).as_ref()
-        .and_then(|nvml| seed(nvml, &nvml_device(nvml, &uuid)?));
     let mut last = false;
     loop {
         let started = working::initialize(device);
@@ -75,7 +73,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             Err(Error::Cuda { code: 2, .. }) => Some(0),
             Ok(()) => card_free(device).and_then(|free| {
                 let context = before.map_or(0, |before| before.saturating_sub(free));
-                let room = came_up(device, Expected { uuid, context, seeded });
+                let room = came_up(device, Expected { uuid, context, set: None });
                 (free < room).then(|| room - free)
             }),
             Err(_) => None,
@@ -85,7 +83,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             _ => break started,
         }
     }?;
-    came_up(device, Expected { uuid, context: 0, seeded });
+    came_up(device, Expected { uuid, context: 0, set: None });
     // What other programs hold as this process begins: a wait is only ever for what they took since.
     let _ = others_came(device);
     if let Some(serving) = serving {
@@ -133,8 +131,8 @@ struct Expected {
     uuid: [u8; 16],
     /// Its context's measured cost (`join`): 0 where NVML could not read the card.
     context: usize,
-    /// The release's figure for this card and driver (`OUT_OF_BOOKS`), where it has one.
-    seeded: Option<u64>,
+    /// The model set its latest plan runs (`plan_seen`): what it learns under and reads back.
+    set: Option<u64>,
 }
 
 static EXPECTED: Mutex<BTreeMap<i32, Expected>> = Mutex::new(BTreeMap::new());
@@ -145,35 +143,25 @@ fn came_up(device: i32, expected: Expected) -> usize {
     expect(device, false)
 }
 
-/// The most bytes a process held outside its books, by card and driver major version, from the
-/// release gate's run records (`release-gate/ledger.py out-of-books`): developer-measured, as the
-/// kernel tables are. A tab-separated row each: card, driver, bytes.
-const OUT_OF_BOOKS: &str = include_str!("../out-of-books.tsv");
-
-fn seed(nvml: &Nvml, gpu: &nvml_wrapper::Device<'_>) -> Option<u64> {
-    let card = gpu.name().ok()?;
-    let version = nvml.sys_driver_version().ok()?;
-    let driver = version.split('.').next()?;
-    OUT_OF_BOOKS.lines()
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            Some((fields.next()?, fields.next()?, fields.next()?.trim().parse::<u64>().ok()?))
-        })
-        .find(|(row, major, _)| *row == card && *major == driver)
-        .map(|(.., bytes)| bytes)
+/// A plan running model set `set` became active on `device`: its learned figure now applies.
+pub(crate) fn plan_seen(device: i32, set: u64) {
+    let changed = EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).get_mut(&device)
+        .is_some_and(|expected| expected.set.replace(set) != Some(set));
+    if changed {
+        expect(device, false);
+    }
 }
 
-/// The driver's room every map leaves on `device` (`Device::driver_room`): the most any process on
-/// this card held outside its books (learned this boot, else the release's figure for the card and
-/// driver) less what this process holds there now, measured (by NVML, else read from the card); with
-/// neither, its context's measured cost. A fixed 800 MiB was left before, 10-13% of an 8 GB card.
-/// `learn`: a request ended, and what this process holds outside its books joins what the card's
-/// processes learned. Read where NVML's per-process figure is cheap enough: as the process comes up and at each
-/// request's boundaries.
+/// The driver's room every map leaves on `device` (`Device::driver_room`): the most a process running
+/// this model set on this card held outside its books (learned on this machine, kept across boots)
+/// less what this process holds there now, measured (by NVML, else read from the card); for a set
+/// this card never ran, its context's measured cost. Learned across every model set, a process
+/// inherited another's growth. A fixed 800 MiB was left before, 10-13% of an 8 GB card. `learn`: a
+/// request ended, and what this process holds outside its books joins what its set learned. Read as
+/// the process comes up, as a plan becomes active and at each request's boundaries.
 fn expect(device: i32, learn: bool) -> usize {
     let Ok(gpu) = crate::gpu(device) else { return 0 };
-    let Some(Expected { uuid, context, seeded }) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
+    let Some(Expected { uuid, context, set }) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
         .get(&device).copied()
     else {
         return 0;
@@ -186,10 +174,10 @@ fn expect(device: i32, learn: bool) -> usize {
     let floor = gpu.outside_floor.load(Ordering::Acquire);
     let grown = if floor == usize::MAX { 0 } else { gpu.outside.load(Ordering::Acquire).saturating_sub(floor) };
     let own = measured.unwrap_or(context + grown);
-    if learn {
-        let _ = varena_ledger::held_out_of_books(&uuid, own as u64);
+    if learn && let Some(set) = set {
+        let _ = varena_ledger::held_out_of_books(&uuid, set, own as u64);
     }
-    let most = varena_ledger::out_of_books(&uuid).max(seeded);
+    let most = set.and_then(|set| varena_ledger::out_of_books(&uuid, set));
     let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
     gpu.expect_driver(room, measured.unwrap_or(0));
     room
