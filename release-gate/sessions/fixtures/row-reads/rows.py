@@ -3,11 +3,12 @@
 # dependencies = ["cozy-runtime>=0.48.0.dev0", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14"]
 # ///
 """row-reads' check (tfs-303), on one checkpoint: for every tensor that cuts (`Checkpoint.rows`), a sample per scheme read by
-row ranges with `Checkpoint.read_rows` into host and CUDA outs, alone and batched, each part equal byte for byte to the same
-rows of a whole read (`Tensors.read`), the rows told apart from the part's stored shape here, not from TensorFS's cut; each
-encoded range decoded alone (`raw.decode_into`, the CPU reference) equal to the same rows of the whole decode; a varena
-Source's `read_rows` from its kept page and from the store, equal too. Then the read speed of the largest tensor: whole
-(`Tensors.read_into` per part), one `read_rows` of every row, eight windows, and the Source's windows from its page.
+row ranges with `Checkpoint.read_rows` into host outs (plain buffers, DLPack arrays) and CUDA outs (on the caller's stream,
+on none), alone and batched, one part without the others, each equal byte for byte to the same rows of a whole read
+(`Tensors.read`), the rows told apart from the part's stored shape here, not from TensorFS's cut; each encoded range decoded
+alone (`raw.decode_into`, the CPU reference) equal to the same rows of the whole decode. Then the largest tensor: its read
+speed whole (`Tensors.read_into` per part), as one `read_rows` of every row and as eight windows, and a varena Source's
+`read_rows` of those windows from the store and from its kept page, each reader's bytes checked into zeroed outs.
 `seed` makes each call its own: no memo answers it."""
 
 import json
@@ -141,13 +142,14 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
                 decoded = tensors.read(key, decode=True).tobytes()
             for start, stop in ranges(cut, rng):
                 sizes = cut.nbytes(start, stop)
-                host = {r: np.empty(n, np.uint8) for r, n in sizes.items()}
+                # Host outs as plain buffers here; as DLPack arrays (numpy) in the batched read below.
+                host = {r: bytearray(n) for r, n in sizes.items()}
                 gpu = {r: torch.empty(n, dtype=torch.uint8, device="cuda") for r, n in sizes.items()}
                 ck.read_rows([(cname, key, start, stop, host)])
                 ck.read_rows([(cname, key, start, stop, gpu)], stream=stream)
                 for role in sizes:
                     want = expected(stored[role], whole[role], cut.count, cut.tile, start, stop)
-                    if host[role].tobytes() != want:
+                    if bytes(host[role]) != want:
                         fail(f"{scheme} {cname}/{key}#{role} rows {start}..{stop}: host bytes differ from the whole read's")
                     if gpu[role].cpu().numpy().tobytes() != want:
                         fail(f"{scheme} {cname}/{key}#{role} rows {start}..{stop}: CUDA bytes differ from the whole read's")
@@ -160,6 +162,13 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
                                     params=dict(meta.encoding.params))
                     if out.view(torch.uint8).numpy().tobytes() != decoded[start * per : stop * per]:
                         fail(f"{scheme} {cname}/{key} rows {start}..{stop}: its decode differs from the whole decode's rows")
+            # A role left out is not read: the first tile's first part alone.
+            start, stop = 0, min(cut.tile, cut.count)
+            role, n = next(iter(cut.nbytes(start, stop).items()))
+            alone = bytearray(n)
+            ck.read_rows([(cname, key, start, stop, {role: alone})])
+            if bytes(alone) != expected(stored[role], whole[role], cut.count, cut.tile, start, stop):
+                fail(f"{scheme} {cname}/{key}#{role} rows {start}..{stop}: read alone, its bytes differ from the whole read's")
             # One range of each into the batch: every sample in one read, host and CUDA.
             some = ranges(cut, rng)
             start, stop = some[min(2, len(some) - 1)]
@@ -175,7 +184,15 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
             for role, w in want.items():
                 if h[4][role].tobytes() != w or g[4][role].cpu().numpy().tobytes() != w:
                     fail(f"batched {h[0]}/{h[1]}#{role} rows {h[2]}..{h[3]}: bytes differ from the whole read's")
-        lines.append(f"batched: {len(batch_host)} tensors in one read_rows, host and CUDA")
+                g[4][role].zero_()
+        # The CUDA outs again with no stream given: each written on a stream of TensorFS's own, landed when it returns.
+        torch.cuda.synchronize()
+        ck.read_rows(batch_gpu)
+        for g, want in zip(batch_gpu, batch_want):
+            for role, w in want.items():
+                if g[4][role].cpu().numpy().tobytes() != w:
+                    fail(f"batched, no stream given, {g[0]}/{g[1]}#{role} rows {g[2]}..{g[3]}: bytes differ from the whole read's")
+        lines.append(f"batched: {len(batch_host)} tensors in one read_rows, host and CUDA, on the caller's stream and on none")
     if largest is not None:
         report["speed"] = speed(ck, largest, stream, fail)
     for scheme, row in sorted(report["schemes"].items()):
@@ -189,7 +206,8 @@ def check(ctx: Context, payload: Ask, weights: Weights) -> Checked:
 
 def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
     """The largest tensor's read speed, warm (its bytes in the page cache), into CUDA: whole, one read of every row, eight
-    windows, and a varena Source's windows from its kept page against from the store."""
+    windows, and a varena Source's windows from its kept page against from the store. Each reader's windows are checked
+    against the whole read and zeroed before the next reader writes them."""
     size, cname, key, meta, cut = largest
     tensors = ck.components[cname].tensors
     stored = raw.parts(ck, cname, key)
@@ -200,6 +218,7 @@ def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
             tensors.read_into(key, out, role=role or None)
 
     read_whole()
+    known = {role: out.cpu().numpy().tobytes() for role, out in whole.items()}
     every = {r: torch.empty(n, dtype=torch.uint8, device="cuda") for r, n in cut.nbytes(0, cut.count).items()}
     per = -(-cut.count // WINDOWS)
     step = -(-per // cut.tile) * cut.tile
@@ -207,15 +226,30 @@ def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
     windows = [{r: torch.empty(n, dtype=torch.uint8, device="cuda") for r, n in cut.nbytes(a, b).items()} for a, b in bounds]
     read_windows = [(cname, key, a, b, w) for (a, b), w in zip(bounds, windows)]
 
-    def each(reader) -> None:
+    def each(reader) -> tuple[int, int]:
+        """Every window, one read each: the bytes a Source served from its page and from the store."""
+        page = store = 0
         for one in read_windows:
-            reader([one], stream=stream)
+            got = reader([one], stream=stream)
+            if got is not None:
+                page, store = page + got[0], store + got[1]
+        return page, store
+
+    def landed(reader: str) -> None:
+        """The windows hold their rows of the whole read; then zeroed, so what the next reader leaves is its own."""
+        for (a, b), w in zip(bounds, windows):
+            for role, out in w.items():
+                if out.cpu().numpy().tobytes() != expected(stored[role], known[role], cut.count, cut.tile, a, b):
+                    fail(f"{reader} {cname}/{key}#{role} rows {a}..{b}: bytes differ from the whole read's")
+                out.zero_()
+        torch.cuda.synchronize()
 
     found = {"tensor": f"{cname}/{key}", "scheme": scheme_of(meta), "bytes": size, "rows": cut.count, "windows": len(bounds)}
     for label, f in [("whole", read_whole), ("rows_all", lambda: ck.read_rows([(cname, key, 0, cut.count, every)], stream=stream)),
                      ("windows", lambda: each(ck.read_rows))]:
         s = timed(f)
         found[label] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2)}
+    landed("windows")
     # A varena Source of this tensor's parts, as the Runtime makes one for a block: from the store, then its kept page.
     try:
         pages = varena.Pages(torch.cuda.current_device())
@@ -224,24 +258,23 @@ def speed(ck, largest, stream: int, fail: Callable[[str], None]) -> dict:
             parts.append((f"{cname}/{key}#{role or 'value'}", offset, p.length))
             offset += -(-p.length // 256) * 256
         source = varena.Source(pages, "row-reads", 0, offset, checkpoint=ck, parts=parts, page=f"row-reads:{ck.id}:{key}")
-        served = source.read_rows(read_windows[:1], stream=stream)
-        found["source_store"] = {"s": round(timed(lambda: each(source.read_rows)), 4), "first": served}
-        found["source_store"]["gb_s"] = round(size / found["source_store"]["s"] / 1e9, 2)
+        served = each(source.read_rows)
+        landed("source store")
+        s = timed(lambda: each(source.read_rows))
+        found["source_store"] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2), "served": served}
+        landed("source store")
         pages.read_ahead([source])
         until = time.monotonic() + 120
         while time.monotonic() < until and source.read_rows(read_windows[:1], stream=stream)[0] == 0:
             time.sleep(0.2)
-        served = source.read_rows(read_windows[:1], stream=stream)
+        served = each(source.read_rows)
+        landed("source page" if served[0] else "source store")
         if served[0] == 0:
             found["source_page"] = "its page was not kept in 120 s"
         else:
             s = timed(lambda: each(source.read_rows))
-            found["source_page"] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2), "first": served}
-            known = {role: out.cpu().numpy().tobytes() for role, out in whole.items()}
-            for (a, b), w in zip(bounds, windows):
-                for role, out in w.items():
-                    if out.cpu().numpy().tobytes() != expected(stored[role], known[role], cut.count, cut.tile, a, b):
-                        fail(f"source page {cname}/{key}#{role} rows {a}..{b}: bytes differ from the whole read's")
+            found["source_page"] = {"s": round(s, 4), "gb_s": round(size / s / 1e9, 2), "served": served}
+            landed("source page")
     except Exception as error:  # a tier this process could not make is reported, not the check's failure
         found["source_error"] = f"{type(error).__name__}: {error}"[:300]
     return found
