@@ -3,9 +3,11 @@
 // box is. On project/edits.py, whose two slots' defaults are LoRAs its rule over `edit` picks between: a box made from the palette gets its
 // default edit's trigger; one the API made gets none as the page loads it; choosing an edit puts its trigger after the prompt, drawn, and
 // another edit replaces it; deleted, it stays deleted through a reload and an edit of the words. The chosen LoRA has its row beneath the
-// box, its release's strength said in words, no control. A LoRA added in Models & LoRAs still appends its own, once. On the Hub's H3 Edit,
-// when its edits are slots (packages #1017), its VFX edit's trigger comes and goes with its Edit. Shots at 1440×900 and 1920×1080, paper
-// and dark.
+// box, its release's strength said in words, no control. A LoRA added in Models & LoRAs appends its own, once. Of a LoRA with several
+// triggers only the first goes in (cl-1287; Paul, 11-19: "you can have loras with many trigger words, sure. Just include one though when you
+// add it to the user's prompt in the webui, but tensorhub can record many trigger words"): the rest are chips on its row, one click puts one
+// in. On the Hub's H3 Edit, when its edits are slots (packages #1017), its VFX edit's trigger comes and goes with its Edit. Shots at
+// 1440×900 and 1920×1080, paper and dark.
 const { test, expect, themed, canvasIdle, canvasVisible, focus, fixtureTool, openPoint } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave, toolRow } = require('./hands');
@@ -100,15 +102,15 @@ test('rule-loras', async ({ page, project, api, guards }) => {
     expect.soft(await summaryOf('edited'), 'a load puts no trigger in').toBe(WORDS);
   });
 
-  await test.step('an edit chosen: its trigger after the prompt, drawn; another replaces it', async () => {
+  await test.step('an edit chosen: its first trigger after the prompt, drawn; another replaces it', async () => {
     await editOf.selectOption({ label: 'Body swap' });
     await expect.poll(() => chosenOf('edited'), { message: 'body swap chosen' }).toEqual([SWAP]);
-    await softly.poll(() => summaryOf('edited'), { message: "body swap's triggers after the prompt" }).toBe(`${WORDS} bfs_swap, head swap`);
-    await softly.poll(lit, { message: 'drawn' }).toEqual(['bfs_swap', 'head swap']);
+    await softly.poll(() => summaryOf('edited'), { message: "body swap's first trigger alone after the prompt" }).toBe(`${WORDS} bfs_swap`);
+    await softly.poll(lit, { message: 'drawn' }).toEqual(['bfs_swap']);
     await look('swap', 'edited');
     await editOf.selectOption({ label: 'VFX edit' });
     await expect.poll(() => chosenOf('edited'), { message: 'VFX edit chosen again' }).toEqual([VFX]);
-    await softly.poll(() => summaryOf('edited'), { message: "body swap's triggers replaced by VFX edit's" }).toBe(`${WORDS} vfx_edit`);
+    await softly.poll(() => summaryOf('edited'), { message: "body swap's trigger replaced by VFX edit's" }).toBe(`${WORDS} vfx_edit`);
     await softly.poll(lit, { message: 'drawn' }).toEqual(['vfx_edit']);
     await look('vfx', 'edited', true);
   });
@@ -132,7 +134,7 @@ test('rule-loras', async ({ page, project, api, guards }) => {
     await look('deleted', 'edited');
   });
 
-  await test.step('a LoRA added in Models & LoRAs appends its own triggers, once, as before', async () => {
+  await test.step('a LoRA of two triggers added in Models & LoRAs appends its first, once; the other is a chip that puts it in', async () => {
     await open('scene');
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
@@ -140,13 +142,21 @@ test('rule-loras', async ({ page, project, api, guards }) => {
     await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
     await picker.locator('.model-picker-lora-option', { hasText: /BFS Body Swap/i }).click();
     await expect.poll(async () => (await asset('scene'))?.fields?.models?.base_model?.lora?.[0]?.ref, { message: 'a LoRA added' }).toMatch(new RegExp(`^${SWAP}`));
-    await softly.poll(() => summaryOf('scene'), { message: 'its triggers after the prompt, once' }).toBe(`${WORDS} bfs_swap, head swap`);
+    await softly.poll(() => summaryOf('scene'), { message: 'its first trigger alone after the prompt, once' }).toBe(`${WORDS} bfs_swap`);
     await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
-    await softly.poll(lit, { message: 'drawn' }).toEqual(['bfs_swap', 'head swap']);
-    await reload();
-    await open('scene');
-    await canvasIdle(page);
-    expect.soft(await summaryOf('scene'), 'reloaded, the same').toBe(`${WORDS} bfs_swap, head swap`);
+    await softly.poll(lit, { message: 'drawn' }).toEqual(['bfs_swap']);
+    const row = region.locator('.active-models li.active-lora', { hasText: /BFS Body Swap/i });
+    for (const word of swap) await expect.soft(row.getByRole('button', { name: word, exact: true }), `"${word}" a chip on its row`).toBeVisible();
+    await look('added', 'scene', true);
+    expect.soft(await summaryOf('scene'), 'reloaded, the same').toBe(`${WORDS} bfs_swap`);
+    // The other, clicked with the caret at the prompt's end: in once, after the first.
+    await region.getByRole('textbox', { name: 'Summary', exact: true }).click();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+    await row.getByRole('button', { name: 'head swap', exact: true }).click();
+    await softly.poll(async () => { const said = await summaryOf('scene'); return said.startsWith(`${WORDS} bfs_swap`) && said.split('head swap').length - 1; },
+      { message: '"head swap" in once, after the first' }).toBe(1);
+    await softly.poll(lit, { message: 'both drawn' }).toEqual(['bfs_swap', 'head swap']);
+    await look('chip', 'scene');
   });
 
   // The Hub's H3 Edit, once its edits are slots by rule (packages #1017; its rules on raw weights need cozy-runtime #2295): of its five
