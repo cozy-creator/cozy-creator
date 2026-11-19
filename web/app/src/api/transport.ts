@@ -12,13 +12,22 @@ export interface Transport {
   /** For `<img>`: a URL, or a blob URL. */
   src(path: string): Promise<string>
   /** A video's or a sound's bytes, whole, in this page's memory, for an element's `src` (cl-1215): fetched by one request that completes, so
-   *  playing, looping and seeking it hold none of the six connections a browser opens to Calcifer. Shared while held; `release` when no
-   *  element shows it. One past MEDIA_IN_MEMORY plays from its URL with Range instead. A `202` (not made yet) rejects with `Pending`. */
-  media(path: string): Promise<{ url: string; release(): void }>
+   *  playing, looping and seeking it hold none of the six connections a browser opens to Calcifer. Shared while held. One past
+   *  MEDIA_IN_MEMORY plays from its URL with Range instead. A `202` (not made yet) rejects with `Pending`. */
+  media(path: string): Promise<HeldMedia>
   /** `path` into `el` from memory (`media`): resolved once it's `el`'s source, to seek and play; it holds the bytes until `stop`. */
   play(path: string, el: HTMLMediaElement): Promise<Playback>
   /** An ordinary browser download of what `path` answers, into the Downloads folder. */
   save(path: string): void
+}
+
+/** A file held in this page's memory (`Transport.media`). An element shows it by `show`, and shows one holder's at a time: `release` first
+ *  stops every element still showing this holder's (paused, its `src` gone, its load ended), then lets go. So its URL is revoked only once no
+ *  element can still read it (cl-1314: a `<video>` let go while it loaded went on asking for a revoked `blob:` URL). */
+export interface HeldMedia {
+  url: string
+  show(element: HTMLMediaElement): void
+  release(): void
 }
 
 /** The most a video or a sound is held in a page's memory: past it, it plays from Calcifer over Range, holding a connection while it loads. */
@@ -51,11 +60,18 @@ export function sameOrigin(): Transport {
     const url = resolve(path)
     return url.pathname + url.search
   }
-  // Which play each element shows now.
+  // Which holder or play each element shows now.
   const playing = new WeakMap<HTMLMediaElement, object>()
+  /** `el` shows nothing any more: paused, its source gone and its load ended, so it reads nothing of what it showed. */
+  const emptied = (el: HTMLMediaElement) => {
+    playing.delete(el)
+    el.pause()
+    el.removeAttribute("src")
+    el.load()
+  }
   // Each held file once, while anything shows it: by its path, its blob's URL and how many hold it.
   const held = new Map<string, { url: Promise<string>; holders: number }>()
-  const media = async (path: string): Promise<{ url: string; release(): void }> => {
+  const media = async (path: string): Promise<HeldMedia> => {
     const project = guard(path)
     let one = held.get(path)
     if (!one) {
@@ -73,7 +89,7 @@ export function sameOrigin(): Transport {
     const mine = one
     mine.holders++
     let released = false
-    const release = () => {
+    const letGo = () => {
       if (released) return
       released = true
       if (--mine.holders > 0) return
@@ -83,9 +99,23 @@ export function sameOrigin(): Transport {
     try {
       const url = await mine.url
       project?.check()
-      return { url, release }
+      const holder = {}
+      const shown = new Set<HTMLMediaElement>()
+      return {
+        url,
+        show(el) {
+          playing.set(el, holder)
+          shown.add(el)
+          if (el.getAttribute("src") !== url) el.src = url
+        },
+        release() {
+          for (const el of shown) if (playing.get(el) === holder) emptied(el)
+          shown.clear()
+          letGo()
+        },
+      }
     } catch (error) {
-      release()
+      letGo()
       throw error
     }
   }
@@ -160,28 +190,17 @@ export function sameOrigin(): Transport {
     async play(path, el) {
       // Stopped, the element lets go of what it shows, unless another play has been put in it since: by this play, not its URL, which
       // two plays of one file share (React's development build mounts an orbit twice).
-      const showing = (url: string, release?: () => void) => {
-        const mine = {}
-        playing.set(el, mine)
-        el.src = url
-        return {
-          stop() {
-            release?.()
-            if (playing.get(el) !== mine) return
-            playing.delete(el)
-            el.pause()
-            el.removeAttribute("src")
-            el.load()
-          },
-        }
-      }
       try {
         const one = await media(path)
-        return showing(one.url, one.release)
+        one.show(el)
+        return { stop: () => one.release() }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") throw error
         // What can't be read so plays from its URL, where the element says why (not found, can't decode, Calcifer gone).
-        return showing(direct(path))
+        const mine = {}
+        playing.set(el, mine)
+        el.src = direct(path)
+        return { stop: () => { if (playing.get(el) === mine) emptied(el) } }
       }
     },
   }

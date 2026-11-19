@@ -2,6 +2,7 @@ import { Texture, VideoSource } from "pixi.js"
 import type { Client } from "../../api/client"
 import { type Latent as Picture, type LatentWatch, watchLatent } from "../../api/latents"
 import { type Asking, asking, heldPreview } from "../../api/thumbs"
+import type { HeldMedia } from "../../api/transport"
 
 export type MediaSource =
   | { kind: "thumb"; sha256: string }
@@ -161,7 +162,7 @@ export class Media {
     Object.assign(element, { muted: true, loop: true, playsInline: true, disablePictureInPicture: true, preload: "auto" })
     let texture: Texture | undefined, frame = 0, stopped = false
     // Its bytes in the page's memory while it's held: looping, it holds no connection (cl-1215).
-    let bytes: { release(): void } | undefined
+    let bytes: HeldMedia | undefined
     // Each decoded frame where the browser says so (requestVideoFrameCallback), else each animation frame while it's held.
     const framed = "requestVideoFrameCallback" in element
     const next = () => { frame = framed ? element.requestVideoFrameCallback(shown) : requestAnimationFrame(shown) }
@@ -177,9 +178,10 @@ export class Media {
       next()
     }
     const asking = heldPreview(this.o.client.transport, this.o.project, sha256, this.o.client.preview(this.o.project, sha256), (held) => {
+      // The new shown first, so the one let go is no longer this element's (cl-1314).
+      held.show(element)
       bytes?.release()
       bytes = held
-      element.src = held.url
       next()
       if (this.visible) element.play().catch(() => {})
     })

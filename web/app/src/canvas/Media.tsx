@@ -7,7 +7,7 @@ import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
 import { type LatentWatch, watchLatent } from "../api/latents"
 import { type HeldPreview, heldPreview } from "../api/thumbs"
-import type { Playback } from "../api/transport"
+import type { HeldMedia, Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import { mediaEpoch, retireMedia, useAskedImage } from "../app/media"
 import type { MainFile } from "../api/calcifer"
@@ -189,24 +189,25 @@ export function usePreview(video: boolean, initialHover?: PreviewHover) {
   }
 }
 
-/** `path`'s bytes in this page's memory while it's shown (Transport.media, cl-1215): the URL for a `<video>`'s src, holding no connection to
- *  Calcifer as it plays, loops and seeks. Undefined until they're here; the last let go once the next is drawn in its place. */
-export function useHeldMedia(path: string | undefined): string | undefined {
+/** `path`'s bytes in this page's memory while it's shown (Transport.media, cl-1215), for a `<video>` that shows them (`show`), holding no
+ *  connection to Calcifer as it plays, loops and seeks. Undefined until they're here; the last let go once the next is drawn in its place,
+ *  its element emptied first (cl-1314). */
+export function useHeldMedia(path: string | undefined): HeldMedia | undefined {
   const { client } = useConnection()
-  const [held, setHeld] = useState<{ path: string; url: string; release(): void } | null>(null)
+  const [held, setHeld] = useState<{ path: string; media: HeldMedia } | null>(null)
   useEffect(() => {
     if (!path) return
     let live = true
-    void client.transport.media(path).then((one) => {
-      if (live) setHeld({ path, ...one })
-      else one.release()
+    void client.transport.media(path).then((media) => {
+      if (live) setHeld({ path, media })
+      else media.release()
     }, () => {})
     return () => {
       live = false
     }
   }, [client, path])
-  useEffect(() => () => held?.release(), [held])
-  return held && held.path === path ? held.url : undefined
+  useEffect(() => () => held?.media.release(), [held])
+  return held && held.path === path ? held.media : undefined
 }
 
 /**
@@ -218,7 +219,7 @@ export function Preview({ sha256 }: { sha256: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [playing, setPlaying] = useState(false)
-  const [held, setHeld] = useState<{ url: string; release(): void }>()
+  const [held, setHeld] = useState<HeldMedia>()
   const element = useRef<HTMLVideoElement>(null)
   const asking = useRef<HeldPreview>(undefined)
   const projectId = store.projectId
@@ -232,14 +233,14 @@ export function Preview({ sha256 }: { sha256: string }) {
   // Its bytes and decoder go with it, not when it's collected.
   useEffect(() => {
     const el = element.current
-    if (!el || !src) return
-    el.src = src
+    if (!el || !held) return
+    held.show(el)
     el.play().catch(() => {})
     return () => {
       el.removeAttribute("src")
       el.load()
     }
-  }, [src])
+  }, [held])
   if (!src) return null
   return (
     <video
@@ -919,10 +920,14 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
-  // A video revision's bytes in the page's memory (cl-1215); the one before let go once this one is drawn in its place.
-  const [held, setHeld] = useState<{ release(): void } | null>(null)
+  // A video revision's bytes in the page's memory (cl-1215), shown by its element; the one before let go once this one is drawn in its place,
+  // its element emptied first if it still showed it (cl-1314).
+  const [held, setHeld] = useState<Pick<HeldMedia, "show" | "release"> | null>(null)
   useEffect(() => () => held?.release(), [held])
   const element = useRef<HTMLVideoElement>(null)
+  useLayoutEffect(() => {
+    if (held && element.current) held.show(element.current)
+  }, [held])
   const resume = useRef<{ at: number; playing: boolean } | null>(null)
   // The revision its element plays: the newest may still be on its way.
   const playing = useRef(0)
@@ -931,16 +936,16 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
     if (!store.projectId) { setSrc(undefined); return }
     let live = true
     const path = client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)
-    void (glimpse.media === "video" ? client.transport.media(path) : client.transport.src(path).then((url) => ({ url, release() {} }))).then(({ url, release }) => {
-      if (!live) return release()
+    void (glimpse.media === "video" ? client.transport.media(path) : client.transport.src(path).then((url) => ({ url, show() {}, release() {} }))).then((one) => {
+      if (!live) return one.release()
       // Where it is now, else where it last was: its element redrawn, or a revision before still on its way.
       const el = element.current
       const was = glimpsedAt.get(key)
       resume.current = el?.currentSrc && !resume.current ? { at: el.currentTime, playing: !el.paused }
         : was && was.rev < glimpse.rev ? { at: was.at, playing: was.playing } : resume.current
       playing.current = glimpse.rev
-      setHeld({ release })
-      setSrc(url)
+      setHeld(one)
+      setSrc(one.url)
     }, () => {})
     return () => {
       live = false
