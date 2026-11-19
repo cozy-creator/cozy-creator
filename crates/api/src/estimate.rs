@@ -543,15 +543,15 @@ pub fn runs_of(models: &[v1::ModelRef]) -> Runs<'_> {
 
 /// Of `rows`, those of the model `runs` names (the coordinator, 11-18, Paul: "how long will X workload take with model Y on GPU G"), a
 /// row naming none being its slot's default's; then of its lane ("each card will also use be using its optimal lane"), a row naming
-/// none being the card's default lane's, which a run takes when none is pinned. Never another model's or lane's; with either unknown,
-/// all.
+/// none being the card's default lane's, which a run takes when none is pinned. Never another model's or lane's. A model unknown (its
+/// card unread) is its slot's default, so another model's row never times it; a lane unknown, any.
 fn at<'r>(rows: impl Iterator<Item = &'r Benchmark>, runs: Runs) -> Vec<&'r Benchmark> {
     let model = |row: &Benchmark| match row.model.split('@').next().unwrap_or_default() {
         "" => !runs.picked,
-        named => named == runs.model,
+        named => !runs.model.is_empty() && named == runs.model,
     };
     let lane = |row: &Benchmark| row.lane.is_empty() || row.lane == runs.lane;
-    rows.filter(|row| runs.model.is_empty() || model(row)).filter(|row| runs.lane.is_empty() || lane(row)).collect()
+    rows.filter(|row| model(row)).filter(|row| runs.lane.is_empty() || lane(row)).collect()
 }
 
 /// Whether two machines' cards, as their drivers name them, are one card.
