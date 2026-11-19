@@ -1,6 +1,7 @@
 import { Texture, VideoSource } from "pixi.js"
 import type { Client } from "../../api/client"
-import { heldPreview, THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
+import { type Latent as Picture, type LatentWatch, watchLatent } from "../../api/latents"
+import { type Asking, asking, heldPreview } from "../../api/thumbs"
 
 export type MediaSource =
   | { kind: "thumb"; sha256: string }
@@ -25,7 +26,6 @@ const MIB = 1024 * 1024
 /** Soft: pinned textures are never evicted, so a view of 5,000 cards may pass it. Unpinned ones go oldest first past either bound. */
 const BUDGET_BYTES = 768 * MIB
 const UNPINNED_BYTES = 64 * MIB
-const LATENT_MS = 8000
 
 interface Entry {
   key: string
@@ -36,12 +36,12 @@ interface Entry {
   bytes: number
   aspect?: number
   failed: boolean
-  tries: number
-  pending: number
   loading?: AbortController
-  waiting?: () => void
+  /** A file's asking (`asking`): it says when it's asked for again. */
+  asked?: Asking
+  waiting: boolean
 }
-interface Latent { run: number; pins: number; listeners: Set<() => void>; texture?: Texture; tag?: string; timer?: ReturnType<typeof setTimeout>; loading?: AbortController; newest?: number }
+interface Latent { run: number; pins: number; listeners: Set<() => void>; texture?: Texture; watch: LatentWatch; decoding: number }
 
 /** A texture and the ImageBitmap it was made from: Pixi forgets a bitmap on destroy without closing it. */
 function drop(texture: Texture | undefined) {
@@ -103,7 +103,7 @@ export class Media {
   acquire(request: MediaRequest, onChange: () => void): MediaHandle {
     const key = JSON.stringify([request.source, request.width])
     let entry = this.entries.get(key)
-    if (!entry) this.entries.set(key, (entry = { key, request, pins: 0, listeners: new Set(), bytes: 0, failed: false, tries: 0, pending: 0 }))
+    if (!entry) this.entries.set(key, (entry = { key, request, pins: 0, listeners: new Set(), bytes: 0, failed: false, waiting: false }))
     const held = entry
     if (this.unpinned.delete(key)) this.unpinnedBytes -= held.bytes
     held.pins++
@@ -127,22 +127,22 @@ export class Media {
     }
   }
 
-  /** The run's newest picture of what it's making, asked again every 8 s while held; asking is what keeps the machine making them. */
+  /** The run's newest picture of what it's making while held and seen, asked of Calcifer once for it and Focus (`watchLatent`). */
   latent(run: number, onChange: () => void): LatentHandle {
     let latent = this.latents.get(run)
-    if (!latent) this.latents.set(run, (latent = { run, pins: 0, listeners: new Set() }))
+    if (!latent) {
+      const fresh: Latent = { run, pins: 0, listeners: new Set(), decoding: 0, watch: watchLatent(this.o.client, this.o.project, run, (picture) => void this.drawLatent(fresh, picture)) }
+      this.latents.set(run, (latent = fresh))
+    }
     const held = latent
     held.pins++
     held.listeners.add(onChange)
-    if (held.pins === 1) void this.askLatent(held)
+    if (held.pins === 1) held.watch.wanted(this.visible && !this.stopped)
     let released = false
     return {
       get texture() { return held.texture },
       newest: (number: number) => {
-        if (released || !number || number === held.newest) return
-        held.newest = number
-        // Each preview is said as it's made: a short render showed none, polled every LATENT_MS (render: "a passive latent preview").
-        if (!held.loading) void this.askLatent(held)
+        if (!released) held.watch.newest(number)
       },
       release: () => {
         if (released) return
@@ -215,13 +215,14 @@ export class Media {
     if (this.visible === visible || this.stopped) return
     this.visible = visible
     if (visible) {
-      for (const latent of this.latents.values()) void this.askLatent(latent)
+      for (const latent of this.latents.values()) latent.watch.wanted(true)
       for (const video of this.videos) video.resume()
       this.pump()
       return
     }
-    for (const entry of this.entries.values()) { entry.loading?.abort(); entry.waiting?.(); entry.waiting = undefined }
-    for (const latent of this.latents.values()) { latent.loading?.abort(); clearTimeout(latent.timer) }
+    // A wait that ends while it's hidden asks nothing: `pump` waits for it to be seen again.
+    for (const entry of this.entries.values()) entry.loading?.abort()
+    for (const latent of this.latents.values()) latent.watch.wanted(false)
     for (const video of this.videos) video.pause()
   }
 
@@ -287,16 +288,31 @@ export class Media {
     if (this.stopped || !this.visible) return
     for (const entry of this.entries.values()) {
       if (this.active >= LOADS) return
-      if (entry.pins && !entry.texture && !entry.loading && !entry.waiting && !entry.failed) void this.load(entry)
+      // A file that failed is asked again when its asking says; a run's output or an import that failed, never.
+      if (entry.pins && !entry.texture && !entry.loading && !entry.waiting && (!entry.failed || entry.asked)) void this.load(entry)
     }
   }
 
   private async load(entry: Entry) {
+    const { source, width } = entry.request
+    if ((source.kind === "thumb" || source.kind === "file") && !entry.asked) {
+      // Its first ask goes through its asking, as every viewer's does: one another viewer gave up on says so at once.
+      entry.waiting = true
+      entry.asked = asking(this.o.project, source.sha256, this.path(source), () => {
+        entry.waiting = false
+        this.pumpSoon()
+      }, () => {
+        entry.failed = true
+        this.landed.add(entry)
+        this.land()
+      })
+      entry.asked.start()
+      return
+    }
+    const asked = entry.asked
     const loading = (entry.loading = new AbortController())
     this.active++
     const live = () => !this.stopped && this.visible && !loading.signal.aborted && this.entries.get(entry.key) === entry && entry.pins > 0
-    const { source, width } = entry.request
-    const sha256 = source.kind === "thumb" || source.kind === "file" ? source.sha256 : undefined
     let bitmap: ImageBitmap | undefined
     try {
       if (source.kind === "local") {
@@ -311,13 +327,12 @@ export class Media {
         } finally { image.removeAttribute("src") }
       } else {
         const response = await this.o.client.transport.fetch(this.path(source), { signal: loading.signal, priority: "low" })
-        if (response.status === 202 && sha256) {
-          // Calcifer is still making it: waited for, not a failure, and no try spent.
+        if (response.status === 202 && asked) {
+          // Calcifer is still making it: waited for, not a failure.
           await response.body?.cancel()
           if (!live()) return
-          entry.tries = 0
-          entry.pending = Math.min(5, entry.pending + 1)
-          this.wait(entry, sha256, thumbWait(entry.pending))
+          entry.waiting = true
+          asked.pending()
           return
         }
         if (!response.ok || response.status === 202) { await response.body?.cancel(); throw new Error("unavailable") }
@@ -344,13 +359,13 @@ export class Media {
       this.bytes += entry.bytes
       bitmap = undefined
       entry.failed = false
+      asked?.shown()
       this.landed.add(entry)
       this.evict()
     } catch {
       if (!live()) return
-      entry.tries++
-      if (sha256 && entry.tries < THUMB_TRIES) this.wait(entry, sha256, thumbWait(entry.tries))
-      else { entry.failed = true; this.landed.add(entry) }
+      if (!asked) { entry.failed = true; this.landed.add(entry) }
+      else { entry.waiting = true; asked.failed() }
     } finally {
       bitmap?.close()
       this.active--
@@ -373,16 +388,12 @@ export class Media {
     return client.output({ project, run: source.run }, source.output, source.index, source.rev)
   }
 
-  private wait(entry: Entry, sha256: string, ms: number) {
-    entry.waiting = whenThumb(this.o.project, sha256, ms, () => { entry.waiting = undefined; this.pump() })
-  }
-
   private discard(entry: Entry) {
     this.entries.delete(entry.key)
     if (this.unpinned.delete(entry.key)) this.unpinnedBytes -= entry.bytes
     this.bytes -= entry.bytes
     entry.loading?.abort()
-    entry.waiting?.()
+    entry.asked?.stop()
     drop(entry.texture)
     entry.texture = undefined
     entry.bytes = 0
@@ -396,42 +407,27 @@ export class Media {
     }
   }
 
-  private async askLatent(latent: Latent) {
-    clearTimeout(latent.timer)
-    latent.loading?.abort()
-    if (this.stopped || !this.visible || !latent.pins) return
-    const loading = (latent.loading = new AbortController())
-    const live = () => !this.stopped && this.visible && latent.pins > 0 && latent.loading === loading && !loading.signal.aborted
+  /** Each new latent picture its run's watch is told, decoded: the newest decode wins. */
+  private async drawLatent(latent: Latent, picture: Picture) {
+    const turn = ++latent.decoding
     let bitmap: ImageBitmap | undefined
     try {
-      const path = this.o.client.runPreview({ project: this.o.project, run: latent.run })
-      const response = await this.o.client.transport.fetch(path, { signal: loading.signal, priority: "low", headers: latent.tag ? { "If-None-Match": latent.tag } : {} })
-      const tag = response.headers.get("etag")
-      if (response.status !== 200 || !tag || tag === latent.tag) { await response.body?.cancel(); return }
-      const blob = await response.blob()
-      if (!live()) return
-      bitmap = await createImageBitmap(blob)
-      if (!live()) return
+      bitmap = await createImageBitmap(picture.blob)
+      if (this.stopped || this.latents.get(latent.run) !== latent || latent.decoding !== turn) return
       drop(latent.texture)
       latent.texture = Texture.from(bitmap, true)
-      latent.tag = tag
       bitmap = undefined
       for (const listener of [...latent.listeners]) this.tell(listener)
     } catch {
       // A preview is optional while the run's own result is still being made.
     } finally {
       bitmap?.close()
-      if (latent.loading === loading) {
-        latent.loading = undefined
-        if (!loading.signal.aborted && latent.pins && this.visible && !this.stopped) latent.timer = setTimeout(() => void this.askLatent(latent), LATENT_MS)
-      }
     }
   }
 
   private dropLatent(latent: Latent) {
     this.latents.delete(latent.run)
-    clearTimeout(latent.timer)
-    latent.loading?.abort()
+    latent.watch.stop()
     drop(latent.texture)
     latent.texture = undefined
     latent.listeners.clear()

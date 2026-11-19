@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useConnection } from "../app/Connection"
+import { useAskedImage } from "../app/media"
 import { CopyError } from "./CopyError"
 import { Icon } from "./Icon"
 import { close, details, dismiss, hasMore, held, type Note, notes, openHistory, opened, openNote, past, unread } from "./notes"
@@ -7,18 +8,11 @@ import { pressBeganOutside } from "./press"
 import { useSignal } from "./signal"
 import "./NoteList.css"
 
-/** A note's picture: a take's thumbnail, fetched as the page fetches any (with its session). */
-function NotePicture({ path }: { path: string }) {
+/** A note's picture: a take's thumbnail, asked for as every file is (`useAskedImage`): one just made may not be drawn yet. */
+function NotePicture({ picture }: { picture: NonNullable<Note["picture"]> }) {
   const { client } = useConnection()
-  const [src, setSrc] = useState<string>()
-  useEffect(() => {
-    let live = true
-    void client.transport.src(path).then((url) => live && setSrc(url), () => {})
-    return () => {
-      live = false
-    }
-  }, [client, path])
-  return src ? <img className="note-picture" src={src} alt="" draggable={false} /> : <span className="note-picture" />
+  const image = useAskedImage(picture.project, picture.sha256, client.thumb(picture.project, picture.sha256))
+  return image.src ? <img key={image.request} className="note-picture" src={image.src} alt="" draggable={false} onLoad={image.onLoad} onError={image.onError} /> : <span className="note-picture" />
 }
 
 /** Drawn as Icon draws: 20 by 20, in the text's colour. */
@@ -60,7 +54,7 @@ function Line({ note, live, open }: { note: Note; live: boolean; open: () => voi
         open()
       }}
     >
-      {note.picture && <NotePicture path={note.picture} />}
+      {note.picture && <NotePicture picture={note.picture} />}
       <span ref={words} className="line">
         {note.message}
       </span>
@@ -107,7 +101,7 @@ function Opened({ note, live, back }: { note: Note; live: boolean; back: () => v
       </div>
       {note.picture && (
         <div className="note-open-picture">
-          <NotePicture path={note.picture} />
+          <NotePicture picture={note.picture} />
         </div>
       )}
       {note.remedy && <p className="note-open-remedy">{note.remedy}</p>}

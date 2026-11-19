@@ -5,9 +5,11 @@ import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, use
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
-import { type HeldPreview, heldPreview, THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
+import { type LatentWatch, watchLatent } from "../api/latents"
+import { type HeldPreview, heldPreview } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
+import { mediaEpoch, retireMedia, useAskedImage } from "../app/media"
 import type { MainFile } from "../api/calcifer"
 import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
@@ -38,19 +40,17 @@ const FULL = 2048
 /** A video's frames each, wherever a strip is drawn at rest: a box's hover, a clip. */
 const STRIP_WIDTH = 256
 
-const mediaEpoch = new Map<string, number>()
 const mediaKey = (project: string | null, key: string) => `${project ?? ""}\0${key}`
 /** A project's view closed (its vault locked): what this page drew of it is forgotten, and what it's still asking for is let go. */
 export function revokeProjectMedia(project: string) {
-  mediaEpoch.set(project, (mediaEpoch.get(project) ?? 0) + 1)
+  retireMedia(project)
   const prefix = `${project}\0`
   for (const key of arrived) if (key.startsWith(prefix)) arrived.delete(key)
 }
 
 /**
  * A thumbnail Calcifer keeps in the project, made as its file landed (cl-982): with no width, what the canvas and every list draw of a
- * picture or a video. Each is asked for at once, as reading it is all Calcifer does. One not made yet (202 thumb_pending) is asked again
- * when Calcifer says it's there, and one whose file is still on its way here, later each time, before it says there's none.
+ * picture or a video. Asked for as every file is (`useAskedImage`).
  */
 export function Thumb({
   sha256,
@@ -78,67 +78,18 @@ export function Thumb({
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
-  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
+  const { client } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean; failed: () => void }>()
   const [loaded, setLoaded] = useState<string>()
-  const nextRequest = useRef(0)
-  const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
   const width = exact ? cardWidth : strip ? STRIP_WIDTH : undefined
   const drawn = mediaKey(projectId, `${sha256}:${width ?? "picture"}`)
-  const base = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
-  const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
-  const attempt = tries.base === base ? tries.n : 0
-  const path = base && attempt ? `${base}&try=${attempt}` : base
-  const latestPath = useRef(path)
-  latestPath.current = path
-  const retries = useRef<{ base?: string; errors: number; pending: number }>({ errors: 0, pending: 0 })
-  useEffect(() => {
-    if (!path || !projectId) return
-    let live = true, checking = false
-    let wait: (() => void) | undefined
-    let probe: AbortController | undefined
-    const epoch = mediaEpoch.get(projectId) ?? 0
-    const projectEpoch = bridge.projectEpoch(projectId)
-    const request = ++nextRequest.current
-    const current = () => live && !probe?.signal.aborted && nextRequest.current === request && latestPath.current === path
-      && store.active && store.projectId === projectId && !signedOut.get() && (mediaEpoch.get(projectId) ?? 0) === epoch && bridge.projectEpoch(projectId) === projectEpoch
-    if (retries.current.base !== base) retries.current = { base, errors: 0, pending: 0 }
-    const retry = retries.current
-    const failed = async (checkPending: boolean) => {
-      if (!current() || checking) return
-      checking = true
-      let pending = false
-      if (checkPending) {
-        probe = new AbortController()
-        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* An unknown failure still uses the bounded error budget. */ }
-      }
-      if (!current()) return
-      if (pending) { retry.errors = 0; retry.pending = Math.min(5, retry.pending + 1) }
-      else if (++retry.errors >= THUMB_TRIES) { setFailedPath(path); return }
-      setImage(undefined)
-      wait = whenThumb(projectId, sha256, thumbWait(pending ? retry.pending : retry.errors), () => {
-        wait = undefined
-        if (current()) setTries({ base, n: attempt + 1 })
-      })
-    }
-    const stop = () => { live = false; probe?.abort(); wait?.() }
-    const unwatch = privateViewEpoch.subscribe(() => { if (bridge.projectEpoch(projectId) !== projectEpoch) stop() })
-    const unsign = signedOut.subscribe(() => { if (signedOut.get()) stop() })
-    void client.transport.src(path).then((src) => {
-      if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
-      setFailedPath(undefined)
-      setImage({ path, src, request, live: current, failed: () => { void failed(true) } })
-    }, () => { void failed(false) })
-    return () => {
-      unwatch(); unsign(); stop()
-    }
-  }, [client, bridge, privateViewEpoch, signedOut, store, projectId, path])
+  const path = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
+  const image = useAskedImage(projectId, sha256, path, () => store.active && store.projectId === projectId)
   // A strip that can't be made leaves the poster under it as it was.
-  if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
-  const waiting = pulse && loaded !== path ? <span className="thumb-wait" /> : null
-  if (!image || failedPath === image.path) return waiting
+  if (image.failed) return strip || wave ? null : <span className="media-note">No preview</span>
+  const waiting = pulse && loaded !== image.src ? <span className="thumb-wait" /> : null
+  if (!image.src) return waiting
   return (
     <>
     {waiting}
@@ -149,18 +100,13 @@ export function Thumb({
       className={`${className ?? ""} ${arrived.has(drawn) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
-      onError={() => {
-        if (image.path !== path || !image.live()) return
-        image.failed()
-      }}
+      onError={image.onError}
       onLoad={(event) => {
-        if (image.path !== path || !image.live()) return
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
-        retries.current.errors = 0
-        retries.current.pending = 0
+        image.onLoad()
         arrived.add(drawn)
-        setLoaded(image.path)
+        setLoaded(event.currentTarget.src)
         onShown?.()
       }}
     />
@@ -538,13 +484,8 @@ interface Way {
   rendering?: boolean
 }
 
-/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked, and this tab
- *  asks only while it's in view. */
-const PREVIEW_ASK_MS = 8000
-
-/** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents. Asked for as
- *  each new one is made, and every few seconds while none is, which is what keeps the machine making them; an answer with no new
- *  one leaves the last in place. The take replaces it. */
+/** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents, watched while its run
+ *  goes and this tab is seen (`watchLatent`, asked of Calcifer once for this and the board's card). The take replaces it. */
 function LatentPreview({ view, number }: { view: ElementView; number: number }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -556,42 +497,27 @@ function LatentPreview({ view, number }: { view: ElementView; number: number }) 
   const inView = useSignal(tabShown)
   const asking = running && inView
   const newest = run?.progress?.preview ?? 0
-  const [ask, setAsk] = useState(0)
   const [shown, setShown] = useState<{ url: string; tag: string }>()
-  const held = useRef<{ url: string; tag: string }>(undefined)
+  const watch = useRef<LatentWatch>(undefined)
   useEffect(() => {
-    if (asking) setAsk((n) => n + 1)
-  }, [asking, newest])
-  useEffect(() => {
-    if (!asking) return
-    const timer = setInterval(() => setAsk((n) => n + 1), PREVIEW_ASK_MS)
-    return () => clearInterval(timer)
-  }, [asking])
-  useEffect(() => {
-    if (!project || !asking || !ask) return
-    const epoch = mediaEpoch.get(project) ?? 0
-    const asked = new AbortController()
-    const tag = held.current?.tag
-    void (async () => {
-      const response = await client.transport.fetch(client.runPreview({ project, run: number }), { signal: asked.signal, headers: tag ? { "If-None-Match": tag } : {} })
-      const now = response.headers.get("etag")
-      if (response.status !== 200 || !now || now === tag) return
-      const blob = await response.blob()
-      if (asked.signal.aborted || !store.active || store.projectId !== project || (mediaEpoch.get(project) ?? 0) !== epoch) return
-      const picture = { url: URL.createObjectURL(blob), tag: now }
-      if (held.current) URL.revokeObjectURL(held.current.url)
-      held.current = picture
-      setShown(picture)
-    })().catch(() => {})
-    return () => asked.abort()
-  }, [client, store, project, number, asking, ask])
-  useEffect(() => {
-    setShown(undefined)
+    if (!project) return
+    const epoch = mediaEpoch(project)
+    let url: string | undefined
+    const watching = (watch.current = watchLatent(client, project, number, (picture) => {
+      if (!store.active || store.projectId !== project || mediaEpoch(project) !== epoch) return
+      if (url) URL.revokeObjectURL(url)
+      url = URL.createObjectURL(picture.blob)
+      setShown({ url, tag: picture.tag })
+    }))
     return () => {
-      if (held.current) URL.revokeObjectURL(held.current.url)
-      held.current = undefined
+      watching.stop()
+      watch.current = undefined
+      if (url) URL.revokeObjectURL(url)
+      setShown(undefined)
     }
-  }, [project, number])
+  }, [client, store, project, number])
+  useEffect(() => watch.current?.wanted(asking), [asking, project, number])
+  useEffect(() => watch.current?.newest(newest), [newest, project, number])
   if (!shown || !project || !store.active) return null
   return (
     <div className="latent-preview" data-preview={shown.tag}>

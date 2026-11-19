@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react"
-import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
+import { type Asking, asking } from "../api/thumbs"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 
@@ -18,14 +18,16 @@ interface Picture extends Source {
   ready: boolean
   dead: boolean
   running: boolean
-  /** Request/cache-bust generation, including accepted pending checks. */
+  /** Asked for again only when its `asking` says. */
+  waiting: boolean
+  /** Unavailable, until its file's next event. */
+  gone: boolean
+  /** Each ask's number: an answer to an earlier one is let go. */
   tries: number
-  /** Consecutive genuine failures; an accepted pending response does not spend this budget. */
-  errors: number
-  pendingChecks: number
-  probe?: AbortController
-  /** Stops waiting to ask again. */
-  wait?: () => void
+  asked?: Asking
+  request?: AbortController
+  /** Its bytes in this page's memory: the image's source. */
+  url?: string
 }
 
 interface Buffer {
@@ -81,9 +83,10 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
     picture.running = false
-    picture.probe?.abort()
+    picture.request?.abort()
+    picture.asked?.stop()
     picture.image.removeAttribute("src")
-    picture.wait?.()
+    if (picture.url) URL.revokeObjectURL(picture.url)
     picture.image.remove()
     buffer.pictures.delete(picture.key)
   }
@@ -117,61 +120,73 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
     callbacks.current.onShown()
   }
 
-  /** `picture` asked for, at once: each is served from its project's store. One not made yet is asked again when Calcifer says it's
-   *  there; one still on its way here, later each time. */
+  /** `picture` asked for, at once, from its project's store, as every file is (`asking`): its thumbnail fetched into this page's memory, so
+   *  a `202` (not made yet) is seen; its own file from its URL. */
   const load = (buffer: Buffer, picture: Picture) => {
     const id = project
-    if (!id || buffer.stopped || picture.dead || picture.ready || picture.running || picture.errors >= THUMB_TRIES) return
+    if (!id || buffer.stopped || picture.dead || picture.ready || picture.running || picture.waiting) return
+    const path = picture.path ? client.file(id, picture.path) : client.thumb(id, picture.sha)
+    if (!picture.asked) {
+      // Its first ask goes through its asking, as every viewer's does: one another viewer gave up on says so at once.
+      picture.waiting = true
+      picture.asked = asking(id, picture.sha, path, () => {
+        picture.waiting = false
+        queueMicrotask(() => {
+          if (!buffer.stopped && !picture.dead && store.active && store.projectId === id && buffer.pictures.get(picture.key) === picture) refresh(buffer)
+        })
+      }, () => {
+        picture.gone = true
+        if (buffer.selected !== picture.key) return
+        if (buffer.displayed?.sha !== picture.sha) hide(buffer)
+        setFailed(true)
+      })
+      picture.asked.start()
+      return
+    }
+    const asked = picture.asked
     picture.running = true
-    const attempt = picture.tries
+    const attempt = ++picture.tries
     const current = () => !buffer.stopped && !picture.dead && store.active && store.projectId === id
       && buffer.pictures.get(picture.key) === picture && picture.tries === attempt
-    const base = picture.path ? client.file(id, picture.path) : client.thumb(id, picture.sha)
-    const path = attempt ? `${base}${base.includes("?") ? "&" : "?"}try=${attempt}` : base
-    let imageRequested = false
+    const wait = (tell: () => void) => {
+      picture.running = false
+      picture.waiting = true
+      tell()
+    }
     void (async () => {
       // A box's first picture asked once the frame it's drawn in is up: fifty requests set up at once held a project's first frame
       // ~100 ms (web-opens A/B 43395065723).
-      if (!buffer.displayed && !picture.tries) await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)))
+      if (!buffer.displayed && attempt === 1) await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)))
       if (!current()) return
-      const url = await client.transport.src(path)
+      let src: string
+      if (picture.path) {
+        // Its own file is never a 202: drawn from its URL, as it is, with no copy of its bytes in this page.
+        src = await client.transport.src(path)
+      } else {
+        const request = (picture.request = new AbortController())
+        const response = await client.transport.fetch(path, { signal: request.signal })
+        if (!current()) { void response.body?.cancel(); return }
+        if (response.status === 202 || !response.ok) {
+          void response.body?.cancel()
+          return wait(response.status === 202 ? asked.pending : asked.failed)
+        }
+        const blob = await response.blob()
+        if (picture.url) URL.revokeObjectURL(picture.url)
+        src = picture.url = URL.createObjectURL(blob)
+      }
       if (!current()) return
-      picture.image.src = url
-      imageRequested = true
+      picture.image.src = src
       await picture.image.decode()
       if (!current()) return
       picture.running = false
       picture.ready = true
-      picture.errors = 0
-      picture.pendingChecks = 0
+      picture.gone = false
+      asked.shown()
       reveal(buffer, picture)
       refresh(buffer)
-    })().catch(async () => {
+    })().catch((error) => {
       if (!current()) return
-      let pending = false
-      // Original files retain their existing load/retry path. Only a failed thumbnail needs readiness classification.
-      if (!picture.path && imageRequested) {
-        const probe = new AbortController()
-        picture.probe = probe
-        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* Unknown failures remain bounded. */ }
-        finally { if (picture.probe === probe) picture.probe = undefined }
-        if (probe.signal.aborted || !current()) return
-      }
-      if (pending) { picture.errors = 0; picture.pendingChecks = Math.min(5, picture.pendingChecks + 1) }
-      else picture.errors++
-      if (picture.errors < THUMB_TRIES) {
-        picture.tries++
-        picture.wait = whenThumb(id, picture.sha, thumbWait(pending ? picture.pendingChecks : picture.errors), () => {
-          picture.wait = undefined
-          picture.running = false
-          if (!buffer.stopped && !picture.dead && store.active && store.projectId === id && buffer.pictures.get(picture.key) === picture && picture.tries === attempt + 1) refresh(buffer)
-        })
-        return
-      }
-      picture.running = false
-      if (buffer.selected !== picture.key) return
-      if (buffer.displayed?.sha !== picture.sha) hide(buffer)
-      setFailed(true)
+      wait(error instanceof DOMException && error.name === "AbortError" ? asked.held : asked.failed)
     })
   }
 
@@ -193,7 +208,7 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
     const standIn = buffer.pictures.get(buffer.standIn)
     if (selected?.ready) reveal(buffer, selected)
     else if (standIn?.ready) reveal(buffer, standIn)
-    if (selected && !selected.ready && selected.errors >= THUMB_TRIES) {
+    if (selected && !selected.ready && selected.gone) {
       if (buffer.displayed?.sha !== selected.sha) hide(buffer)
       setFailed(true)
     }
@@ -221,7 +236,7 @@ export function BufferedImage({ sha256, neighbors, originalPath, neighborPaths, 
       image.decoding = "async"
       const source = buffer.sources.get(key)
       if (!source) continue
-      const picture: Picture = { ...source, image, ready: false, dead: false, running: false, tries: 0, errors: 0, pendingChecks: 0 }
+      const picture: Picture = { ...source, image, ready: false, dead: false, running: false, waiting: false, gone: false, tries: 0 }
       buffer.pictures.set(key, picture)
       buffer.queue.push(picture)
     }

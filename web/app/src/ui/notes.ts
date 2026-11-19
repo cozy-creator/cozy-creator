@@ -11,8 +11,8 @@ export interface Note {
   action?: { label: string; run: () => void }
   /** An error's whole text, to copy and paste: every error the page says has it. */
   copy?: string
-  /** A small picture of what it's about: a take's thumbnail, by its path on Calcifer (cl-937). */
-  picture?: string
+  /** A small picture of what it's about: a take's thumbnail, by its project and file (cl-937). */
+  picture?: { project: string; sha256: string }
 }
 
 /** Notes the pointer is on. While it's on any, none goes: one gone from under it moves the rest, and the one reached for stays put. */
@@ -32,7 +32,7 @@ const SAID_MS = 6_000
 const OFFERED_MS = 10_000
 const KEPT = 100
 
-export function say(message: string, error?: unknown, offer?: { action?: NonNullable<Note["action"]>; picture?: string }): number {
+export function say(message: string, error?: unknown, offer?: { action?: NonNullable<Note["action"]>; picture?: Note["picture"] }): number {
   const body = error instanceof ApiError ? error.body : undefined
   const reason = error instanceof Error ? error.message : undefined
   const text = reason && reason !== message ? `${message}: ${reason}` : message
