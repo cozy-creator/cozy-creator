@@ -7,3 +7,8 @@ tasks:
     dir: "{{.TASKFILE_DIR}}"
     cmds:
       - uv run --script scripts/orders.py --write
+  keeps:
+    desc: Regenerate the keep-in-fp32 table (crates/tensorfs/keeps.json) from Diffusers' and Transformers' model classes
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - uv run --script scripts/keeps.py --write

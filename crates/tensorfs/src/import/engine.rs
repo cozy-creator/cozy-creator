@@ -316,7 +316,10 @@ pub(crate) fn tables() -> &'static [Table] {
 /// The built-in tables' digest: an import is what its source's bytes and these tables make.
 pub fn tables_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| crate::sha256::hex_digest(TABLES.join("\0").as_bytes()))
+    DIGEST.get_or_init(|| {
+        let tables = TABLES.iter().chain([&super::keep::KEEPS]).copied();
+        crate::sha256::hex_digest(tables.collect::<Vec<_>>().join("\0").as_bytes())
+    })
 }
 
 // ------------------------------------------------------------------------------ recognition
@@ -740,6 +743,30 @@ pub(crate) struct Planned {
     pub encoding: Option<Encoding>,
     /// A plain tensor's one part (role `""`), or an encoded tensor's parts in order.
     pub parts: Vec<PlannedPart>,
+}
+
+impl Planned {
+    /// Stores this plain F32 tensor as BF16, each element rounded to nearest even as torch rounds, when its bytes
+    /// are a source range's; false, unchanged, for any other tensor.
+    pub(crate) fn narrow(&mut self, to: &Dtype) -> bool {
+        let [part] = self.parts.as_mut_slice() else { return false };
+        let r = &mut part.read;
+        if *to != Dtype::BF16 || self.encoding.is_some() || self.dtype != Dtype::F32 || r.source != Dtype::F32
+            || r.cast.is_some() || r.inline.is_some() || r.derive.is_some()
+        {
+            return false;
+        }
+        // A tensor read as it is is one run of bytes: as elements, one run of len / 4.
+        if r.unit == 1 {
+            if r.runs.count() != 1 || r.runs.base != 0 || !r.len.is_multiple_of(4) || r.runs.run != r.len {
+                return false;
+            }
+            (r.unit, r.runs.run) = (4, r.len / 4);
+        }
+        r.cast = Some(to.clone());
+        (self.dtype, part.dtype) = (to.clone(), to.clone());
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1618,19 +1645,24 @@ impl<'f> TensorReader<'f> {
         }
         self.out.clear();
         let wide = r.source == Dtype::F32;
+        let (to, inf) = match r.cast {
+            Some(Dtype::BF16) => (f32_to_bf16 as fn(u32) -> u16, 0x7f80),
+            _ => (f32_to_f16 as fn(u32) -> u16, 0x7c00),
+        };
         for e in self.raw.chunks_exact(unit as usize) {
             let bits = if wide {
                 u32::from_le_bytes([e[0], e[1], e[2], e[3]])
             } else {
                 u32::from(u16::from_le_bytes([e[0], e[1]])) << 16
             };
-            let half = f32_to_f16(bits);
-            if half & 0x7fff == 0x7c00 && bits & 0x7f80_0000 != 0x7f80_0000 {
+            let half = to(bits);
+            if half & 0x7fff == inf && bits & 0x7f80_0000 != 0x7f80_0000 {
                 return Err(std::io::Error::other(format!(
-                    "{}: element {} ({}) overflows F16",
+                    "{}: element {} ({}) overflows {}",
                     self.what,
                     self.seen,
-                    f32::from_bits(bits)
+                    f32::from_bits(bits),
+                    r.cast.as_ref().map_or("F16", Dtype::name)
                 )));
             }
             self.seen += 1;
@@ -1659,6 +1691,14 @@ fn io(what: &str, e: std::io::Error) -> Refusal {
         code: Code::IO_FAILED,
         detail: format!("{what}: {e}"),
     }
+}
+
+/// torch's `.to(torch.bfloat16)` from f32 bits: round to nearest even, any NaN its canonical quiet NaN.
+pub(crate) fn f32_to_bf16(f: u32) -> u16 {
+    if f & 0x7fff_ffff > 0x7f80_0000 {
+        return 0x7fc0;
+    }
+    ((f + 0x7fff + ((f >> 16) & 1)) >> 16) as u16
 }
 
 /// numpy's `astype(float16)` from f32 bits: round to nearest even, NaN payload kept.
