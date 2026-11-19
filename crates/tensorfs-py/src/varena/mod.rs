@@ -641,11 +641,18 @@ impl PyNoCapture {
     }
 }
 
-/// The host's number less what its processes hold and its headroom (`varena_ledger::host`): what
-/// more this process may hold. Negative: over it.
+/// What more this process may hold in host RAM: the room the machine's host admission asks against
+/// (`host::room`). Negative: over it. `i64::MAX` where the figures are unreadable, and without the
+/// store, whose admission refuses nothing.
 #[pyfunction]
 fn _varena_host_room(py: Python<'_>) -> i64 {
-    py.detach(|| varena_ledger::host::budget().room())
+    #[cfg(feature = "store")]
+    return py.detach(|| host::room(&varena_ledger::host::budget()));
+    #[cfg(not(feature = "store"))]
+    {
+        let _ = py;
+        i64::MAX
+    }
 }
 
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
