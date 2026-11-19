@@ -1755,11 +1755,17 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
         // What ends from here, the attempt's own doing included, is seen: no holder's end goes unheard.
         stirs.borrow_and_update();
         let failure = match transition(api, root, Closing::Closes, until) {
-            Ok(transition) => match close(api, root, &transition) {
-                // No answer carries what a deadline's lock says (logged as it was said): never the project's next one.
-                Ok(()) => return unsaid(root),
-                Err(failure) => failure,
-            },
+            Ok(transition) => {
+                let closed = close(api, root, &transition);
+                // No answer carries what a deadline's lock says (logged as it was said): never the project's next one. Cleared after
+                // every close, a failed one too: one that removed the session and then failed leaves the loop below, and its lines
+                // would go with the project's next explicit lock.
+                unsaid(root);
+                match closed {
+                    Ok(()) => return,
+                    Err(failure) => failure,
+                }
+            }
             Err(failure) => failure,
         };
         if !still_needs() { return; }
