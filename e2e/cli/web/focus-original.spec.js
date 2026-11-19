@@ -4,7 +4,7 @@
 // own, its pixels are drawn as they are, as an image editor draws them, not smoothed; fitted, smoothed. A 16,384 px panorama zooms to its
 // own pixels (8× its fit was 0.6 of them), its 32 MP file decoding while the page draws on: no frame as long as its decode takes on the
 // runner. Its looks, fitted and zoomed, at 1440×900 and 1920×1080 on paper and dark, are kept for a person to look at.
-const { mkdirSync, readFileSync } = require('fs');
+const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, focus, png, themed } = require('./fixtures');
 const { ffmpeg, fit, leave } = require('./hands');
@@ -104,6 +104,13 @@ test('focus-original', async ({ page, project }) => {
   });
 
   await test.step('a 16,384 px panorama: its 32 MP file drawn as the page draws on, zoomed to its own pixels', async () => {
+    // Diagnostic (xs-225 follow-up): a Chrome trace of the window, its long main-thread tasks named by what ran in them.
+    const cdp = await page.context().newCDPSession(page);
+    const traced = [];
+    cdp.on('Tracing.dataCollected', ({ value }) => traced.push(...value));
+    const traceDone = new Promise((done) => cdp.once('Tracing.tracingComplete', done));
+    await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: ['toplevel', 'devtools.timeline',
+      'disabled-by-default-devtools.timeline', 'v8', 'blink', 'blink.image_decoding', 'cc', 'gpu', 'disabled-by-default-devtools.timeline.frame'] } });
     // Every frame from here to its file drawn: the longest gap between two.
     await page.evaluate(() => {
       const seen = (window.__frames = { longest: 0, at: 0, last: performance.now(), id: 0, loaf: [], tasks: [] });
@@ -162,6 +169,20 @@ test('focus-original', async ({ page, project }) => {
       }
       return Math.round(times.sort((x, y) => x - y)[1]);
     }, file);
+    await cdp.send('Tracing.end');
+    await traceDone;
+    writeFileSync(test.info().outputPath('panorama-trace.json'), JSON.stringify({ traceEvents: traced }));
+    {
+      const threads = new Map(traced.filter((e) => e.ph === 'M' && e.name === 'thread_name').map((e) => [`${e.pid}:${e.tid}`, e.args.name]));
+      const long = traced.filter((e) => e.ph === 'X' && e.dur >= 100_000);
+      const on = (e) => threads.get(`${e.pid}:${e.tid}`) || `${e.pid}:${e.tid}`;
+      const tops = long.filter((e) => /RunTask/.test(e.name)).sort((a, b) => b.dur - a.dur).slice(0, 6).map((t) => ({
+        thread: on(t), ms: Math.round(t.dur / 1000), name: t.name, at: t.ts,
+        inside: traced.filter((e) => e.ph === 'X' && e.pid === t.pid && e.tid === t.tid && e !== t && e.ts >= t.ts && e.ts + (e.dur || 0) <= t.ts + t.dur && e.dur >= 10_000)
+          .sort((a, b) => b.dur - a.dur).slice(0, 8).map((e) => `${e.name} ${Math.round(e.dur / 1000)}`),
+      }));
+      test.info().annotations.push({ type: 'panorama-trace', description: JSON.stringify({ events: traced.length, tops }) });
+    }
     expect.soft(longest, `the longest frame while it opened and its file decoded, ms: under ${DRAWS_ON} of the ${decoded} ms its file takes to decode here`)
       .toBeLessThan(DRAWS_ON * decoded);
     const fitted = await drawn(page);
