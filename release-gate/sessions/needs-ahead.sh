@@ -12,7 +12,8 @@
 # 2. A page shows the project: `draw`, drafted text-to-image, is guessed on the machine, which fetches the model and expander_t2i,
 #    never expander_i2i.
 # 3. While expander_t2i is still coming, the draft mentions <pic>: expander_t2i stops where it was, and expander_i2i comes.
-# 4. `draw` is ready on the GPU rental; rendered, its quote downloads nothing and its run waits for nothing.
+# 4. `draw` is ready on the GPU rental, and loaded where its GPU has room; rendered, its quote downloads nothing and its run waits
+#    for no download, nor, loaded ahead, for an executor or a model's load.
 # params:
 #   tree     the packages_refs checkout whose qwen-image-2 runs (`-f packages_refs=pk=<packages ref with its rules>`, tree pk)
 #   cpu_sku  refused (above)
@@ -20,7 +21,8 @@
 #   link_mbit the GPU rental's download link shaped to this many Mbit/s from step 2 on (tc police on its ingress, over SSH; default
 #            800), so a draft's edit lands while expander_t2i is still coming ("": as rented; a fast pod fetched its 11 GB in 18 s).
 #            A host that refuses it (`RTNETLINK answers: Operation not permitted`, 44319564258) runs as rented: if expander_t2i is
-#            whole before the edit, the cut can't be timed, and step 3 is judged by TensorD's drop of the text-to-image item alone.
+#            whole before the edit, the cut can't be timed, and step 3 is judged by TensorD's drop of the text-to-image item alone
+#            (the first at or after the edit).
 #   need_s   the seconds the cap must buy of every rental together (default 3600)
 . "$(dirname "$0")/lib.sh"
 # A failure keeps the rental's TensorD log first: what it planned and fetched says why.
@@ -134,7 +136,8 @@ page() {
     "http://$addr/v1/events/$stream" > "$OUT/show-$NAME.json" 2>&1 || fail "the page couldn't show the project: $(tail -c 300 "$OUT/show-$NAME.json")"
 }
 # first_fetch <since ms> <rule>: from TensorD's log, when the first list item planned after <since> whose rules hold for <rule> was
-# planned, and when the machine first fetched an object at a prepare item's order after that (Unix ms each; the pod's clock).
+# planned, and when the machine first fetched an object at a prepare item's order after that (Unix ms each; the pod's clock); and
+# that item's id (`-`: none).
 first_fetch() {
   python3 -I - "$OUT/tensord-$NAME.log" "$1" "$2" <<'PY'
 import datetime, re, sys
@@ -142,6 +145,7 @@ log, since, rule = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 def ms(stamp):
     return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
 planned = fetched = 0
+item = "-"
 for line in open(log, errors="replace"):
     parts = line.split(" ", 1)
     if not parts[0][:4].isdigit():
@@ -150,12 +154,12 @@ for line in open(log, errors="replace"):
     if at < since:
         continue
     if not planned and "cozy:prepare:" in line and "its rules hold for" in line and f'"{rule}"' in line.split("its rules hold for", 1)[1].split("}", 1)[0]:
-        planned = at
+        planned, item = at, (re.search(r"(cozy:prepare:\S+): its request", line) or [None, "-"])[1]
     elif planned and not fetched:
         found = re.search(r"fetching object=\S+ bytes=\d+ priority=(\d+)", line)
         if found and int(found.group(1)) >= 1 << 63:
             fetched = at
-print(planned, fetched)
+print(planned, fetched, item)
 PY
 }
 # row: draw's guess's row on the board, the newest that names it: what the machine a render of it would go to has ready for it.
@@ -217,23 +221,29 @@ switch() {
   whole "$OUT/switch.json" "$I2I" || fail "expander_i2i isn't whole on $NAME 30 min after the edit: $(models "$OUT/switch.json"); row: ${READY:-none}"
   jq -e --arg m "$NAME" '.ready == true and .machine == $m' <<< "${READY:-null}" > /dev/null || fail "draw isn't ready on $NAME: ${READY:-no row}"
   T2I_LEFT=$(held "$OUT/switch.json" "$T2I")
+  # The draft's two list items, as TensorD planned them: text-to-image once the page showed it, and the edit's.
+  read -r _ _ T2I_ITEM <<< "$(first_fetch "$PAGE_MS" expander_t2i)"
+  read -r _ _ I2I_ITEM <<< "$(first_fetch "$EDIT_MS" expander_i2i)"
   # When expander_t2i's own bytes last grew, by the runner's clock, and the drop as TensorD logged it (its own clock).
-  local grew dropped at_edit
+  local grew at_edit
   at_edit=$(awk -F'\t' -v e="$EDIT_MS" 'NR > 1 && $1 <= e {b = $2} END {print b + 0}' "$series")
   grew=$(awk -F'\t' 'NR > 1 {if ($2 > last) {at = $1}; last = $2} END {print at + 0}' "$series")
-  # A live item's run ends at its drop; one whose needs had landed (untimed) ended before it, and its drop ends its extras.
-  dropped=$(grep -m1 -E "list item cozy:prepare:[^ ]* dropped: its (run ends|extras stop)" "$OUT/tensord-$NAME.log" | cut -c1-40)
-  say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; TensorD's drop: ${dropped:-not in its log}; series in t2i-series.tsv"
-  # Judged at TensorD's drop: expander_t2i's own bytes grow no more 3 s after it (what was in flight, and `cozy machine show`'s lag).
+  say "expander_t2i's own bytes: $at_edit at the edit, $T2I_LEFT at the end; last grew at $grew (Unix ms), $((grew - EDIT_MS)) ms after the edit; series in t2i-series.tsv"
+  # Judged at TensorD's drop of the text-to-image item, the first at or after the edit (another item's, or one before the edit, is
+  # no answer): expander_t2i's own bytes grow no more 3 s after it (what was in flight, and `cozy machine show`'s lag). Its run, live,
+  # ends at the drop; untimed, its needs had landed and its run ended with them, so its drop ends its extras (`ahead.rs`).
   # On a 2 GB/s pod the 2–3 s from the edit to the drop lands gigabytes first (44065133454): that is the edit's latency (`first_fetch`),
   # not the stop. TensorD's log says what of every model was in flight at the drop: shared weights the new request needs go on.
-  local stop
-  stop=$(python3 -I - "$OUT/tensord-$NAME.log" <<'PY'
+  local stop how='its run ends'
+  [ -z "$UNTIMED" ] || how='its (run ends|extras stop)'
+  stop=$(python3 -I - "$OUT/tensord-$NAME.log" "$T2I_ITEM" "$EDIT_MS" "$how" <<'PY'
 import datetime, re, sys
+log, item, edit, how = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 def ms(stamp):
     return int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
-started, landed, drop = {}, {}, None
-for line in open(sys.argv[1], errors="replace"):
+dropping = re.compile(rf"list item {re.escape(item)} dropped: ({how})")
+started, landed, drop, said = {}, {}, None, ""
+for line in open(log, errors="replace"):
     stamp = line.split(" ", 1)[0]
     if not stamp[:4].isdigit():
         continue
@@ -244,18 +254,24 @@ for line in open(sys.argv[1], errors="replace"):
     found = re.search(r"landed object=(\w+) bytes=(\d+)", line)
     if found:
         landed.setdefault(found.group(1), at)
-    if drop is None and "cozy:prepare:" in line and re.search(r"dropped: its (run ends|extras stop)", line):
-        drop = at
+    found = dropping.search(line)
+    if drop is None and at >= edit and found:
+        drop, said = at, found.group(1)
 if drop is None:
     print("none 0 0 0 0")
 else:
     flying = [(name, size) for name, (at, size) in started.items() if at < drop and landed.get(name, drop) >= drop]
     after = [(name, size) for name, size in flying if name in landed]
-    print(drop, len(after), sum(size for _, size in after), len(flying) - len(after), sum(size for name, size in flying if name not in landed))
+    print(drop, len(after), sum(size for _, size in after), len(flying) - len(after), sum(size for name, size in flying if name not in landed), said)
 PY
 )
-  read -r dropped_at landed_after landed_bytes stopped stopped_bytes <<< "$stop"
-  say "at TensorD's drop (${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit), of every model: $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes); expander_t2i's own last grew $((grew - dropped_at)) ms after it"
+  local dropped_at landed_after landed_bytes stopped stopped_bytes said
+  read -r dropped_at landed_after landed_bytes stopped stopped_bytes said <<< "$stop"
+  if [ "$dropped_at" = none ]; then
+    say "TensorD logged no drop of the text-to-image item ($T2I_ITEM) at or after the edit"
+  else
+    say "TensorD's drop of the text-to-image item ($T2I_ITEM): \"$said\", at ${dropped_at} Unix ms, $((dropped_at - EDIT_MS)) ms after the edit; of every model: $landed_after objects in flight landed after it ($landed_bytes bytes), $stopped stopped ($stopped_bytes bytes); expander_t2i's own last grew $((grew - dropped_at)) ms after it"
+  fi
   if [ -n "$UNTIMED" ]; then
     [ "$dropped_at" != none ] || MISMATCH+=("TensorD logged no drop of the text-to-image item")
   elif whole "$OUT/switch.json" "$T2I"; then
@@ -333,8 +349,19 @@ if [ -n "$CPU_SKU" ]; then
 else
   switch
 fi
-say "step 4: draw rendered on $NAME, on $(version)"
-before=$(total "$OUT/switch.json")
+# ahead <file> <item>: that list item's readiness in $NAME's Status (`loading`, `loaded`, `ready`, …), a tab, and why, if it says.
+ahead() { jq -r --arg id "$2" '[.status.ahead[]? | select(.id == $id)] | first // {} | "\(.readiness.stage // .state // "unlisted")\t\(.readiness.reason // "")"' "$1" 2> /dev/null; }
+# Prepared ahead (cl-1123 B, C): its needs downloaded, then, on an idle GPU with room, its request loaded. A card whose free memory
+# can't hold it says why (24 GB: "no spare GPU memory"), and its render loads as a cold one does.
+say "step 4: draw's request ($I2I_ITEM) loads ahead on $NAME where its GPU has room"
+began=$SECONDS LOAD='' WHY=''
+while [ $((SECONDS - began)) -lt 300 ]; do
+  shown "$OUT/loaded.json"; IFS=$'\t' read -r LOAD WHY <<< "$(ahead "$OUT/loaded.json" "$I2I_ITEM")"
+  [ "$LOAD" = loading ] || { [ "$LOAD" = ready ] && [ -z "$WHY" ]; } || break
+  sleep 2
+done
+say "draw's request on $NAME: $LOAD${WHY:+ ($WHY)} $((SECONDS - began)) s after it was ready; then rendered, on $(version)"
+before=$(total "$OUT/loaded.json")
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" draw > "$OUT/draw.txt" 2>&1 || fail "draw: $(tail -c 400 "$OUT/draw.txt")"
 record draw "$OUT/draw.json" || fail "draw has no run record: $(tail -c 300 "$OUT/draw.txt")"
 shown "$OUT/after-draw.json"
@@ -344,18 +371,25 @@ jq -e '.placed.fetch_bytes == 0' "$OUT/draw.json" > /dev/null || fail "draw's qu
 jq -e '.measurements.weights.needs == 0' "$OUT/draw.json" > /dev/null || fail "draw waited for $(jq -r .measurements.weights.needs "$OUT/draw.json") bytes"
 [ "$after" = "$before" ] || fail "$NAME holds $((after - before)) bytes more after draw's render"
 [ "$(held "$OUT/after-draw.json" "$T2I")" = "$T2I_LEFT" ] || fail "draw's render fetched expander_t2i"
+# Loaded ahead, its first step (the run's first stage) starts no executor and builds and loads no model (load-ahead.sh's test).
+stages=$(jq -c '[.report.measured[0].stages[]?.name]' "$OUT/draw.json")
+step1=$(jq -r 'map(select(test("^(executor start|construction)$|^loading ") | not)) | first // ""' <<< "$stages")
+built=$(jq -r 'map(select(test("^(executor start|construction)$|^loading "))) | join(", ")' <<< "$stages")
+inside=$(jq -r --arg f "$step1" 'map(select(startswith($f + " / loading"))) | join(", ")' <<< "$stages")
+say "draw's first step: ${step1:-none}; started or built: ${built:-nothing}; loaded in it: ${inside:-nothing}"
+if [ "$LOAD" = loaded ]; then
+  [ -z "$built" ] && [ -z "$inside" ] || MISMATCH+=("draw's request was loaded ahead, but its first step started or built ${built:-nothing} and loaded ${inside:-nothing}")
+else
+  say "draw's request wasn't loaded ahead ($LOAD${WHY:+: $WHY}): its render's load is not judged"
+fi
 cozy machine logs "$NAME" --since 2h -n 0 > "$OUT/tensord-$NAME.log" 2>&1 || true
 cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
-# Adoption (cl-1123): draw's run names the item that made it ready, and is that request to the byte.
-adopted=$(grep -m1 -E "run run-[0-9a-f]+ (is the request|names)" "$OUT/tensord-$NAME.log" | sed 's/.*INFO tensord::ahead: //')
-say "draw's run on $NAME: ${adopted:-named no predicted request}"
-[[ $adopted == *"is the request"*"takes what it made ready"* ]] || MISMATCH+=("draw's render didn't adopt its item: ${adopted:-it named none}")
 # From each draft to its machine's first byte (`first_fetch`): the page showing the project, and the edit.
-read -r planned fetched <<< "$(first_fetch "$PAGE_MS" expander_t2i)"
+read -r planned fetched _ <<< "$(first_fetch "$PAGE_MS" expander_t2i)"
 say "the T2I draft: shown at $PAGE_MS; planned on $NAME $((planned - PAGE_MS)) ms later; first fetched $((fetched - PAGE_MS)) ms after it was shown"
 [ "$fetched" -gt 0 ] && [ $((fetched - PAGE_MS)) -le 5000 ] || MISMATCH+=("the T2I draft's first byte came $((fetched - PAGE_MS)) ms after the page showed it")
 if [ -n "${EDIT_MS:-}" ]; then
-  read -r planned fetched <<< "$(first_fetch "$EDIT_MS" expander_i2i)"
+  read -r planned fetched _ <<< "$(first_fetch "$EDIT_MS" expander_i2i)"
   say "the I2I edit: made at $EDIT_MS; planned on $NAME $((planned - EDIT_MS)) ms later; first fetched $((fetched - EDIT_MS)) ms after the edit"
   [ "$fetched" -gt 0 ] && [ $((fetched - EDIT_MS)) -le 5000 ] || MISMATCH+=("the I2I edit's first byte came $((fetched - EDIT_MS)) ms after it")
 fi
