@@ -3,8 +3,14 @@
 # pod, and runs nowhere else. One cpu pod: e2e/cli/weightless `wait` (600 s) runs on it; once it runs, the pod is ended (--force).
 # If the run is ever placed on another machine, it is canceled at once and the session fails.
 . "$(dirname "$0")/lib.sh"
+# The open RC's Runtime and TensorFS (params `runtime_url`, `tensorfs_url`), fetched before renting: this cozy's Runtime minor.
+RW=$(wheel_from "$OUT/wheels/runtime" "$(param runtime_url)") && [ -n "$RW" ] || fail "no Runtime wheel from $(param runtime_url)"
+TW=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs_url)") && [ -n "$TW" ] || fail "no TensorFS wheel from $(param tensorfs_url)"
 quote 600
 rent
+cozy machine update "$NAME" --runtime "$RW" --tensorfs "$TW" --tensord "$(command -v cozy)" -y > "$OUT/update.txt" 2>&1 ||
+  fail "update $NAME: $(tail -c 300 "$OUT/update.txt")"
+say "$NAME: $(cozy machine show "$NAME" 2>&1 | grep -E '^(version|runtime|tensorfs) ' | paste -sd' ')"
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd)
 cozy --json run "$W/wait" seconds:=600 --on "$NAME" > "$OUT/pinned.ndjson" 2> "$OUT/pinned.err" & P=$!
 h=
