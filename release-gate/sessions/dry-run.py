@@ -364,7 +364,19 @@ def build():  # type: ignore[no-untyped-def]
     torch.Tensor.uniform_ = lambda self, *a, **k: self  # type: ignore[method-assign]
     torch.Tensor.normal_ = lambda self, *a, **k: self  # type: ignore[method-assign]
     with DEV:
-        model = adaln_pruned.H3Transformer(**config).to(torch.bfloat16).eval()
+        model = adaln_pruned.H3Transformer(**config).eval()
+        # bf16 but for the checkpoint's float32 modules; `.to()` would swap fake tensors, which their mode's weakrefs refuse.
+        keep = tuple(getattr(model, "_keep_in_fp32_modules", None) or ())
+        for path, module in model.named_modules():
+            if any(part in keep for part in path.split(".")):
+                continue
+            for name, p in list(module._parameters.items()):
+                if p is not None and p.is_floating_point():
+                    module._parameters[name] = torch.nn.Parameter(torch.empty(p.shape, dtype=torch.bfloat16, device=DEV), requires_grad=False)
+            for name, b in list(module._buffers.items()):
+                if b is not None and b.is_floating_point() and name != "inv_freq":
+                    module._buffers[name] = torch.empty(b.shape, dtype=torch.bfloat16, device=DEV)
+        RESULT["float32_modules"] = list(keep)
         for block in model.transformer_blocks:
             a, ff = block.attn, block.ff
             a.to_q, a.to_k, a.to_v = int8(a.to_q), int8(a.to_k), int8(a.to_v)
