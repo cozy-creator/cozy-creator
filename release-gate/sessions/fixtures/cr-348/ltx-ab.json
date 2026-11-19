@@ -1,6 +1,6 @@
 {
  "gpus": 2,
- "need_s": 4200,
+ "need_s": 5400,
  "order": "one-way",
  "compare": [],
  "cells": [
