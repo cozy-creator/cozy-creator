@@ -172,8 +172,10 @@ pub(crate) fn keep(key: &str, values: &[f64]) {
 
 static MEMO: Mutex<BTreeMap<String, Vec<f64>>> = Mutex::new(BTreeMap::new());
 
+/// This boot's id, read once a process: every read's ceiling lookup asks it.
 fn boot() -> Option<String> {
-    platform::process::boot_id().ok().filter(|s| !s.is_empty())
+    static BOOT: OnceLock<Option<String>> = OnceLock::new();
+    BOOT.get_or_init(|| platform::process::boot_id().ok().filter(|s| !s.is_empty())).clone()
 }
 
 static STORE: OnceLock<PathBuf> = OnceLock::new();

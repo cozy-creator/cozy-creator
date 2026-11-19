@@ -17,6 +17,10 @@ const READERS: usize = 8;
 /// Slots each reader owns: one fills while the other's copy lands, and both stay in its caches.
 /// A shared pool (LIFO or FIFO) measured 8-20% slower warm H2D.
 const RING: usize = 2;
+/// Runs the staging serves at once, each with all its readers: a demand fill beside the core's fill
+/// ahead of it. With one run's worth, a demand fill waited out the whole fill ahead before it read
+/// a byte (SDXL's text encoder from RAM: 6 ms a 20 MB block alone, 20-50 ms behind one, cl-1318).
+const RUNS: usize = 2;
 const STREAMS: usize = 4;
 
 /// The engine's sizes: a staged piece, its readers, and the slots each reader owns.
@@ -505,7 +509,7 @@ impl Engine {
                 let ctx = at as CUcontext;
                 let _ctx = CtxGuard::enter(ctx)?;
                 let Sizes { readers, ring, .. } = sizes();
-                (0..readers * ring)
+                (0..readers * ring * RUNS)
                     .map(|_| Slot::new(ctx))
                     .collect::<cuda::Result<Vec<_>>>()
             })

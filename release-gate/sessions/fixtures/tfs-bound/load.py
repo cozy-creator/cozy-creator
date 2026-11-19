@@ -8,8 +8,10 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
   evict <ck>...          the checkpoints' chunk files out of the page cache
   disk <ck>...           the disk itself, no TensorFS: the checkpoints' chunk files read O_DIRECT on a grid of threads and
                          request sizes (each on files no other read touched), then buffered from an empty page cache
-  fill <ck> <comps>      a whole-resident load the way the Runtime binds one (cr-318): one Region a block, every block's
-                         Source over its stored parts, all filled by one `varena.fill`; from disk (evicted), then from RAM
+  fill <ck> <comps> [reserve GiB] [alone]
+                         a whole-resident load the way the Runtime binds one (cr-318): one Region a block, every block's
+                         Source over its stored parts, all filled by one `varena.fill`; from disk (evicted), then from RAM.
+                         `alone`: then each Region by its own `use`, in order (a fill ahead of demand, a demand fill)
   paged <ck> <comp>      a paged model's host tier: its blocks' pages read ahead from disk into pinned RAM (`Pages.read_ahead`),
                          each read whole into pinned RAM by its Source (`read_host`), then filled onto the card from those pages
 
@@ -189,8 +191,13 @@ class Card:
         import torch
         from tensorfs.varena import _runtime as varena
 
+        from tensorfs.varena import torch as vt
+
         self.torch, self.varena = torch, varena
+        # As an executor starts (cozy_runtime executor.py): varena's Torch allocator, the device, then Torch's CUDA.
+        varena.bind_torch_allocator()
         varena.activate(0, shared=False)
+        vt.initialize(0)
         self.dev = varena.Device(0)
         self.pages = varena.Pages(0)
         self.stream = torch.cuda.Stream()
@@ -208,8 +215,9 @@ class Card:
             out.append((self.varena.Source(self.pages, f"tfs-bound/{tag}/{comp}", i, n, checkpoint=ck, parts=where, page=page), n))
         return out
 
-    def fill(self, sources: Sequence[tuple[object, int]], tag: str, limit: int) -> dict[str, object]:
-        """Regions for `sources` within `limit` bytes, all filled by one `varena.fill`, then each that call left alone by its `use`."""
+    def fill(self, sources: Sequence[tuple[object, int]], tag: str, limit: int, one_by_one: bool = False) -> dict[str, object]:
+        """Regions for `sources` within `limit` bytes, all filled by one `varena.fill`, then each that call left alone by its
+        `use`; `one_by_one`: each by its own `use`, in order, as a fill ahead of demand or a demand fill reads one."""
         chosen, total = [], 0
         for source, n in sources:
             if total + n > limit:
@@ -220,7 +228,7 @@ class Card:
         regions = [self.dev.region(n, s, f"tfs-bound/{tag}") for s, n in chosen]
         self.torch.cuda.synchronize()
         began = time.perf_counter()
-        uses = self.varena.fill(regions, [s for s, _ in chosen], self.s)
+        uses = [None] * len(regions) if one_by_one else self.varena.fill(regions, [s for s, _ in chosen], self.s)
         self.stream.synchronize()
         together = time.perf_counter() - began
         alone, refused = [], ""
@@ -260,7 +268,7 @@ def pick(ckids: str, comps: Sequence[str]) -> object:
     raise SystemExit(json.dumps({"error": f"none of {ckids} holds {list(comps)}"}))
 
 
-def fill(ckids: str, comps: Sequence[str], reserve: float) -> dict[str, object]:
+def fill(ckids: str, comps: Sequence[str], reserve: float, one_by_one: bool) -> dict[str, object]:
     ck = pick(ckids, comps)
     files = chunk_files([ck.id])  # type: ignore[attr-defined]
     blocks = blocks_of(ck, comps)
@@ -273,6 +281,10 @@ def fill(ckids: str, comps: Sequence[str], reserve: float) -> dict[str, object]:
     report["cold"] = card.fill(card.sources(ck, blocks, "cold", False), "cold", limit)
     report["cached_after_cold"] = cached_share(files)
     report["warm"] = card.fill(card.sources(ck, blocks, "warm", False), "warm", limit)
+    if one_by_one:
+        evict(files)
+        report["cold_alone"] = card.fill(card.sources(ck, blocks, "cold-alone", False), "cold-alone", limit, True)
+        report["warm_alone"] = card.fill(card.sources(ck, blocks, "warm-alone", False), "warm-alone", limit, True)
     return report
 
 
@@ -347,7 +359,7 @@ def main() -> None:
         elif mode == "disk":
             out.update(disk(args))
         elif mode == "fill":
-            out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0))
+            out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0, "alone" in args[3:]))
         elif mode == "paged":
             out.update(paged(args[0], args[1], float(args[2]) if len(args) > 2 else 2.0))
         else:

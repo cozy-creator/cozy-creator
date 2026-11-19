@@ -120,17 +120,18 @@ for arm in arms:
         if not rec:
             continue
         m = obj(rec.get("measurements"))
-        memory = first(first(obj(rec.get("report")).get("measured")).get("memory"))
-        store, derived = obj(memory.get("store")), obj(memory.get("derived"))
-        gb, gbps = num(store.get("bytes")) / 1e9, num(store.get("gbps"))
-        construction = obj(obj(m.get("execution")).get("construction"))
-        legs = obj(construction.get("legs_ms"))
-        stages = obj(obj(m.get("attribution")).get("stages"))
-        top = sorted(((k, num(obj(v).get("total_ms"))) for k, v in stages.items()), key=lambda kv: -kv[1])[:4]
-        note = (f"{rec.get('name')} {rec.get('status')}, executing {num(rec.get('execution_ms')) / 1000:.1f} s, prepare "
-                f"{num(construction.get('prepare_ms')) / 1000:.1f} s, fill leg {num(legs.get('construct.fill')) / 1000:.1f} s, derived "
-                f"{num(derived.get('bytes')) / 1e9:.2f} GB; " + ", ".join(f"{k} {v / 1000:.1f} s" for k, v in top))
-        add(arm, f"run {run} store reads", gb, gb / gbps if gbps else 0.0, cold, True, note)
+        moved = obj(obj(first(obj(obj(m.get("memory")).get("stats")).get("varena")).get("stats")).get("moved"))
+        stages = [obj(x) for x in first(obj(rec.get("report")).get("measured")).get("stages", []) if isinstance(x, dict)]
+        said = ", ".join(f"{x.get('name')} {num(x.get('ms')) / 1000:.1f} s" for x in stages if num(x.get("ms")) >= 100)
+        head = f"{rec.get('name')} {rec.get('status')}, executing {num(rec.get('execution_ms')) / 1000:.1f} s; {said}"
+        if not moved:
+            rows.append([arm, f"run {run}", "-", "-", "-", "-", "-", "-", head + " (no fill record: a parent call's)"])
+            continue
+        for origin, case, from_disk in (("store", "store -> card", cold), ("host", "pinned pages -> card", False)):
+            f = obj(moved.get(origin))
+            gb, s_ = num(f.get("bytes")) / 1e9, num(f.get("ns")) / 1e9
+            if gb:
+                add(arm, f"run {run} {case} ({int(num(f.get('fills')))} fills)", gb, s_, from_disk, True, head if origin == "store" else "")
 
 print("| arm | case | GB | s | GB/s | bound s | x (disk ceiling) | x (disk max) | notes |")
 print("|---|---|---|---|---|---|---|---|---|")
