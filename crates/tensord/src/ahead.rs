@@ -102,7 +102,7 @@ static PLACES: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Mutex::defa
 
 /// What each prepare item's run has in the download line, by its run's id (`lines`): each fetch and what it lined, to line again
 /// where a list moves the item ahead (`again`).
-static LINED: LazyLock<Mutex<HashMap<String, Vec<(Weak<Fetch>, Needs)>>>> = LazyLock::new(Mutex::default);
+static FETCHES: LazyLock<Mutex<HashMap<String, Vec<(Weak<Fetch>, Needs)>>>> = LazyLock::new(Mutex::default);
 
 /// Prepare item `id`'s place in the download line; the last, for one no list names.
 pub(crate) fn place(id: &str) -> u64 {
@@ -112,7 +112,7 @@ pub(crate) fn place(id: &str) -> u64 {
 /// Run `caller` is about to line `reads` under `fetch` (`Fetch::lined`): kept for a prepare item, whose place may move.
 pub(crate) fn lines(caller: &str, fetch: &Arc<Fetch>, reads: &Needs) {
     if guess(caller) {
-        lock(&LINED).entry(caller.to_owned()).or_default().push((Arc::downgrade(fetch), reads.clone()));
+        lock(&FETCHES).entry(caller.to_owned()).or_default().push((Arc::downgrade(fetch), reads.clone()));
     }
 }
 
@@ -135,7 +135,7 @@ fn placed(ids: &[String]) -> Vec<String> {
 /// Prepare item `id` moved ahead in the download line: what its run lined is lined at its new place too, each object taking the
 /// more urgent of its orders, so nothing of it stops or starts again. One whose run lined nothing yet lines there when it does.
 fn again(runs: &Runs, id: &str) {
-    let lined: Vec<(Arc<Fetch>, Needs)> = (lock(&LINED).get(id).into_iter().flatten()).filter_map(|(fetch, reads)| Some((fetch.upgrade()?, reads.clone()))).collect();
+    let lined: Vec<(Arc<Fetch>, Needs)> = (lock(&FETCHES).get(id).into_iter().flatten()).filter_map(|(fetch, reads)| Some((fetch.upgrade()?, reads.clone()))).collect();
     if lined.is_empty() {
         return;
     }
@@ -283,7 +283,7 @@ pub(crate) fn put(
     let named: Vec<String> = lock(&LISTED).values().flatten().cloned().collect();
     lock(&NEEDS).retain(|id, _| named.contains(id));
     lock(&PLACES).retain(|id, _| named.contains(id));
-    lock(&LINED).retain(|id, lined| {
+    lock(&FETCHES).retain(|id, lined| {
         lined.retain(|(fetch, _)| fetch.strong_count() > 0);
         named.contains(id)
     });
