@@ -624,7 +624,7 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
     cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))  # type: ignore[attr-defined]  # marks a graph varena captured
     cuda_graph._varena_operands = list(taken.values())  # type: ignore[attr-defined]  # what its replays read (`_taking`)
     try:  # a raw `graph.replay()` is `replay`'s: its pool mapped back and what it reads checked
-        cuda_graph.__class__ = _replayed(type(cuda_graph))
+        cuda_graph.__class__ = _replayed(cast(type, type(cuda_graph)))
     except TypeError:  # a graph class whose layout refuses it: `launching` alone checks
         pass
 
@@ -644,7 +644,7 @@ def _taking() -> type:
 
     class Taking(TorchDispatchMode):
         def __init__(self, device: int, taken: dict[int, StorageWeakRef]) -> None:
-            super().__init__()
+            super().__init__()  # type: ignore[no-untyped-call]  # TorchDispatchMode's __init__ is unannotated
             self.device, self.taken, self.asked = device, taken, set[int]()
 
         def __torch_dispatch__(self, func, types, args=(), kwargs=None):  # type: ignore[no-untyped-def]
@@ -676,7 +676,7 @@ def _replayed(base: type) -> type:
     if getattr(base, "_varena_base", None) is not None:
         return base
 
-    class Replayed(base):  # type: ignore[misc, valid-type]
+    class Replayed(base):  # type: ignore[misc]
         _varena_base = base
 
         def replay(self) -> None:
