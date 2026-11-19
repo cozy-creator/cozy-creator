@@ -1,0 +1,52 @@
+{
+  "order": "one-way",
+  "need_s": 1700,
+  "compare": [["s1-a6", "s1-b6"], ["s1-aoff", "s1-boff"]],
+  "cells": [
+    {
+      "name": "w-seedvr2", "tree": "rc", "target": "seedvr2/upscale", "warmup": true,
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30031"],
+      "update": {"runtime": "44512267551", "tensorfs": "artifact:44512262445/tensorfs-wheel-7ccf9b81abde723a0ee6ac65a73e75e04d6b8a12", "tensord": true, "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "w-anima", "tree": "rc", "target": "anima/generate", "warmup": true,
+      "args": ["prompt=masterpiece, best quality, anime illustration of a lighthouse keeper", "seed:=30032"]
+    },
+    {
+      "name": "w-qwen", "tree": "rc", "target": "qwen3/ask", "warmup": true,
+      "args": ["--model", "model=qwen/qwen3.5-9b@0.2.0", "prompts:=[{\"text\": \"Name three colours.\"}]", "max_tokens:=32", "seed:=30033"]
+    },
+    {
+      "name": "s1-a6", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30034"],
+      "update": {"runtime": "44512267551", "tensorfs": "artifact:44512262445/tensorfs-wheel-7ccf9b81abde723a0ee6ac65a73e75e04d6b8a12", "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "s1-b6", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30034"],
+      "update": {"runtime": "44510396225", "tensorfs": "artifact:44510392113/tensorfs-wheel-18207befbc741f47e196c7e8ff929733cf2b78b8", "gpu_memory_limit": "6GiB"}
+    },
+    {
+      "name": "g1-b6", "tree": "rc", "target": "anima/generate",
+      "args": ["prompt=masterpiece, best quality, anime illustration of a lighthouse keeper", "seed:=30035"]
+    },
+    {
+      "name": "g2-b6", "tree": "rc", "target": "anima/generate", "wait_s": 20,
+      "args": ["prompt=masterpiece, best quality, anime illustration of a lighthouse keeper", "seed:=30036"]
+    },
+    {
+      "name": "lm-b6", "tree": "rc", "target": "qwen3/ask",
+      "args": ["--model", "model=qwen/qwen3.5-9b@0.2.0", "prompts:=[{\"text\": \"Name three colours.\"}]", "max_tokens:=32", "seed:=30037"]
+    },
+    {
+      "name": "s1-aoff", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30038"],
+      "update": {"runtime": "44512267551", "tensorfs": "artifact:44512262445/tensorfs-wheel-7ccf9b81abde723a0ee6ac65a73e75e04d6b8a12", "gpu_memory_limit": "off"}
+    },
+    {
+      "name": "s1-boff", "tree": "rc", "target": "seedvr2/upscale",
+      "args": ["--file", "video={clip1}", "resolution=1080p", "seed:=30038"],
+      "update": {"runtime": "44510396225", "tensorfs": "artifact:44510392113/tensorfs-wheel-18207befbc741f47e196c7e8ff929733cf2b78b8", "gpu_memory_limit": "off"}
+    }
+  ]
+}
