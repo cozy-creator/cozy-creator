@@ -11,7 +11,8 @@
 # as lib.sh `wheel_from` takes; the Runtime a native dev build carrying `_ggml`).
 # params: tensorfs, runtime (required); llama (b12466) and llama_sha256; models (default every q35-9b/q38-27b row); seconds
 # (3600); built (a pod-session run that built llama.cpp on a runner: below); skus and quoted (preflight.sh pick_offer); the
-# ride-along's decode, make, model and tree; opening_red and opening_green (Runtime wheel sources for cr-342's cell).
+# ride-along's decode, make, model and tree; opening_red and opening_green (Runtime wheel sources for cr-342's cell); red,
+# red_rule and red_models (a PR's cell without its fix: below).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-kernels
@@ -20,6 +21,8 @@ LLAMA_SUM=$(param llama_sha256 d81544fe1f31f2539f3610486eb10e7fe606d88da9d1f85a5
 MODELS=$(param models "$(python3 "$FIX/shapes.py" models)")
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
+RED=$(param red '')
+[ -z "$RED" ] || { RED_WHEEL=$(wheel_from "$OUT/wheels/red" "$RED") && [ -n "$RED_WHEEL" ]; } || fail "red: no Runtime wheel from $RED"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · $MODELS"
 # The ride-along (optional): `decode` lanes (label=org/name@sha256:…) and `make` lanes (comma-separated recipe lanes of the
 # packages checkout `tree`'s qwen3, each quantized on the pod from `model` or, written `lane=org/name@sha256:…`, from that
@@ -250,11 +253,47 @@ else
   ORDER_BAD=1; say "FAILED: batch-shapes: $(grep -m1 -E '^Run .* failed|^error' "$OUT/batch-shapes.txt" | cut -c1-300)"
 fi
 [ -z "${ORDER_BAD:-}" ] || say "FAILED: batch-shapes: a raced read on the default stream unlike its settled one (lines above)"
+# `red`: a Runtime wheel source carrying a PR's cell and none of its fix (cozy-runtime#2334: the RC plus `ordered-threads`).
+# Last, on this pod, its environment asked which Runtime it imports, each of `red_models` (default the first model) benched
+# on it: some `red_rule` row (default `ordered-threads:`) must read other than true, or the cell reproduces nothing. Its
+# rows never enter the candidate's table.
+if [ -n "$RED" ]; then
+  wheel=$RED_WHEEL
+  step runtime-red machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$wheel" -y || fail "the pod's Runtime (red)"
+  step runtime-version-red run "$FIX/drive/runtime_version" --on "$NAME" || fail "runtime_version (red)"
+  took=$( (cd "$RUN_PROJECT" && cozy --json --full run watch "$(runno runtime-version-red)" --once) 2> /dev/null | jq -r '.result.detail // ""')
+  want=${wheel##*/cozy_runtime-}; want=${want%%-cp*}
+  [ "$took" = "$want" ] || fail "red: the drive's environment imports cozy-runtime ${took:-nothing}, not $want"
+  reds=()
+  for model in $(param red_models "${MODELS%%,*}" | tr , ' '); do
+    if ! step "red-bench-$model" run "$FIX/drive/gemm_speed" lanes=ggml "shapes=$model" --on "$NAME"; then
+      RED_BAD=1; say "FAILED: red gemm_speed $model: $(grep -m1 -E '^Run .* failed|^error' "$OUT/red-bench-$model.txt" | cut -c1-300)"; continue
+    fi
+    on_candidates "red-bench-$model"
+    n=$(runno "red-bench-$model"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) | jq '.result' > "$OUT/red-bench-$model.json"
+    reds+=("$OUT/red-bench-$model.json")
+  done
+  [ "${#reds[@]}" = 0 ] || python3 - "$(param red_rule ordered-threads:)" "$took" "${reds[@]}" << 'PY' | tee -a "$R" || RED_BAD=1
+import json, sys
+rule, took, *paths = sys.argv[1:]
+rows = {}
+for path in paths:
+    for shape in json.loads(json.load(open(path))["detail"])["shapes"]:
+        for name, said in shape["rules"].get("ggml", {}).items():
+            if name.startswith(rule):
+                rows[f"{shape['model']}-{shape['site']} {name}"] = said
+off = sorted(k for k, said in rows.items() if said != "true")
+print(f"red ({took}): {len(off)} of {len(rows)} {rule} rows not true" + (f"; first {off[0]}: {rows[off[0]][:300]}" if off else ""))
+sys.exit(0 if off else 1)
+PY
+  [ -z "${RED_BAD:-}" ] || say "FAILED: red: its cell reproduced nothing, or its bench failed (lines above)"
+fi
 [ -z "${OPEN_BAD:-}" ] || say "FAILED: cr-342's opening_kernel cell (lines above)"
-[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}" ] || fail "a ride-along lane, batch-shapes or opening_kernel failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
+[ "$KERNELS" = 1 ] || { [ -z "${RIDE_BAD:-}${ORDER_BAD:-}${OPEN_BAD:-}${RED_BAD:-}" ] || fail "a ride-along lane, batch-shapes, opening_kernel or red failed"; say "PASS: the ride-along on $(jq -r '.status.gpus[0].name' "$OUT/show.json") (no kernel table asked)"; exit 0; }
 (cd "$FIX" && python3 compare.py "$OUT/llama-perf.txt" "$OUT/calibrate.json" "${benches[@]}") > "$OUT/summary.md"; code=$?
 cat "$OUT/summary.md" >> "$R"; cat "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$code" = 0 ] || fail "a case missed its bar (summary.md)"
 [ -z "${ORDER_BAD:-}" ] || fail "batch-shapes: a raced read on the default stream unlike its settled one"
 [ -z "${OPEN_BAD:-}" ] || fail "cr-342's opening_kernel cell"
+[ -z "${RED_BAD:-}" ] || fail "red: its cell reproduced nothing, or its bench failed"
 say "PASS: llama.cpp's kernels in our Runtime at stock llama.cpp's speed on $(jq -r '.status.gpus[0].name' "$OUT/show.json")"
