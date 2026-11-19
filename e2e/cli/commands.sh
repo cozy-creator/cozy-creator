@@ -1654,21 +1654,28 @@ cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_ba
 }
 
 # cl-1317 (the coordinator, 11-19: "a describe can rent and render"): `cozy run <fn> --describe` given inputs ignored --describe and ran
-# the function. It refuses them in one line, as terms or a request file, and starts no run.
+# the function. Given inputs as terms or a request file, or a run's options, it describes as it does alone, byte for byte, says once
+# that it ignored them, and starts no run.
 describe_inputs() {
 step "--describe with inputs runs nothing (cl-1317)"
 local before code n
 before=$(cozy --json run ls --all --limit 0 | jq '[.runs[] | select(.kind == "call")] | length') || true
 printf 'text: described\n' > "$OUT/describe-inputs.yaml"
-for n in term input; do
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe --on local) > "$OUT/describe-alone.json" 2> "$OUT/describe-alone.err" \
+  || { check "--describe alone failed: $(tail -c 300 "$OUT/describe-alone.err")"; return; }
+! grep -q 'ignored what was given' "$OUT/describe-alone.err" || check "--describe alone said it ignored inputs: $(tail -c 300 "$OUT/describe-alone.err")"
+for n in term input option; do
   case $n in
     term) set -- text=described ;;
     input) set -- --input "$OUT/describe-inputs.yaml" ;;
+    option) set -- --lane bf16 ;;
   esac
   code=0
   (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe "$@" --on local) > "$OUT/describe-$n.json" 2> "$OUT/describe-$n.err" || code=$?
-  [ "$code" != 0 ] && grep -q describe_inputs "$OUT/describe-$n.json" "$OUT/describe-$n.err" \
-    || check "--describe $*: wasn't refused describe_inputs (exit $code): $(tail -c 300 "$OUT/describe-$n.json") $(tail -c 200 "$OUT/describe-$n.err")"
+  [ "$code" = 0 ] && cmp -s "$OUT/describe-alone.json" "$OUT/describe-$n.json" \
+    || check "--describe $*: not the describe alone (exit $code): $(tail -c 300 "$OUT/describe-$n.json") $(tail -c 200 "$OUT/describe-$n.err")"
+  [ "$(grep -c 'ignored what was given to run it with' "$OUT/describe-$n.err")" = 1 ] \
+    || check "--describe $*: didn't say once that it ignored them: $(tail -c 300 "$OUT/describe-$n.err")"
 done
 [ "$(cozy --json run ls --all --limit 0 | jq '[.runs[] | select(.kind == "call")] | length')" = "$before" ] \
   || check "--describe with inputs started a run: $(cozy --json run ls --all --limit 3 | jq -c '[.runs[] | {number, kind, target, status}]')"
