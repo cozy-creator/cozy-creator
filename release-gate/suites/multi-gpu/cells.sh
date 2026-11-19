@@ -10,6 +10,19 @@ h3_group h3-u2-short 100 prompt="<$NAME> $MOTION" seed:=$((R + 353)) duration_s:
 h3_group h3-u2-warm 100 prompt="<$NAME> $SCENE" seed:=$((R + 355)) duration_s:=5
 # A model the caller chose, fetched from the Hub during the call: its run carries a capability, so GPU 0's invoke holds a
 # token, and the group's `run` hands it to GPU 1 (cl-935: runs 47352, 47366 and 47432 failed group_broken, credential_at_seam).
+# cr-348 C, a degree key's second group call: h3-u2-short's request on another seed has its keys (each sharded stage's first
+# sharded call's tensor shapes), and each stage runs at the degree its machine's record gives: one GPU where an earlier run of
+# the key recorded its time at two (warm), else two again (a time measured cold, a kernel building or weights read from disk,
+# is not recorded). After h3-u2-warm, so a key it shares makes this its third call and leaves h3-u2-warm at two GPUs.
+h3_group h3-u2-again 100 prompt="<$NAME> $MOTION" seed:=$((R + 362)) duration_s:=5
+h3_again() {
+  [ -f h3-u2-short.json ] && [ -f h3-u2-again.json ] || return 0
+  local got records=(h3-u2-short.json)
+  [ -f h3-u2-warm.json ] && records+=(h3-u2-warm.json)
+  got=$(jq -rs -f "$HERE/sessions/fixtures/h3-group/again.jq" "${records[@]}" h3-u2-again.json)
+  expect h3-u2-again-degree "$([[ $got == PASS* ]] && echo PASS || echo FAIL)" "${got:-no record was read}"
+}
+h3_again
 h3_group h3-u2-finetune 100 prompt="<$NAME> $MOTION" seed:=$((R + 354)) duration_s:=5 model.base_model=sexgod1979/pinkcherry
 # A 26 s shot in two segments, the second carrying the first's frames: its steps track the rows each attends (cr-288).
 source "$HERE/suites/execution/multi-gpu/h3-carried.sh"
@@ -76,3 +89,39 @@ h3_second() {
   expect h3-second "$([[ $got == PASS* ]] && echo PASS || echo FAIL)" "${got:-no record was read}"
 }
 h3_second
+# xs-199, cr-348 (Paul: "N GPUs must beat 1 on real pods before any release"): LTX-2.5 5 s 1080p on two GPUs is no slower than
+# on one, within the ledger's noise (ledger.py NOISE, Paul 11-15: within 5% is a tie). Gate 44411764104 on 2x rtx-5090 took
+# 44.2 s on two GPUs against 33.1 s on one: every GPU ran every stage, and the base stage's steps are host-bound. Each side warm,
+# every run on its own seed (the call memo). A Runtime with cr-348 C measures each sharded stage at two GPUs, then at one, and
+# keeps the faster; a time measured cold is measured again. So two GPUs run until one of their runs after the first measures
+# nothing, the fifth at the latest (two degrees, each at most cold then warm), and that run is judged.
+ltx_one_two() {
+  [ -z "$ONLY" ] || [[ $ONLY == *",ltx-gpus-1,"* || $ONLY == *",ltx-gpus-2,"* ]] || return 0
+  local c i hot e1 e2 noise
+  local req=("prompt=A hot air balloon drifts over terraced rice fields in morning mist; the camera rises with it as the burner flares. Sound: the roar of the burner, birdsong, wind."
+    duration_s:=5 resolution=1080p aspect_ratio=16:9 audio:=true --lane int8)
+  local rows='[.measurements, .calls[]?.measurements] | map(select(. != null) | .execution.transport.stages // {}) | add // {}'
+  ltx_run() {  # <cell> <seed> <gpus>: completed and computed, else the row fails
+    ONLY=${ONLY:+$ONLY,$1,} cell "$1" "$(pkg ltx-2.5 generate)" "${req[@]}" seed:="$2" --gpus="$3"
+    [ "$(run_get "$OUT" "$1" .status)" = completed ] ||
+      { expect ltx-gpus-no-slower FAIL "$1: $(run_get "$OUT" "$1" '.status + " " + (.reason.message // "")' | head -c 200)"; return 1; }
+    jq -e '(.memo.memoized // false) == false and all(.calls[]?; (.memoized // false) == false)' "$1.json" > /dev/null ||
+      { expect ltx-gpus-no-slower FAIL "$1 was answered from a memo: nothing to compare"; return 1; }
+  }
+  ltx_run ltx-gpus-1-warm $((R + 370)) 1 && ltx_run ltx-gpus-1 $((R + 371)) 1 || return 0
+  for i in 1 2 3 4 5; do
+    c=ltx-gpus-2-$i
+    ltx_run "$c" $((R + 371 + i)) 2 || return 0
+    [ "$i" -gt 1 ] && jq -e "$rows | all(.[]; .steady_ms == null)" "$c.json" > /dev/null && break
+  done
+  jq -e "$rows | all(.[]; .steady_ms == null)" "$c.json" > /dev/null ||
+    { expect ltx-gpus-no-slower FAIL "two GPUs still measured a degree on their run $i: $(jq -c "$rows" "$c.json")"; return 0; }
+  # A GPU held back for heat or by its host's power limit (ledger.py `throttled`) voids the pair, as h3-gpus-faster.
+  hot=$(python3 -I "$HERE/ledger.py" throttled ltx-gpus-1.json "$c.json" | paste -sd' ')
+  [ -z "$hot" ] || { expect ltx-gpus-no-slower FAIL "void (hot host): $hot. Run this row again on another host."; return 0; }
+  e1=$(run_get "$OUT" ltx-gpus-1 .execution_ms) e2=$(run_get "$OUT" "$c" .execution_ms)
+  noise=$(python3 -I -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["NOISE"])' "$HERE/ledger.py")
+  expect ltx-gpus-no-slower "$(awk -v a="$e1" -v b="$e2" -v n="$noise" 'BEGIN { print (a > 0 && b > 0 && b <= a * (1 + n)) ? "PASS" : "FAIL" }')" \
+    "1 GPU: execution $e1 ms; 2 GPUs ($c): $e2 ms, stage degrees $(jq -c "$rows | with_entries(select(.value.degree) | .value |= .degree)" "$c.json")"
+}
+ltx_one_two
