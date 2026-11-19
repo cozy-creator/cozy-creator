@@ -1,0 +1,1 @@
+A dropped weight or retained region gives its pages back when it is dropped, once nothing still reads them, where they stayed mapped until a later demand ran short: a Qwen-Image 2 edit chain held 1-6 GiB nobody owned between calls (the release gate's `unowned` check) (var-035).
