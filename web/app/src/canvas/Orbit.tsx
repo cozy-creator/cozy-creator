@@ -92,7 +92,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const shownAngle = within(angle, orbit)
   const frame = frameAt(shownAngle, orbit, frames)
 
-  // Its file in this page's memory while it's open: every frame a seek away, holding no connection (cl-1215).
+  // Its file while it's open, asked of Calcifer in pieces: every frame a seek away, holding no connection (cl-1220).
   useEffect(() => {
     const el = video.current
     if (!el) return

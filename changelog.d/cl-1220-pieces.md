@@ -1,0 +1,1 @@
+A video's first frame comes as soon as it did before every video could play at once, whatever its size, and a page holds about half the memory: a player asks Calcifer for its file a megabyte at a time (`?pieces=true`), each answer completes, so no video holds a connection while it plays, loops, seeks or pauses, and nothing is read whole first.

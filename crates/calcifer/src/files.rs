@@ -1,7 +1,7 @@
 //! How Calcifer answers with a file (CALCIFER-API.md, Files): GET and HEAD, `Accept-Ranges`, one
 //! `Range: bytes=…` as `206` (`416` when unsatisfiable, the whole when `If-Range` names another
-//! revision), an `ETag` and `If-None-Match` as `304`, so a `<video>` seeks it and a browser caches
-//! it. What a run wrote is never script in Calcifer's origin, where script is code execution as you:
+//! revision; at most a megabyte when `?pieces=true` asks), an `ETag` and `If-None-Match` as `304`, so a
+//! `<video>` seeks it and a browser caches it. What a run wrote is never script in Calcifer's origin, where script is code execution as you:
 //! each file is sandboxed, and only a picture, video or sound opens in place.
 use std::fmt::Write as _;
 use std::io::{Seek as _, SeekFrom};
@@ -18,16 +18,34 @@ use tokio::io::AsyncReadExt as _;
 pub(crate) const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
 /// The most of a file read out at once. Each piece is a trip to the blocking pool, so `ReaderStream`'s own 4 KiB made a large file
-/// crawl: the page reads a video whole before it plays (cl-1215), and 127 MB took 572 ms, 106 ms at this size (cl-1220).
+/// crawl: 127 MB took 572 ms, 106 ms at this size (cl-1220).
 const PIECE: usize = 256 << 10;
 
-/// `file` (`len` bytes of `media_type`, its revision `etag`, quoted) as `headers` ask for it.
+/// The most one `Range` answer carries when the request asks for pieces (cl-1220). A `<video>` asks on from where a shorter `206` ends,
+/// so each answer completes and none holds one of the six connections a browser opens to Calcifer while it plays, loops or pauses:
+/// every video in every window plays at once (Paul, 11-18). A browser takes up to about 2 MiB off the socket of an element that has
+/// stopped reading (Chrome's network process), so a megabyte leaves nothing unread; 256 KiB made a first frame slow (cl-1220).
+const MOST_PER_ANSWER: u64 = 1 << 20;
+
+/// What a file route's query may ask besides its own.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct Asked {
+    /// `?download=<name>`: a browser saves it as `name`, not shows it (cl-891).
+    pub(crate) download: Option<String>,
+    /// `?pieces=true`: a media element's request, the page's own (Transport.media): each `Range` answer at most MOST_PER_ANSWER, with the
+    /// true total in `Content-Range`. Without it, as a download resuming, a range is answered whole.
+    #[serde(default)]
+    pub(crate) pieces: bool,
+}
+
+/// `file` (`len` bytes of `media_type`, its revision `etag`, quoted) as `headers` ask for it, a range in `pieces` or whole.
 pub(crate) fn send(
     mut file: std::fs::File,
     len: u64,
     media_type: &str,
     etag: &str,
     headers: &HeaderMap,
+    pieces: bool,
 ) -> std::io::Result<Response> {
     let octets = HeaderValue::from_static("application/octet-stream");
     let disposition = if shown_in_place(media_type) { "inline" } else { "attachment" };
@@ -49,6 +67,7 @@ pub(crate) fn send(
     let (response, status, first, count) = match ranged(range, len) {
         Ok(None) => (response, StatusCode::OK, 0, len),
         Ok(Some((first, last))) => {
+            let last = if pieces { last.min(first.saturating_add(MOST_PER_ANSWER - 1)) } else { last };
             let response = response.header(header::CONTENT_RANGE, format!("bytes {first}-{last}/{len}"));
             (response, StatusCode::PARTIAL_CONTENT, first, last - first + 1)
         }
@@ -69,12 +88,6 @@ pub(crate) fn send(
         .header(header::CONTENT_LENGTH, count)
         .body(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(bytes, piece)))
         .expect("a response"))
-}
-
-/// `?download=<name>` on a file route: a browser saves it as `name`, not shows it (cl-891).
-#[derive(serde::Deserialize)]
-pub(crate) struct Download {
-    pub(crate) download: Option<String>,
 }
 
 /// `response` saved by a browser as `name`, with the file's extension `ext` when it ends otherwise: `hei.2` is `hei.2.png`.
