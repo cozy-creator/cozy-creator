@@ -649,6 +649,20 @@ impl PyNoCapture {
     }
 }
 
+/// What more this process may hold in host RAM: the room the machine's host admission asks against
+/// (`host::room`). Negative: over it. `i64::MAX` where the figures are unreadable, and without the
+/// store, whose admission refuses nothing.
+#[pyfunction]
+fn _varena_host_room(py: Python<'_>) -> i64 {
+    #[cfg(feature = "store")]
+    return py.detach(|| host::room(&varena_ledger::host::budget()));
+    #[cfg(not(feature = "store"))]
+    {
+        let _ = py;
+        i64::MAX
+    }
+}
+
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 fn _varena_core_identity() -> u64 {
@@ -695,6 +709,7 @@ fn _varena_fill(
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_host_room, module)?)?;
     #[cfg(feature = "store")]
     module.add_function(wrap_pyfunction!(_varena_fill, module)?)?;
     cache_owner::install(module)?;
