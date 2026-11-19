@@ -9,7 +9,11 @@ use std::{
 
 use api::{
     error::{Error, Kind},
-    calcifer::project::{Clip, ClipNow, Timeline, TimelineNow, TrackNow},
+    calcifer::{
+        node,
+        project::{Clip, ClipNow, Timeline, TimelineNow, Track, TrackNow},
+        tool::{EDIT, EDIT_FPS},
+    },
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -260,10 +264,10 @@ impl Canvas {
         let fps = match fields.get("fps").and_then(Value::as_f64) {
             Some(fps) if fps.is_finite() && fps > 0.0 && fps <= 240.0 => fps,
             Some(fps) => {
-                said.push(format!("fps {fps} isn't a frame rate like 24, 25 or 30, so Cozy cuts at 24."));
-                24.0
+                said.push(format!("fps {fps} isn't a frame rate like 24, 25 or 30, so Cozy cuts at {EDIT_FPS}."));
+                EDIT_FPS as f64
             }
-            None => 24.0,
+            None => EDIT_FPS as f64,
         };
         let short = fields.get("resolution").map(text).and_then(|written| {
             let short = written.strip_suffix('p').and_then(|n| n.parse::<u64>().ok()).filter(|n| *n >= 16);
@@ -330,6 +334,28 @@ pub(crate) fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip>
         Some(tracks) => clips_of(tracks),
         None => reads.iter().map(|read| Clip { clip: format!("<{}>", read.name), ..Default::default() }).collect(),
     }
+}
+
+/// An Edit's timeline once `fields` are written over `held`: at a new frame rate each clip's points (`in`, `out`, a still's `frames`) move
+/// to the frame at the same time, rounded half up as the page's `Math.round` was, so each clip keeps its time. None: it isn't an Edit after
+/// the write, its rate stays, the write sets its own timeline (written at the new rate), or it has none.
+pub(crate) fn retimed_timeline(held: &Map<String, Value>, fields: &Map<String, Value>) -> Option<Value> {
+    let tool = match fields.get("tool") {
+        Some(tool) => tool.as_str(),
+        None => held.get("tool").and_then(Value::as_str),
+    };
+    let edit = tool.is_some_and(|tool| node::plain(tool.trim()).trim_start_matches("_/") == EDIT);
+    if !edit || !fields.contains_key("fps") || fields.contains_key("timeline") || fields.contains_key("tracks") {
+        return None;
+    }
+    let tracks = held.get("tracks")?;
+    let (from, to) = (Canvas::of(held, &mut vec![]).fps, Canvas::of(fields, &mut vec![]).fps);
+    if (from - to).abs() < f64::EPSILON {
+        return None;
+    }
+    let at = |frame: Option<u64>| frame.map(|frame| (frame as f64 * to / from).round() as u64);
+    let clips = clips_of(tracks).into_iter().map(|clip| Clip { first: at(clip.first), out: at(clip.out), frames: at(clip.frames), ..clip }).collect();
+    Some(serde_json::to_value(Timeline { tracks: vec![Track { clips }] }).expect("clips serialize"))
 }
 
 /// `fields` as the file writes them, the wire's `timeline` as `tracks`. What can be fixed is, and said.

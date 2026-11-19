@@ -646,7 +646,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </div>
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
-      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} pixels={(shown?.field === "image" || shown?.field === "video") && shown.width && shown.height ? { width: shown.width, height: shown.height } : undefined} fitted={asset?.kind !== "text"} full={plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
+      {cut ? <VideoEditor name={name} settings={here && asset?.tool && <AssetEdit name={name} view={view} editing focused actions={null} />} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} pixels={(shown?.field === "image" || shown?.field === "video") && shown.width && shown.height ? { width: shown.width, height: shown.height } : undefined} fitted={asset?.kind !== "text"} full={plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}

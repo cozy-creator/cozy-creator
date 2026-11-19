@@ -1,5 +1,5 @@
 import type { Asset, Tool, ToolField } from "../api/calcifer"
-import { TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
+import { EDIT, TEXT_TOOL } from "./controls"
 import { madeHere, namesItsPackage } from "./shown"
 
 // A picture, a video or a sound comes in as a file dropped, or a tool that makes it; words come in as Text. There's no list of blank
@@ -14,8 +14,8 @@ export const OPERATIONS = [
   { key: "text", label: "Text", makes: "text" },
 ] as const
 
-/** The tools listed, with Calcifer's own: Text, and the Video Timeline last. */
-export const withBuiltIns = (tools: Tool[]): Tool[] => [TEXT_TOOL, ...tools.filter((tool) => tool.id !== TEXT_TOOL.id && tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL]
+/** The tools listed, the Video Timeline among them, with Text, which is the page's. */
+export const withBuiltIns = (tools: Tool[]): Tool[] => [TEXT_TOOL, ...tools.filter((tool) => tool.id !== TEXT_TOOL.id)]
 
 export type Operation = typeof OPERATIONS[number]["key"]
 export interface PaletteEntry {
@@ -40,7 +40,7 @@ const changes = (tool: Tool) => /edit|inpaint|outpaint|vid2vid/.test(nameOf(tool
  *  can edit one (Paul, 11-16: two groups of the same models was "confusing af"), and so is what makes video, a video edit its own row of it
  *  (Paul, 11-16: "eliminate the Edit Video section, and instead place it inside of 'Video' section"). */
 export function operationOf(tool: Tool): Operation | null {
-  if (tool.id === VIDEO_EDIT_TOOL.id) return "timeline"
+  if (tool.id === EDIT) return "timeline"
   if (tool.id === TEXT_TOOL.id) return "text"
   if (madeHere(tool.id)) return null
   if (tool.makes === "text") return "llm"
@@ -52,7 +52,7 @@ export function operationOf(tool: Tool): Operation | null {
 /** A tool's row in its group: its model, its package's title as its description writes it (Calcifer's `title`: MiniMax H3, Qwen-Image-2.1),
  *  and for a video edit what it does too, its model said once: MiniMax H3 Edit beside MiniMax H3. */
 export const modelLabel = (tool: Tool) => {
-  if (tool.id === VIDEO_EDIT_TOOL.id) return "Video Timeline"
+  if (tool.id === EDIT) return "Video Timeline"
   const title = tool.package_title || tool.label
   if (operationOf(tool) !== "video" || !changes(tool) || !tool.label || title.toLowerCase().endsWith(tool.label.toLowerCase())) return title
   return namesItsPackage(tool) ? tool.label : `${title} ${tool.label}`
@@ -80,9 +80,9 @@ export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   })
 }
 
-export const isVideoEdit = (asset: Asset) => asset.tool === "cozy/edit" || asset.fields?.node_kind === "video_edit"
+export const isVideoEdit = (asset: Asset) => asset.tool === EDIT || asset.fields?.node_kind === "video_edit"
 
 /** A tool attaches to the kind it produces. Timeline is a removable video tool. */
 export function toolFitsNode(tool: Tool, asset: Asset): boolean {
-  return tool.id !== "text" && (!madeHere(tool.id) || tool.id === VIDEO_EDIT_TOOL.id) && tool.makes === asset.kind
+  return tool.id !== "text" && (!madeHere(tool.id) || tool.id === EDIT) && tool.makes === asset.kind
 }

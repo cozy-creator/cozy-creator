@@ -4152,20 +4152,6 @@ input[type="checkbox"] {
 .asset-menu > button:hover {
   background: var(--tint2);
 }
-.menu-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 2px 2px 8px;
-  font-size: var(--body);
-}
-.menu-row .field {
-  flex: none;
-  width: 130px;
-  height: 26px;
-  font-size: var(--body);
-}
 /* Alive, and brief. Only what arrives moves, on the compositor, and coming back on screen isn't arriving. */
 .media img.arrives {
   animation: fade-in 180ms ease-out;

@@ -246,7 +246,22 @@ pub struct ToolField {
     pub max_items: Option<u64>,
 }
 
-/// Timeline, the built-in video composition tool: clips on a track, rendered here.
+/// An Edit's frame rate when its box sets none: what its points count in.
+pub const EDIT_FPS: u64 = 24;
+/// What an Edit's film may be: its rate, its shape (film and media's own ratios, Paul 11-13) and its short edge. Unset, its shape and size
+/// are its first clip's.
+const EDIT_RATES: [u64; 6] = [EDIT_FPS, 25, 30, 48, 50, 60];
+const EDIT_RATIOS: [&str; 19] = ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21", "2:1", "1:2", "2.39:1", "1.85:1", "1.90:1", "1.43:1", "1.37:1", "1.66:1"];
+const EDIT_SIZES: [&str; 4] = ["720p", "1080p", "1440p", "2160p"];
+const FIRST_CLIP: &str = "Same as the first clip";
+
+/// A choice of the Edit's.
+fn edit_choice(field: &str, label: &str, options: Vec<Value>, default: Option<Value>) -> ToolField {
+    let unset = default.is_none();
+    ToolField { field: field.to_owned(), ty: FieldType::Choice, label: label.to_owned(), default, auto: unset, placeholder: unset.then(|| FIRST_CLIP.to_owned()), options: Some(options), ..ToolField::default() }
+}
+
+/// Timeline, the built-in video composition tool: clips on a track, rendered here, and the film they make.
 pub fn edit() -> Tool {
     Tool {
         id: EDIT.to_owned(),
@@ -264,7 +279,12 @@ pub fn edit() -> Tool {
         pickup: None,
         model: None,
         models: vec![],
-        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() }],
+        fields: vec![
+            ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() },
+            edit_choice("fps", "Frame rate", EDIT_RATES.map(Value::from).to_vec(), Some(Value::from(EDIT_FPS))),
+            edit_choice("aspect_ratio", "Aspect ratio", EDIT_RATIOS.map(Value::from).to_vec(), None),
+            edit_choice("resolution", "Resolution", EDIT_SIZES.map(Value::from).to_vec(), None),
+        ],
     }
 }
 

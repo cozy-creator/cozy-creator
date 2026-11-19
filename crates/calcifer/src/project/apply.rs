@@ -357,6 +357,17 @@ impl Planning<'_> {
         if let Some((id, block)) = &wrote.tool {
             self.tool_block(&name, id, block.as_ref(), &was, &now, &heads, rev, &mut ask, &mut changed);
         }
+        // A new frame rate moves an Edit's points, as its write will (`Written::set`): each said with the rest.
+        let mut asked = ask.fields.clone();
+        if let Some(tool) = &ask.tool {
+            asked.insert("tool".to_owned(), json!(tool));
+        }
+        if let Some(timeline) = super::tools::retimed_timeline(&boxed.map(), &asked) {
+            for (at, before, after) in leaves("timeline", now.fields.get("timeline").unwrap_or(&Value::Null), &timeline) {
+                self.change(&path(&at), before, after);
+                changed.push(at);
+            }
+        }
         let mut approved = None;
         if let Some(mine) = wrote.approved {
             let numbers: Vec<u32> = self.lock.asset(&name).into_iter().flat_map(|held| &held.versions).map(|version| version.number).collect();
