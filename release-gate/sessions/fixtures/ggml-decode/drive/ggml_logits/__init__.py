@@ -180,16 +180,20 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
     """The engine's decoder (xs-213 phase 2, `cozy_runtime.engine.decoder`) on `PROMPT`: 512 greedy tokens, never
     stopping, drafted with the checkpoint's MTP head and plain. Each is timed warm (after the same call once, which records
     its step): `s` is the call's wall time, prefill included; `decode_s` and `steps` the decode's. Each mode runs on the
-    launcher's WHILE node and, as `<mode>-replayed`, with the host replaying the step's graph (the same step, the same
+    path this driver's check judged (`engine.launcher`: the launcher's WHILE node, else replayed), through the model's
+    declared set where it landed (`declared`), and, as `<mode>-replayed`, with the host replaying the step's graph (the same step, the same
     pod); the drafted mode also as `drafted-unfused`, replayed, with the step's small ops as torch's (the reference the
     fused kernels are held against). Every call's greedy tokens are held against Transformers' teacher-forced forward
     (`forced`), and against today's path on the same pod (`lm.generate`, drafted, warm): the first position they differ
     at, or their length. `profile` (fused) and `profile_unfused` are replayed calls; `profile_launched` the launcher's."""
     from cozy_runtime.engine.decoder import Decoder, Request
+    from cozy_runtime.engine.launch import JIT
 
     net = model.pipe.components["model"]
     ids = model.processor.tokenizer(PROMPT, add_special_tokens=False)["input_ids"]
-    rows: dict[str, object] = {"prompt_tokens": len(ids), "gpu": torch.cuda.get_device_name()}
+    run = getattr(model.engine, "run", None)  # the model's declared set where CozyEngine installed one, as a call's
+    launches = _launches(model)  # the launcher's arm on the path a call takes on this driver
+    rows: dict[str, object] = {"prompt_tokens": len(ids), "gpu": torch.cuda.get_device_name(), "declared": run is not None}
     cold, _ = _timed(net, torch.tensor([ids]), 512)  # the executor's first call: today's path as a user's first waits
     seconds, today = _timed(net, torch.tensor([ids]), 512)
     rows["today"] = {"tokens": len(today), "s": round(seconds, 3), "tok_s": round(len(today) / seconds, 1),
@@ -204,7 +208,8 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
         try:
             request = Request(prompts=[ids], max_new=512, stops=[])
             began = time.perf_counter()
-            replayed = decoders[f"{mode}-replayed"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False)
+            replayed = decoders[f"{mode}-replayed"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False,
+                                                               run=run or JIT)
             replayed(request)
             torch.cuda.synchronize()
             if mode == "drafted" or head is None:  # the engine's first call: its kernels compiled, its step captured
@@ -219,7 +224,7 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
             made_by[f"{mode}-replayed"] = replayed_tokens
             if mode == "drafted":
                 unfused = decoders["drafted-unfused"] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, launcher=False,
-                                                                     fused=False)
+                                                                     fused=False, run=run or JIT)
                 unfused(request)
                 torch.cuda.synchronize()
                 began = time.perf_counter()
@@ -230,7 +235,8 @@ def engine(ctx: Context, model: VisionLM) -> Agreement:
                                            "ms_step": round(1e3 * plain_ops.decode_s / max(plain_ops.steps, 1), 3)}
                 made_by["drafted-unfused"] = plain_ops.tokens[0]
             try:  # the launcher's arm: a failure is told and the replayed arms stand
-                decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600)
+                decoder = decoders[mode] = Decoder(net, max_rows=1, max_tokens=len(ids) + 600, run=run or JIT,
+                                                    launcher=launches)
                 decoder(request)
                 torch.cuda.synchronize()
                 began = time.perf_counter()
@@ -292,6 +298,12 @@ ASKS = (
 def bucket(ctx: Context, model: VisionLM) -> Agreement:
     """`_bucket` on the path the engine judged for this driver (`engine.launcher`), as a call decodes: the launcher,
     else the host-replayed graph; it waits for the check."""
+    return _bucket(model, launcher=_launches(model))
+
+
+def _launches(model: VisionLM) -> bool:
+    """Whether the engine launches its step on this driver (`engine.launcher`'s judgement, waited for), or replays it
+    from the host; raises where it runs neither."""
     from cozy_runtime.engine import launcher
 
     index = int(getattr(model.engine, "index", 0))
@@ -302,7 +314,7 @@ def bucket(ctx: Context, model: VisionLM) -> Agreement:
         time.sleep(1)
     if paths.launcher and paths.replayed:
         raise RuntimeError(f"this driver runs neither launch path: {paths.launcher}; {paths.replayed}")
-    return _bucket(model, launcher=not paths.launcher)
+    return not paths.launcher
 
 
 @app.entrypoint(accelerator=True)

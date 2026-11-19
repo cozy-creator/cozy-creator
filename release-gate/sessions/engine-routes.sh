@@ -21,20 +21,25 @@
 #   rows       17 questions in one `VisionLM.ask` (the drive's `rows`; AskRequest takes 16): Transformers' engine;
 #   room       the q8_0 lane with the GPU memory limited to `capped`: its weights' lease is refused at the call's start, so
 #              Transformers' engine serves it ("don't fit at the call's start").
+#   lanes      each `label=ref` through the decode drive's `engine` (the engine against today's path on one call, drafted
+#              and plain, launched and host-replayed: every engine arm agreed with Transformers' teacher-forced forward at
+#              every clear position, and drafted faster than today's path) and `bucket` (checked as the q8_0 bucket is;
+#              q8_0's is the route's), TensorD restarted before each lane so no other executor holds a model on the card.
 # Then the varena suite's `cases` (engine-loop, a section a process), the refusal path (`refused`: the launcher check's
 # records cleared and the next executor's check child killed with SIGSEGV, as a crash ends it: its calls take the
 # replayed path or Transformers' engine with the reason, with the same tokens, none crashed, no launcher pass kept), and,
 # with TensorD restarted and the GPU free, stock llama.cpp (`llama`).
 # Every call must answer with words. The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime.
 # params: tree (required), tensorfs, runtime (required), capped (6GiB), cases (engine-loop), llama (b12466; "" for none),
-#         gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (2400), skus and quoted (preflight.sh).
+#         gguf (unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf), seconds (2400), skus and quoted (preflight.sh),
+#         lanes ("": label=org/name@sha256:… pairs).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
 VARENA=$(cd "$HERE/../suites/varena/drive" && pwd)
 TREE=$(param tree '') CAPPED=$(param capped 6GiB) LLAMA=$(param llama b12466)
 CASES=$(param cases "engine-loop-loop engine-loop-polled engine-loop-attention engine-loop-ggml engine-loop-copies engine-loop-replayed")
-GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf')
+GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf') LANES=$(param lanes '')
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 [[ $CAPPED =~ ^[0-9]+[MG]iB$ ]] || fail "capped: <n>GiB"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
@@ -157,6 +162,30 @@ route rows "at most 16 rows" "$FIX/drive/rows" --model "model=$Q8"
 step cap machine update "$NAME" --gpu-memory-limit "$CAPPED" -y || fail "limit the GPU to $CAPPED"
 route room "don't fit at the call's start" "$SOURCE/qwen3/ask" --model "model=$Q8" "prompt=$STORY" max_tokens:=32 temperature:=0
 step uncap machine update "$NAME" --gpu-memory-limit off -y || say "uncap failed"
+ENGINE_ROW='"today \(.today.tok_s) tok/s (\(.today.s) s, cold \(.today.cold_s) s) · drafted \(.drafted.tok_s // .drafted.error) tok/s (\(.drafted.s) s, \(.drafted.ms_step) ms a step, \(.drafted.kept_a_step) a step, launcher \(.drafted.launcher)) · plain \(.plain.tok_s // .plain.error) tok/s (\(.plain.ms_step) ms a step) · replayed \(."drafted-replayed".ms_step) / \(."plain-replayed".ms_step) ms a step · unfused \(."drafted-unfused".ms_step) ms a step · engine cold \(.engine_cold_s) s · declared \(.declared) · forced " + ([.forced | to_entries[] | "\(.key) \(.value.agreed)/\(.value.clear)"] | join(", "))'
+for pair in $LANES; do
+  label=${pair%%=*} ref=${pair#*=}
+  step "pull-$label" model install "$ref" --on "$NAME" || { FAILED+=("pull-$label"); continue; }
+  for entry in engine bucket; do
+    [ "$entry" = bucket ] && [ "$ref" = "$Q8" ] && continue  # the route's bucket
+    n=$entry-$label
+    # TensorD restarted before the lane's first entry; its bucket follows in the same executor, its set landed by then.
+    [ "$entry" = engine ] && { step "fresh-$n" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD before $n"; }
+    step "$n" run "$FIX/drive/$entry" --model "model=$ref" --on "$NAME" || { tail -c 2000 "$OUT/$n.txt" | tee -a "$R"; FAILED+=("$n"); continue; }
+    record "$n"
+    jq -r '.result.detail // ""' "$OUT/$n.json" > "$OUT/$n-detail.json" 2> /dev/null
+    if [ "$entry" = engine ]; then
+      say "$n: $(jq -r "$ENGINE_ROW" "$OUT/$n-detail.json" 2> /dev/null)"
+      jq -e '([.drafted.tok_s, .plain.tok_s] | all(. != null)) and ([.forced | to_entries[] | select(.key != "today") | .value.agreed == .value.clear] | all)' \
+        "$OUT/$n-detail.json" > /dev/null 2>&1 || { say "FAILED: $n: an arm failed, or disagreed at a clear position"; FAILED+=("$n-forced"); continue; }
+      jq -e '.drafted.s < .today.s' "$OUT/$n-detail.json" > /dev/null 2>&1 || { say "FAILED: $n: drafted no faster than today's path"; FAILED+=("$n-faster"); }
+    else
+      say "$n: $(jq -c '{declared, launcher, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/$n-detail.json" 2> /dev/null)"
+      jq -e '.declared and ([(.drafted // [])[], (.plain // [])[]] | length == 8) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' \
+        "$OUT/$n-detail.json" > /dev/null 2>&1 || { say "FAILED: $n: not through the declared set, or a clear position disagreed"; FAILED+=("$n-forced"); }
+    fi
+  done
+done
 if [ -n "$CASES" ]; then
   pod_install stage-varena "$VARENA"
   for c in $CASES; do
