@@ -3,7 +3,9 @@
   top tokens agree, and KL(reference || lane) in nats.
 - `decode`: the lane's single-row greedy decode of `PROMPT` for a fixed number of tokens, timed with the checkpoint's
   MTP head drafting (as every call runs) and without it, warm (each after its own warm-up).
-- `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls."""
+- `quality`: one lane's top-1 next tokens and perplexity on `TEXTS`, compared across calls.
+- `opening_kernel`: cr-342's cell through the Runtime's bench (cozy-runtime#2322), in this environment, which holds
+  the Transformers it builds its small model with."""
 
 import json
 import time
@@ -12,8 +14,8 @@ from typing import cast
 
 import msgspec
 import torch
-from cozy_runtime import lm
-from cozy_runtime.author import App, Context
+from cozy_runtime import bench, lm
+from cozy_runtime.author import App, Context, call
 from cozy_runtime.vlm import VisionLM
 from torch.overrides import TorchFunctionMode
 from transformers import PreTrainedModel
@@ -89,6 +91,12 @@ def quality(ctx: Context, model: VisionLM) -> Agreement:
         nll = -logp[:-1].gather(-1, ids[0, 1:, None]).squeeze(-1)
         rows.append({"tokens": int(ids.shape[1]), "top1": logp.argmax(-1).tolist(), "ppl": float(nll.mean().exp())})
     return Agreement(json.dumps(rows))
+
+
+@app.entrypoint(accelerator=False)
+async def opening_kernel(ctx: Context) -> Agreement:
+    """A cold decode whose first steps meet a kernel still building completes (`bench.lm_opening_kernel`, cr-342)."""
+    return Agreement((await call(bench.lm_opening_kernel, bench.EmptyRequest())).detail)
 
 
 def _timed(net: PreTrainedModel, ids: torch.Tensor, tokens: int) -> tuple[float, list[int]]:

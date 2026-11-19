@@ -1,5 +1,5 @@
-"""ggml-kernels' driver (xs-213): the Runtime's GEMM bench at the ggml lane, the pod's copy bandwidth, and
-the Runtime its environment imports. Public API only: the bench runs inside the Runtime, where its kernels live."""
+"""ggml-kernels' driver (xs-213): the Runtime's GEMM bench at the ggml lane, its batch-shapes, the pod's copy
+bandwidth, and the Runtime its environment imports. Public API only: the bench runs inside the Runtime, where its kernels live."""
 
 import msgspec
 from cozy_runtime import bench
@@ -23,6 +23,12 @@ async def gemm_speed(ctx: Context, *, lanes: str = "ggml", shapes: str = "", see
 async def host_calibrate(ctx: Context) -> Measured:
     """This pod's sustained bf16 GEMM TFLOPS and device-memory copy GB/s."""
     return Measured((await call(bench.host_calibrate, bench.EmptyRequest())).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def batch_shapes(ctx: Context) -> Measured:
+    """batch-shapes raced on torch's default stream with no sync, beside the same cases settled (cozy-runtime#2309)."""
+    return Measured((await call(bench.ggml_batch_shapes, bench.EmptyRequest())).detail)
 
 
 @app.entrypoint(accelerator=False)
