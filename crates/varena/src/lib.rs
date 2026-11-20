@@ -567,10 +567,11 @@ impl State {
         if entry.high {
             return (reclaim::HIGH, entry.last_use);
         }
-        if entry.prefetched {
-            // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
-            let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
-            return (reclaim::PREFETCHED, u64::MAX - next);
+        // An unused fill the plan doesn't name is a guess, and goes first. One it names ranks by that use, as
+        // any region the plan needs: ahead of another model's idle weights (`UNPLANNED`), or a full card's
+        // demand evicted this pass's read-ahead and read it again (s14: SDXL beside an idle Klein, 0.9 GB).
+        if entry.prefetched && order.next_use(id).is_none() {
+            return (reclaim::PREFETCHED, entry.last_use);
         }
         let touched = self.phase_boundary.is_some_and(|boundary| entry.last_use > boundary);
         let looping = self.plan_phase.as_ref().is_none_or(PlanPhase::loops);

@@ -28,7 +28,7 @@ pub(crate) const HIGH: u8 = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
-    /// Peer service, owner collection and prefetch: completed memory only.
+    /// Peer service and owner collection: completed memory only.
     No,
     /// May also wait for GPU work already submitted and, before this process's weights go, an
     /// idle peer's answer; never on another thread, or on a process in a request.
@@ -48,8 +48,6 @@ pub(crate) struct Protect<'a> {
     /// A weight's demand, or a loop's working one, leaves the free pages the rest of this phase
     /// will use again: they would only map straight back. It takes weights first, these pages last.
     pub(crate) keep_phase: bool,
-    /// A guess must not take another guess.
-    pub(crate) speculative: bool,
     /// The caller's retry takes free working pages in place: what a wait completes is tried
     /// once before any working page goes.
     pub(crate) reuse_working: bool,
@@ -216,11 +214,7 @@ impl<'a> Sequence<'a> {
                     self.maximum.saturating_sub(self.released), self.protect.pool)?;
                 Ok(self.released > released)
             }
-            Step::Weights => {
-                // A guess takes no other guess and no region this phase still needs.
-                let classes = if self.protect.speculative { UNPLANNED..=PHASE_FRESH } else { PREFETCHED..=PHASE_NEXT };
-                self.weights(want, classes, waiting, waiting)
-            }
+            Step::Weights => self.weights(want, PREFETCHED..=PHASE_NEXT, waiting, waiting),
             Step::PendingWorking if waiting => {
                 if self.protect.keep_phase && working::phase_known(self.device)? {
                     return Ok(false);
@@ -513,10 +507,12 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
 }
 
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
-/// memory, where free counts completed free working pages and completed idle regions that
-/// reclaim would take anyway. With nothing measured yet, a first pass, it reads ahead only
-/// into room already free, and so does `free_only`: a fill past the one a use asked for. False
-/// declines with no IO and no waiting.
+/// memory. Short of that, a read-ahead takes what the region's demand fill would take, in its order:
+/// working pages beyond the phase's need, then the weights demand would evict (`ahead`). The eviction
+/// comes either way; ahead, the fill overlaps the work before it instead of waiting on it (var-033:
+/// a loop's kept prefix had crowded out Klein's read-ahead on an 8 GB card, 9.5% slower). With
+/// nothing measured yet, a first pass, it reads ahead only into room already free, and so does
+/// `free_only`: a fill past the one a use asked for. False declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
     let Some((gap, reusable, excess, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
@@ -524,41 +520,95 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     // Mapped free pages serve the phase's working demand first.
     let needed = bytes + gap.saturating_sub(reusable);
     let gpu = crate::gpu(device)?;
-    let into = group.first().copied();
-    let protect = Protect { regions: Some(group), speculative: true, keep_working: true, into, ..Default::default() };
-    let (room, idle) = {
-        let order = plan::order(device)?;
+    let room = {
         let gate = crate::gate(device)?;
         if gate.not_capturing().is_err() {
             return Ok(false);
         }
         let _context = gpu.driver().enter()?;
-        let room = gpu.spare(gpu.driver().memory_info()?.0).min(gpu.headroom());
-        let state = gpu.lock()?;
-        let prefix = state.prefix(&order);
-        let idle = state.entries.iter()
-            .filter(|(id, entry)| {
-                let class = state.rank(**id, entry, &order, prefix).0;
-                entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
-                    && gpu.completion(&state, **id) == Completion::Done
-            })
-            .map(|(_, entry)| entry.bytes)
-            .sum::<usize>();
-        (room, idle)
+        gpu.spare(gpu.driver().memory_info()?.0).min(gpu.headroom())
     };
     if needed <= room {
         return Ok(true);
     }
     let short = needed - room;
-    if !known || free_only || short > idle + excess {
+    if !known || free_only {
+        return Ok(false);
+    }
+    let into = group.first().copied();
+    let weights = short.saturating_sub(excess);
+    if weights > 0 && ahead(device, group, weights, into, false)? < weights {
         return Ok(false);
     }
     let trimmed = working::release_beyond_phase(device, short.min(excess), usize::MAX, None)?;
-    if trimmed < short {
-        let mut released = 0;
-        release(device, short - trimmed, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+    let left = short.saturating_sub(trimmed);
+    Ok(left == 0 || ahead(device, group, left, into, true)? >= left)
+}
+
+/// Of the weights the demand fill of `group` would evict, in its order (the weight classes by rank),
+/// those finished and not used before it: in the active phase, only what lies between the last use
+/// and the group's own plan position, a loop going round, comes first. A group the active phase
+/// doesn't name keeps the classes a guess may take. No wait: one still in use is passed over, as
+/// demand passes it within a class. The bytes found, up to `want`; `evict` takes them once they
+/// reach it.
+fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evict: bool) -> Result<usize> {
+    let order = plan::order(device)?;
+    let gpu = crate::gpu(device)?;
+    let gate = crate::gate(device)?;
+    if gate.not_capturing().is_err() {
+        return Ok(0);
     }
-    Ok(true)
+    let mut state = gpu.lock()?;
+    gpu.poll_fences(&mut state)?;
+    let at = group.iter().filter_map(|id| match order.next_use(*id) {
+        Some((0, position)) => Some(position),
+        _ => None,
+    }).min();
+    let cursor = state.last_used.and_then(|id| match order.next_use(id) {
+        Some((0, position)) => Some(position),
+        _ => None,
+    });
+    // Used before the group: after the last use and before the group's position, round the loop.
+    let sooner = |position: u64| match (at, cursor) {
+        (Some(at), Some(cursor)) if cursor < at => cursor < position && position < at,
+        (Some(at), Some(cursor)) => position > cursor || position < at,
+        (Some(at), None) => position < at,
+        (None, _) => false,
+    };
+    let prefix = state.prefix(&order);
+    let classes = if at.is_some() { CONTENTLESS..=PHASE_NEXT } else { UNPLANNED..=PHASE_FRESH };
+    let mut candidates: Vec<_> = state.entries.iter()
+        .filter(|(id, entry)| entry.idle() && !group.contains(id))
+        .map(|(id, entry)| (state.rank(*id, entry, &order, prefix), *id, entry.bytes))
+        .filter(|(rank, ..)| rank.0 == CONTENTLESS || classes.contains(&rank.0))
+        .collect();
+    candidates.sort_unstable();
+    let (mut victims, mut found, mut busy) = (Vec::new(), 0usize, None);
+    for ((class, _), id, bytes) in candidates {
+        // A class with a victim still in use is as far as demand would go: it waits there before a
+        // dearer class (`weight_pass`), so a read-ahead, which never waits, stops there too.
+        if found >= want || busy.is_some_and(|busy| class > busy) {
+            break;
+        }
+        let later = class == CONTENTLESS || !matches!(order.next_use(id), Some((0, position)) if sooner(position));
+        if !later {
+            continue;
+        }
+        if gpu.completion(&state, id) == Completion::Done {
+            victims.push(id);
+            found += bytes;
+        } else {
+            busy.get_or_insert(class);
+        }
+    }
+    if evict && found >= want {
+        let _context = gpu.driver().enter()?;
+        let mut released = 0;
+        for id in victims {
+            gpu.evict(&mut state, id, ReclaimReason::Allocator, &mut released, into)?;
+        }
+    }
+    Ok(found.min(want))
 }
 
 /// Wait for this region's own abandoned users, outside every lock.
