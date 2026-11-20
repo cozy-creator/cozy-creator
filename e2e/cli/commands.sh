@@ -1245,20 +1245,26 @@ TOML
 }
 : > "$tree/sib/e2e_rcsib/__init__.py"
 sib_floor "$major.$minor.0.dev0"
+local marker=$OUT/rcsib-marker made
+: > "$marker"
 cell rc-floor-sibling-first "$tree/dep/relay" "text=on the RC's newest" \
   || { check "rc floor sibling: the first run failed: $(run_get "$OUT" rc-floor-sibling-first .reason.message | head -c 300)"; return; }
-grep -q "$new_file" "$tree/dep/uv.lock" 2> /dev/null \
-  || { check "rc floor sibling: the first lock isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" 2> /dev/null | tail -1)"; return; }
-# The lock on the oldest build, as a lock made before the sibling's floor rose holds it; the sibling's floor at the newest.
-sed -i -e "s|$new_file|$old_file|g" -e "s|$new_sha|$old_sha|g" -e "s|version = \"$new\"|version = \"$old\"|" "$tree/dep/uv.lock"
+# The lock Calcifer made for the copy (`local_code::lock_dir`), which takes e2e-rcsib by path.
+made=$(find "$HOME/.cozy" "$RUN_PROJECT" -path '*/locked-*/lock' -newer "$marker" -size +0 2> /dev/null | xargs -r grep -l 'name = "e2e-rcdep"' 2> /dev/null | head -1)
+[ -n "$made" ] && grep -q "$new_file" "$made" \
+  || { check "rc floor sibling: the first lock (${made:-none found}) isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "${made:-/dev/null}" 2> /dev/null | tail -1)"; return; }
+# That lock, put on the oldest build, as the tree's own (orbit's held dev2376); the sibling's floor at the newest.
+sed -e "s|$new_file|$old_file|g" -e "s|$new_sha|$old_sha|g" -e "s|version = \"$new\"|version = \"$old\"|" "$made" > "$tree/dep/uv.lock"
 sib_floor "${new%%+*}"
+: > "$marker"
 if cell rc-floor-sibling "$tree/dep/relay" "text=after its sibling's floor rose"; then
-  grep -q "$new_file" "$tree/dep/uv.lock" \
-    || check "rc floor sibling: the relock isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" | tail -1)"
+  made=$(find "$HOME/.cozy" "$RUN_PROJECT" -path '*/locked-*/lock' -newer "$marker" -size +0 2> /dev/null | xargs -r grep -l 'name = "e2e-rcdep"' 2> /dev/null | head -1)
+  [ -n "$made" ] && grep -q "$new_file" "$made" \
+    || check "rc floor sibling: the relock (${made:-none found}) isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "${made:-/dev/null}" 2> /dev/null | tail -1)"
 else
   check "rc floor sibling: e2e-rcdep, locked on $old, didn't run once e2e-rcsib floored at $new: $(run_get "$OUT" rc-floor-sibling .reason.message | head -c 400)"
 fi
-echo "rc floor sibling: after the sibling's floor rose, e2e-rcdep's lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" 2> /dev/null | tail -1)"
+echo "rc floor sibling: after e2e-rcsib's floor rose to $new, e2e-rcdep's lock holds $(grep -A1 -x 'name = "cozy-runtime"' "${made:-/dev/null}" 2> /dev/null | tail -1)"
 }
 
 # cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
