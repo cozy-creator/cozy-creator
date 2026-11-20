@@ -12,7 +12,7 @@ LEGS=$(param legs lost) GPUS_ASKED=$(param gpus '')
 # The open RC's Runtime and TensorFS (params `runtime_url`, `tensorfs_url`), fetched before renting: this cozy's Runtime minor.
 RW=$(wheel_from "$OUT/wheels/runtime" "$(param runtime_url)") && [ -n "$RW" ] || fail "no Runtime wheel from $(param runtime_url)"
 TW=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs_url)") && [ -n "$TW" ] || fail "no TensorFS wheel from $(param tensorfs_url)"
-quote $((600 * $(wc -w <<< "$LEGS")))
+quote $((180 * $(wc -w <<< "$LEGS")))
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd)
 # events <ndjson>: the run's events, as its `cozy --json run` follow printed them.
 events() { sed 's/^[0-9.]* {/{/' "$1" 2> /dev/null | grep '^{'; }
