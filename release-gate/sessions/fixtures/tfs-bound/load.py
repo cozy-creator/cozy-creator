@@ -228,11 +228,11 @@ class Card:
         return int(free)
 
     def sources(self, ck: object, blocks: Sequence[tuple[str, list[tuple[str, int]]]], tag: str, keep: bool) -> list[tuple[object, int]]:
-        out = []
+        out: list[tuple[object, int]] = []
         for i, (comp, parts) in enumerate(blocks):
             where, n = placed(parts)
             page = f"tfs-bound:{tag}:{i}" if keep else None
-            out.append((self.varena.Source(self.pages, f"tfs-bound/{tag}/{comp}", i, n, checkpoint=ck, parts=where, page=page), n))
+            out.append((self.varena.Source(self.pages, f"tfs-bound/{tag}/{comp}", i, n, checkpoint=ck, parts=where, page=page), n))  # type: ignore[arg-type]
         return out
 
     def fill(self, sources: Sequence[tuple[object, int]], tag: str, limit: int, one_by_one: bool = False) -> dict[str, object]:
@@ -245,10 +245,10 @@ class Card:
             chosen.append((source, n))
             total += n
         self.pages.drain()
-        regions = [self.dev.region(n, s, f"tfs-bound/{tag}") for s, n in chosen]
+        regions = [self.dev.region(n, s, f"tfs-bound/{tag}") for s, n in chosen]  # type: ignore[arg-type]
         self.torch.cuda.synchronize()
         began = time.perf_counter()
-        uses = [None] * len(regions) if one_by_one else self.varena.fill(regions, [s for s, _ in chosen], self.s)
+        uses = [None] * len(regions) if one_by_one else self.varena.fill(regions, [s for s, _ in chosen], self.s)  # type: ignore[misc]
         self.stream.synchronize()
         together = time.perf_counter() - began
         alone, refused = [], ""
@@ -336,8 +336,8 @@ def paged(ckids: str, comp: str, reserve: float) -> dict[str, object]:
     evict(files)
     kept = card.sources(ck, blocks, "kept", True)
     began = time.perf_counter()
-    card.pages.read_ahead([s for s, _ in kept])
-    last, still = -1, 0.0
+    card.pages.read_ahead([s for s, _ in kept])  # type: ignore[misc]
+    last, still, at = -1, 0.0, began
     while still < 3.0:
         time.sleep(0.05)
         st = card.pages.stats()
@@ -447,7 +447,7 @@ def memcpy(threads: int, each: int = 256 << 20, rounds: int = 8) -> float:
 
     def work(pair: tuple[object, object]) -> None:
         for _ in range(rounds):
-            np.copyto(pair[1], pair[0])  # type: ignore[call-overload]
+            np.copyto(pair[1], pair[0])  # type: ignore[arg-type]
 
     began = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(threads) as pool:

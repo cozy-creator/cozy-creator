@@ -23,6 +23,10 @@ def num(x: object) -> float:
     return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else 0.0
 
 
+def arr(x: object) -> list[object]:
+    return x if isinstance(x, list) else []
+
+
 def first(x: object) -> Obj:
     return obj(x[0]) if isinstance(x, list) and x else {}
 
@@ -37,7 +41,7 @@ def load(path: str) -> Obj:
 out, arms = sys.argv[1], sys.argv[2:]
 ceiling, disk = load(f"{out}/ceiling.json"), load(f"{out}/disk.json")
 d, h = num(ceiling.get("disk_gbps")), num(ceiling.get("h2d_gbps"))
-cases = [obj(c) for c in disk.get("cases", []) if isinstance(c, dict)]
+cases = [obj(c) for c in arr(disk.get("cases")) if isinstance(c, dict)]
 dmax = max((num(c.get("gb_s")) for c in cases if c.get("direct")), default=0.0)
 print(f"ceilings: disk {d:.2f} GB/s ({'O_DIRECT' if ceiling.get('disk_direct') else 'buffered'}), pinned H2D {h:.1f} GB/s "
       f"({ceiling.get('streams')} streams); disk max {dmax:.2f} GB/s (grid below); {ceiling.get('cpus')} CPUs, memcpy GB/s by "
@@ -143,7 +147,7 @@ for arm in arms:
             continue
         m = obj(rec.get("measurements"))
         moved = obj(obj(first(obj(obj(m.get("memory")).get("stats")).get("varena")).get("stats")).get("moved"))
-        stages = [obj(x) for x in first(obj(rec.get("report")).get("measured")).get("stages", []) if isinstance(x, dict)]
+        stages = [obj(x) for x in arr(first(obj(rec.get("report")).get("measured")).get("stages")) if isinstance(x, dict)]
         said = ", ".join(f"{x.get('name')} {num(x.get('ms')) / 1000:.1f} s" for x in stages if num(x.get("ms")) >= 100)
         head = f"{rec.get('name')} {rec.get('status')}, executing {num(rec.get('execution_ms')) / 1000:.1f} s; {said}"
         if not moved:
@@ -157,5 +161,5 @@ for arm in arms:
 
 print("| arm | case | GB | s | GB/s | bound s | x (disk ceiling) | x (disk max) | notes |")
 print("|---|---|---|---|---|---|---|---|---|")
-for r in rows:
-    print("| " + " | ".join(r) + " |")
+for cells in rows:
+    print("| " + " | ".join(cells) + " |")
