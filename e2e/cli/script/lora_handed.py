@@ -78,3 +78,9 @@ async def handed(payload: Hand, lora: Weights) -> Read:
     request's `model.lora=` in its place."""
     models = {"model": ModelChoice(lora=(Lora(lora.ref),))} if payload.styled else None
     return await call(encoded, Ask(), models=models)
+
+
+@app.entrypoint(accelerator=False, defaults={"first": PROJ, "second": PROJ})
+def twin(payload: Ask, first: Weights, second: Weights) -> Read:
+    """Two LoRA slots and no model a LoRA applies to: a LoRA naming no slot must name one (`lora_slot_ambiguous`)."""
+    return Read(0.0)
