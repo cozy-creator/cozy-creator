@@ -17,12 +17,15 @@
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (a native dev build: `_ggml`).
 # params: tree (required: a packages checkout with qwen3), lanes (required: label=org/name@sha256:<checkpoint>, or
 #         label=org/name for that model's checkpoint in lane <label>; the first the one `room` caps), tensorfs, runtime (required), capped (24GiB; "" for none), llama (b12466; "" for none),
-#         gguf (unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf), seconds (5400), skus and quoted (preflight.sh).
+#         gguf (unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf), seconds (5400), skus and quoted (preflight.sh),
+#         parts (the steps above to run, space-separated: "ready served engine bucket room llama"; ready always runs).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
 TREE=$(param tree '') LANES=$(param lanes '') CAPPED=$(param capped 24GiB) LLAMA=$(param llama b12466)
 GGUF=$(param gguf 'unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf')
+PARTS=" $(param parts 'ready served engine bucket room llama') "
+part() { [[ $PARTS == *" $1 "* ]]; }
 [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/qwen3/pyproject.toml" ] || fail "no qwen3 in packages_refs checkout '$TREE'"
 [[ -z $CAPPED || $CAPPED =~ ^[0-9]+[MG]iB$ ]] || fail "capped: <n>GiB"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
@@ -49,7 +52,7 @@ kernels "$SOURCE/qwen3"
 . "$FIX/preflight.sh"
 drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
 drive_lock "$FIX/drive"
-if [ -n "$LLAMA" ]; then
+if [ -n "$LLAMA" ] && part llama; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
 fi
@@ -98,6 +101,9 @@ ready() {
     heard=$(note "$label-$i")
     say "$label-$i: the engine's kernels compiled on the request: $(compiled "$label-$i")$(j=$(jitted "$label-$i"); [ -n "$j" ] && echo " · $j") · ${heard:-none}"
     [ "$(compiled "$label-$i")" = 0 ] || { say "FAILED: $label-$i: an engine kernel compiled on the request"; FAILED+=("$label-$i"); }
+    # A kernel the call's step found refused (ggml's probe, a grouped kernel), as its record tells it.
+    refused=$(jq -r '[.. | strings | select(test("rel L2|refused|not finite"))] | unique | join(" | ")' "$OUT/$label-$i.json" 2> /dev/null)
+    [ -z "$refused" ] || say "$label-$i: refused: $(cut -c1-2500 <<<"$refused")"
     if [[ $heard == *"by the engine"* ]]; then say "$label: the engine serves from call $i, $(($(date +%s) - began)) s after the first"; return; fi
     sleep 15
   done
@@ -121,9 +127,9 @@ for pair in "${lanes[@]}"; do
   step "pull-$label" model install "$ref" --on "$NAME" || { FAILED+=("pull-$label"); continue; }
   fresh "ready-$label"
   ready "ready-$label" "$ref"
-  route "served-$label" "by the engine" "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0
-  route "warm-$label" "by the engine" "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0
-  if drive engine "$label" "$ref"; then
+  part served && route "served-$label" "by the engine" "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0
+  part served && route "warm-$label" "by the engine" "$SOURCE/qwen3/ask" --model "model=$ref" "prompt=$STORY" max_tokens:=512 temperature:=0
+  if part engine && drive engine "$label" "$ref"; then
     d=$OUT/engine-$label-detail.json
     say "engine $label: today $(jq -c '.today' "$d") · drafted $(jq -c '.drafted | {s, tok_s, ms_step, kept_a_step, captured, launcher, notes}' "$d") · plain $(jq -c '.plain | {s, tok_s, ms_step, captured, launcher, notes}' "$d") · cold $(jq -c '.engine_cold_s' "$d")"
     say "engine $label forced: $(jq -c '.forced | with_entries(.value |= [.agreed, .clear, .first_wrong])' "$d")"
@@ -133,14 +139,14 @@ for pair in "${lanes[@]}"; do
     jq -e '([.drafted.s, .plain.s] | map(select(. != null)) | min) < .today.s' "$d" > /dev/null ||
       { say "FAILED: engine $label: no faster than today's path"; FAILED+=("speed-$label"); }
   fi
-  if drive bucket "$label" "$ref"; then
+  if part bucket && drive bucket "$label" "$ref"; then
     d=$OUT/bucket-$label-detail.json
     say "bucket $label: $(jq -c '{declared, launcher, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear, .same_as_alone]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear, .same_as_alone]]}' "$d")"
     jq -e '.declared and ([(.drafted // [])[], (.plain // [])[]] | length >= 4) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' "$d" > /dev/null ||
       { say "FAILED: bucket $label: not through the declared set, or a clear position disagreed"; FAILED+=("bucket-$label"); }
   fi
 done
-if [ -n "$CAPPED" ]; then
+if [ -n "$CAPPED" ] && part room; then
   first=${lanes[0]}
   step cap machine update "$NAME" --gpu-memory-limit "$CAPPED" -y || fail "limit the GPU to $CAPPED"
   route room "don't fit at the call's start" "$SOURCE/qwen3/ask" --model "model=${first#*=}" "prompt=$STORY" max_tokens:=32 temperature:=0
@@ -150,7 +156,7 @@ cozy machine logs "$NAME" tensord -n 4000 2> /dev/null | grep -aE '\[kernels\]|\
 say "kernel lines: $(wc -l < "$OUT/kernel-lines.txt"); first: $(head -3 "$OUT/kernel-lines.txt" | cut -c1-200 | paste -sd ';' -)"
 # A settings-only update drains and restarts TensorD: its executors let the GPU go before llama.cpp starts.
 step uncap machine update "$NAME" --gpu-memory-limit off -y || fail "restart TensorD"
-if [ -n "$LLAMA" ]; then
+if [ -n "$LLAMA" ] && part llama; then
   read -r hf file <<<"$GGUF"
   { there "mkdir -p /w/out" < /dev/null && there "cat > /w/llama.sh" < "$FIX/llama.sh"; } || fail "copy llama.sh to the pod"
   if there "bash /w/llama.sh $LLAMA $hf $file" 3600 < /dev/null > "$OUT/llama.jsonl" 2> "$OUT/llama.err"; then
