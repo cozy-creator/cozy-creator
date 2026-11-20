@@ -97,6 +97,9 @@ name the rental (the account's rentals are one pool, cl-1224).
   held), `h3-layout-caps` (se-170: one H3 Upscale request uncapped and at 6 GiB, on two pods, keeps one window
   layout), `idle-held` (a second model beside an idle one, cl-1159), `vram-yield` (a game takes the card mid-call, xs-088).
 - **Models:** `model-ingest` puts a first-party model or an author's mirror on the Hub from a pod.
+- **Runtime contract:** `construction-card` (cr-335, D3: a factory that reads `torch.cuda` sees one card named by its variant,
+  the request after it the real card; `without` first runs a Runtime with that view removed, which must read the real card; one GPU, or
+  under `bundle`).
 - **One open issue each**, deleted when it closes: `at-rest`, `carry-ahead`, `edit-ahead`, `first-guess`, `load-ahead`,
   `needs-ahead`, `nofit-local`, `submit-at-once` (cl-1123, cl-1202), `cold-load` (cl-1318: time until inference starts
   against the machine's disk and PCIe bound), `control-plane`, `derived-disk`, `egress`, `far-reads`,
