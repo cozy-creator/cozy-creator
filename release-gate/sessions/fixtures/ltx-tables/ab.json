@@ -18,7 +18,7 @@
       ],
       "update": {
         "runtime": "44643529827",
-        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensorfs": "artifact:44646425501/tensorfs-wheel-809f55234abc5933b10c18be6f34b326a5a6430b",
         "tensord": true,
         "gpu_memory_limit": "6GiB"
       }
@@ -33,7 +33,7 @@
       ],
       "update": {
         "runtime": "44643936012",
-        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensorfs": "artifact:44646425501/tensorfs-wheel-809f55234abc5933b10c18be6f34b326a5a6430b",
         "tensord": true,
         "gpu_memory_limit": "off"
       }
@@ -48,7 +48,7 @@
       ],
       "update": {
         "runtime": "44643529827",
-        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensorfs": "artifact:44646425501/tensorfs-wheel-809f55234abc5933b10c18be6f34b326a5a6430b",
         "tensord": true,
         "gpu_memory_limit": "off"
       }
