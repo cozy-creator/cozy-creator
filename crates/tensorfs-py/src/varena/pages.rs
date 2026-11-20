@@ -12,8 +12,8 @@
 //! Two jobs run beside the fills on the tier's own threads. Reading ahead (`read_ahead`) reads the
 //! pages a request will use next into the tier, in its order, within free room: a slot's derived
 //! page on disk, else its stored bytes for its derive to read, else a plain page's stored bytes.
-//! Persisting (`persist`) writes a derived page the tier keeps to the store, so a later process
-//! reads it.
+//! Persisting (`persist`) writes a derived page the tier keeps to the OS's temporary storage
+//! (`tensorfs::derived`), so a later process reads it.
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -40,9 +40,6 @@ pub(super) const WINDOW: usize = 64 << 20;
 const FAULTERS: usize = 4;
 /// Readers a page is read ahead with: demand fills keep the larger share of the disk.
 const AHEAD_READERS: usize = 2;
-/// Derived pages written under one sync, at most.
-const PERSIST_BATCH: usize = 16;
-
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
 pub(super) struct Page {
@@ -283,11 +280,15 @@ pub(super) struct Tier {
     persisted_bytes: AtomicU64,
     persist_skipped: AtomicU64,
     persist_failed: AtomicU64,
+    /// The writer's time on the pages it wrote.
+    persist_ns: AtomicU64,
+    /// Pages sent to the writer and not yet written or skipped (`flush`).
+    persist_queued: Mutex<u64>,
+    persist_done: Condvar,
 }
 
 /// A derived page the tier keeps, `len` bytes of `set`, to write to disk as page `key` of `slot`.
 pub(super) struct Persisting {
-    pub(super) checkpoint: tensorfs::Checkpoint,
     pub(super) slot: String,
     pub(super) key: String,
     pub(super) set: String,
@@ -367,7 +368,8 @@ impl Tier {
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), making: Arc::default(), freeing: Arc::default(),
             stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
             persisted: AtomicU64::new(0), persisted_bytes: AtomicU64::new(0),
-            persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
+            persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0), persist_ns: AtomicU64::new(0),
+            persist_queued: Mutex::new(0), persist_done: Condvar::new(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier), shared);
@@ -944,7 +946,7 @@ impl Tier {
     }
 
     /// Write a derived page the tier keeps to disk behind the fills: a later process reads it
-    /// there (`Checkpoint::keep_derived`). The writer takes it from the tier when its turn comes;
+    /// there (`tensorfs::derived`). The writer takes it from the tier when its turn comes;
     /// one the tier let go by then is made again, and written then.
     pub(super) fn persist(self: &Arc<Self>, job: Persisting) {
         let sender = self.persists.get_or_init(|| {
@@ -956,55 +958,60 @@ impl Tier {
             }
             Mutex::new(sender)
         });
+        *self.persist_queued.lock().unwrap_or_else(|error| error.into_inner()) += 1;
         if sender.lock().unwrap_or_else(|error| error.into_inner()).send(job).is_err() {
             self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+            self.persisted_one();
         }
     }
 
-    /// The writer: what is queued, up to `PERSIST_BATCH` pages under one sync, a checkpoint's at a time.
+    fn persisted_one(&self) {
+        let mut queued = self.persist_queued.lock().unwrap_or_else(|error| error.into_inner());
+        *queued = queued.saturating_sub(1);
+        self.persist_done.notify_all();
+    }
+
+    /// Waits until every page sent to the writer is written or skipped: before the tier forgets its pages, so what a
+    /// merge made ahead reaches the disk (`PyPages.flush`).
+    pub(super) fn flush(&self) {
+        let mut queued = self.persist_queued.lock().unwrap_or_else(|error| error.into_inner());
+        while *queued > 0 {
+            queued = self.persist_done.wait(queued).unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    /// The writer, one page at a time into the OS's temporary storage (`tensorfs::derived`): no sync, so its writes
+    /// reach the page cache and the disk behind them, never in a fill's way.
     fn persist_behind(&self, jobs: std::sync::mpsc::Receiver<Persisting>) {
-        while let Ok(first) = jobs.recv() {
-            let mut batch = vec![first];
-            while batch.len() < PERSIST_BATCH {
-                let Ok(job) = jobs.try_recv() else { break };
-                batch.push(job);
-            }
-            let mut groups: Vec<(tensorfs::Checkpoint, Vec<(Persisting, Arc<Page>)>)> = Vec::new();
-            for job in batch {
-                let Some(page) = self.take(&job.key, &job.set, job.len, false) else {
-                    self.persist_skipped.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                match groups.iter_mut().find(|(checkpoint, _)| checkpoint.id() == job.checkpoint.id()) {
-                    Some((_, pages)) => pages.push((job, page)),
-                    None => groups.push((job.checkpoint.clone(), vec![(job, page)])),
+        while let Ok(job) = jobs.recv() {
+            self.write_one(job);
+            self.persisted_one();
+        }
+    }
+
+    fn write_one(&self, job: Persisting) {
+        let Some(page) = self.take(&job.key, &job.set, job.len, false) else {
+            self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let began = Instant::now();
+        // SAFETY: a kept page's bytes were written before it was shared, and `page` holds it.
+        let bytes = unsafe { std::slice::from_raw_parts(page.ptr.cast_const(), page.len) };
+        match tensorfs::derived::keep(&job.slot, &job.key, bytes) {
+            Ok(true) => {
+                self.persisted.fetch_add(1, Ordering::Relaxed);
+                self.persisted_bytes.fetch_add(page.len as u64, Ordering::Relaxed);
+                self.persist_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if let Some(source) = job.source.upgrade() {
+                    source.persisted();
                 }
             }
-            for (checkpoint, pages) in groups {
-                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|(job, page)| {
-                    // SAFETY: a kept page's bytes were written before it was shared, and `pages` holds it.
-                    let bytes = unsafe { std::slice::from_raw_parts(page.ptr.cast_const(), page.len) };
-                    (job.slot.as_str(), job.key.as_str(), bytes)
-                }).collect();
-                match checkpoint.keep_derived(&written) {
-                    Ok(kept) => {
-                        for ((job, page), object) in pages.iter().zip(kept) {
-                            if object.is_none() {
-                                self.persist_skipped.fetch_add(1, Ordering::Relaxed);
-                                continue;
-                            }
-                            self.persisted.fetch_add(1, Ordering::Relaxed);
-                            self.persisted_bytes.fetch_add(page.len as u64, Ordering::Relaxed);
-                            if let Some(source) = job.source.upgrade() {
-                                source.persisted();
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if self.persist_failed.fetch_add(pages.len() as u64, Ordering::Relaxed) == 0 {
-                            tracing::warn!("derived pages were not written to disk: {error}");
-                        }
-                    }
+            Ok(false) => {
+                self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                if self.persist_failed.fetch_add(1, Ordering::Relaxed) == 0 {
+                    tracing::warn!("derived pages were not written to disk: {error}");
                 }
             }
         }
@@ -1253,6 +1260,10 @@ impl PyPages {
     fn pin_idle(&self, py: Python<'_>, waiting: &Bound<'_, PyAny>) -> PyResult<()> {
         self.tier.pin_idle(py, waiting)
     }
+    /// Every derived page sent to disk written there (`Tier::flush`).
+    fn flush(&self, py: Python<'_>) {
+        py.detach(|| self.tier.flush());
+    }
     /// A set's pages go, or every page with none named. A reading of `set` alone keeps the rest.
     #[pyo3(signature = (set = None))]
     fn forget(&self, py: Python<'_>, set: Option<String>) {
@@ -1319,11 +1330,12 @@ impl PyPages {
         row.set_item("read_ahead", read_ahead_pages)?;
         row.set_item("read_ahead_bytes", read_ahead_bytes)?;
         row.set_item("read_ahead_refused", read_ahead_refused)?;
-        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed")?;
+        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, and the writer's ns")?;
         row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
         row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
         row.set_item("persist_skipped", self.tier.persist_skipped.load(Ordering::Relaxed))?;
         row.set_item("persist_failed", self.tier.persist_failed.load(Ordering::Relaxed))?;
+        row.set_item("persist_ns", self.tier.persist_ns.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }

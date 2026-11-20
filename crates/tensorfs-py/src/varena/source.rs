@@ -1,5 +1,5 @@
 //! TensorFS as varena's Source: a Region's bytes from its host page, else its derived page on disk
-//! (a derive made it in an earlier process: `Store::derived`), else each stored object range from
+//! (a derive made it in an earlier process: `tensorfs::derived`), else each stored object range from
 //! where it already is (another set's resident Region on this GPU, that set's kept page, or its
 //! own bytes the tier read ahead), else the store (fetched if a caller is waiting), then its
 //! derive on the thread that called `use`. A worker running ahead of demand never sees Python:
@@ -172,21 +172,23 @@ impl Inner {
         self.page.as_deref()
     }
 
-    /// Its slot's page `page` on disk, or with none the one used last, under whatever overlay.
+    /// Its slot's page `page` on disk, or with none the one used last, under whatever overlay
+    /// (`tensorfs::derived`, the OS's temporary storage).
     fn derived_page(&self, page: Option<&str>) -> Option<OnDisk> {
-        let (slot, stored) = (self.slot.as_ref()?, self.stored.as_ref()?);
-        let found = stored.checkpoint.derived(slot, page, true);
-        let (derived, source) = found.inspect_err(|error| tracing::warn!("a derived page could not be looked up: {error}")).ok()??;
-        if derived.object.length != self.bytes as u64 {
+        let slot = self.slot.as_ref().filter(|_| self.stored.is_some())?;
+        let found = tensorfs::derived::find(slot, page);
+        let found = found.inspect_err(|error| tracing::warn!("a derived page could not be looked up: {error}")).ok()??;
+        if found.len != self.bytes as u64 {
             return None;
         }
+        let object = tensorfs::format::ObjectRef { sha256: found.page.clone(), length: found.len };
         let items = vec![Item {
             offset: 0,
-            len: derived.object.length,
-            source: ItemSource::Object(ObjectRange { off: 0, len: derived.object.length, obj: derived.object }),
+            len: found.len,
+            source: ItemSource::Object(ObjectRange { off: 0, len: found.len, obj: object.clone() }),
             part_end: true,
         }];
-        Some(OnDisk { page: derived.page, items, source })
+        Some(OnDisk { page: found.page, items, source: Store::files(vec![(object, found.file)], true, 0) })
     }
 
     /// The page its slot's block was derived as last, under whatever overlay: what a read ahead
@@ -491,10 +493,9 @@ impl Inner {
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
                         let kept = self.keep(key, py, &view, spare.take())?;
-                        if let (Some(_), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
+                        if let (Some(_), Some(slot), Some(_), true) = (kept, &self.slot, &self.stored, changed) {
                             self.tier.persist(Persisting {
-                                checkpoint: stored.checkpoint.clone(), slot: slot.clone(), key: key.clone(),
-                                set: self.set.clone(), len: self.bytes, source: this.clone(),
+                                slot: slot.clone(), key: key.clone(), set: self.set.clone(), len: self.bytes, source: this.clone(),
                             });
                         }
                     }

@@ -1,7 +1,7 @@
 # derived-state.sh <reset|settle|census>: on a rented pod's root shell (machines.sh `pod_derived`), what the machine keeps from
 # earlier runs besides its weights and installs.
 # - reset clears it, before an update restarts the machine:
-#   - TensorFS derived pages (LoRA bakes, `/var/lib/tensorfs/derived`)
+#   - TensorFS derived pages (LoRA bakes, in the OS's temporary storage: `/var/tmp/cozy-derived-<uid>/<boot>`)
 #   - the stage memo, learned memory peaks, the kernel store and JIT caches (`/var/lib/cozy/tensord/gpu/...`, and any
 #     project's stage memo)
 #   - the page cache of the store's files.
@@ -13,11 +13,12 @@
 # An arm that finds another arm's state reads it as its own (44006261838: the candidate read the 0.25.0 arm's Turbo LoRA
 # bakes, Flux-2 load 79 s -> 8.8 s).
 set -u
-G=/var/lib/cozy/tensord/gpu S=/var/lib/tensorfs
+G=/var/lib/cozy/tensord/gpu S=/var/lib/tensorfs D=$(echo /var/tmp/cozy-derived-*/*/)
 memos=$({ echo "$G/stage-memo"; find /var/lib/cozy -maxdepth 7 -type d -name stage-memo -not -path "*/generations/*" -not -path "*/editable/*" 2>/dev/null; } | sort -u)
 files() { n=0; for d in "$@"; do [ -d "$d" ] && n=$((n + $(find "$d" -mindepth 1 -type f 2>/dev/null | wc -l))); done; echo "$n"; }
 if [ "${1:-census}" = reset ] || [ "${1:-census}" = settle ]; then
-  rm -rf "$S/derived"
+  # shellcheck disable=SC2086 # boot directories, none with spaces
+  rm -rf $D "$S/derived"; D=  # the store's: where a TensorFS before cl-1318 kept them
   caches=; [ "$1" = settle ] || caches="$G/kernels $G/jit"
   # shellcheck disable=SC2086 # one path a line, none with spaces
   for d in $memos "$G/peaks" $caches; do [ -d "$d" ] && find "$d" -mindepth 1 -delete 2>/dev/null; done
@@ -37,4 +38,5 @@ for top, _, names in os.walk(sys.argv[1]):
 PY
 fi
 # shellcheck disable=SC2086
-echo "derived $(files "$S/derived") memo $(files $memos) peaks $(files "$G/peaks") kernels $(files "$G/kernels") jit $(files "$G/jit") cached_gib $(awk '/^Cached:/ {printf "%.1f", $2 / 1048576}' /proc/meminfo)"
+# shellcheck disable=SC2086
+echo "derived $(files $D) memo $(files $memos) peaks $(files "$G/peaks") kernels $(files "$G/kernels") jit $(files "$G/jit") cached_gib $(awk '/^Cached:/ {printf "%.1f", $2 / 1048576}' /proc/meminfo)"
