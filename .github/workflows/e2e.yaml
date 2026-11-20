@@ -6,8 +6,10 @@ name: e2e
 # every published first-party package release installs and imports on the candidate set. The GPU suites run in the
 # release gate, not here. `e2e` always reports.
 #   Required for merges into master: it runs on the merge queue's group (merge_group), on the final PR + branch
-#   state; on a pull request, and in an rc/* queue, `affected` and every suite are skipped and `e2e` passes at once:
-#   an RC merges on `build`, and its head runs every suite after (rc-e2e.yaml; Paul, 11-12). A queue entry's base
+#   state; on a pull request every suite is skipped and `e2e` passes at once. An RC merges on `build`, and its head runs every
+#   suite after (rc-e2e.yaml; Paul, 11-12); its queue runs, for a PR whose diff touches crates/cli/ or crates/calcifer/, the Linux
+#   cli shards ci/affected picks from that diff and the edge set, edge first and failing fast (`queue`; the coordinator, 11-20:
+#   #4094 reached the RC red, and all 38 shards a merge cost too much). A queue entry's base
 #   (merge_group.base_sha) is the entry ahead of it, so it selects only its own PR's suites: the rulesets' ALLGREEN
 #   (here, cozy-runtime, packages) makes every entry pass its own. HEADGREEN let a later entry's green carry red ones ahead of it in (cl-677).
 #   Other repos (their own merge_group) and dispatches call it:
@@ -198,20 +200,21 @@ concurrency:
 
 jobs:
   affected:
-    # On a pull request (here or a caller's) nothing runs: the merge queue's group is where e2e runs. Nor in an RC's
-    # queue: its head runs it once merged (rc-e2e.yaml).
-    if: github.event_name != 'pull_request' && !(github.event_name == 'merge_group' && startsWith(github.event.merge_group.base_ref, 'refs/heads/rc/'))
+    # On a pull request (here or a caller's) nothing runs: the merge queue's group is where e2e runs. An RC's queue runs picked cli
+    # shards alone (`queue`); its head runs the rest once merged (rc-e2e.yaml).
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
     outputs:
-      selection: ${{ steps.changed.outputs.selection || steps.select.outputs.selection }}
-      cli_edge: ${{ steps.changed.outputs.edge_shards || '[]' }}
-      cli_rest: ${{ steps.changed.outputs.rest_shards || '[]' }}
-      linux: ${{ steps.select.outputs.linux }}
-      runners: ${{ steps.select.outputs.runners }}
-      native_runners: ${{ steps.select.outputs.native_runners }}
-      native_build: ${{ steps.select.outputs.native_build }}
+      selection: ${{ steps.queue.outputs.selection || steps.changed.outputs.selection || steps.select.outputs.selection }}
+      queue: ${{ steps.queue.outputs.selection != '' }}
+      cli_edge: ${{ steps.queue.outputs.edge_shards || steps.changed.outputs.edge_shards || '[]' }}
+      cli_rest: ${{ steps.queue.outputs.rest_shards || steps.changed.outputs.rest_shards || '[]' }}
+      linux: ${{ steps.queue.outputs.linux || steps.select.outputs.linux }}
+      runners: ${{ steps.queue.outputs.selection && '[]' || steps.select.outputs.runners }}
+      native_runners: ${{ steps.queue.outputs.selection && '[]' || steps.select.outputs.native_runners }}
+      native_build: ${{ steps.queue.outputs.selection && 'false' || steps.select.outputs.native_build }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.pin.outputs.ref }}
       creator: ${{ steps.pin.outputs.creator }}
@@ -413,6 +416,33 @@ jobs:
           echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
+      # An RC's queue entry, by its own PR's diff (merge_group.base_sha is the entry ahead): one touching crates/cli/ or crates/calcifer/
+      # runs the Linux cli shards ci/affected --shards picks from that diff (each shard whose paths it touches, every one for a product
+      # path no shard names) and the edge set, edge first (`cli-edge`); any other runs nothing. A red the picker missed that a full RC
+      # run later finds is a fix to ci/suites.toml's map (store.rs → local-code was the first).
+      - id: queue
+        if: github.event_name == 'merge_group' && startsWith(github.event.merge_group.base_ref, 'refs/heads/rc/')
+        env:
+          REF: ${{ steps.pin.outputs.ref }}
+          BASE: ${{ steps.what.outputs.base }}
+          SELECTION: ${{ steps.select.outputs.selection }}
+        run: |
+          if ! git -C src diff --name-only "$BASE" "$REF" | grep -qE '^crates/(cli|calcifer)/'; then
+            echo 'selection={"suites":[],"os":["linux"],"build":[],"packages":[],"why":{}}' >> "$GITHUB_OUTPUT"
+            echo 'linux=false' >> "$GITHUB_OUTPUT"
+            echo "### RC queue: no crates/cli/ or crates/calcifer/ change: no suite" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          conf=.creator/ci/suites.toml
+          python3 -c 'import json, sys, tomllib; print(json.dumps({s: sys.argv[2] for s in tomllib.load(open(sys.argv[1], "rb"))["cozy-creator"]["shards"]["paths"]}))' \
+            "$conf" "$BASE" > "$RUNNER_TEMP/queue-bases.json"
+          picked=$(cd src && python3 ../.creator/ci/affected --shards "$REF" "$RUNNER_TEMP/queue-bases.json")
+          edge=$(python3 -c 'import json, sys, tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], "rb"))["cozy-creator"]["shards"]["edge"]))' "$conf")
+          echo "edge_shards=$(jq -c --argjson e "$edge" '[.shards[] | select(. as $s | $e | index($s))]' <<< "$picked")" >> "$GITHUB_OUTPUT"
+          echo "rest_shards=$(jq -c --argjson e "$edge" '[.shards[] | select(. as $s | $e | index($s) | not)]' <<< "$picked")" >> "$GITHUB_OUTPUT"
+          echo "selection=$(jq -c '.suites = ["cli"] | .os = ["linux"]' <<< "$SELECTION")" >> "$GITHUB_OUTPUT"
+          echo 'linux=true' >> "$GITHUB_OUTPUT"
+          { echo "### RC queue: picked cli shards"; echo '```'; jq -r '.why | to_entries[] | select(.key != "cpu" and .key != "imports") | "\(.key): \(.value)"' <<< "$picked"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       # cl-1128 (Paul, 11-17: "test the hardest cases first … test only so far as you need to"): on an RC push, the edge set and each
       # other shard (and cpu, imports) whose paths changed since it last went green on this RC (ci/suites.toml's
       # [cozy-creator.shards]), read from the RC's commits' rc-e2e check runs in one GraphQL query. Edge shards first.
@@ -792,7 +822,7 @@ jobs:
   cli-edge:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate, hub]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards == 'changed' && needs.affected.outputs.cli_edge != '[]'
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && (inputs.shards == 'changed' || needs.affected.outputs.queue == 'true') && needs.affected.outputs.cli_edge != '[]'
     strategy:
       fail-fast: true
       matrix:
@@ -990,7 +1020,7 @@ jobs:
   cli:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate, hub, cli-edge]
-    if: ${{ !cancelled() && needs.affected.result == 'success' && needs.candidate.result == 'success' && needs.hub.result == 'success' && contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && (inputs.shards != 'changed' || ((needs.cli-edge.result == 'success' || needs.cli-edge.result == 'skipped') && needs.affected.outputs.cli_rest != '[]')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator') }}
+    if: ${{ !cancelled() && needs.affected.result == 'success' && needs.candidate.result == 'success' && needs.hub.result == 'success' && contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && ((inputs.shards != 'changed' && needs.affected.outputs.queue != 'true') || ((needs.cli-edge.result == 'success' || needs.cli-edge.result == 'skipped') && needs.affected.outputs.cli_rest != '[]')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1002,7 +1032,7 @@ jobs:
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
         # answers: Status answers while the journal's commits wait for the disk (cl-1202).
         # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
-        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_rest || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
+        shard: ${{ fromJSON((inputs.shards == 'changed' || needs.affected.outputs.queue == 'true') && needs.affected.outputs.cli_rest || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -1500,27 +1530,27 @@ jobs:
     timeout-minutes: 10
     steps:
       # Coverage (e2e/coverage.py) over every cli shard's calls: each command and flag has a test, and each PR-tier one ran.
-      # A dispatch of some shards (`shards`) checks none.
+      # A dispatch of some shards (`shards`), or an RC queue's, checks none.
       # A taken TensorD is a release, not the CLI this checkout builds: no coverage.
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == '' && needs.affected.outputs.queue != 'true'
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == '' && needs.affected.outputs.queue != 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-cli-linux-*
           path: ${{ runner.temp }}/cli
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == '' && needs.affected.outputs.queue != 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: candidate-cozy-*
           merge-multiple: true
           path: ${{ runner.temp }}/candidates
       - name: coverage
-        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == ''
+        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == '' && inputs.shards == '' && needs.affected.outputs.queue != 'true'
         run: |
           chmod +x "$RUNNER_TEMP/candidates/cozy"
           python3 -I .creator/e2e/coverage.py check "$RUNNER_TEMP/candidates/cozy" .creator/e2e/coverage.toml --tiers pr \
