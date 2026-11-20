@@ -52,7 +52,7 @@ kernels "$SOURCE/qwen3"
 drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
 drive_lock "$FIX/drive"
 [ -z "$CASES" ] || { drive_check "$VARENA" varena_drive; drive_lock "$VARENA"; }
-if [ -n "$LLAMA" ]; then
+if [ -n "$LLAMA" ] || want refused || want records; then  # each reads or writes the pod over `cozy machine ssh`
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
 fi
