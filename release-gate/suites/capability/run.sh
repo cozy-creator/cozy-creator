@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Suite `capability`: one cell, `long-project-run`. e2e/skew/run.sh --command OUT COZY RUNTIME TENSORFS, signed in to CI's throwaway
-# Hub. Escaped in 0.26.0-0.27.1 (TensorD hub.rs): a capability's renewal looked its runs up outside their private scope, so it never
+# Suite `capability`: one cell, `long-project-run`. e2e/skew/run.sh --admin --command OUT COZY RUNTIME TENSORFS, signed in to CI's
+# throwaway Hub as its admin (a fresh account's grant doesn't cover making a private model: 44662230988). Escaped in 0.26.0-0.27.1 (TensorD hub.rs): a capability's renewal looked its runs up outside their private scope, so it never
 # found a project's run on this computer's machine. Redeemed once as the run began, its token was never renewed: past the Hub's 15
 # minutes every read under it was refused, a private LoRA's weights mid-render or the upload at its end (the coordinator 11-20, of
 # 44636417703: "A private LoRA or model in a local render over 15 minutes failing mid-run is a user-facing loss in the release").
