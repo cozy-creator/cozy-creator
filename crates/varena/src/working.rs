@@ -133,9 +133,13 @@ pub struct WorkingStats {
     pub driver_memory_longest_ns: u64,
     /// Pages moved to a new block's address rather than released and made again (`assemble`).
     pub remapped_bytes: u64,
+    pub remapped_chunks: u64,
     /// Their old addresses' unmaps (`retire`), all and the longest: a `cuMemUnmap` that synchronizes shows here.
     pub retire_unmap_ns: u64,
     pub retire_unmap_longest_ns: u64,
+    /// Frees a working allocation still waited on the host for, as another stream or several used them.
+    pub pending_cross_stream: u64,
+    pub pending_cross_stream_bytes: u64,
     pub observed_mapped: u64,
     pub observed_retired: u64,
     pub observed_ns: u64,
@@ -1039,6 +1043,7 @@ impl Device {
         }
         // The old blocks go, their order kept for what the new segment holds past this block.
         let (mut waits, mut ordered) = (Waits::new(), false);
+        let moved_chunks = moved.len() as u64;
         for (base, index) in moved {
             let chunk = state.segments[&base].chunks[index];
             let (start, end) = (base + chunk.offset as u64, base + (chunk.offset + chunk.bytes) as u64);
@@ -1072,6 +1077,7 @@ impl Device {
         }
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         state.stats.remapped_bytes += gathered as u64;
+        state.stats.remapped_chunks += moved_chunks;
         let mut segment = Segment::new(total, class, None);
         segment.chunks = chunks;
         state.segments.insert(ptr, segment);
@@ -1697,9 +1703,12 @@ impl Device {
 
     // Events whose completion would free `limit` bytes of whole segments and released pages.
     // Each is already submitted: no live allocation, graph reference or owner action is awaited.
-    fn pending_events(&self, state: &State, limit: usize, exclude: Option<PoolId>, stream: Option<u64>) -> Vec<usize> {
+    /// Also the frees among them that wait because another stream or several used them (none of
+    /// `stream`'s own, which `assemble` moves), as (count, bytes).
+    fn pending_events(&self, state: &State, limit: usize, exclude: Option<PoolId>, stream: Option<u64>) -> (Vec<usize>, (u64, u64)) {
         let fences = self.fences();
         let (mut events, mut bytes) = (Vec::new(), 0usize);
+        let mut cross = (0u64, 0u64);
         for (base, segment) in &state.segments {
             if bytes >= limit {
                 break;
@@ -1722,6 +1731,11 @@ impl Device {
             for (_, block) in &mut blocks {
                 if !ordered(block) {
                     fences.events(&block.waits, &mut events);
+                    let other = block.life == Life::Pending || (block.life == Life::Ready
+                        && matches!((block.reusable_on, stream), (Some(on), Some(own)) if on != own));
+                    if other && !fences.complete(&block.waits) {
+                        cross = (cross.0 + 1, cross.1 + block.capacity as u64);
+                    }
                 }
             }
             if let Some(pool) = pool {
@@ -1732,7 +1746,7 @@ impl Device {
             }
         }
         cache::pending_events(state, &fences, self.page(), limit.saturating_sub(bytes), &mut events);
-        events
+        (events, cross)
     }
 }
 
@@ -2384,10 +2398,12 @@ pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>, strea
         let _context = owner.driver().enter()?;
         let polled = owner.poll(&mut state);
         polled.map_err(|error| owner.fail(&mut state, error))?;
-        let events = owner.pending_events(&state, want, keep, stream);
+        let (events, (cross, cross_bytes)) = owner.pending_events(&state, want, keep, stream);
         if events.is_empty() {
             return Ok(false);
         }
+        state.stats.pending_cross_stream += cross;
+        state.stats.pending_cross_stream_bytes += cross_bytes;
         (events, gate.hold()?)
     };
     reclaim::wait_outside(owner, &events, false)?;
