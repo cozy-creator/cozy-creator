@@ -38,7 +38,7 @@
       ],
       "max_s": 600,
       "update": {
-        "runtime": "44660743488",
+        "runtime": "44661684600",
         "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
         "gpu_memory_limit": "6GiB"
       }
