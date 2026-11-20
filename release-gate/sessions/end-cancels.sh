@@ -3,7 +3,7 @@
 # the step's cozy and cancels its run before its pod ends (lib.sh `finish`, machines.sh `cancel_runs`). e2e/cli/weightless `wait`
 # (300 s) is asked of the pod through `step`; once it runs, a watcher TERMs the session.
 . "$(dirname "$0")/lib.sh"
-quote 600
+quote 300
 rent
 W=$(cd "$(dirname "$0")/../../e2e/cli/weightless" && pwd) || fail "no e2e/cli/weightless in this checkout"
 ( for _ in $(seq 1 90); do
