@@ -1976,6 +1976,30 @@ PY
 in_project "$project" --json run "$pkg/inspect" "seed:=$seed" "model.model=$model@$int8" --on local > "$root/inspect.ndjson" 2> "$root/inspect.err" \
   && grep -q '"scheme": *"int8.convrot"' "$root/inspect.ndjson" \
   || check "quantize outside: the int8 lane $model@$int8 didn't read back as int8.convrot near its source: $(tail -c 400 "$root/inspect.ndjson") $(tail -c 200 "$root/inspect.err")"
+# cl-1326 (the coordinator, 11-20: an RC cozy "can't read a quantize result from a machine on released Runtime 0.48.0"; Paul 11-16: skew
+# both ways, so cozy 0.28 must work with machines that haven't updated yet): the same quantize with local held on the released Runtime and
+# its TensorFS, as a machine that hasn't updated holds them, read to its int8 checkpoint by this cozy's TensorD.
+local rt tfs was_rt was_tfs skewed
+rt=$(curl -fsS --retry 3 https://pypi.org/pypi/cozy-runtime/json | jq -r '.info.version // empty') || rt=
+tfs=$(curl -fsS --retry 3 https://pypi.org/pypi/tensorfs/json | jq -r '.info.version // empty') || tfs=
+if [ -z "$rt" ] || [ -z "$tfs" ]; then
+  check "quantize skew: PyPI named no released Runtime ('$rt') or TensorFS ('$tfs')"
+else
+  cozy --json machine show local > "$root/skew-before.json" 2>&1 || true
+  was_rt=${CAND_RT:-$(jq -r '.status.runtime // empty' "$root/skew-before.json")} was_tfs=${CAND_TFS:-$(jq -r '.status.tensorfs // empty' "$root/skew-before.json")}
+  if cozy --json machine update local --runtime "$rt" --tensorfs "$tfs" -y > "$root/skew-update.json" 2>&1; then
+    machine_ready
+    code=0; (cd "$outside" && cozy --json model quantize "$model@$bf16" --lane int8 --package "$pkg" --on local -y) > "$root/skew.ndjson" 2> "$root/skew.err" || code=$?
+    skewed=$(int8_of "$root/skew.ndjson")
+    if [ "$code" = 0 ] && [ -n "$skewed" ]; then echo "quantize skew: on Runtime $rt / TensorFS $tfs, $model@$bf16 → int8 $skewed"
+    else check "quantize skew: cozy model quantize on local held on Runtime $rt / TensorFS $tfs: exit $code, no int8 checkpoint: $(tail -c 400 "$root/skew.ndjson") $(tail -c 200 "$root/skew.err")"; fi
+  else
+    check "quantize skew: local refused Runtime $rt / TensorFS $tfs: $(tail -c 300 "$root/skew-update.json")"
+  fi
+  cozy --json machine update local --runtime "$was_rt" ${was_tfs:+--tensorfs "$was_tfs"} -y > "$root/skew-back.json" 2>&1 \
+    || check "quantize skew: local refused Runtime $was_rt again: $(tail -c 300 "$root/skew-back.json")"
+  machine_ready
+fi
 cozy --json logout > "$root/logout.json" 2>&1 || check "quantize outside: logout: $(tail -c 300 "$root/logout.json")"
 }
 
