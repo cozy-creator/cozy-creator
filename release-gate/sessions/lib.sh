@@ -56,6 +56,23 @@ wheel_from() {
   esac
   find "$1" -name '*manylinux*x86_64*.whl' | head -1
 }
+# installs_together <label> <runtime wheel> <tensorfs wheel> [package dir]: on the runner, before anything is rented (the $0
+# pre-flight too), the two wheels resolve together as a pod's update installs them (`uv pip install --dry-run`), and stand in for
+# the package's lock by TensorD's rule (fixtures/ggml-decode/stands.py). cr-348's 44646440593 rented a 2x RTX 5090 for $0.435 to
+# learn its arm's Runtime and TensorFS "do not install together".
+STANDS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/ggml-decode/stands.py
+installs_together() {
+  local label=$1 rt=$2 tfs=$3 pkg=${4:-} env=$OUT/dry-env said
+  [ -x "$env/bin/python" ] || uv venv -q -p 3.12 "$env" > "$OUT/dry-env.txt" 2>&1 ||
+    fail "$label: no Python 3.12 to check its wheels in: $(tail -c 300 "$OUT/dry-env.txt")"
+  uv pip install --dry-run -p "$env" "$rt" "$tfs" > "$OUT/dry-${label// /-}.txt" 2>&1 ||
+    fail "$label: ${rt##*/} and ${tfs##*/} do not install together: $(grep -iE -A4 'no solution' "$OUT/dry-${label// /-}.txt" | paste -sd' ' | tr -s ' ' | cut -c1-500)"
+  said="${rt##*/} and ${tfs##*/} install together"
+  if [ -n "$pkg" ] && [ -f "$pkg/uv.lock" ]; then
+    said="$said; $(uv run -q --no-project --with packaging python "$STANDS" "$pkg/uv.lock" "${pkg##*/}'s lock" "$rt" "$tfs")" || fail "$label: $said"
+  fi
+  say "$label: $said"
+}
 # made <name>: the checkpoint a step's upload, quantize or run made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…`
 # line, or a run's `<slot> commit <org/name>@sha256:…` one (a machine's own `checkpoint sha256:…` line names no model);
 # cozy 0.24's quantize says `commit`.
