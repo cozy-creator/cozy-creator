@@ -90,14 +90,15 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
 fi
 # {digits}: cap-sweep's 65,000 characters of digit groups (a long prompt).
 DIGITS=$(awk 'BEGIN { x = 20261118; for (i = 0; i < 16250; i++) { x = (x * 48271) % 2147483647; printf "%03d ", x % 1000 } }')
-# {pic1}..{pic16} and {depth}: cap-sweep's 2048x2048 pictures and depth map, made here when a cell names one (var-030).
+# {pic1}..{pic16}, {depth} and {lines}: cap-sweep's 2048x2048 pictures, depth map and edge map, made here when a cell names one.
 PICS=$OUT/media
-if jq -e 'any(.[].args[]?; test("\\{pic[0-9]+\\}|\\{depth\\}"))' <<<"$CELLS" > /dev/null; then
+if jq -e 'any(.[].args[]?; test("\\{pic[0-9]+\\}|\\{depth\\}|\\{lines\\}"))' <<<"$CELLS" > /dev/null; then
   mkdir -p "$PICS"; FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd); SRC=("$REF/seed.jpg" "$FX/lighthouse.jpg" "$FX/teapot.jpg")
   for i in $(seq 16); do
     ffmpeg -nostdin -v error -y -i "${SRC[$((i % 3))]}" -vf "hue=h=$((i * 22)),scale=2048:2048:flags=lanczos" -q:v 2 "$PICS/pic$i.jpg" || fail "picture $i"
   done
   ffmpeg -nostdin -v error -y -i "$REF/seed.jpg" -vf "format=gray,gblur=sigma=8" "$PICS/depth.png" || fail "the depth map"
+  ffmpeg -nostdin -v error -y -i "$REF/seed.jpg" -vf "edgedetect=low=0.1:high=0.3,negate" "$PICS/lines.png" || fail "the edge map"
 fi
 LONG=$OUT/long.jpg
 if jq -e 'any(.[].args[]?; contains("{long}"))' <<<"$CELLS" > /dev/null; then
@@ -455,7 +456,7 @@ for k in "${names[@]}"; do
   if [ -n "$u" ] && [ "${ENDED[$u]:-}" = completed ]; then say "$k: not run: $u completed"; continue; fi
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
-    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{depth\}/$PICS/depth.png}; a=${a//\{digits\}/$DIGITS}; a=${a//\{long\}/$LONG}; a=${a//\{clip5\}/$OUT/clip5.mp4}; a=${a//\{clip15\}/$OUT/clip15.mp4}
+    a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{depth\}/$PICS/depth.png}; a=${a//\{lines\}/$PICS/lines.png}; a=${a//\{digits\}/$DIGITS}; a=${a//\{long\}/$LONG}; a=${a//\{clip5\}/$OUT/clip5.mp4}; a=${a//\{clip15\}/$OUT/clip15.mp4}
     while [[ $a =~ \{pic([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/$PICS/pic${BASH_REMATCH[1]}.jpg}; done
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
