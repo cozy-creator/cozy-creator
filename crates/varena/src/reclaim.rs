@@ -583,15 +583,22 @@ fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evi
         .filter(|(rank, ..)| rank.0 == CONTENTLESS || classes.contains(&rank.0))
         .collect();
     candidates.sort_unstable();
-    let (mut victims, mut found) = (Vec::new(), 0usize);
+    let (mut victims, mut found, mut busy) = (Vec::new(), 0usize, None);
     for ((class, _), id, bytes) in candidates {
-        if found >= want {
+        // A class with a victim still in use is as far as demand would go: it waits there before a
+        // dearer class (`weight_pass`), so a read-ahead, which never waits, stops there too.
+        if found >= want || busy.is_some_and(|busy| class > busy) {
             break;
         }
         let later = class == CONTENTLESS || !matches!(order.next_use(id), Some((0, position)) if sooner(position));
-        if later && gpu.completion(&state, id) == Completion::Done {
+        if !later {
+            continue;
+        }
+        if gpu.completion(&state, id) == Completion::Done {
             victims.push(id);
             found += bytes;
+        } else {
+            busy.get_or_insert(class);
         }
     }
     if evict && found >= want {
