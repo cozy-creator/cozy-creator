@@ -289,7 +289,7 @@ jobs:
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
-          bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --out "$RUNNER_TEMP/capability" "${args[@]}" \
+          bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --admin --out "$RUNNER_TEMP/capability" "${args[@]}" \
             --command creator/release-gate/suites/capability/run.sh
       - if: always()
         uses: ./creator/e2e/publish
