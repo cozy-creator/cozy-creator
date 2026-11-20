@@ -133,6 +133,9 @@ pub struct WorkingStats {
     pub driver_memory_longest_ns: u64,
     /// Pages moved to a new block's address rather than released and made again (`assemble`).
     pub remapped_bytes: u64,
+    /// Their old addresses' unmaps (`retire`), all and the longest: a `cuMemUnmap` that synchronizes shows here.
+    pub retire_unmap_ns: u64,
+    pub retire_unmap_longest_ns: u64,
     pub observed_mapped: u64,
     pub observed_retired: u64,
     pub observed_ns: u64,
@@ -935,8 +938,12 @@ impl Device {
         let chunk = segment.chunks[old.index];
         let at = old.segment + chunk.offset as u64;
         observer::retiring(self, at, chunk.bytes, None, segment.size_class)?;
+        let began = std::time::Instant::now();
         self.driver().unmap(at, chunk.bytes)?;
+        let ns = began.elapsed().as_nanos() as u64;
         segment.chunks[old.index].retiring = false;
+        state.stats.retire_unmap_ns += ns;
+        state.stats.retire_unmap_longest_ns = state.stats.retire_unmap_longest_ns.max(ns);
         if segment.gone() {
             let bytes = segment.bytes + segment.guard;
             state.segments.remove(&old.segment);
@@ -998,9 +1005,40 @@ impl Device {
                 }
             }
         }
+        // The new address mapped first: refused, the old blocks are as they were.
+        let mut chunks = Vec::new();
+        let mut offset = 0usize;
+        for &(base, index) in &moved {
+            chunks.push(Chunk { offset, retiring: false, ..state.segments[&base].chunks[index] });
+            offset += chunks.last().expect("moved chunk").bytes;
+        }
+        for &(bytes, handle) in &fresh {
+            chunks.push(Chunk { offset, bytes, handle: Some(handle), retiring: false });
+            offset += bytes;
+        }
+        let mut done = 0;
+        let mapped = (|| -> Result<()> {
+            for chunk in &chunks {
+                self.driver().map_only(ptr + chunk.offset as u64, chunk.bytes, chunk.handle.expect("assembled chunk"))?;
+                done += 1;
+            }
+            self.driver().grant(ptr, total)
+        })();
+        if let Err(error) = mapped {
+            for chunk in &chunks[..done] {
+                self.driver().unmap(ptr + chunk.offset as u64, chunk.bytes)?;
+            }
+            for (_, handle) in fresh {
+                self.driver().release(handle)?;
+            }
+            Self::return_address(state, ptr, total);
+            return Err(error.into());
+        }
+        for chunk in &chunks {
+            observer::mapped(self, ptr + chunk.offset as u64, chunk.bytes, None, class)?;
+        }
         // The old blocks go, their order kept for what the new segment holds past this block.
         let (mut waits, mut ordered) = (Waits::new(), false);
-        let (mut chunks, mut offset) = (Vec::new(), 0usize);
         for (base, index) in moved {
             let chunk = state.segments[&base].chunks[index];
             let (start, end) = (base + chunk.offset as u64, base + (chunk.offset + chunk.bytes) as u64);
@@ -1027,27 +1065,16 @@ impl Device {
             old.handle = None;
             old.retiring = true;
             state.retiring.push(Retiring { segment: base, index, waits: held });
-            chunks.push(Chunk { offset, retiring: false, ..chunk });
-            offset += chunk.bytes;
         }
-        for (bytes, handle) in fresh {
-            chunks.push(Chunk { offset, bytes, handle: Some(handle), retiring: false });
-            offset += bytes;
+        for (bytes, _) in fresh {
             self.working.fetch_add(bytes, Ordering::AcqRel);
             state.stats.mapped_bytes += bytes;
         }
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         state.stats.remapped_bytes += gathered as u64;
         let mut segment = Segment::new(total, class, None);
-        segment.chunks = chunks.clone();
+        segment.chunks = chunks;
         state.segments.insert(ptr, segment);
-        for chunk in &chunks {
-            self.driver().map_only(ptr + chunk.offset as u64, chunk.bytes, chunk.handle.expect("assembled chunk"))?;
-        }
-        self.driver().grant(ptr, total)?;
-        for chunk in &chunks {
-            observer::mapped(self, ptr + chunk.offset as u64, chunk.bytes, None, class)?;
-        }
         // This allocation's block, which its caller takes on `stream`, and the rest: free in the
         // order of the pages they hold.
         let origin = ordered.then_some(stream);
@@ -1853,7 +1880,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     // step freed the next uses again.
     let moves = class > LARGE && remaps();
     let protect = Protect {
-        reuse_working: true, keep_phase: looping, outside: true, stream: remaps().then_some(stream), ..Default::default()
+        reuse_working: true, keep_phase: looping, outside: true, stream: moves.then_some(stream), ..Default::default()
     };
     let result = reclaim::acquire(device, exact, Wait::Yes, protect, || {
         let gate = crate::gate(device)?;
