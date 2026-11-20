@@ -3,6 +3,10 @@
 //! half of the host's RAM and beyond a headroom (`Tier::look`). The tier follows use, not arrival:
 //! a page is worth its refills per request, and only pages worth less make room for it.
 //!
+//! A page enters as it is read: a refill of stored bytes is read into a page the tier admits, and
+//! onto the card from there (`keeping`), so what a loop streams is read from the store once. A
+//! first fill reads onto the card alone (nothing says it is read again), and is pinned at idle.
+//!
 //! Pinned pages are memory the kernel cannot take back. The tier is a client of varena's host
 //! number (`varena_ledger::host`): its room is what that number leaves, clean page cache counted
 //! as reclaimable. Every executor's tiers share the host through its ledger page (`host`): idle
@@ -172,7 +176,7 @@ impl Gone {
     }
 }
 
-/// A stored page read once: pinned at idle if it has left the card by then.
+/// A stored page read once, for a first fill: pinned at idle if it has left the card by then.
 struct Wanted {
     set: String,
     source: Weak<Inner>,
@@ -237,6 +241,11 @@ struct State {
     /// Registered pages a retained region gave back, and whether since the last request ended: the
     /// next request of the same shape takes them without registering again, else they go.
     spare: Vec<(Page, bool)>,
+    /// The size of the last refill kept as read: a spare of it is made ahead for the next.
+    spare_wanted: Option<usize>,
+    /// Refills read into a page the tier kept, and their bytes.
+    kept_reads: u64,
+    kept_read_bytes: u64,
     /// Staging bytes this process owns (`staging`): held, never given back.
     staging: u64,
     /// Sources whose pages are read ahead, in the order of use (`read_ahead`), and the keys being
@@ -752,6 +761,10 @@ impl Tier {
     pub(super) fn expect(self: &Arc<Self>, key: String, source: &Arc<Inner>) {
         self.state().ahead.push_back((key, Arc::downgrade(source)));
         self.reserving.notify_all();
+        self.reserver();
+    }
+
+    fn reserver(self: &Arc<Self>) {
         self.reservers.get_or_init(|| {
             let tier = Arc::clone(self);
             let spawned = std::thread::Builder::new().name("tensorfs-reserve".into()).spawn(move || tier.reserve_ahead());
@@ -761,7 +774,48 @@ impl Tier {
         });
     }
 
-    /// Make the expected pages, the first expected first, while the tier admits them.
+    /// A page to read a refill of `key`'s stored bytes into and keep (`Inner::read_kept`), if the
+    /// tier admits it: a spare of its size made ahead, while the tier is under its cap and not
+    /// pressed (its room is held already), else one `reserve` admits. The next one of its size is
+    /// made ahead on the tier's thread, in free room: a loop's blocks are alike, so its next refill
+    /// finds its page registered. None: the refill reads onto the card alone.
+    pub(super) fn keeping(self: &Arc<Self>, key: &str, set: &str, len: usize) -> Option<Page> {
+        let spare = {
+            let mut state = self.state();
+            let fits = !state.pressed && !state.kept.contains_key(key) && self.under_cap(&state, len as u64);
+            let at = if fits { state.spare.iter().position(|(page, _)| page.len == len) } else { None };
+            at.map(|at| state.spare.swap_remove(at).0)
+        };
+        let page = match spare {
+            Some(page) => page,
+            None => self.reserve(key, set, len, true).ok().flatten()?,
+        };
+        self.state().spare_wanted = Some(len);
+        self.reserving.notify_all();
+        self.reserver();
+        Some(page)
+    }
+
+    /// Whether `bytes` more kept bytes stay within the cap.
+    fn under_cap(&self, state: &State, bytes: u64) -> bool {
+        state.bytes + bytes <= self.cap
+    }
+
+    /// `page` holds `key`'s stored bytes, read for a refill: kept.
+    pub(super) fn keep_read(&self, key: &str, set: &str, page: Page) -> Arc<Page> {
+        let (page, replaced) = {
+            let mut state = self.state();
+            state.kept_reads += 1;
+            state.kept_read_bytes += page.len as u64;
+            state.wanted.remove(key); // Kept as read: nothing reads it again at idle.
+            Self::kept_as(&mut state, key, set, page)
+        };
+        drop(replaced); // Unregistering waits on the device: never under the lock.
+        page
+    }
+
+    /// Make the expected pages, the first expected first, while the tier admits them. With none
+    /// expected, a spare of the size the last kept refill read, in free room only.
     fn reserve_ahead(&self) {
         loop {
             let (key, source, forgets, gone) = {
@@ -770,9 +824,21 @@ impl Tier {
                     if state.off.is_some() {
                         return;
                     }
-                    match state.ahead.pop_front() {
-                        Some((key, source)) => break (key, source),
-                        None => state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner()),
+                    if let Some(next) = state.ahead.pop_front() {
+                        break next;
+                    }
+                    let Some(len) = state.spare_wanted.take() else {
+                        state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner());
+                        continue;
+                    };
+                    let spares: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
+                    // Only a spare a kept refill could take: none of its size yet, and within the cap.
+                    if state.spare.iter().all(|(page, _)| page.len != len) && self.under_cap(&state, spares + len as u64) {
+                        drop(state);
+                        if let Ok(Some(page)) = self.new_page(len, false) {
+                            self.spare(page);
+                        }
+                        state = self.state();
                     }
                 };
                 let Some(source) = source.upgrade() else { continue };
@@ -1029,6 +1095,7 @@ impl Tier {
     pub(super) fn request_ended(&self) {
         let mut state = self.state();
         state.to_read.clear();
+        state.spare_wanted = None;
         state.rate = std::mem::take(&mut state.refills);
         state.passes.clear();
         state.taken.clear();
@@ -1298,9 +1365,9 @@ impl PyPages {
                 state.headroom, state.pressed, state.reserved.len(), state.reserved_ahead, state.last_reads.clone(),
                 state.let_go.clone())
         };
-        let (read_ahead_pages, read_ahead_bytes, read_ahead_refused) = {
+        let (read_ahead_pages, read_ahead_bytes, read_ahead_refused, kept_reads, kept_read_bytes) = {
             let state = self.tier.state();
-            (state.read_ahead_pages, state.read_ahead_bytes, state.read_ahead_refused)
+            (state.read_ahead_pages, state.read_ahead_bytes, state.read_ahead_refused, state.kept_reads, state.kept_read_bytes)
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -1330,6 +1397,9 @@ impl PyPages {
         row.set_item("read_ahead", read_ahead_pages)?;
         row.set_item("read_ahead_bytes", read_ahead_bytes)?;
         row.set_item("read_ahead_refused", read_ahead_refused)?;
+        row.set_item("kept_reads_scope", "refills read from the store into a page the tier kept, this process")?;
+        row.set_item("kept_reads", kept_reads)?;
+        row.set_item("kept_read_bytes", kept_read_bytes)?;
         row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, and the writer's ns")?;
         row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
         row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
