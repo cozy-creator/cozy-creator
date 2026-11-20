@@ -112,6 +112,14 @@ for arm in arms:
             if key == "cold":
                 note += f"; cached after {f.get('cached_after_cold')}; filler {json.dumps(f.get('filler'))}; memory {json.dumps(f.get('memory_before'))}"
             add(arm, f"policy, cache filled first: {case}", num(r.get("gb")), num(r.get("s")), cold, True, note)
+    f = load(f"{out}/{arm}-holes.json")
+    if f.get("error"):
+        rows.append([arm, "holes: 4 MiB of every 4th chunk cached, memory held", "-", "-", "-", "-", "-", "-", str(f["error"])[:160]])
+    elif f:
+        r, b = obj(f.get("load")), obj(f.get("bytes"))
+        add(arm, "holes: 4 MiB of every 4th chunk cached, memory held: disk + RAM -> card", num(r.get("gb")), num(r.get("s")), True, True,
+            f"O_DIRECT {r.get('o_direct_gb')} GB, through the cache {r.get('through_cache_gb')} GB; cached before {f.get('cached_before')}, after the hold {f.get('cached_after_hold')}, "
+            f"held {f.get('held_gb')} GB; bytes: {b.get('blocks')} blocks, {b.get('gb')} GB, wrong {b.get('wrong_blocks')}")
     paged = [("", f"{out}/{arm}-h3-paged.json")]
     i = 1
     while os.path.exists(f"{out}/{arm}-paged-sweep-{i}.json"):

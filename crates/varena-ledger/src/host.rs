@@ -49,6 +49,19 @@ fn cozy_held() -> u64 {
     0
 }
 
+/// What the machine's one host admission leaves under `now` (var-030 W5): the number less every
+/// executor's holdings (the kernel's charge, or the host ledger page's sum where that is more) and
+/// the headroom. Negative: over it. Unreadable figures (`total <= 0`) are unbounded, `i64::MAX`.
+/// Pins are admitted against it, and a read keeps its bytes in the page cache only within it
+/// (TensorFS `io::cold`), so the cache never holds what admission has promised to pins (cl-1318).
+pub fn admission(now: &Budget) -> i64 {
+    if now.total <= 0 {
+        return i64::MAX;
+    }
+    let ledger = i64::try_from(cozy_held()).unwrap_or(i64::MAX);
+    now.total - now.held.max(ledger) - now.headroom
+}
+
 /// The number as one process sees it, from the tightest limit on its path.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Budget {

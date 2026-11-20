@@ -5,6 +5,8 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
     python load.py <mode> <args>   (TENSORFS_HOME: the machine's store)
 
   ceiling                TensorFS's own ceilings: disk GB/s of the store's volume, pinned H2D GB/s to GPU 0
+  holes <ck> <comps>     the holes path and its bytes: 4 MiB of every fourth chunk cached, memory held to the admission's edge,
+                         the load, and each block on the card against a plain read through the cache
   ceiling-empty          `tensorfs.ceiling(device=0)` from a shell with no TENSORFS_HOME: a home of a few small files
   evict <ck>...          the checkpoints' chunk files out of the page cache
   disk <ck>...           the disk itself, no TensorFS: the checkpoints' chunk files read O_DIRECT on a grid of threads and
@@ -405,7 +407,10 @@ def policy(ckids: str, comps: Sequence[str]) -> dict[str, object]:
                 f.flush()
                 os.fsync(f.fileno())
             n += 1 << 30
-        report["filler"] = {"gb": round(n / GB, 1), "s": round(time.perf_counter() - began, 1)}
+        # Read once more, so its pages are on the kernel's active list: new pages enter the inactive one, and a load that
+        # pushes out its own earlier pages would show here (the review of #4117).
+        again = read_grid([(os.path.join(filler, f), 1 << 30) for f in os.listdir(filler)], 8, 4 << 20, False)
+        report["filler"] = {"gb": round(n / GB, 1), "s": round(time.perf_counter() - began, 1), "read_again_gb_s": again["gb_s"]}
         report["memory_before"] = {k: round(v / GB, 2) for k, v in memory().items()}
         report["cold"] = card.fill(card.sources(ck, blocks, "policy-cold", False), "policy-cold", limit)
         report["cached_after_cold"] = cached_share(files)
@@ -414,6 +419,74 @@ def policy(ckids: str, comps: Sequence[str]) -> dict[str, object]:
     finally:
         for name in os.listdir(filler):
             os.remove(os.path.join(filler, name))
+    return report
+
+
+def holes(ckids: str, comps: Sequence[str]) -> dict[str, object]:
+    """The holes path (cl-1318) and its bytes: the first 4 MiB of every fourth chunk in the page cache, memory held
+    until the host admission leaves less than a read's missing bytes, then the load (past the cache in its holes, the rest
+    from it), and each block's bytes on the card against the same block read plainly through the cache (`Source.read_host`).
+    Clean cache counts toward the admission, so all that is cached stays under one batch's missing bytes: with half of each
+    chunk cached (nadja, 29 GiB) the hold took it all back, and every read went past the cache whole."""
+    import numpy as np
+
+    ck = pick(ckids, comps)
+    files = chunk_files([ck.id])  # type: ignore[attr-defined]
+    blocks = blocks_of(ck, comps)
+    card = Card()
+    limit = card.room() - (2 << 30)
+    m = memory()
+    report: dict[str, object] = {"checkpoint": ck.id, "number_gb": round(m["limit"] / GB, 1)}  # type: ignore[attr-defined]
+    if m["limit"] > 128 << 30:
+        return {**report, "error": f"no container number to press against ({m['limit'] / GB:.0f} GB): the case needs a pod with one"}
+    evict(files)
+    for path, _ in files[::4]:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.pread(fd, 4 << 20, 0)
+        finally:
+            os.close(fd)
+    report["cached_before"] = cached_share(files)
+    # Held until what the admission leaves (the number less what is held and the headroom, the cached runs in it) is under a
+    # 512 MiB batch's missing bytes. The headroom stays free, and the load's O_DIRECT reads add no cache.
+    m = memory()
+    headroom = max(m["limit"] // 16, 512 << 20)
+    pin = max(0, m["limit"] - (m["charged"] - m["file"]) - headroom - (64 << 20))
+    held = np.ones(pin, np.uint8) if pin else None
+    report["held_gb"] = round(pin / GB, 2)
+    report["cached_after_hold"] = cached_share(files)  # the hold may take some of the cached half back
+    report["memory_before"] = {k: round(v / GB, 2) for k, v in memory().items()}
+    sources = card.sources(ck, blocks, "holes", False)
+    chosen, total = [], 0
+    for source, n in sources:
+        if total + n > limit:
+            break
+        chosen.append((source, n))
+        total += n
+    card.pages.drain()
+    regions = [card.dev.region(n, s, "tfs-bound/holes") for s, n in chosen]
+    card.torch.cuda.synchronize()
+    began = time.perf_counter()
+    uses = card.varena.fill(regions, [s for s, _ in chosen], card.s)
+    card.stream.synchronize()
+    took = time.perf_counter() - began
+    card.pages.request_ended()
+    reads = card.pages.stats()["store_reads"]
+    report["load"] = {"gb": round(total / GB, 2), "s": round(took, 3), "o_direct_gb": round(sum(r[2] for r in reads) / GB, 2),
+                      "through_cache_gb": round(sum(r[3] for r in reads) / GB, 2), "alone": sum(1 for u in uses if u is None)}
+    del held
+    # Each block's bytes on the card against the same block read through the cache, plainly.
+    wrong, checked = [], 0
+    for i, ((source, n), use, region) in enumerate(zip(chosen, uses, regions)):
+        u = use if use is not None else region.use(card.s)
+        card.stream.synchronize()
+        got = u.tensor.cpu().numpy()
+        want = np.zeros(n, np.uint8)
+        source.read_host(want, stored=True)  # type: ignore[attr-defined]
+        checked += n
+        if not np.array_equal(got[:n], want):
+            wrong.append(i)
+    report["bytes"] = {"blocks": len(chosen), "gb": round(checked / GB, 2), "wrong_blocks": wrong}
     return report
 
 
@@ -486,6 +559,8 @@ def main() -> None:
             out.update(disk(args))
         elif mode == "fill":
             out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0, "alone" in args[3:]))
+        elif mode == "holes":
+            out.update(holes(args[0], args[1].split(",")))
         elif mode == "policy":
             out.update(policy(args[0], args[1].split(",")))
         elif mode == "paged":

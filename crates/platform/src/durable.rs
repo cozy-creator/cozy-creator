@@ -18,7 +18,7 @@ mod soon;
 #[cfg(feature = "sqlite")]
 pub mod wal;
 pub use private::{create_private_new, make_private_dir, open_to_others, shut_to_others};
-pub use disk::{DiskClass, Filesystem, cached, cached_pages, cached_pages_each, cached_runs, filesystem, open_direct, page_size, renames_after_data, will_need};
+pub use disk::{DiskClass, Filesystem, cached, cached_pages, cached_pages_each, cached_runs, filesystem, open_direct, page_size, renames_after_data, uncached_runs, will_need};
 pub use soon::soon;
 
 static TEMPS: AtomicU64 = AtomicU64::new(0);
