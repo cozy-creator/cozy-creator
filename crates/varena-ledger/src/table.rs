@@ -143,7 +143,7 @@ pub fn held_out_of_books(uuid: &[u8; 16], set: u64, bytes: u64) -> io::Result<()
 }
 
 /// The most a process's bytes outside its books grew on this GPU in its first completed request of one
-/// function (`work`, a model set's): the libraries and kernels that function loads. None before any did.
+/// code path (`work`, a model set's): the libraries and kernels that path loads. None before any did.
 pub fn first_growth(uuid: &[u8; 16], work: u64) -> Option<u64> {
     learned("first-growth", uuid, work)
 }

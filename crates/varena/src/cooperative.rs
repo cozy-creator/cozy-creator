@@ -118,8 +118,9 @@ pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
 }
 
-/// A request began or ended on `device`. `work` names the function it runs (None for a Start's or a
-/// Load's construction), and an ending one says whether it `completed`. A beginning one makes the
+/// A request began or ended on `device`. `work` names the code path it runs, its function and the
+/// inputs it gave (None for a Start's or a Load's construction), and an ending one says whether it
+/// `completed`. A beginning one makes the
 /// driver's room now, from what is idle and finished: a library's first use (a cuFFT plan, a cuDNN
 /// engine's code) may come before the request maps anything (var-040).
 pub(crate) fn request_boundary(device: i32, begin: bool, work: Option<&str>, completed: bool) {
@@ -142,9 +143,9 @@ struct Expected {
     context: usize,
     /// The model set its latest plan runs (`plan_seen`): what it learns under and reads back.
     set: Option<u64>,
-    /// The function of each request running here, and what this process held outside its books as it began.
+    /// The code path of each request running here, and what this process held outside its books as it began.
     running: Vec<(u64, usize)>,
-    /// Functions a request completed in this process: their libraries and kernels are loaded here.
+    /// Paths a request completed in this process: their libraries and kernels are loaded here.
     ran: BTreeSet<u64>,
 }
 
@@ -178,7 +179,7 @@ fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
     bytes.into_iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// One function of one model set: what its first run grew is learned under it.
+/// One code path of one model set: what its first run grew is learned under it.
 fn first_key(set: u64, work: u64) -> u64 {
     fnv(set.to_le_bytes().into_iter().chain(work.to_le_bytes()))
 }
@@ -191,13 +192,13 @@ fn first_key(set: u64, work: u64) -> u64 {
 ///   allocation, which what the process holds says nothing of (s16: a cold H3 on a full 4090 with no
 ///   room failed cuDNN's first audio conv). Learned across every model set, a process inherited
 ///   another's growth. A fixed 800 MiB was left before, 10-13% of an 8 GB card.
-/// - For a request running a function no request completed in this process: what that function's
-///   first completed run grew outside its books on this card, else the context's cost. The same set
-///   runs other functions, and another function's libraries are not loaded yet: an LTX-2.5 retake after
-///   a text-to-video in one process began with room 0, its learned figure already held, and its first
-///   cuFFT plan was refused on a full 4090 (var-040).
+/// - For a request running a code path (a function and the inputs it gave) no request completed in
+///   this process: what that path's first completed run grew outside its books on this card, else the
+///   context's cost. The same set runs other paths, whose libraries are not loaded yet: an LTX-2.5
+///   retake after a text-to-video in one process began with room 0, its learned figure already held,
+///   and its first cuFFT plan was refused on a full 4090 (var-040).
 /// At a request's end, what this process holds joins what its set learned; a completed one's growth, if
-/// it was its function's first here, joins what that function learned. A failed one teaches no growth:
+/// it was its path's first here, joins what that path learned. A failed one teaches no growth:
 /// one that ended early would teach too little. Read as the process comes up, as a plan becomes active
 /// and at each request's boundaries.
 fn expect(device: i32, boundary: Boundary) -> (usize, usize) {

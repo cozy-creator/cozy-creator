@@ -60,10 +60,11 @@ comes out of the room: growth is not counted twice. A process coming up asks its
 before Torch's runtime and first stream, where a refusal reaches no one.
 
 Growth follows the code a process runs, not its weights: one model set runs several functions, and a
-function's first run loads libraries the others never did. So while a request runs a function (the
-Runtime names it at the request's begin) that no request completed in this process, the room is at
-least what that function's first completed run grew outside the books on this card, learned like the
-set's figure, or the context's cost where none did. Only a completed request teaches that growth. An
+path's first run loads libraries the others never did. The Runtime names a request's path as it
+begins: its function and the names of the inputs it gave (a Qwen Image 2 edit's references reach an
+FFT its plain generate never runs). While a request runs a path no request completed in this
+process, the room is at least what that path's first completed run grew outside the books on this
+card, learned like the set's figure, or the context's cost where none did. Only a completed request teaches that growth. An
 LTX-2.5 retake after a text-to-video in one process began with room 0 and its first cuFFT plan was
 refused on a full 4090 (var-040). A request's begin makes its room at once, from what is idle and
 finished, since a library's first use can come before the request's first map.

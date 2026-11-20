@@ -56,8 +56,8 @@ def poisoned() -> str | None:
 
 def request_boundary(device: int, *, begin: bool, work: str | None = None, completed: bool = False) -> None:
     """A request started or ended here: orders who donates first, and the first to begin is a phase
-    boundary. `work` names the call's function, whose first run in a process keeps room for the
-    libraries it loads; an ending request says whether it `completed`, and only then teaches what that
+    boundary. `work` names the call's code path (its function and the inputs it gave), whose first
+    run in a process keeps room for the libraries it loads; an ending request says whether it `completed`, and only then teaches what that
     run grew. Never fails."""
     _ext._varena_request_boundary(device, begin, work, completed)
 

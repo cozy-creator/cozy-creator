@@ -627,8 +627,8 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 /// first one running here is also a phase boundary, for eager callers too: the last call's regions
 /// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
 /// turbo streaming in the same process, run 39070).
-/// `work` names the call's function (None for construction); an ending request says whether it
-/// `completed` (`cooperative::request_boundary`).
+/// `work` names the call's code path, its function and the inputs it gave (None for construction);
+/// an ending request says whether it `completed` (`cooperative::request_boundary`).
 pub fn request_boundary(device: i32, begin: bool, work: Option<&str>, completed: bool) {
     if let Ok(gpu) = gpu(device) {
         if !begin {
