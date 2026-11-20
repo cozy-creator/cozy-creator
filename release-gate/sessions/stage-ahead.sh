@@ -30,6 +30,8 @@
 #   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
 #   tree     the packages_refs checkout H3 runs from (`-f packages_refs=pk=<ref>`, tree pk), for the h3 arms: a dev home
 #   shot     the H3 Shot's beats (default one 5 s beat: "shorter is quadratically faster"; the load is the same)
+#   base, cand  {"runtime", "tensorfs"} wheel sources (lib.sh `wheel_from`) the pod runs beside its TensorD: base in every arm
+#            ({}: its image's), cand in h3-after over base (the LoRA merge ahead lives in its Runtime and TensorFS)
 . "$(dirname "$0")/lib.sh"
 ARMS=" $(param arms 'free before after disk yield back') " YIELD_GB=$(param yield_gb 6)
 HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
@@ -61,6 +63,21 @@ P_FIELDS() { jq -nc --argjson s "$1" '{prompt: "a brass compass on a walnut desk
 mkdir -p "$OUT/before" && gh run download "$BEFORE" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/before" > /dev/null 2>&1 || fail "no cozy from run $BEFORE"
 RC_BIN=$(find "$OUT/before" -name cozy-linux-x86_64 | head -1) && chmod +x "$RC_BIN" || fail "run $BEFORE has no cozy-linux-x86_64"
 RC_V=$("$RC_BIN" --version | awk '{print $2}') WANT=$(cozy --version | awk '{print $2}')
+# Each set's `machine update` flags, its wheels fetched before renting.
+declare -a BASE_FLAGS=() CAND_FLAGS=()
+for kind in runtime tensorfs; do
+  declare -A got=()
+  for set in base cand; do
+    src=$(param "$set" '{}' | jq -r --arg k "$kind" '.[$k] // empty')
+    [ -n "$src" ] || continue
+    got[$set]=$(wheel_from "$OUT/wheels/$set-$kind" "$src") && [ -n "${got[$set]}" ] || fail "$set: no $kind wheel from $src"
+    say "$set $kind: ${got[$set]##*/}"
+  done
+  [ -z "${got[base]:-}" ] || BASE_FLAGS+=("--$kind" "${got[base]}")
+  # cand's over base's: h3-after's set.
+  f=${got[cand]:-${got[base]:-}}; [ -z "$f" ] || CAND_FLAGS+=("--$kind" "$f")
+  unset got
+done
 [ "$RC_V" != "$WANT" ] || fail "before ($RC_V) is this build"
 say "this build $WANT, before $RC_V"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
@@ -111,14 +128,17 @@ runs() {
   echo "$(date -u +%T) $2 $v" >> "$OUT/versions.txt"
   [ "$v" = "$1" ] || fail "$2: the pod runs TensorD ${v:-?}, not $1"
 }
-# tensord <bin> <version> <arm>: the pod's TensorD is <bin>, restarted (every executor ends; the disk stays).
+# tensord <bin> <version> <arm> [flags]: the pod's TensorD is <bin> (and its Runtime and TensorFS: flags, else base's),
+# restarted (every executor ends; the disk stays).
 tensord() {
   close
   unhold
-  step "tensord-$3" machine update "$NAME" --tensord "$1" -y || fail "$3: the pod refused TensorD $2"
+  local flags=("${@:4}"); [ "$#" -gt 3 ] || flags=("${BASE_FLAGS[@]}")
+  step "tensord-$3" machine update "$NAME" --tensord "$1" "${flags[@]}" -y || fail "$3: the pod refused TensorD $2 ${flags[*]}"
   step "restart-$3" machine update "$NAME" --mode dedicated -y || fail "$3: the restart"
   [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "$3: $NAME isn't ready after its restart"
   runs "$2" "$3"
+  say "$3: the pod runs $(cozy machine show "$NAME" --json | jq -r '"TensorD \(.status.version), Runtime \(.status.runtime), TensorFS \(.status.tensorfs)"')"
 }
 tensord "$(command -v cozy)" "$WANT" start
 
@@ -330,9 +350,9 @@ say "back: the program ended ($(cat "$OUT/hog.txt")): q $(item "$Q_ID" stage), $
 [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "back: $NAME isn't ready after the program"
 [ "$(item "$Q_ID" stage)" = built ] || fail_if "back: q's executor didn't keep it built through the program ($(item "$Q_ID" stage))"
 fi
-# h3 <arm> <bin> <version> <seed>: an H3 Shot box predicted onto the pod, then rendered; its record a cold-load cell.
+# h3 <arm> <bin> <version> <seed> [flags]: an H3 Shot box predicted onto the pod, then rendered; its record a cold-load cell.
 h3() {
-  tensord "$2" "$3" "$1"
+  tensord "$2" "$3" "$1" "${@:5}"
   evict "$1"
   project "$1"
   run_page add shot --tool minimax-h3/generate --fields "$(jq -nc --arg b "$SHOT" --argjson s "$4" '{beats: ($b | fromjson), turbo: true, seed: $s}')" \
@@ -347,7 +367,7 @@ if arm h3-before; then
   printf '%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' h3-before rc h3 disk denoise run-h3-before.json step2 >> "$OUT/cold-load.tsv"
 fi
 if arm h3-after; then
-  h3 h3-after "$(command -v cozy)" "$WANT" 71
+  h3 h3-after "$(command -v cozy)" "$WANT" 71 "${CAND_FLAGS[@]}"
   until_item -none 'built|loaded' h3-after
   until_held "$ID" h3-after
   say "h3-after: $(meminfo)"
