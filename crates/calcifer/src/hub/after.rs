@@ -201,6 +201,7 @@ async fn retire(
         let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
             agreed: None,
             stays: vec![],
+            placed: false,
             on: On::Machine(machine.to_owned()),
             hub: hub.clone(),
             kind: wire::Kind::Remove,

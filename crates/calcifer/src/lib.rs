@@ -1245,7 +1245,7 @@ impl Calcifer {
             named = machines.admit(&submit).await.map_err(Error::Refused)?;
         }
         let (machine, pinned, wants) = match &submit.on {
-            On::Machine(name) => (Some(named.unwrap_or_else(|| name.clone())), true, None),
+            On::Machine(name) => (Some(named.unwrap_or_else(|| name.clone())), !submit.placed, None),
             on => (None, false, Some(on.to_string())),
         };
         // A run lands in its project; a job of Calcifer's lands nothing here (cl-1028).

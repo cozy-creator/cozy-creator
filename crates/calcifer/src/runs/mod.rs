@@ -892,6 +892,7 @@ async fn call(
     // Even a prepare-only private local-code call needs protected input/journal scope.
     let out = out.or_else(|| project.as_deref().filter(|project| crate::project::vault::encrypted(&crate::project::vault::logical(project))).map(crate::project::landing));
     let mut submission = call.submission(code.on, hub, &spec, bound.as_ref(), out);
+    submission.placed = ask.on.is_empty();
     if let Some(named) = ask.project.as_deref() {
         let store = api.projects.store(api, named).await?;
         submission.project = Some(store.project_id().to_owned());

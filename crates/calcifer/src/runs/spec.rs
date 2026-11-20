@@ -158,6 +158,7 @@ impl Call<'_> {
         SubmitRun { project: None,
             agreed: None,
             stays: api::calcifer::tool::stays(self.callable),
+            placed: false,
             on,
             hub: hub.to_owned(),
             kind,

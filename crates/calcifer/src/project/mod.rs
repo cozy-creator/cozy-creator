@@ -6299,6 +6299,7 @@ impl Walk {
             warnings,
             agreed: None,
             stays: package.callable(&renderer.function).map(|callable| api::calcifer::tool::stays(&callable)).unwrap_or_default(),
+            placed: pending.target.any,
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
         // Canceled while it was made ready: nothing is sent.
