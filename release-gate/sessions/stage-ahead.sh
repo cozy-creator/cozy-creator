@@ -254,7 +254,7 @@ if arm yield; then
   t=0; until [[ $(item -none stage) =~ ^(loading|staging|built)$ ]]; do sleep 0.2; t=$((t + 1)); [ "$t" -lt 600 ] || fail "yield: q's stage never began: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"; done
   say "yield: q is $(item -none stage), $(item -none done) of $(item -none total) bytes in RAM: the call is sent"
   called yield 82
-  until_item -none 'built|staged' yield
+  until_item -none 'built|staged|loaded' yield
   say "yield: after the call, q $(item "$ID" stage) with $(item "$ID" done) bytes in RAM"
 fi
 

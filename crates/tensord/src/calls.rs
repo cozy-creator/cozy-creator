@@ -683,8 +683,11 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
             }
         }
         (None, Some(position), Some(ms)) => {
-            // Past its loads: a stage may read beside it now (cl-1318).
-            crate::gpu_service::stepped(engine, id);
+            // A step of its loop, or a token (not a load's bytes, which come timed too): past its loads, so a stage may read beside
+            // it now (cl-1318: a load's frame let one restart during SDXL's construction, 44652269206).
+            if frame.total.is_some() && (frame.unit.is_empty() || frame.unit == api::calcifer::TOKENS) {
+                crate::gpu_service::stepped(engine, id);
+            }
             if seen.steps.0 != frame.stage {
                 seen.steps = (frame.stage.clone(), 0, vec![]);
             }
