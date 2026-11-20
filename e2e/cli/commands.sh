@@ -1979,7 +1979,7 @@ in_project "$project" --json run "$pkg/inspect" "seed:=$seed" "model.model=$mode
 # cl-1326 (the coordinator, 11-20: an RC cozy "can't read a quantize result from a machine on released Runtime 0.48.0"; Paul 11-16: skew
 # both ways, so cozy 0.28 must work with machines that haven't updated yet): the same quantize with local held on the released Runtime and
 # its TensorFS, as a machine that hasn't updated holds them, read to its int8 checkpoint by this cozy's TensorD.
-local rt tfs was_rt was_tfs skewed
+local rt tfs was_rt was_tfs skewed skew_model=${account:-e2e}/cl1326-skew-$seed skew_bf16
 rt=$(curl -fsS --retry 3 https://pypi.org/pypi/cozy-runtime/json | jq -r '.info.version // empty') || rt=
 tfs=$(curl -fsS --retry 3 https://pypi.org/pypi/tensorfs/json | jq -r '.info.version // empty') || tfs=
 if [ -z "$rt" ] || [ -z "$tfs" ]; then
@@ -1987,11 +1987,16 @@ if [ -z "$rt" ] || [ -z "$tfs" ]; then
 else
   cozy --json machine show local > "$root/skew-before.json" 2>&1 || true
   was_rt=${CAND_RT:-$(jq -r '.status.runtime // empty' "$root/skew-before.json")} was_tfs=${CAND_TFS:-$(jq -r '.status.tensorfs // empty' "$root/skew-before.json")}
-  if cozy --json machine update local --runtime "$rt" --tensorfs "$tfs" -y > "$root/skew-update.json" 2>&1; then
+  # Its own model, from the same source run: the int8 lane of $model is the RC Runtime's output, which another producer can't finish.
+  in_project "$project" --json model upload "run:$made#model" "$skew_model" --lane bf16 --on local -y > "$root/skew-upload.ndjson" 2> "$root/skew-upload.err" || true
+  skew_bf16=$(grep '^{' "$root/skew-upload.ndjson" | jq -rs --arg m "$skew_model" '[.. | objects | select(.published?.destination? == $m) | .published.commit] | last // empty' || true)
+  if [ -z "$skew_bf16" ]; then
+    check "quantize skew: uploading run $made's model as $skew_model named no commit: $(tail -c 300 "$root/skew-upload.ndjson") $(tail -c 200 "$root/skew-upload.err")"
+  elif cozy --json machine update local --runtime "$rt" --tensorfs "$tfs" -y > "$root/skew-update.json" 2>&1; then
     machine_ready
-    code=0; (cd "$outside" && cozy --json model quantize "$model@$bf16" --lane int8 --package "$pkg" --on local -y) > "$root/skew.ndjson" 2> "$root/skew.err" || code=$?
+    code=0; (cd "$outside" && cozy --json model quantize "$skew_model@$skew_bf16" --lane int8 --package "$pkg" --on local -y) > "$root/skew.ndjson" 2> "$root/skew.err" || code=$?
     skewed=$(int8_of "$root/skew.ndjson")
-    if [ "$code" = 0 ] && [ -n "$skewed" ]; then echo "quantize skew: on Runtime $rt / TensorFS $tfs, $model@$bf16 → int8 $skewed"
+    if [ "$code" = 0 ] && [ -n "$skewed" ]; then echo "quantize skew: on Runtime $rt / TensorFS $tfs, $skew_model@$skew_bf16 → int8 $skewed"
     else check "quantize skew: cozy model quantize on local held on Runtime $rt / TensorFS $tfs: exit $code, no int8 checkpoint: $(tail -c 400 "$root/skew.ndjson") $(tail -c 200 "$root/skew.err")"; fi
   else
     check "quantize skew: local refused Runtime $rt / TensorFS $tfs: $(tail -c 300 "$root/skew-update.json")"
