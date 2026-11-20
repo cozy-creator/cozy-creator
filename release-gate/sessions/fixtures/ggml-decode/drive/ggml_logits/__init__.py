@@ -607,3 +607,243 @@ def head_reads(ctx: Context, model: VisionLM) -> Agreement:
                 lm.HEADS[net] = head
         rows[mode] = {"tokens": int(made.shape[1]), "head_linears": seen.rows}
     return Agreement(json.dumps(rows))
+
+
+#: int8_paths' prompt: about a thousand tokens of text in one user turn (TEXTS over again), thinking off.
+LONG_TOKENS = 1000
+#: The tokens int8_paths decodes and holds every path to.
+PATH_TOKENS = 48
+
+
+def _long_prompt(tokenizer: object) -> list[int]:
+    body, ids = "", []
+    while len(ids) < LONG_TOKENS:
+        body += "\n\n".join(TEXTS) + "\n\n"
+        text = (f"<|im_start|>user\n{body}Retell all of the above in your own words.<|im_end|>\n<|im_start|>assistant\n"
+                "<think>\n\n</think>\n\n")  # fmt: skip
+        ids = tokenizer(text, add_special_tokens=False)["input_ids"]  # type: ignore[operator]  # a tokenizer
+    return list(ids)
+
+
+def _hadamard256(values: torch.Tensor) -> torch.Tensor:
+    """The regular Hadamard H4⊗H4⊗H4⊗H4 on each 256 channels, one 4-point stage of additions a factor, as the Runtime's
+    `int8.convrot` eager law writes it (`encoding.formats.hadamard`)."""
+    shape = values.shape
+    work = values.reshape(-1, 4, 4, 4, 4)
+    for axis in range(1, 5):
+        a, b, c, d = work.unbind(axis)
+        work = torch.stack((a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a), axis)
+    return work.reshape(shape)
+
+
+def _eager(leaf: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """`int8.convrot`'s W8A8 law in torch ops (the Runtime's `int8_linear.eager`): each row rotated (H/16 per 256),
+    quantized per row (amax / 127, round half even), torch's int8 GEMM, both scales: no row depends on another."""
+    data, scale = leaf.data, leaf.scale  # type: ignore[union-attr]  # an int8 leaf's buffers
+    width = x.shape[-1]
+    rotated = _hadamard256(x.reshape(-1, width).float()).mul_(1.0 / 16)
+    row_scale = (rotated.abs().amax(-1, keepdim=True) / 127.0).clamp_(min=1e-12)
+    quantized = torch.round(rotated / row_scale).clamp_(-127, 127).to(torch.int8)
+    rows = int(quantized.shape[0])
+    padded = torch.nn.functional.pad(quantized, (0, 0, 0, max(0, 17 - rows)))
+    acc = torch._int_mm(padded, data.t())[:rows]
+    out = acc.float().mul_(row_scale.reshape(-1, 1)).mul_(scale.float().reshape(1, -1))
+    return out.to(torch.bfloat16).reshape(*x.shape[:-1], -1)
+
+
+def _int8_leaves(net: torch.nn.Module) -> dict[str, torch.nn.Module]:
+    return {name: m for name, m in net.named_modules() if getattr(m, "encoding", None) == "int8.convrot"}
+
+
+def _bits(a: torch.Tensor, b: torch.Tensor) -> dict[str, object]:
+    """Two outputs of the same rows: rows bit for bit equal, elements that differ, the largest difference."""
+    a, b = a.reshape(-1, a.shape[-1]), b.reshape(-1, b.shape[-1])
+    same = (a == b) | (a.isnan() & b.isnan())
+    return {"rows": int(a.shape[0]), "rows_equal": int(same.all(-1).sum()), "elements_differ": int((~same).sum()),
+            "max_abs": round(float((a.float() - b.float()).abs().max()), 5),
+            "max_rel": round(float((a.float() - b.float()).abs().max() / a.float().abs().max().clamp(min=1e-30)), 7)}
+
+
+def _kernel_paths(net: torch.nn.Module, prompt: list[int], leaves: dict[str, torch.nn.Module]) -> dict[str, object]:
+    """On rows the 9B's own forward hands a few int8 leaves (the long prompt), each path the leaf takes by row count
+    against the others, bit for bit: the prefill's quantize and tiled GEMM (all rows at once, `gemm`), a decode's GEMV
+    (one row, `gemv1`; four, `gemv4`), the GEMM on five rows (`gemm5`), and the eager law (`eager`). Then the fused
+    norm prologue (`accel.kernels.int8_rows`, the RMSNorm in f32 inside the quantizer) against the leaf on the model's
+    own bf16 RMSNorm output, on the rows a post-attention norm hands gate_proj."""
+    from cozy_runtime.accel import kernels
+
+    root = net.get_decoder()  # type: ignore[operator]  # a Transformers model's
+    count = len(root.layers)
+    picked = [f"layers.{i}." for i in sorted({0, 3, count // 2, count - 1})]
+    chosen = {n: m for n, m in leaves.items() if any(p in n for p in picked) and n.rsplit(".", 1)[-1] in
+              ("gate_proj", "down_proj", "q_proj", "o_proj", "in_proj_qkv", "out_proj")}  # fmt: skip
+    seen: dict[str, torch.Tensor] = {}
+    norms: dict[int, torch.Tensor] = {}
+    hooks = [m.register_forward_pre_hook(lambda mod, args, name=n: seen.setdefault(name, args[0].detach().clone()))
+             for n, m in chosen.items()]  # fmt: skip
+    for i in (0, count // 2):
+        hooks.append(root.layers[i].post_attention_layernorm.register_forward_pre_hook(
+            lambda mod, args, i=i: norms.setdefault(i, args[0].detach().clone())))  # fmt: skip
+    try:
+        with torch.inference_mode():
+            net(input_ids=torch.tensor([prompt], device=net.device), logits_to_keep=1)
+    finally:
+        for hook in hooks:
+            hook.remove()
+    rows: dict[str, object] = {}
+    sample = [*range(32), *range(len(prompt) - 32, len(prompt))]
+    with torch.inference_mode():
+        for name, x in seen.items():
+            leaf = chosen[name]
+            flat = x.reshape(-1, x.shape[-1])
+            try:
+                whole = leaf(flat)[sample]
+                gemv1 = torch.cat([leaf(flat[i : i + 1]) for i in sample])
+                gemv4 = torch.cat([leaf(flat[sample[j : j + 4]]) for j in range(0, len(sample), 4)])
+                gemm5 = torch.cat([leaf(flat[[*sample[j : j + 4], sample[j]]])[:4] for j in range(0, len(sample), 4)])
+                eager = _eager(leaf, flat[sample])
+                rows[name] = {"k": int(flat.shape[-1]), "gemv1": _bits(whole, gemv1), "gemv4": _bits(whole, gemv4),
+                              "gemm5": _bits(whole, gemm5), "eager": _bits(whole, eager)}  # fmt: skip
+            except Exception as exc:  # told; the other leaves stand
+                rows[name] = f"{type(exc).__name__}: {exc}"[:300]
+        for i, x in norms.items():
+            layer = root.layers[i]
+            norm, gate = layer.post_attention_layernorm, layer.mlp.gate_proj
+            flat = x.reshape(-1, x.shape[-1])
+            try:
+                unfused = gate(norm(flat))
+                operand = kernels.int8_rows(flat, (gate,), norm="rms", eps=float(norm.eps),
+                                            scale=norm.weight.float().to(flat.dtype).reshape(1, -1))  # fmt: skip  # a copy: the op reads it by pointer
+                if operand is None:
+                    rows[f"prologue.{i}"] = "declined: int8_rows gave no operand"
+                    continue
+                fused = gate(operand)
+                rows[f"prologue.{i}"] = {"fused_vs_unfused": _bits(unfused, fused),
+                                         "fused_vs_eager_on_f32_norm": _bits(fused, _eager(gate, _rms_f32(norm, flat)))}
+            except Exception as exc:
+                rows[f"prologue.{i}"] = f"{type(exc).__name__}: {exc}"[:300]
+    return rows
+
+
+def _rms_f32(norm: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Qwen3.5's RMSNorm left in f32 (its forward rounds to bf16 at the end)."""
+    f = x.float()
+    return f * torch.rsqrt(f.pow(2).mean(-1, keepdim=True) + float(norm.eps)) * (1.0 + norm.weight.float())
+
+
+def _forward(net: torch.nn.Module, prompt: list[int], made: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Transformers' one-pass forward over the prompt and `made`: the logits each of `made` was chosen from (f32,
+    `[len(made), V]`) and each layer's hidden state at those positions (`[layers + 1, len(made), H]`), on the host."""
+    ids = torch.tensor([prompt + made[:-1]], device=net.device)
+    with torch.inference_mode():
+        out = net(input_ids=ids, output_hidden_states=True, logits_to_keep=len(made))
+    hidden = torch.stack([h[0, len(prompt) - 1 :].float() for h in out.hidden_states])
+    return out.logits[0].float().cpu(), hidden.cpu()
+
+
+def _decode(net: torch.nn.Module, prompt: list[int], made: list[int] | None) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+    """Transformers' cached decode, a token at a time: of `made` (teacher-forced), or greedy where `made` is None, for
+    `PATH_TOKENS`. The same logits and hidden states as `_forward`, and the tokens."""
+    logits, hidden, tokens = [], [], []
+    count = PATH_TOKENS if made is None else len(made)
+    with torch.inference_mode():
+        out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, output_hidden_states=True,
+                  logits_to_keep=1)  # fmt: skip
+        for t in range(count):
+            last = out.logits[0, -1].float()
+            logits.append(last.cpu())
+            hidden.append(torch.stack([h[0, -1].float() for h in out.hidden_states]).cpu())
+            token = int(last.argmax()) if made is None else made[t]
+            tokens.append(token)
+            if t + 1 < count:
+                out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=out.past_key_values,
+                          use_cache=True, output_hidden_states=True, logits_to_keep=1)  # fmt: skip
+    return torch.stack(logits), torch.stack(hidden, 1), tokens
+
+
+def _gap(a: torch.Tensor, b: torch.Tensor, ha: torch.Tensor | None = None, hb: torch.Tensor | None = None,
+         skip: int = 0) -> dict[str, object]:  # fmt: skip
+    """Logits `a` against `b` at each position past `skip`: the largest difference (max and mean over positions), the
+    tops that agree, KL(a || b) in nats, and the lead `a` gives its top over `b`'s top where they differ. With hidden
+    states, each layer's relative difference (the largest over positions)."""
+    a, b = a[skip:], b[skip:]
+    diff = (a - b).abs().amax(-1)
+    ta, tb = a.argmax(-1), b.argmax(-1)
+    kl = (torch.log_softmax(a, -1).exp() * (torch.log_softmax(a, -1) - torch.log_softmax(b, -1))).sum(-1)
+    found: dict[str, object] = {"positions": int(a.shape[0]), "max": round(float(diff.max()), 3),
+                                "mean": round(float(diff.mean()), 3), "tops_agree": int((ta == tb).sum()),
+                                "kl_mean": round(float(kl.mean()), 5), "kl_max": round(float(kl.max()), 5)}  # fmt: skip
+    if ha is not None and hb is not None:
+        ha, hb = ha[:, skip:], hb[:, skip:]
+        rel = ((ha - hb).norm(dim=-1) / ha.norm(dim=-1).clamp(min=1e-30)).amax(-1)
+        found["hidden_rel"] = [round(float(r), 5) for r in rel]
+    return found
+
+
+@app.entrypoint(accelerator=True)
+def int8_paths(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
+    """Where int8.convrot's one-pass forward and its token-by-token decode part on a long prompt (xs-213): `model` an
+    int8 lane, `reference` the same checkpoint's bf16 lane, a ~1,000-token text prompt, `PATH_TOKENS` tokens.
+    - `kernels`: each int8 path the leaf takes by row count, on the same real rows, bit for bit (`_kernel_paths`).
+    - `bf16`: the reference's own forward against its own decode (the paths' difference with no 8-bit operand).
+    - `int8`: the lane's forward against its decode, as Transformers runs both (prefill's GEMM, decode's GEMV);
+      `int8_decode_gemm`: its decode with every int8 leaf given five rows, the prefill's quantize and GEMM, so both
+      paths run one kernel; `int8_eager`: forward and decode both on the eager law.
+    - `to_bf16`: each int8 path's logits against the reference's forward, and the reference's decode against it.
+    Every arm reads the same tokens: the reference's greedy decode. Hidden states per layer say where the paths part."""
+    ref_net, net = reference.pipe.components["model"], model.pipe.components["model"]
+    prompt = _long_prompt(model.processor.tokenizer)
+    found: dict[str, object] = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), "tokens": PATH_TOKENS}
+    ref_dec, ref_dec_h, made = _decode(ref_net, prompt, None)
+    ref_fwd, ref_fwd_h = _forward(ref_net, prompt, made)
+    found["bf16"] = _gap(ref_fwd, ref_dec, ref_fwd_h, ref_dec_h, skip=1)
+    leaves = _int8_leaves(net)
+    found["int8_leaves"] = len(leaves)
+    try:
+        found["kernels"] = _kernel_paths(net, prompt, leaves)
+    except Exception as exc:
+        found["kernels"] = f"{type(exc).__name__}: {exc}"[:300]
+    fwd, fwd_h = _forward(net, prompt, made)
+    dec, dec_h, _ = _decode(net, prompt, made)
+    found["int8"] = _gap(fwd, dec, fwd_h, dec_h, skip=1)
+    arms = {"int8_forward": fwd, "int8_decode": dec}
+    shapes: dict[int, torch.Size] = {}
+
+    def pad(mod: torch.nn.Module, args: tuple[object, ...]) -> tuple[object, ...] | None:
+        x = args[0]
+        if not isinstance(x, torch.Tensor) or x.numel() > 4 * x.shape[-1]:
+            return None
+        flat = x.reshape(-1, x.shape[-1])
+        shapes[id(mod)] = x.shape
+        return (torch.cat([flat, flat[-1:].expand(5 - flat.shape[0], -1)]), *args[1:])
+
+    def cut(mod: torch.nn.Module, args: tuple[object, ...], out: torch.Tensor) -> torch.Tensor | None:
+        shape = shapes.pop(id(mod), None)
+        return None if shape is None else out[: shape.numel() // shape[-1]].reshape(*shape[:-1], out.shape[-1])
+
+    hooks = [h for m in leaves.values() for h in (m.register_forward_pre_hook(pad), m.register_forward_hook(cut))]
+    try:
+        dec5, dec5_h, _ = _decode(net, prompt, made)
+        found["int8_decode_gemm"] = _gap(fwd, dec5, fwd_h, dec5_h, skip=1)
+        found["decode_gemm_vs_gemv"] = _gap(dec, dec5, dec_h, dec5_h)
+        arms["int8_decode_gemm"] = dec5
+    except Exception as exc:
+        found["int8_decode_gemm"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        for hook in hooks:
+            hook.remove()
+    for leaf in leaves.values():
+        leaf.forward = lambda x, *args, leaf=leaf, **kwargs: _eager(leaf, x)  # type: ignore[method-assign]
+    try:
+        efwd, efwd_h = _forward(net, prompt, made)
+        edec, edec_h, _ = _decode(net, prompt, made)
+        found["int8_eager"] = _gap(efwd, edec, efwd_h, edec_h, skip=1)
+        found["eager_vs_kernels_forward"] = _gap(fwd, efwd, fwd_h, efwd_h)
+        arms["int8_eager_forward"], arms["int8_eager_decode"] = efwd, edec
+    except Exception as exc:
+        found["int8_eager"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        for leaf in leaves.values():
+            leaf.__dict__.pop("forward", None)
+    found["to_bf16"] = {name: _gap(ref_fwd, logits) for name, logits in {"bf16_decode": ref_dec, **arms}.items()}
+    return Agreement(json.dumps(found))
