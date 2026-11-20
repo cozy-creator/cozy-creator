@@ -1,0 +1,4 @@
+[
+  {"function": "scaled", "gpus": 0, "cpu": "e2e", "request": {"seconds": 1}, "warm_ms": 1000, "note": "estimate_scaled: time grows as seconds^0.5"},
+  {"function": "scaled", "gpus": 0, "cpu": "e2e", "request": {"seconds": 16}, "warm_ms": 4000, "note": "estimate_scaled: time grows as seconds^0.5"}
+]

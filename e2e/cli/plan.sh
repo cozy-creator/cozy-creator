@@ -394,12 +394,14 @@ timeout 60 "$COZY" --json machine end stand-b --force -y > "$OUT/stand-b-end.jso
 # plan_queue (cl-1107; Paul, 11-16: "when I have two machines up, both set to 'preferred' status, all requests will keep going to the
 # first machine." "This should never happen."): pod-session 43996197790's third request, quoted again on two stand-ins that say only
 # the Status those machines pushed (fakemachine.py), so nothing is sent to them. queue-a is kubera, one RTX 5090 holding the shot's code
-# and two runs started on its CPU while their GPU work waits (`gpu_waits`): a shot whose 52 GB still come at 200 MB/s, then an edit no
-# benchmark times. queue-b is cibo, two RTX 4090s holding nothing of the code, a minute's install, and the 64 MiB of BiRefNet's weights
-# it lacks 300 s away. The shot is timed by its benchmarks.json as H3's generate (230 s on the 5090, 335 s on a 4090, 196 s on two).
-# queue-a finishes it in 262 s of weights, 230 s and a minute ahead of it, then its own 230 s (782 s); queue-b in 120 + 300 + 196 s
-# (616 s): it goes to queue-b, on both GPUs. Before the fix queue-a's runs ahead were a minute each (612 s) and queue-b quoted one GPU
-# (755 s): it went to queue-a. Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its
+# and two runs started on its CPU while their GPU work waits (`gpu_waits`): a shot whose 52 GB still come at 200 MB/s, then an edit
+# queue-a timed at a minute (its frame's `times`: no benchmark times it, and an untimed one would leave queue-a's finish unknown, cl-1279).
+# queue-b is cibo, two RTX 4090s holding nothing of the code, a minute's install, and the 64 MiB of BiRefNet's weights it lacks 300 s
+# away. The shot is timed by its benchmarks.json as H3's generate (230 s on the 5090, 335 s on a 4090, 196 s on two). queue-a finishes
+# it in 262 s of weights, 230 s and a minute ahead of it, then its own 230 s (782 s); queue-b in 120 + 300 + 196 s (616 s): it goes to
+# queue-b, on both GPUs. Before the fix queue-a's runs ahead were a minute each (612 s) and queue-b quoted one GPU (755 s): it went to
+# queue-a. queue-a's own quote is read from the walk's placement line (a render of second, which goes nowhere: a stand-in runs
+# nothing): with the fix reverted its shot ahead, named by local code, is untimed, and so is queue-a's finish. Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its
 # code is staged and its manifest kept.
 plan_queue() {
 step "plan queue (cl-1107): a machine's runs ahead count their time, so a shot goes where it finishes soonest"
@@ -431,7 +433,7 @@ jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --arg m "$man
       models: ["zhengpeng7/birefnet"], bytes_left: 52453916267},
      {function: "local/e2e-queued/edit", widths: [1], running: true, width: 1, started_at_unix_ms: ($now - 7000), gpu_waits: true,
       models: ["zhengpeng7/birefnet"], bytes_left: 0}],
-   times: []}' > "$OUT/queue-a.frame.json"
+   times: [{function: "local/e2e-queued/edit", runs: [{width: 1, size: {}, ms: 60000}]}]}' > "$OUT/queue-a.frame.json"
 jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --argjson now "$now" --argjson lacks "$lacks" '
   {worker_id: "stand-in-queue-b", boot_id: "queue-b", version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
    started_at_unix_ms: ($now - 60000), serving_gpus: 2, link_bytes_per_s: ($lacks / 300), disk: {total_bytes: 322122547200, free_bytes: 300000000000},
@@ -465,7 +467,84 @@ done
 echo "plan queue: second's estimate ${estimate:-none}"
 J '.machine == "queue-b" and .card == "RTX 4090" and (.run_ms - 196000 | fabs) < 4000' <<< "${estimate:-null}" \
   || check "plan queue: second goes to queue-b, on both its GPUs (196 s), not queue-a behind its two runs: ${estimate:-none} $(tail -c 300 "$OUT/queue-fit.json") $(tail -c 300 "$OUT/queue-fit.err") $(tail -c 300 "$OUT/queue-a.log")"
+# Each machine's quote, as the walk weighed them (`placement::said`), in its walk log (calcifer.diagnostics, run.sh).
+local placed='' walk=$P/.vault-calcifer/diagnostics/walk.log quoted
+coming_go second '["queue-a","queue-b"]'
+for _ in $(seq 60); do
+  placed=$(grep -h ' goes to queue-' "$walk" 2> /dev/null | tail -n 1 || true)
+  [ -n "$placed" ] && break
+  sleep 1
+done
+echo "plan queue: ${placed:-the walk placed second nowhere}"
+quoted=$(grep -oE 'queue-a finishes in [0-9]+ s' <<< "$placed" | grep -oE '[0-9]+' || true)
+[ -n "$quoted" ] && [ "$quoted" -ge 767 ] && [ "$quoted" -le 797 ] \
+  || check "plan queue: queue-a isn't quoted to finish in about 782 s, its runs ahead timed (cl-1107): ${placed:-no placement line} $(tail -c 300 "$walk" 2> /dev/null)"
 for name in queue-a queue-b; do
+  timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
+done
+kill "${pids[@]}" 2> /dev/null || true
+}
+
+# plan_unknown (cl-1279, 11-19; Paul's ruling: "a machine with a real estimate wins over one whose time is unknown. Unknown machines are
+# used only when no machine has an estimate; then the job is placed by fit, soonest free and rentals before local, with its time shown
+# as unknown"). Two stand-ins that say only their Status (fakemachine.py), so nothing is sent to them, each holding none of the code:
+# known-a an RTX 4090, which the queued shot's benchmarks.json times (335 s), and unknown-b a card no row or Hub speed relates to. The
+# shot goes to known-a, timed 335 s: on rc/0.28.0 unknown-b was quoted a flat minute (`UNKNOWN_MS`) and won. The same shot with no
+# benchmarks.json, which no machine can time, is still placed on one of them, its time shown as unknown (`run_ms` none, basis none).
+plan_unknown() {
+step "plan unknown (cl-1279): a machine with an estimate wins over one with none; with none anywhere a job is still placed, its time unknown"
+local P=$OUT/unknown tool=$here/project/queued/shot untimed=$OUT/unknown-untimed version runtime tensorfs now name port fp pid pids=() card frame est
+local lacks=$((64 << 20))
+rm -rf "$untimed" && cp -r "$here/project/queued" "$untimed" && rm -f "$untimed/benchmarks.json"
+sed -i 's/^name = "e2e-queued"$/name = "e2e-untimed"/' "$untimed/pyproject.toml"
+cozy --json new --unencrypted "$P" > "$OUT/unknown-new.json" 2>&1 || { check "plan unknown: new: $(tail -c 300 "$OUT/unknown-new.json")"; return; }
+jq -n --arg t "$tool" --arg u "$untimed/shot" '[
+  {name: "timed", tool: $t, kind: "image", fields: {instructions: "Where its rows time it."}},
+  {name: "untimed", tool: $u, kind: "image", fields: {instructions: "Where nothing times it."}}]' | boxes_in "$P" || return
+cozy --json machine show local > "$OUT/unknown-local.json" || { check "plan unknown: machine show local"; return; }
+version=$(jq -r '.status.version // empty' "$OUT/unknown-local.json") runtime=$(jq -r '.status.runtime // empty' "$OUT/unknown-local.json")
+tensorfs=$(jq -r '.status.tensorfs // empty' "$OUT/unknown-local.json") now=$(date +%s%3N)
+[ -n "$version" ] || { check "plan unknown: local's version: $(head -c 300 "$OUT/unknown-local.json")"; return; }
+for name in known-a unknown-b; do
+  case $name in known-a) card="NVIDIA GeForce RTX 4090" ;; *) card="NVIDIA RTX E2E-0000 Untimed" ;; esac
+  jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --arg n "$name" --arg card "$card" --argjson now "$now" --argjson lacks "$lacks" '
+    {worker_id: "stand-in-\($n)", boot_id: $n, version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
+     started_at_unix_ms: ($now - 60000), serving_gpus: 1, link_bytes_per_s: 200000000, disk: {total_bytes: 322122547200, free_bytes: 300000000000},
+     gpus: [{index: 0, name: $card, uuid: "GPU-\($n)-0", memory_bytes: 25757220864, family: "sm89", memory_class: "discrete"}],
+     models: [{repository: "zhengpeng7/birefnet", total_bytes: (1099511627776 - $lacks), unique_bytes: (1099511627776 - $lacks),
+       checkpoints: [{release: "0.1.0", lane: "fp16", manifest: "sha256:\("0" * 64)", role: "model", complete: false, bytes: 1099511627776,
+         held_bytes: (1099511627776 - $lacks)}]}],
+     queue: [], times: []}' > "$OUT/$name.frame.json"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=$name" -days 2 \
+    -keyout "$OUT/$name.key" -out "$OUT/$name.pem" > /dev/null 2>&1 || { check "plan unknown: $name's certificate"; break; }
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 "$here/fakemachine.py" --port "$port" --cert "$OUT/$name.pem" --key "$OUT/$name.key" --frame "$OUT/$name.frame.json" \
+    > "$OUT/$name.log" 2>&1 & pid=$!
+  pids+=("$pid")
+  for _ in $(seq 50); do curl -skf "https://127.0.0.1:$port/v1/status" > /dev/null 2>&1 && break; sleep 0.2; done
+  fp=$(openssl x509 -in "$OUT/$name.pem" -outform der | sha256sum | cut -c1-64)
+  cozy --json machine add "$name" "127.0.0.1:$port" --fingerprint "sha256:$fp" > "$OUT/$name-add.json" 2> "$OUT/$name-add.err" \
+    || check "plan unknown: machine add $name: $(tail -c 300 "$OUT/$name-add.json") $(tail -c 300 "$OUT/$name-add.err")"
+done
+in_project "$P" --json machine use "unknown-b,known-a" > "$OUT/unknown-use.json" 2>&1 \
+  || check "plan unknown: machine use unknown-b,known-a: $(tail -c 300 "$OUT/unknown-use.json")"
+for box in timed untimed; do
+  est=''
+  for _ in $(seq 20); do
+    project_api "$P" /fit -X POST -H 'Content-Type: application/json' -d "{\"names\":[\"$box\"]}" > "$OUT/unknown-fit-$box.json" 2> "$OUT/unknown-fit-$box.err" || true
+    est=$(jq -c --arg b "$box" '.estimates[]? | select(.name == $b)' "$OUT/unknown-fit-$box.json" 2> /dev/null || true)
+    [ -n "$est" ] && break
+    sleep 3
+  done
+  echo "plan unknown: $box's estimate ${est:-none}"
+  case $box in
+    timed) J '.machine == "known-a" and .run_ms == 335100 and .basis == "reference"' <<< "${est:-null}" \
+      || check "plan unknown: timed goes to known-a, its 335 s from its row, not unknown-b on a minute assumed: ${est:-none} $(tail -c 300 "$OUT/unknown-fit-$box.err")" ;;
+    *) J '(.machine == "known-a" or .machine == "unknown-b") and .run_ms == null and .basis == "none"' <<< "${est:-null}" \
+      || check "plan unknown: untimed, which nothing times, isn't placed with its time unknown: ${est:-none} $(tail -c 300 "$OUT/unknown-fit-$box.err")" ;;
+  esac
+done
+for name in known-a unknown-b; do
   timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
 done
 kill "${pids[@]}" 2> /dev/null || true

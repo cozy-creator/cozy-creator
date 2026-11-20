@@ -70,7 +70,8 @@ pub(crate) struct Listed {
     pub project: Arc<Project>,
     /// Its box, which its row names.
     pub asset: String,
-    pub start_at_ms: i64,
+    /// When its plan starts it there; none: unknown, after every known one.
+    pub start_at_ms: Option<i64>,
     pub hub: String,
     pub item: v1::Predicted,
     /// `org/package/function`, as its row says it.
@@ -109,11 +110,12 @@ struct Tries {
 }
 
 /// Where a guess's render would finish when it was placed (`placement::Offer`): on its machine, and on each other machine that serves
-/// and fits it, with how long that one's line held it from GPUs. What a machine's load moving could change of it (`Lists::could_move`).
+/// and fits it, with how long that one's line held it from GPUs, each unknown where nothing measured times it there. What a machine's
+/// load moving could change of it (`Lists::could_move`).
 #[derive(Clone, Default)]
 pub(crate) struct Placed {
-    pub finish_ms: i64,
-    pub others: HashMap<String, (i64, i64)>,
+    pub finish_ms: Option<i64>,
+    pub others: HashMap<String, (Option<i64>, Option<i64>)>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -422,7 +424,7 @@ impl Lists {
             let Some(frame) = machines.frame(&name) else { continue };
             let planned = if name == "local" { &planned_local } else { &planned };
             let mut upcoming: Vec<&Listed> = planned.get(&name).into_iter().flat_map(|lists| lists.values().flatten()).collect();
-            upcoming.sort_by_key(|listed| listed.start_at_ms);
+            upcoming.sort_by_key(|listed| (listed.start_at_ms.is_none(), listed.start_at_ms));
             // Its list, each item once, in the order its machine makes them ready (cl-1278): what a render named, until the machine
             // answers it (`answered`), the oldest first; its guesses, the box touched last first; then what demand elsewhere asks of
             // it that no guess does: nothing of an encrypted project where its request may not go ahead (`Calcifer::sealed_from`,
@@ -701,6 +703,7 @@ impl Lists {
             }
         }
         let sooner = crate::plan::finishes_clearly_sooner;
+        let by = |at: Option<i64>, ms: Option<i64>| Some(at? + ms?);
         let guessed = lock(&self.guessed);
         let guesses = guessed.get(project).map(Vec::as_slice).unwrap_or_default();
         for (machine, moved) in by_machine {
@@ -710,11 +713,11 @@ impl Lists {
                     match guess.machine == machine {
                         true => {
                             (moved.later && !placed.others.is_empty())
-                                || (moved.waits_ms > 0 && placed.others.values().any(|(other, _)| sooner(*other, placed.finish_ms + moved.waits_ms, now)))
+                                || (moved.waits_ms > 0 && placed.others.values().any(|(other, _)| sooner(*other, by(placed.finish_ms, Some(moved.waits_ms)), now)))
                         }
                         false => placed.others.get(&machine).is_some_and(|(finish, gpu_wait)| {
-                            (moved.fewer && sooner(finish - gpu_wait, placed.finish_ms, now))
-                                || (moved.waits_ms < 0 && sooner(finish + moved.waits_ms, placed.finish_ms, now))
+                            (moved.fewer && sooner(by(*finish, gpu_wait.map(|wait| -wait)), placed.finish_ms, now))
+                                || (moved.waits_ms < 0 && sooner(by(*finish, Some(moved.waits_ms)), placed.finish_ms, now))
                         }),
                     }
                 });

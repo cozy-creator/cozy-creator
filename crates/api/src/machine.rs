@@ -1117,22 +1117,30 @@ pub struct EstimateJob {
     pub gpus: u32,
     /// It builds a model on a GPU, itself or a call it makes: a machine with none takes it only on a time that stands on something.
     pub gpu: bool,
-    /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
-    /// this machine has measured none of the function.
-    pub prior_ms: u64,
-    /// How many of this machine's own runs `prior_ms` is, which its frame doesn't time (a project's private runs, cl-1047): its quote
+    /// The caller's runs of it at one GPU on this machine, else on others of its kind, newest first: what it is timed by where this
+    /// machine has measured none of the function, scaled to its size as the machine's own are (`estimate::Shape`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prior: Vec<TimedRun>,
+    /// How many of this machine's own runs `prior` is, which its frame doesn't time (a project's private runs, cl-1047): its quote
     /// is then Measured. 0: runs elsewhere.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub prior_runs: u32,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
+    /// What it reads is made at a time unknown, after work nothing times: so is its start.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub after_untimed: bool,
     /// Its time on one GPU of this machine by its function's own formula over its benchmark rows (`needs::Cost::on`, cl-1286), and
     /// what that stands on: what it is timed by where the machine has no runs of it. None: it declares none, or none gives a time here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formula_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formula_basis: Option<Basis>,
+    /// That formula's time here at each size its runs ran at, here and on the caller's other machines (`prior` too): how they scale to
+    /// its size (`estimate::Shape`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formula_at: Vec<(JobSize, f64)>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -1264,8 +1272,10 @@ pub struct Quote {
     pub short_bytes: u64,
     /// The GPUs it would run on; 0: none.
     pub width: u32,
-    pub start_ms: u64,
-    pub finish_ms: u64,
+    /// When it would start and finish, ms from now. None: it can't run here, or unknown: its time, or that of a run it waits for,
+    /// stands on nothing measured.
+    pub start_ms: Option<u64>,
+    pub finish_ms: Option<u64>,
     /// Its code's install and, its weights not here, their download and load onto the GPUs: part of `start_ms`.
     pub prepare_ms: u64,
     /// How many runs and jobs start here before it.
@@ -1294,7 +1304,7 @@ pub enum Basis {
     /// card, scaled to this one by how the two compare across the functions both were measured on, else by the Hub's spec speeds
     /// (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
     Scaled,
-    /// Nothing: a minute is assumed.
+    /// Nothing measured relates to it: its time is unknown.
     #[default]
     None,
 }

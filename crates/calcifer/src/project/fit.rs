@@ -196,18 +196,18 @@ async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec
         .and_then(|picture| picture.frame.gpus.first())
         .map(|gpu| gpu.name.clone())
         .unwrap_or_default();
-    let run_ms = match chosen.basis {
-        Basis::None => 0,
-        _ => (chosen.finish_at_ms - chosen.start_at_ms).max(0) as u64,
+    let run_ms = match (chosen.start_at_ms, chosen.finish_at_ms) {
+        (Some(start), Some(finish)) if chosen.basis != Basis::None => Some((finish - start).max(0) as u64),
+        _ => None,
     };
     let faster = faster(api, hub, &job, &chosen.machine, &gpu, run_ms).await;
     Some(BoxEstimate { name, machine: chosen.machine.to_string(), card: card(&gpu), run_ms, basis: chosen.basis, faster })
 }
 
-/// The card to rent instead when `machine`, whose `gpu` (empty: none) takes `run_ms` (0: unknown), runs `job` far slower than a rented
+/// The card to rent instead when `machine`, whose `gpu` (empty: none) takes `run_ms` (none: unknown), runs `job` far slower than a rented
 /// one would (`recommended`), or has no GPU for a job that loads a model on one: its time there, both times and its cost a render in a
 /// line, and the rent. None: local code, which the Hub places on nothing, or no measured card qualifies.
-async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, gpu: &str, run_ms: u64) -> Option<Faster> {
+async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, gpu: &str, run_ms: Option<u64>) -> Option<Faster> {
     // A packages checkout's first-party package from source (`_/pkg/fn`) is placed as its newest release, and timed by its source's
     // benchmarks; a project's own code (`local/pkg/fn`), which the Hub doesn't have, by nothing.
     let (path, release) = job.target.split_once('@').unwrap_or((&job.target, ""));
@@ -216,19 +216,19 @@ async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, g
     }
     let (package, function) = path.rsplit_once('/')?;
     let cpu = gpu.is_empty() && job.gpu;
-    if !cpu && run_ms == 0 {
+    if !cpu && run_ms.is_none() {
         return None;
     }
     let placed = placed(api, hub, package, release, function).await?;
-    let here = run_ms as f64;
+    let here = run_ms.map(|ms| ms as f64).filter(|_| !cpu);
     let references = crate::placement::references_for(api, [job], vec![]);
-    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::runs_of(&job.models), &placed.offers, (!cpu).then_some(here))?;
+    let (rent, away) = recommended(&references, &job.function, &job.size, api::estimate::runs_of(&job.models), &placed.offers, here)?;
     let there = format!("a rented {}, {} and {} a render", rent.card, about(away / 1e3), per_render(rent.usd_micros_per_hour, away));
     let line = match (cpu, machine.is_local()) {
         (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
         (true, false) => format!("{machine} has no GPU, so this would run on its CPU, slowly. On {there}."),
-        (false, true) => format!("On this computer's {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
-        (false, false) => format!("On {machine}'s {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
+        (false, true) => format!("On this computer's {} this takes {}; on {there}.", card(gpu), about(here? / 1e3)),
+        (false, false) => format!("On {machine}'s {} this takes {}; on {there}.", card(gpu), about(here? / 1e3)),
     };
     let rent = RentFor { line: format!("A rented {} runs it for ${:.2}/h.", rent.card, rent.usd_micros_per_hour as f64 / 1e6), ..rent };
     Some(Faster { run_ms: away as u64, line, rent })

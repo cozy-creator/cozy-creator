@@ -344,12 +344,17 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 
 - Calcifer quotes each machine a job may go to itself (cl-967), from the Status it pushes, with the estimator TensorD packs its queue by
   (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
-  lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
-  GPU of that kind, from this computer's runs at one width on it; `prior_runs`, how many of that machine's own runs it is: a project's,
-  read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has
+  lane commit, bytes and repository, from its Hub card), `size` (its function's own variables, else `JobSize::of` its payload), `gpu` and `prior`
+  (this computer's runs of it at one width on that machine, else on its kind, each with its size; `prior_runs`, how many of that machine's
+  own runs they are: a project's, read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). Every
+  past run, the machine's own, `prior`'s and other machines', is scaled to the size asked as the function's rows are (`estimate::Shape`,
+  cl-1286): by its formula's times at both sizes where it declares one, else by each variable's exponent fitted over its rows. A machine that ran none of it and has
   no prior is timed by its release's benchmarks (`api::estimate::References`, cl-1024: of its card, else another card's times its Hub
   speed over this one's, the card nearest in speed; local code from source, a packages checkout's or a project's `./dir`, by its own
-  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. Before its release's benchmarks, another of this computer's machines' runs of it on the same card (`prior`), and after them its runs on another card scaled by how the two compare (`scaled`; GPUs only, cl-1107). A machine's runs ahead count all their work not done: a root on its GPUs what's left since it took them, a root started on its CPU alone while its GPU calls wait for their weights or a GPU (an orchestrator, `Queued::gpu_waits`) all of it, after its calls' downloads. A rental that hasn't measured its link is quoted at the median of what this account's other rentals from its Hub and provider measured (cl-1107). `cozy machine show` says when a machine's GPUs are free of what it holds, as these quotes count it (`status.busy_until_ms`). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else its time is unknown (cl-1279,
+  11-19: no minute assumed): a machine whose finish is known always wins over one whose finish isn't; with none known, the soonest start
+  wins (fit, free soonest, a rental before this computer), and the time shows as unknown (`finish_ms`, `run_ms`, `placed.finish_at_ms`
+  none). What waits behind an untimed root is untimed too. A machine packing its own queue knows no benchmarks. Before its release's benchmarks, another of this computer's machines' runs of it on the same card (`prior`), and after them its runs on another card scaled by how the two compare (`scaled`; GPUs only, cl-1107). A machine's runs ahead count all their work not done: a root on its GPUs what's left since it took them, a root started on its CPU alone while its GPU calls wait for their weights or a GPU (an orchestrator, `Queued::gpu_waits`) all of it, after its calls' downloads. A rental that hasn't measured its link is quoted at the median of what this account's other rentals from its Hub and provider measured (cl-1107). `cozy machine show` says when a machine's GPUs are free of what it holds, as these quotes count it (`status.busy_until_ms`). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -357,7 +362,7 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
   quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
-  timed by this computer's runs on its card, else its release's benchmarks, else a minute; run reports never time anything
+  timed by this computer's runs on its card, else its release's benchmarks, else untimed; run reports never time anything
   (cl-1006). Its quote's `ready_ms` says when.
   A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto.
 - A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish

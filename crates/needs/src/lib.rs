@@ -868,7 +868,11 @@ impl<'a> Checker<'a> {
                 Some(Kind::List(_) | Kind::Any) => Ok(Kind::Float),
                 _ => Err("`sum(list)` adds a list of numbers".into()),
             },
-            other if !matches!(self.mode, Mode::Rule) => Err(format!("`{other}` isn't something an estimate may call; it calls `measured`, `pow`, `sum`, `min`, `max`, and what a rule may")),
+            "words" if !matches!(self.mode, Mode::Rule) => match (args.len(), args.first()) {
+                (1, Some(Kind::Text | Kind::Any | Kind::Optional(_))) => Ok(Kind::Float),
+                _ => Err("`words(text)` counts a text's words".into()),
+            },
+            other if !matches!(self.mode, Mode::Rule) => Err(format!("`{other}` isn't something an estimate may call; it calls `measured`, `pow`, `sum`, `min`, `max`, `words`, and what a rule may")),
             other => Err(format!("`{other}` isn't something a rule may call; {MAY}")),
         }
     }

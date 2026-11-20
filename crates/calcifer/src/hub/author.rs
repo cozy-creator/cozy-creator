@@ -689,17 +689,19 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
 const INTERFACE: &str = "metadata/package-interface.json";
 /// The package's benchmarks, beside its pyproject.toml (cl-1024): optional, written by `cozy package benchmarks` or a release's gate.
 pub(crate) const BENCHMARKS: &str = "benchmarks.json";
+/// The most of a row's `note` the Hub keeps, in bytes (its `validateBenchmark`).
+const NOTE_BYTES: usize = 200;
 
 /// The benchmarks a release of the package at `root` declares (cl-1024): its `benchmarks.json`, every row whole and naming a function
 /// of its interface (`interface`, as the build described it), refused by row before anything uploads. None without the file. A field
 /// this cozy doesn't read is left out of its rows and said once, with them (cl-1279, Paul: "warning, not error"): a newer cozy's
-/// rows publish.
+/// rows publish. So is a note longer than the Hub keeps, cut at a character to fit (fix, don't refuse).
 fn benchmarks(root: &Path, interface: &Path, say: Say<'_>) -> Result<Vec<PackageBenchmark>, Error> {
     let path = root.join(BENCHMARKS);
     let Ok(text) = fs::read(&path) else { return Ok(vec![]) };
     let wrong = |why: String| refuse("benchmarks_invalid", format!("{BENCHMARKS}: {why}"));
     let mut unread: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    let rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| {
+    let mut rows: Vec<PackageBenchmark> = serde_ignored::deserialize(&mut serde_json::Deserializer::from_slice(&text), |at| {
         let mut steps = vec![];
         walk(&at, &mut steps);
         if let Some((row, field)) = steps.split_first().and_then(|(row, field)| Some((row.parse().ok()?, field.join(".")))) {
@@ -729,6 +731,15 @@ fn benchmarks(root: &Path, interface: &Path, say: Say<'_>) -> Result<Vec<Package
     }
     for (field, at) in unread {
         say(&format!("{BENCHMARKS}: `{field}` in {} is no field this cozy reads: left out of the release", runs(&at)));
+    }
+    let mut long = BTreeSet::new();
+    for (at, row) in rows.iter_mut().enumerate().filter(|(_, row)| row.note.len() > NOTE_BYTES) {
+        let end = (0..=NOTE_BYTES).rev().find(|end| row.note.is_char_boundary(*end)).unwrap_or(0);
+        row.note.truncate(end);
+        long.insert(at);
+    }
+    if !long.is_empty() {
+        say(&format!("{BENCHMARKS}: `note` in {} is longer than the {NOTE_BYTES} bytes the Hub keeps: cut to fit", runs(&long)));
     }
     Ok(rows)
 }

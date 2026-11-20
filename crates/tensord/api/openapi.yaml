@@ -1087,7 +1087,7 @@ components:
     Basis:
       type: string
       enum: [measured, prior, none]
-      description: 'What a quote''s time stands on: runs here, the caller''s `prior_ms`, or nothing (a minute).'
+      description: 'What a quote''s time stands on: runs here, the caller''s `prior` runs, or nothing (its time unknown).'
     EstimateJob:
       type: object
       properties:
@@ -1100,11 +1100,10 @@ components:
         models: {type: array, items: {$ref: '#/components/schemas/ModelRef'}}
         size: {$ref: '#/components/schemas/JobSize'}
         gpus: {type: integer, format: int32, minimum: 0, description: 'The user''s GPU count; 0: the machine chooses.'}
-        prior_ms:
-          type: integer
-          format: int64
-          minimum: 0
-          description: 'The caller''s time for it on one GPU of this kind; 0: none. Used when no run of it here is timed.'
+        prior:
+          type: array
+          items: {$ref: '#/components/schemas/TimedRun'}
+          description: 'The caller''s runs of it at one GPU on this machine, else on its kind: used when no run of it here is timed.'
         after_ms:
           type: integer
           format: int64
@@ -1130,8 +1129,8 @@ components:
         fits: {type: boolean}
         refusal: {$ref: '#/components/schemas/Reason'}
         width: {type: integer, format: int32, minimum: 0, description: 'The GPUs it would run on; 0: none.'}
-        start_ms: {type: integer, format: int64, minimum: 0}
-        finish_ms: {type: integer, format: int64, minimum: 0}
+        start_ms: {type: [integer, 'null'], format: int64, minimum: 0, description: 'Null: unknown, nothing measured timing it or a run it waits for.'}
+        finish_ms: {type: [integer, 'null'], format: int64, minimum: 0}
         prepare_ms: {type: integer, format: int64, minimum: 0, description: 'Its install and weights'' fetch, part of `start_ms`.'}
         queue_position: {type: integer, format: int32, minimum: 0}
         basis: {$ref: '#/components/schemas/Basis'}

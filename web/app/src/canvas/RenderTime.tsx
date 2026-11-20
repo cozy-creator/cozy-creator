@@ -49,7 +49,7 @@ export function RenderTime({ name, view }: { name: string; view: ElementView }) 
           Ready on {ready}
         </span>
       )}
-      {estimate && estimate.run_ms >= SHOWN_MS && (
+      {estimate?.run_ms != null && estimate.run_ms >= SHOWN_MS && (
         <span className="render-time" role="note" aria-label="Render time" title={`Typical time on ${where}, once it starts`}>
           {about(estimate.run_ms)}
         </span>

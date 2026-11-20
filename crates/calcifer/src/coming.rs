@@ -2,12 +2,12 @@
 //! booting or ordered, quoted as its machine will quote once it serves. It should serve when its Hub's word says
 //! (`Hubs::on_its_way`); then it is quoted as a machine that holds nothing (`placement::Picture`, `api::estimate::quote`), the runs
 //! already sent to it ahead of the jobs asked, each timed by this computer's runs on its card, else its release's benchmarks (cl-1024:
-//! of that card, else another's scaled by the Hub's speeds), else not at all (a minute, as a machine assumes).
+//! of that card, else another's scaled by the Hub's speeds), else unknown.
 use std::sync::Arc;
 
 use api::{
     calcifer::{Kind, MachineKind, MachineState, On, Status},
-    machine::{self as v1, Basis, JobSize},
+    machine::{self as v1, JobSize},
 };
 
 use crate::{
@@ -43,7 +43,7 @@ impl Machines {
 }
 
 /// `coming` as it will picture itself once it serves (`placement::Picture`): its Hub's GPUs, nothing held, nothing timed; the runs
-/// already sent to it, which wait for it here, ahead of anything asked, each timed by its card (`card_time`).
+/// already sent to it, which wait for it here, ahead of anything asked, each timed by this computer's runs on its card (`card_runs`).
 pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
     let way = &coming.way;
     let gpus = (0..way.gpus).map(|index| v1::Gpu { index, name: way.card.clone(), ..Default::default() }).collect();
@@ -55,18 +55,8 @@ pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
     for row in sent.iter().filter(|row| row.kind == Kind::Call) {
         let payload: serde_json::Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
         let size = JobSize::of(&payload);
-        let (one_ms, _) = card_time(api, way, &row.target, &size);
-        ahead.push(v1::EstimateJob { key: row.id.to_string(), function: row.target.clone(), size, gpus: row.spec.gpus, prior_ms: one_ms as u64, ..Default::default() });
+        let prior = api.calcifer.card_runs(&row.target, &way.card);
+        ahead.push(v1::EstimateJob { key: row.id.to_string(), function: row.target.clone(), size, gpus: row.spec.gpus, prior, ..Default::default() });
     }
     Picture { on: On::Machine(coming.name.clone()), name: coming.name.clone(), frame, ready_at_ms: Some(way.ready_at_ms), ahead, references: Default::default() }
-}
-
-/// What a run of `target` (`org/pkg/fn@release`, `local/pkg/fn`) of `size` takes on one GPU of `way`'s card, and what that stands on:
-/// this computer's runs on that card; else nothing (0), where its release's benchmarks time it, as the estimator reads them for the
-/// card (cl-1024), else a minute.
-pub(crate) fn card_time(api: &Arc<Api>, way: &OnItsWay, target: &str, size: &JobSize) -> (f64, Basis) {
-    match api.calcifer.card_ms(target, &way.card, size) {
-        Some(ms) => (ms, Basis::Prior),
-        None => (0.0, Basis::None),
-    }
 }

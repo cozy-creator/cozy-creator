@@ -1175,8 +1175,9 @@ pub struct BoxEstimate {
     pub machine: String,
     /// Its GPU in a person's words: `RTX 4090`. Empty: none, so its CPU.
     pub card: String,
-    /// The run itself there, at the GPUs it would take: no queue, install, download or load. 0: unknown.
-    pub run_ms: u64,
+    /// The run itself there, at the GPUs it would take: no queue, install, download or load. None: unknown, nothing measured timing it
+    /// there.
+    pub run_ms: Option<u64>,
     pub basis: crate::machine::Basis,
     /// The tool's recommended GPU (the Hub's pick for its release), when a rented one runs it more than 3× faster and a minute sooner,
     /// or it would run here on a CPU.
