@@ -87,6 +87,20 @@ for arm in arms:
             if temp == "cold":
                 note += f", cached before {f.get('cached_before_cold')}, after {f.get('cached_after_cold')}"
             add(arm, f"{label} fill {'disk' if cold else 'RAM'} -> card", num(r.get("gb")), num(r.get("s")), cold, True, note)
+    for kind in ("full", "tight"):
+        f = load(f"{out}/{arm}-policy-{kind}.json")
+        if not f:
+            continue
+        if f.get("error"):
+            rows.append([arm, f"policy {kind}", "-", "-", "-", "-", "-", "-", str(f["error"])[:120]])
+            continue
+        mem = f"memory before {json.dumps(f.get('memory_before'))}, held {json.dumps(f.get('held_gb'))}"
+        r = obj(f.get("cold"))
+        add(arm, f"policy {kind}: disk -> card", num(r.get("gb")), num(r.get("s")), True, True,
+            f"cached after {f.get('cached_after_cold')}; {mem}; reads {json.dumps(r.get('rows'))}")
+        r = obj(f.get("again"))
+        add(arm, f"policy {kind}: the same again", num(r.get("gb")), num(r.get("s")), False, True,
+            f"a bound of RAM: the again row is from disk where the first read went past the cache; reads {json.dumps(r.get('rows'))}")
     paged = [("", f"{out}/{arm}-h3-paged.json")]
     i = 1
     while os.path.exists(f"{out}/{arm}-paged-sweep-{i}.json"):
