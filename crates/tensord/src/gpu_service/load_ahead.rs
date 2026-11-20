@@ -148,19 +148,24 @@ fn gib(bytes: u64) -> String {
 }
 
 impl Pool {
-    /// `predicted`'s weights are here: it loads when a GPU is idle. Its like (the same caller's item) is replaced. On a shared
-    /// machine (this computer, unless its owner made it dedicated) it never loads.
-    pub(crate) fn predict(self: &Arc<Self>, engine: &Arc<Engine>, predicted: Predicted) {
-        if self.config.host.mode != HostMode::Dedicated || predicted.plan.degree == 0 || predicted.plan.slots.is_empty() {
+    /// A list item's weights are here: what it predicts loads when a GPU is idle, its call, or (a composite: H3's `generate`) each
+    /// call its rules pick (cl-1318), all one caller's, which replace what it predicted before. On a shared machine (this computer,
+    /// unless its owner made it dedicated) nothing loads.
+    pub(crate) fn predict(self: &Arc<Self>, engine: &Arc<Engine>, predicted: Vec<Predicted>) {
+        let predicted: Vec<Predicted> = predicted.into_iter().filter(|one| one.plan.degree != 0 && !one.plan.slots.is_empty()).collect();
+        let Some((actor, caller)) = predicted.first().map(|one| (one.actor.clone(), one.caller.clone())) else { return };
+        if self.config.host.mode != HostMode::Dedicated {
             return;
         }
-        let built = |slot: &&PlanSlot| !slot.on_demand || predicted.build.contains(&slot.binding.model_parameter_name);
-        let need = predicted.plan.slots.iter().filter(built).map(|slot| slot.selected_encoded_bytes).sum();
-        self.ahead.planned.lock().unwrap().insert((predicted.actor.clone(), predicted.caller.clone()));
+        self.ahead.planned.lock().unwrap().insert((actor.clone(), caller.clone()));
         {
             let mut items = self.ahead.items.lock().unwrap();
-            items.retain(|item| !(item.predicted.actor == predicted.actor && item.predicted.caller == predicted.caller));
-            items.push(Arc::new(Item { predicted, need, state: Mutex::default() }));
+            items.retain(|item| !(item.predicted.actor == actor && item.predicted.caller == caller));
+            for predicted in predicted {
+                let built = |slot: &&PlanSlot| !slot.on_demand || predicted.build.contains(&slot.binding.model_parameter_name);
+                let need = predicted.plan.slots.iter().filter(built).map(|slot| slot.selected_encoded_bytes).sum();
+                items.push(Arc::new(Item { predicted, need, state: Mutex::default() }));
+            }
         }
         let (pool, woken) = (Arc::downgrade(self), Arc::downgrade(engine));
         self.ahead.serving.get_or_init(|| {
@@ -222,17 +227,40 @@ impl Pool {
 
     /// How ready the machine is for `actor`'s item `caller` beyond its weights: `loading`, `loaded` or `evicted`; else `ready`
     /// with why it isn't loading, when it was looked at. None: no load step for it.
+    /// A composite's calls (cl-1318) say the least ready of them, named by its function.
     pub(crate) fn readiness(&self, actor: &str, caller: &str) -> Option<api::machine::Readiness> {
-        let item = self.ahead.items.lock().unwrap().iter().find(|item| item.predicted.actor == actor && item.predicted.caller == caller).cloned()?;
+        let items: Vec<Arc<Item>> = self.ahead.items.lock().unwrap().iter().filter(|item| item.predicted.actor == actor && item.predicted.caller == caller).cloned().collect();
+        let rank = |ready: &Option<api::machine::Readiness>| match ready.as_ref().map(|ready| ready.stage.as_str()) {
+            None | Some("ready") => 0,
+            Some("evicted") => 1,
+            Some("staging") => 2,
+            Some("staged") => 3,
+            Some("built") => 4,
+            Some("loading") => 5,
+            _ => 6,
+        };
+        let each: Vec<(&Arc<Item>, Option<api::machine::Readiness>)> = items.iter().map(|item| (item, self.item_readiness(item))).collect();
+        let (item, ready) = each.into_iter().min_by_key(|(_, ready)| rank(ready))?;
+        let entrypoint = &item.predicted.plan.entrypoint;
+        ready.map(|ready| match items.len() {
+            1 => ready,
+            _ => api::machine::Readiness { reason: format!("{entrypoint}: {}", ready.reason).trim_end_matches(": ").to_owned(), ..ready },
+        })
+    }
+
+    fn item_readiness(&self, item: &Arc<Item>) -> Option<api::machine::Readiness> {
+        let (actor, caller) = (&item.predicted.actor, &item.predicted.caller);
         let at = |stage: &str, reason: String| Some(api::machine::Readiness { stage: stage.into(), total: item.need, reason, ..Default::default() });
-        let loading = self.ahead.loading.lock().unwrap().as_ref().filter(|loading| loading.actor == actor && loading.caller == caller).map(|loading| loading.level);
+        let loading = (self.ahead.loading.lock().unwrap().as_ref())
+            .filter(|loading| loading.actor == *actor && loading.caller == *caller && loading.construction == item.predicted.plan.construction)
+            .map(|loading| loading.level);
         match loading {
             Some(Level::Gpu) => return at("loading", String::new()),
             Some(_) => return at("loading", "into RAM: its executor and models, as its GPU can't hold it now".into()),
             None => {}
         }
-        let on_gpu = self.on_gpu(&item);
-        let in_ram = self.in_ram(&item);
+        let on_gpu = self.on_gpu(item);
+        let in_ram = self.in_ram(item);
         let state = item.state.lock().unwrap();
         // In RAM, or on its way there, while no GPU holds it: its load then reads RAM, at the bound of PCIe.
         let staged = |stage: &crate::stage::Stage| {
