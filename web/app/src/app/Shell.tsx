@@ -425,10 +425,11 @@ export function Shell() {
     if (!id || !vault.data?.encrypted) return
     const cover = () => flushSync(() => setChecking(true))
     const recheck = () => {
-      cover()
       void vault.refetch().then((answer) => { if (!answer.isError) setChecking(false) })
     }
-    const visible = () => { if (document.visibilityState === "hidden") cover(); else recheck() }
+    // A tab switch keeps its authorized player and event subscription. Leaving the page
+    // still covers it before the browser can keep it in its back/forward cache.
+    const visible = () => { if (document.visibilityState === "visible") recheck() }
     document.addEventListener("visibilitychange", visible)
     window.addEventListener("pagehide", cover)
     window.addEventListener("pageshow", recheck)
