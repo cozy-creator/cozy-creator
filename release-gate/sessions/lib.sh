@@ -16,7 +16,7 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 # Made up, and here so each published session shows its scrub ran (e2e/publish): in its log, results.txt and this file it reads `Bearer [scrubbed]`.
 say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
-RC=0 RID='' NAME='' WD='' BG='' DL='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
+RC=0 RID='' NAME='' WD='' BG='' DL='' STEP='' RENT_ARGS=''  # BG: a session's own background loop, ended with it; STEP: the running step's cozy
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 # ON: the pod of the session that runs this one (`on_this`): this one neither quotes, rents, guards, claims nor ends a pod.
 ON=${ON:-}
@@ -73,18 +73,20 @@ finish() {
   # From here a signal is noted, not obeyed: nothing the session started (the deadline watcher, a helper) or a cancel stops
   # the rental ends below. 43971316155's watcher TERMed this trap and the session exited without its RESULT.
   trap 'RC=1' INT TERM HUP
-  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
-  for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting. So does the
+  # step in flight, its cozy before its shell (the Image Upscalers session's cf9233d813: 44643016198's `cozy run` outlived the session).
+  for p in $DL $WD $BG $STEP; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
   if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
+  # Its runs, canceled before its pods end (machines.sh `cancel_runs`).
+  cancel_runs "$RUN_PROJECT" "$OUT" end | while read -r line; do say "$line before its pods end"; done
   # An order a refused rent left standing that `order` did not record (the session ended first): ended by its handle too.
   for r in $(standing "$OUT"/rent*.out "$OUT"/rent*.err); do
     grep -qsxF "$r" "$OUT/rental" || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; }
   done
   for r in "${RIDS[@]}"; do
     local tries=0
-    gone "$r" || unpin "$r"
     until gone "$r"; do
       if [ $((tries % 12)) = 0 ]; then
         cozy machine end "$r" -y >> "$OUT/end.txt" 2>&1 || cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1
@@ -226,6 +228,7 @@ step() {
   local kinds=''
   if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
   (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow='' free='' was=''
+  STEP=$p
   local look=$((QUIET_S / 2 / 30 * 30)) window="$((QUIET_S / 60)) min"; [ $((QUIET_S % 60)) = 0 ] || window="$QUIET_S s"
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1))
@@ -249,10 +252,10 @@ step() {
       if [ "$still" = "$look" ]; then was=$free
       elif [ -n "$free" ] && [ "$free" != "$was" ]; then say "$n: quiet $window, and its pod moved ($was, now $free)"; still=0; was=$free; fi
     fi
-    [ "$still" -lt "$QUIET_S" ] || { kill "$p"; say "$n: no output for $window${was:+, the pod still at $was}"; return 124; }
+    [ "$still" -lt "$QUIET_S" ] || { pkill -P "$p"; kill "$p"; STEP=''; say "$n: no output for $window${was:+, the pod still at $was}"; return 124; }
   done
   [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
-  wait "$p"; local c=$?
+  wait "$p"; local c=$?; STEP=''
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
   return $c
 }
@@ -283,13 +286,11 @@ guard() {
         why="no read of what the Hub bills for ${blind}s"
       fi
       echo "$(date -u +%T) GUARD: $why, ending $(jq -r 'join(" ")' <<<"$ids")" >> "$R"
-      jq -r '.[]' <<<"$ids" | while read -r r; do unpin "$r"; cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
+      cancel_runs "$RUN_PROJECT" "$OUT" guard | while read -r line; do echo "$(date -u +%T) $line before its pods end" >> "$R"; done
+      jq -r '.[]' <<<"$ids" | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
       exit 0
     done ) 9>&- & WD=$!
 }
-
-# unpin <rental id or name>: this session's runs still on that machine, canceled before it ends (machines.sh `unpin_runs`).
-unpin() { unpin_runs "$1" "$RUN_PROJECT" "$OUT" | while read -r line; do say "$line before it ends"; done; }
 
 # billed <rental id>: what the Hub bills for it, and what its provider does, from the account's rentals of the last day.
 billed() {
