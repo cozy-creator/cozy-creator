@@ -1,6 +1,6 @@
 {
-  "need_s": 2700,
-  "max_failures": 1,
+  "need_s": 6000,
+  "max_failures": 3,
   "order": "one-way",
   "floor_mb_s": 100,
   "cells": [
@@ -22,6 +22,40 @@
         "tensord": true,
         "gpu_memory_limit": "6GiB"
       }
+    },
+    {
+      "name": "f2-gen-probe",
+      "tree": "rc",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30034",
+        "steps:=2"
+      ],
+      "max_s": 2400,
+      "host_free_gib": 35,
+      "update": {
+        "runtime": "44644407000",
+        "tensorfs": "artifact:44635144596/tensorfs-wheel-72efcf55296f2ca1c7c399bd964257ac7388fee2",
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "f2-gen-hardest",
+      "tree": "rc",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30034"
+      ],
+      "max_s": 1800,
+      "host_free_gib": 35
     }
   ]
 }
