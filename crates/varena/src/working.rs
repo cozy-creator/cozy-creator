@@ -138,6 +138,8 @@ pub struct WorkingStats {
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,
     pub reclaim_step_ns: [u64; crate::reclaim::STEPS],
+    /// Of the reclaim order's time, what it waited on the GPU's work (in no step's figure).
+    pub reclaim_gpu_wait_ns: u64,
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,
@@ -2489,6 +2491,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.reclaim_longest_step,
     ) = owner.driver().times();
     stats.reclaim_step_ns = owner.driver().reclaim_steps();
+    stats.reclaim_gpu_wait_ns = owner.driver().gpu_wait_ns();
     (stats.observed_mapped, stats.observed_retired, stats.observed_ns) = observer::observed();
     Ok(stats)
 }

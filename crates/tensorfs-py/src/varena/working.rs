@@ -474,6 +474,7 @@ fn _varena_working_stats(
         ("reclaim_ns", stats.reclaim_ns),
         ("reclaim_longest_ns", stats.reclaim_longest_ns),
         ("reclaim_longest_step", stats.reclaim_longest_step),
+        ("reclaim_gpu_wait_ns", stats.reclaim_gpu_wait_ns),
         ("reclaim_completed_working_ns", stats.reclaim_step_ns[0]),
         ("reclaim_contentless_ns", stats.reclaim_step_ns[1]),
         ("reclaim_idle_pools_ns", stats.reclaim_step_ns[2]),

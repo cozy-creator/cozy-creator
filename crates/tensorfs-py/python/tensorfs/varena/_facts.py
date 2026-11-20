@@ -188,6 +188,7 @@ class WorkingStats(TypedDict):
     reclaim_ns: int
     reclaim_longest_ns: int
     reclaim_longest_step: int
+    reclaim_gpu_wait_ns: int
     reclaim_completed_working_ns: int
     reclaim_contentless_ns: int
     reclaim_idle_pools_ns: int

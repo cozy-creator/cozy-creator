@@ -1,0 +1,1 @@
+TensorFS: a run record's reclaim times no longer count waiting for the GPU to finish with memory being freed. That wait is the GPU's work and is recorded on its own as `reclaim_gpu_wait_ns`, so a busy GPU no longer reads as hundreds of seconds of eviction (var-030).
