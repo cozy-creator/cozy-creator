@@ -3184,7 +3184,8 @@ fn retried(tx: &Transaction, id: &str, why: &str) -> Result<()> {
 /// (`Machines::place_unplaced`), never renting on its own; one its machine took, as its next attempt. Past its last attempt, a
 /// machine's own job (an install, a warm set, an update: it was for that machine, and what asked for it places its work again), or a
 /// call its caller pinned to the machine (`--on <machine>`: it measures that machine, and another may be another session's: cl-1316),
-/// it fails in one line. One its asker canceled ends canceled.
+/// it fails in one line. A pin is to a machine: a rental whose order never filled (it never served) was none yet, so a call asked of
+/// it is placed again, as `--on new`'s is (Paul 11-19). One its asker canceled ends canceled.
 fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
     let id = row.id.as_str();
     if row.cancel_requested {
@@ -3202,7 +3203,8 @@ fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
             false => format!("{why} before it took {run}"),
         });
     }
-    if row.pinned {
+    let served = |name: &str| tx.query_row("SELECT served FROM machines WHERE name = ?1", [name], |r| r.get::<_, bool>(0)).optional();
+    if row.pinned && row.machine.as_deref().map(served).transpose()?.flatten().unwrap_or(false) {
         let machine = row.machine.as_deref().unwrap_or("its machine");
         return lost(match taken {
             true => format!("{why}, so {run} stopped: it was asked on {machine} (--on), so it runs nowhere else"),
