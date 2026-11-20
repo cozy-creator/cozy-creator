@@ -330,7 +330,15 @@ for k in "${names[@]}"; do
   fi
   ASKED[$key]=1
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
+  # run_s (proof only, after cr-342's d1134b85d3 and f8094eeb22): the run is cancelled once it has run this long, its record
+  # so far kept first in <cell>-live.json, as a cancel keeps none (cr-347)
+  bound=$(jq -r '.run_s // empty' <<<"$c") CW=''
+  [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || { say "$k: past run_s ${bound}s: cancelling $n"
+    cd "$RUN_PROJECT" || exit 0
+    timeout 120 cozy run watch "$n" --once --json --full < /dev/null > "$OUT/$k-live.json" 2> /dev/null
+    cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) 9>&- & CW=$!; }
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  [ -z "$CW" ] || kill "$CW" 2> /dev/null
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
