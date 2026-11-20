@@ -30,7 +30,7 @@ HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
-Q_FIELDS() { jq -nc --arg p "$PROMPT" --argjson s "$1" '{instructions: $p, turbo: false, prompt_upsampling: false, megapixels: 1, aspect_ratio: "1:1", seed: $s}'; }
+Q_FIELDS() { jq -nc --arg p "$PROMPT" --argjson s "$1" --argjson up "${2:-false}" '{instructions: $p, turbo: false, prompt_upsampling: $up, megapixels: 1, aspect_ratio: "1:1", seed: $s}'; }
 P_FIELDS() { jq -nc --argjson s "$1" '{prompt: "a brass compass on a walnut desk", seed: $s}'; }
 mkdir -p "$OUT/before" && gh run download "$BEFORE" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/before" > /dev/null 2>&1 || fail "no cozy from run $BEFORE"
 RC_BIN=$(find "$OUT/before" -name cozy-linux-x86_64 | head -1) && chmod +x "$RC_BIN" || fail "run $BEFORE has no cozy-linux-x86_64"
@@ -239,6 +239,9 @@ render disk q
 fi
 
 if arm yield; then
+  # q with its prompt enhancer (31.5 GB): a stage long enough for the call to come in the middle of it, on a fast disk too
+  # (44659851758 staged 19.2 GB in 1.3 s, before the call came).
+  step fetch-qu run "$TOOL" --on "$NAME" instructions="$PROMPT" turbo:=false prompt_upsampling:=true megapixels:=1 aspect_ratio=1:1 seed:=2 || fail "the enhanced $TOOL"
   # Its control: the call cold with nothing staging.
   tensord "$(command -v cozy)" "$WANT" yield-control
   evict yield-control
@@ -249,7 +252,7 @@ if arm yield; then
   evict yield
   project yield
   HOLD_GB=$YIELD_GB hold yield
-  run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 83)" > "$OUT/box-yield.json" 2>&1 || fail "yield: q: $(tail -c 300 "$OUT/box-yield.json")"
+  run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 83 true)" > "$OUT/box-yield.json" 2>&1 || fail "yield: q: $(tail -c 300 "$OUT/box-yield.json")"
   # Its stage begins with its build at level ram (`loading`, into RAM) and goes on beside it: the call goes at the first sign.
   t=0; until [[ $(item -none stage) =~ ^(loading|staging|built)$ ]]; do sleep 0.2; t=$((t + 1)); [ "$t" -lt 600 ] || fail "yield: q's stage never began: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"; done
   say "yield: q is $(item -none stage), $(item -none done) of $(item -none total) bytes in RAM: the call is sent"
@@ -306,7 +309,7 @@ fi
 close; unhold; kill $BG 2> /dev/null; BG=''
 collect
 
-grep -aE "stage ahead|load ahead|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
+grep -aE "stage ahead|load ahead|first step|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
 # Each render: its time until inference starts (its stages before the first with denoising steps) against its bound.
 python3 -I - "$OUT" "$Q_BYTES" "$HELD" "$DURING" <<'PY' | tee -a "$R" > "$OUT/summary.json"
 import json, sys
@@ -342,6 +345,20 @@ grep -q "stage ahead: .* in RAM in" "$OUT/ahead.log" || fail_if "no stage ahead 
 ! arm yield || jq -e '.renders.yield.until_inference_s <= .renders["yield-control"].until_inference_s * 1.05' "$OUT/summary.json" > /dev/null ||
   fail_if "yield: the call sent mid-stage started later than with nothing staging"
 ! arm yield || grep -q "stage ahead: .*stopped" "$OUT/ahead.log" || fail_if "yield: no stage stopped for the call"
+# The stage reads again only after the call's first step: TensorD's line for it comes first.
+! arm yield || python3 -I - "$OUT/ahead.log" <<'PY2' | tee -a "$R" || fail_if "yield: a stage read again before the call's first step"
+import sys
+from datetime import datetime
+lines = open(sys.argv[1]).read().splitlines()
+at = lambda line: datetime.fromisoformat(line.split()[0].rstrip("Z")).timestamp()
+stop = next((l for l in lines if "stopped for a run waiting" in l or ("stage ahead:" in l and l.rstrip().endswith("stopped"))), None)
+if stop is None:
+    sys.exit("no stage stopped")
+first = next((l for l in lines if "its first step:" in l and at(l) >= at(stop)), None)
+again = next((l for l in lines if "stage ahead: its weights into RAM" in l and at(l) > at(stop)), None)
+print(f"yield: stage stopped {stop.split()[0]}; the call's first step {first and first.split()[0]}; the stage again {again and again.split()[0]}")
+sys.exit(0 if first and (again is None or at(again) >= at(first)) else 1)
+PY2
 ! { arm after && arm disk; } || jq -e '.renders.after.until_inference_s < .renders.disk.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "disk: the built executor reading the disk started no later than reading RAM: the stage bought nothing"
 [ "$RC" = 0 ] && say "PASS: a predicted box the GPU couldn't take was staged in RAM, its render's load read RAM; a free GPU loaded ahead; the RAM went back"
