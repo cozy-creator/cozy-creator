@@ -101,6 +101,21 @@ quote "$NEED"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+# max_memory_gb (proof/cl-1318-ram64): a pod whose container memory number is over it, or has none, is ended at once and another
+# rented, four tries at most: a ram cell whose page cache can fill the number (cl-1318's cache policy).
+MAXMEM=$(param max_memory_gb 0)
+if [ "$MAXMEM" != 0 ]; then
+  for try in 1 2 3 4; do
+    mem=$(T=60 pod "cat /sys/fs/cgroup/memory.max 2> /dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes" < /dev/null 2> /dev/null | tail -1)
+    if [[ $mem =~ ^[0-9]+$ ]] && [ "$mem" -le $((MAXMEM << 30)) ]; then say "pod $NAME: memory number $((mem >> 30)) GiB"; break; fi
+    say "pod $NAME: memory number ${mem:-unread}, over ${MAXMEM} GiB: ended, another rented (try $try of 4)"
+    [ "$try" != 4 ] || fail "no pod with a memory number of ${MAXMEM} GiB or less in 4 tries"
+    cozy machine end "$NAME" -y < /dev/null > /dev/null 2>&1
+    for i in $(seq 1 30); do gone "$RID" && break; sleep 10; done
+    rent
+    for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+  done
+fi
 T=60 pod "cat > /tmp/cold-load.py" < "$FIX/pod.py" || fail "pod.py"
 T=600 pod "python3 /tmp/cold-load.py census" < /dev/null > "$OUT/census-start.json" 2> "$OUT/census-start.err"
 say "pod: $(cat "$OUT/census-start.json")"
