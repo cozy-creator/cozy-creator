@@ -874,12 +874,17 @@ fn open_leaf(
     Ok(id)
 }
 
-/// What `key`'s finest level needs: its measure, else its declaration, and at least what refused it.
+/// What `key`'s finest level needs, in block capacities as the escape tally counts them: its measured
+/// classes, else its declared ones at 5/4 (`Fit::want`), and at least what refused it.
 fn finest(state: &State, key: &str) -> usize {
     let Some(site) = state.splits.sites.get(key) else { return 0 };
     let Some(choice) = site.choices.last() else { return 0 };
+    let held = |classes: &BTreeMap<usize, usize>| classes.iter().map(|(class, count)| class * count).sum::<usize>();
     let sample = site.samples.get(&choice.id);
-    let need = sample.filter(|sample| sample.known).map_or(choice.backing, |sample| sample.peak);
+    let need = match sample.filter(|sample| sample.known) {
+        Some(sample) => held(&sample.classes),
+        None => held(&choice.classes).saturating_mul(5) / 4,
+    };
     need.max(sample.map_or(0, |sample| sample.refused))
 }
 
