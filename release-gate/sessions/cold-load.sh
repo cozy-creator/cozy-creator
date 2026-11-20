@@ -213,6 +213,24 @@ for A in "${arms[@]}"; do
     fi
   done
 done
+# cl-1327's CUDA-init probe (proof only, never merged; `probe`: a model): the last arm's executor start in steps, its Runtime
+# timed in place (fixtures/cold-load/cuda_probe.py) for one `lost` cell, then put back; then plain torch processes' starts.
+PROBE=$(param probe '')
+if [ -n "$PROBE" ]; then
+  T=60 pod "cat > /tmp/cuda-probe.py" < "$FIX/cuda_probe.py" || fail "cuda_probe.py"
+  T=300 pod "python3 /tmp/cuda-probe.py patch" < /dev/null > "$OUT/probe-patch.json" 2>&1
+  say "probe patch: $(head -c 800 "$OUT/probe-patch.json")"
+  cell probe "$PROBE" lost "probe-$PROBE"
+  T=300 pod "python3 /tmp/cuda-probe.py collect" < /dev/null > "$OUT/probe-collect.json" 2>&1
+  T=300 pod "python3 /tmp/cuda-probe.py restore" < /dev/null > "$OUT/probe-restore.json" 2>&1
+  for mode in bare preload bare preload nvml; do
+    T=600 pod "python3 /tmp/cuda-probe.py plain $mode" < /dev/null >> "$OUT/probe-plain.ndjson" 2>&1
+  done
+  say "probe: $(jq -c '[.probe[].line]' "$OUT/probe-collect.json" 2> /dev/null | head -c 4000)"
+  say "probe parents: $(jq -c '[.executors[] | {pid, nvidia_fds, rss_gb, threads, cuda_libs}]' "$OUT/probe-collect.json" 2> /dev/null | head -c 3000)"
+  say "probe memory events: $(jq -c '.memory_events' "$OUT/probe-collect.json" 2> /dev/null | head -c 2000)"
+  say "probe plain: $(jq -c '{mode, import_torch_s, preload_s, nvml_init_s, torch_cuda_init_s, first_alloc_s, first_launches_s, first_launches_ms}' "$OUT/probe-plain.ndjson" 2> /dev/null | paste -sd' ' | head -c 4000)"
+fi
 kill $BG 2> /dev/null; BG=''
 
 LOGGED=true
