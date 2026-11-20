@@ -12,6 +12,9 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
                          a whole-resident load the way the Runtime binds one (cr-318): one Region a block, every block's
                          Source over its stored parts, all filled by one `varena.fill`; from disk (evicted), then from RAM.
                          `alone`: then each Region by its own `use`, in order (a fill ahead of demand, a demand fill)
+  policy <ck> <comps> <other cks> full|tight
+                         where a load's bytes end up: the page cache full of other weights (`tight`: memory pinned too,
+                         until the cache could hold half the load), then the load from disk and the same load again
   paged <ck> <comp>      a paged model's host tier: its blocks' pages read ahead from disk into pinned RAM (`Pages.read_ahead`),
                          each read whole into pinned RAM by its Source (`read_host`), then filled onto the card from those pages
 
@@ -353,6 +356,59 @@ def paged(ckids: str, comp: str, reserve: float) -> dict[str, object]:
     return report
 
 
+def memory() -> dict[str, int]:
+    """This container's memory number (cgroup v2, else v1, else the host's) and what it charges, in bytes."""
+    def read(path: str) -> str:
+        try:
+            return open(path).read().strip()
+        except OSError:
+            return ""
+
+    stat = dict(line.split() for line in read("/sys/fs/cgroup/memory.stat").splitlines() if len(line.split()) == 2)
+    limit = read("/sys/fs/cgroup/memory.max") or read("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    total = int(next(line.split()[1] for line in open("/proc/meminfo") if line.startswith("MemTotal"))) << 10
+    number = int(limit) if limit.isdigit() and int(limit) < total else total
+    current = read("/sys/fs/cgroup/memory.current") or read("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    return {"limit": number, "charged": int(current) if current.isdigit() else -1,
+            "file": int(stat.get("file", stat.get("cache", -1))), "anon": int(stat.get("anon", stat.get("rss", -1)))}
+
+
+def policy(ckids: str, comps: Sequence[str], others: Sequence[str], tight: bool) -> dict[str, object]:
+    """Where a load's bytes end up (cl-1318): the page cache filled first with other weights' bytes, so memory nothing
+    holds is gone but clean cache can give way; `tight`, memory held besides until the cache could hold only half of
+    the load. Then the load from disk, how much of it the cache holds after, and the same load again (a fresh
+    executor's): from memory where the first read kept it, else from disk."""
+    import numpy as np
+
+    ck = pick(ckids, comps)
+    files = chunk_files([ck.id])  # type: ignore[attr-defined]
+    mine = {p for p, _ in files}
+    other = [f for f in chunk_files(others) if f[0] not in mine]
+    blocks = blocks_of(ck, comps)
+    card = Card()
+    limit = card.room() - (2 << 30)
+    load = sum(placed(p)[1] for _, p in blocks)
+    report: dict[str, object] = {"checkpoint": ck.id, "load_gb": round(load / GB, 2), "tight": tight}  # type: ignore[attr-defined]
+    held = None
+    if tight:
+        m = memory()
+        pin = max(0, m["limit"] - m["anon"] - load // 2 - (6 << 30))
+        began = time.perf_counter()
+        # Touched anonymous memory: no swap on a pod, so the kernel can't take it back, as a pinned host tier's.
+        # (Torch's pinned allocator rounds a request up to a power of two: past the number.)
+        held = np.ones(pin, np.uint8) if pin else None
+        report["held_gb"] = {"gb": round(pin / GB, 2), "s": round(time.perf_counter() - began, 1)}
+    evict(files)
+    report["other_read"] = read_grid(other, 8, 4 << 20, False) if other else None
+    report["memory_before"] = {k: round(v / GB, 2) for k, v in memory().items()}
+    report["cold"] = card.fill(card.sources(ck, blocks, "policy-cold", False), "policy-cold", limit)
+    report["cached_after_cold"] = cached_share(files)
+    report["again"] = card.fill(card.sources(ck, blocks, "policy-again", False), "policy-again", limit)
+    report["memory_after"] = {k: round(v / GB, 2) for k, v in memory().items()}
+    del held
+    return report
+
+
 def memcpy(threads: int, each: int = 256 << 20, rounds: int = 8) -> float:
     """GB/s of `threads` threads each copying its own `each` bytes, `rounds` times: the host's copy bandwidth (each byte
     read and written once), what a read from the page cache into pinned staging spends."""
@@ -395,6 +451,8 @@ def main() -> None:
             out.update(disk(args))
         elif mode == "fill":
             out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0, "alone" in args[3:]))
+        elif mode == "policy":
+            out.update(policy(args[0], args[1].split(","), args[2].split(","), args[3] == "tight"))
         elif mode == "paged":
             out.update(paged(args[0], args[1], float(args[2]) if len(args) > 2 else 2.0))
         else:

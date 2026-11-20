@@ -471,11 +471,12 @@ unsafe fn read_impl(
 
 /// Whether each copy reads past the page cache (O_DIRECT, where `opts.direct` allows), sampled
 /// once a read, never per piece. A range the cache mostly holds reads through it: the disk serves
-/// only its holes. So does the rest while varena's host number leaves cache room for this read's
-/// missing bytes (`varena_ledger::host::Budget::cache`: memory nothing holds), so a second read of
-/// them hits memory. Past it the read goes O_DIRECT: caching it would displace other cache, a
-/// store larger than memory its own earlier bytes, and the cache then thrashes (Flux-2 on a 31 GiB
-/// pod read buffered at 0.45–0.95 GB/s against 1.26 GB/s direct, run 42010).
+/// only its holes. So does the rest while the cache could hold this read's missing bytes once the
+/// clean cache it holds now gives way (`varena_ledger::host::Budget::room`: memory nothing pins or
+/// holds), so weights read again (a fresh executor, a paged step) or staged ahead come from memory.
+/// Judged by memory nothing holds, a cache full of older bytes sent every later read past it: H3's
+/// text encoder in a fresh executor read 9.6 GB of 26.4 again from disk (cl-1318). Past the room
+/// the read goes O_DIRECT: memory pinned and held leaves the cache nowhere to keep it.
 fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
     let page = platform::durable::page_size();
     let mut missing = vec![0u64; copies.len()];
@@ -506,7 +507,7 @@ fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
         }
     }
     let need: u64 = missing.iter().sum();
-    let past = need > 0 && varena_ledger::host::budget().cache() < i64::try_from(need).unwrap_or(i64::MAX);
+    let past = need > 0 && varena_ledger::host::budget().room() < i64::try_from(need).unwrap_or(i64::MAX);
     missing.iter().map(|&m| past && m > 0).collect()
 }
 

@@ -11,6 +11,8 @@
 # ended first so the card is free:
 #   fill     Qwen-Image 2's every component, one Region a block, by one `varena.fill`: evicted (from disk), then again (RAM)
 #   h3-fill  the same for H3's transformer;  h3-paged: its blocks read ahead into pinned pages, then onto the card from them
+#   policy   unless `"policy": false`: Qwen-Image 2 from disk with the page cache full of H3's bytes, then with memory
+#            pinned besides, and the same load again: whether its bytes stayed in RAM (load.py `policy`)
 #   sweep    each of the arm's `sweep` env sets, Qwen-Image 2's fill again, and each `paged_sweep` set H3's paged rows
 #            again (a build that reads them: a proof's own)
 #   runs     unless `"runs": false`: Qwen-Image 2 cold (evicted, new executor) and warm (new executor), SDXL on a new executor
@@ -132,6 +134,11 @@ for a in "${names[@]}"; do
   fi
   fresh
   load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae 2 alone
+  # Read through the page cache or past it (cl-1318): a cache full of other weights, then memory pinned besides.
+  if [ "$(param policy true)" = true ] && [ -n "$HCK" ]; then
+    load "$a-policy-full" "$a" '' policy "$QCK" transformer,text_encoder,vae "$HCK" full
+    load "$a-policy-tight" "$a" '' policy "$QCK" transformer,text_encoder,vae "$HCK" tight
+  fi
   if [ -n "$HCK" ]; then
     load "$a-h3-fill" "$a" '' fill "$HCK" transformer 3
     load "$a-h3-paged" "$a" '' paged "$HCK" transformer 3
