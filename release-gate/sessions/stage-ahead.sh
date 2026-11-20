@@ -366,7 +366,7 @@ import sys
 from datetime import datetime
 lines = open(sys.argv[1]).read().splitlines()
 at = lambda line: datetime.fromisoformat(line.split()[0].rstrip("Z")).timestamp()
-stop = next((l for l in lines if "stopped for a run waiting" in l or ("stage ahead:" in l and l.rstrip().endswith("stopped"))), None)
+stop = next((l for l in lines if "stage ahead:" in l and ("stopped for a run" in l or "; stopped" in l)), None)
 if stop is None:
     sys.exit("no stage stopped")
 first = next((l for l in lines if "its first step:" in l and at(l) >= at(stop)), None)
