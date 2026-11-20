@@ -815,6 +815,9 @@ jobs:
     env:
       BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
     steps: &cli-steps
+      - name: proof only (never merged), a forced edge red
+        if: matrix.shard == 'commands'
+        run: exit 1
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
