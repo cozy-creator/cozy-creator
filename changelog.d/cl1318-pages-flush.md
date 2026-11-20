@@ -1,0 +1,1 @@
+TensorFS: `varena.Pages.flush()` waits until every derived page sent to the temporary-storage cache is written, as the native tier's does (cl-1318). #4124 gave only the native `_VarenaPages` a `flush`, so a Runtime's `ram`-level map, which flushes its merge before the tier goes, raised `AttributeError: 'Pages' object has no attribute 'flush'`.
