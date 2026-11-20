@@ -12,7 +12,7 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, sliderBounds, sliderValue, totalOf, WANTED } from "./controls"
 import { Answer, Ghosts, Spread, Thumb, useWords } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
@@ -164,10 +164,15 @@ function NumberField({ field, bound, label }: Drawn) {
   const held = typeof bound.value === "number" ? bound.value : undefined
   const fallback = typeof field.default === "number" ? field.default : (field.min ?? 0)
   const [moving, setMoving] = useState<number | null>(null)
-  const shown = moving ?? held ?? fallback
+  const limits = sliderBounds(field)
+  const shown = sliderValue(field, moving ?? held ?? fallback)
+  const printed = field.integer ? String(shown) : shown.toFixed(2)
   const auto = field.auto && held === undefined && moving === null
   const done = () => {
-    if (moving !== null && moving !== held) bound.write(moving)
+    if (moving !== null) {
+      const next = sliderValue(field, moving)
+      if (next !== held) bound.write(next)
+    }
     setMoving(null)
   }
   return (
@@ -177,15 +182,16 @@ function NumberField({ field, bound, label }: Drawn) {
         className="canvas-control"
         type="range"
         aria-label={label}
-        min={field.min ?? undefined}
-        max={Math.max(field.max ?? 0, shown)}
-        step={field.step ?? (field.integer ? 1 : "any")}
+        aria-valuetext={field.integer ? undefined : printed}
+        min={limits.min}
+        max={Math.max(limits.max ?? 0, shown)}
+        step={limits.step}
         value={shown}
         onChange={(event) => setMoving(Number(event.target.value))}
         onPointerUp={done}
         onKeyUp={done}
       />
-      <span className="num">{auto ? "Auto" : `${shown}${field.unit ? ` ${field.unit}` : ""}`}</span>
+      <span className="num">{auto ? "Auto" : `${printed}${field.unit ? ` ${field.unit}` : ""}`}</span>
       {field.auto && held !== undefined ? (
         <button type="button" className="reset canvas-control" aria-label={`${field.label}: Auto`} title="Auto" onClick={bound.unset}>
           Auto

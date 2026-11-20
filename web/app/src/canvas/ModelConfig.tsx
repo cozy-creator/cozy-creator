@@ -5,6 +5,7 @@ import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { modelChoiceLabel, type PickerSlot, slotsOf, withTriggers } from "./ModelPicker"
+import { roundSliderNumber } from "./controls"
 import { insertAtCaret } from "./triggers"
 
 type Entry = Record<string, unknown>
@@ -68,16 +69,20 @@ function Strength({ name, reference, value, onChange }: { name: string; referenc
   // An omitted strength runs at the recommended one (Calcifer fills it from the card, else 1).
   const held = value == null ? recommended : typeof value === "number" && Number.isFinite(value) ? value : undefined
   const shown = dragging ?? held
-  const commit = (next: number | null) => { if (next !== null && Number.isFinite(next) && next !== held) onChange(Math.round(next * 1000) / 1000) }
+  const commit = (next: number | null) => {
+    if (next === null || !Number.isFinite(next)) return
+    const rounded = roundSliderNumber(next)
+    if (rounded !== held) onChange(rounded)
+  }
   const release = () => { commit(dragging); setDragging(null) }
   const settle = () => { if (typed !== null && typed.trim() && Number.isFinite(Number(typed))) commit(Number(typed)); setTyped(null) }
   return <span className="active-lora-strength">
-    <input type="range" min={0} max={2} step={0.05} aria-label={`Strength of ${name}`} value={Math.min(2, Math.max(0, shown ?? 1))}
+    <input type="range" min={0} max={2} step={0.01} aria-label={`Strength of ${name}`} aria-valuetext={roundSliderNumber(shown ?? 1).toFixed(2)} value={Math.min(2, Math.max(0, roundSliderNumber(shown ?? 1)))}
       onChange={(event) => setDragging(Number(event.target.value))} onPointerUp={release} onKeyUp={release} onBlur={release} />
-    <input type="number" className="field" step={0.05} aria-label={`Strength of ${name}, exactly`} value={typed ?? (shown === undefined ? "" : String(shown))}
+    <input type="number" className="field" step={0.01} aria-label={`Strength of ${name}, exactly`} value={typed ?? (shown === undefined ? "" : shown.toFixed(2))}
       onChange={(event) => setTyped(event.target.value)} onBlur={settle} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); settle() } }} />
     <button type="button" className="iconb" aria-label={`${name}'s recommended strength, ${recommended}`} title={`Recommended: ${recommended}`}
-      disabled={held === recommended} onClick={() => onChange(recommended)}><Icon name="undo" /></button>
+      disabled={held === recommended} onClick={() => commit(recommended)}><Icon name="undo" /></button>
   </span>
 }
 
