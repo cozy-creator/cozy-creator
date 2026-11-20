@@ -12,6 +12,8 @@
 # ended first so the card is free:
 #   fill     Qwen-Image 2's every component, one Region a block, by one `varena.fill`: evicted (from disk), then again (RAM)
 #   h3-fill  the same for H3's transformer;  h3-paged: its blocks read ahead into pinned pages, then onto the card from them
+#   holes    with `"holes": true`: the first 4 MiB of every fourth chunk cached and memory held to the admission's edge, the load, and every
+#            block's bytes on the card against a plain read through the cache (load.py `holes`; a pod with a number)
 #   policy   unless `"policy": false`: Qwen-Image 2 from disk with the page cache filled to the container's number
 #            first, and the same load again: whether its bytes stayed in RAM (load.py `policy`; a pod with a number)
 #   sweep    each of the arm's `sweep` env sets, Qwen-Image 2's fill again, and each `paged_sweep` set H3's paged rows
@@ -145,6 +147,7 @@ for a in "${names[@]}"; do
   load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae 2 alone
   # Read through the page cache or past it (cl-1318): the cache filled to the container's number first.
   [ "$(param policy true)" != true ] || load "$a-policy-full" "$a" '' policy "$QCK" transformer,text_encoder,vae
+  [ "$(param holes false)" != true ] || load "$a-holes" "$a" '' holes "$QCK" transformer,text_encoder,vae
   if [ -n "$HCK" ]; then
     load "$a-h3-fill" "$a" '' fill "$HCK" transformer 3
     load "$a-h3-paged" "$a" '' paged "$HCK" transformer 3

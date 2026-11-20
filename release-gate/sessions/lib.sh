@@ -430,9 +430,28 @@ ready() {
 }
 
 # rent: one rental, ordered and booted ($RID, its machine $NAME), under the guard. Under ON, that pod.
+# rent: one pod. With `max_memory_gb` (a rental with SSH), a pod whose container memory number is over it, or has none, is ended
+# at once and another rented, four in all: a case that needs a small machine's number (cl-1318's page-cache policy).
 rent() {
   [ -z "$ON" ] || { NAME=$ON; say "on $NAME, the pod of the session that runs this one"; return 0; }
   order; ready
+  local most try mem i
+  most=$(param max_memory_gb 0)
+  [ "$most" != 0 ] || return 0
+  [[ $most =~ ^[0-9]+$ && " $RENT_ARGS " == *" --ssh"* ]] || fail "max_memory_gb $most needs a whole number and a rental with SSH"
+  for try in 1 2 3 4; do
+    mem=''
+    for i in $(seq 1 20); do
+      mem=$(timeout 60 cozy machine ssh "$NAME" "cat /sys/fs/cgroup/memory.max 2> /dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes" < /dev/null 2> /dev/null | tail -1)
+      [ -z "$mem" ] || break; sleep 15
+    done
+    if [[ $mem =~ ^[0-9]+$ ]] && [ "$mem" -le $((most << 30)) ]; then say "$NAME: a memory number of $((mem >> 30)) GiB"; return 0; fi
+    say "$NAME: a memory number of ${mem:-none read}, not $most GiB or less: ended at once (pod $try of 4)"
+    [ "$try" != 4 ] || fail "no pod with a memory number of $most GiB or less in 4"
+    cozy machine end "$RID" -y < /dev/null > /dev/null 2>&1
+    for i in $(seq 1 30); do gone "$RID" && break; sleep 10; done
+    order; ready
+  done
 }
 
 # on_this <session> <params JSON>: another session run on this session's pod after its own work, one boot and one download for

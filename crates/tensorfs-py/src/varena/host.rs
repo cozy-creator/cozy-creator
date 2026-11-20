@@ -196,11 +196,6 @@ mod imp {
         host().is_some_and(|host| host.table.peers_running(host.row))
     }
 
-    /// What every process on the host page says it holds.
-    pub(super) fn held_everywhere() -> u64 {
-        host().map_or(0, |host| host.table.held())
-    }
-
     /// This process's row says what it holds now, not at its donor's last look.
     pub(super) fn republish() {
         if let Some(host) = host() {
@@ -264,19 +259,11 @@ pub(super) fn ask_idle(bytes: u64) -> bool {
     }
 }
 
-/// What `admit` asks against, for one reading of the number: it less every executor's holdings (the
-/// kernel's charge, or the host page's sum where that is more) and the headroom. Negative: over it.
-/// Unreadable figures (`total <= 0`) are unbounded, `i64::MAX`: `admit` refuses nothing there. A CPU
-/// executor's weights draw on the same room (`varena.host_room`, var-027).
+/// What `admit` asks against, for one reading of the number: `varena_ledger::host::admission`, the
+/// number TensorFS's reads keep their page cache within too. A CPU executor's weights draw on the
+/// same room (`varena.host_room`, var-027).
 pub(super) fn room(now: &varena_ledger::host::Budget) -> i64 {
-    if now.total <= 0 {
-        return i64::MAX;
-    }
-    #[cfg(target_os = "linux")]
-    let ledger = i64::try_from(imp::held_everywhere()).unwrap_or(i64::MAX);
-    #[cfg(not(target_os = "linux"))]
-    let ledger = 0;
-    now.total - now.held.max(ledger) - now.headroom
+    varena_ledger::host::admission(now)
 }
 
 /// The machine's one host admission (var-030 W5), for `bytes` more host memory this process will pin
