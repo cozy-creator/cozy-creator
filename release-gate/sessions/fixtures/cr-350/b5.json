@@ -1,5 +1,5 @@
 {
- "need_s": 3300,
+ "need_s": 3600,
  "max_failures": 6,
  "order": "one-way",
  "cells": [
@@ -32,24 +32,6 @@
    ]
   },
   {
-   "name": "rc-44",
-   "tree": "rc",
-   "target": "pan2/generate",
-   "args": [
-    "instructions={\"video_style\":\"one continuous shot, dusk atmosphere\",\"lighting\":\"warm interior glow contrasting with cool blue twilight and dynamic sea foam reflections\",\"perspective_view\":\"low-angle wide shot looking up the spiral staircase to capture vertical ascent and scale\",\"subjects_lifecycle\":[{\"subject_id\":\"<|Subject1|>\",\"display_name\":\"lighthouse keeper\",\"subject_attribute\":\"tall man in heavy wool coat and sturdy boots\"}],\"init_frame_visual_description\":\"The keeper stands at the base of a steep, iron spiral staircase, gripping the cold railing. Dusk light filters through high arched windows, casting long shadows. Below, the dark ocean churns against jagged rocks. The keeper looks upward, preparing to ascend.\",\"events\":[{\"event_index\":0,\"time_range_sec\":\"0 to 2.5\",\"event_description\":\"The keeper ascends the winding iron stairs, his boots clicking rhythmically on the metal treads. The camera tilts up to follow his steady climb, revealing the narrowing spiral as he gains height.\",\"camera_motion\":[{\"time_range_sec\":\"0 to 2.5\",\"camera_motion\":[\"tilt_up\"]},{\"time_range_sec\":\"2.5 to 2.5\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"0 to 2.5\",\"action\":\"<|Subject1|> climbs spiral stairs\"}]},{\"event_index\":1,\"time_range_sec\":\"2.5 to 5.0\",\"event_description\":\"Reaching the circular lamp room at the summit, the keeper stops and turns to the great glass lantern. He lifts the heavy wick, strikes a match, and plunges the room into brilliant, dancing light. Below, a massive wave crashes against the rocks, its white spray catching the sudden glow.\",\"camera_motion\":[{\"time_range_sec\":\"2.5 to 5.0\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"2.5 to 3.5\",\"action\":\"<|Subject1|> reaches lamp room\"},{\"time_range_sec\":\"3.5 to 5.0\",\"action\":\"<|Subject1|> lights the great lamp\"}]}],\"quality\":{\"video_quality\":\"crisp details, stable faces, localized reflections, slight motion blur on the crashing wave\",\"text_logos_overlays\":null,\"artifacts\":null}}",
-    "duration:=5",
-    "prompt_upsampling:=false",
-    "steps:=4",
-    "seed:=44"
-   ],
-   "update": {
-    "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2401+g7adda73d-cp312-abi3-manylinux_2_28_x86_64.whl",
-    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3541+gad3af62c-cp311-abi3-manylinux_2_28_x86_64.whl",
-    "tensord": true,
-    "gpu_memory_limit": "off"
-   }
-  },
-  {
    "name": "rc-41",
    "tree": "rc",
    "target": "pan2/generate",
@@ -59,10 +41,16 @@
     "prompt_upsampling:=false",
     "steps:=4",
     "seed:=41"
-   ]
+   ],
+   "update": {
+    "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2401+g7adda73d-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3541+gad3af62c-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "off"
+   }
   },
   {
-   "name": "cs-44",
+   "name": "cs-41",
    "tree": "rc",
    "target": "pan2/generate",
    "args": [
@@ -70,7 +58,7 @@
     "duration:=5",
     "prompt_upsampling:=false",
     "steps:=4",
-    "seed:=44"
+    "seed:=41"
    ],
    "update": {
     "runtime": "44638963390",
@@ -78,18 +66,6 @@
     "tensord": true,
     "gpu_memory_limit": "off"
    }
-  },
-  {
-   "name": "cs-42",
-   "tree": "rc",
-   "target": "pan2/generate",
-   "args": [
-    "instructions={\"video_style\":\"one continuous shot, dusk atmosphere\",\"lighting\":\"warm interior glow contrasting with cool blue twilight and dynamic sea foam reflections\",\"perspective_view\":\"low-angle wide shot looking up the spiral staircase to capture vertical ascent and scale\",\"subjects_lifecycle\":[{\"subject_id\":\"<|Subject1|>\",\"display_name\":\"lighthouse keeper\",\"subject_attribute\":\"tall man in heavy wool coat and sturdy boots\"}],\"init_frame_visual_description\":\"The keeper stands at the base of a steep, iron spiral staircase, gripping the cold railing. Dusk light filters through high arched windows, casting long shadows. Below, the dark ocean churns against jagged rocks. The keeper looks upward, preparing to ascend.\",\"events\":[{\"event_index\":0,\"time_range_sec\":\"0 to 2.5\",\"event_description\":\"The keeper ascends the winding iron stairs, his boots clicking rhythmically on the metal treads. The camera tilts up to follow his steady climb, revealing the narrowing spiral as he gains height.\",\"camera_motion\":[{\"time_range_sec\":\"0 to 2.5\",\"camera_motion\":[\"tilt_up\"]},{\"time_range_sec\":\"2.5 to 2.5\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"0 to 2.5\",\"action\":\"<|Subject1|> climbs spiral stairs\"}]},{\"event_index\":1,\"time_range_sec\":\"2.5 to 5.0\",\"event_description\":\"Reaching the circular lamp room at the summit, the keeper stops and turns to the great glass lantern. He lifts the heavy wick, strikes a match, and plunges the room into brilliant, dancing light. Below, a massive wave crashes against the rocks, its white spray catching the sudden glow.\",\"camera_motion\":[{\"time_range_sec\":\"2.5 to 5.0\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"2.5 to 3.5\",\"action\":\"<|Subject1|> reaches lamp room\"},{\"time_range_sec\":\"3.5 to 5.0\",\"action\":\"<|Subject1|> lights the great lamp\"}]}],\"quality\":{\"video_quality\":\"crisp details, stable faces, localized reflections, slight motion blur on the crashing wave\",\"text_logos_overlays\":null,\"artifacts\":null}}",
-    "duration:=5",
-    "prompt_upsampling:=false",
-    "steps:=4",
-    "seed:=42"
-   ]
   },
   {
    "name": "pq-s1",
@@ -158,7 +134,11 @@
     "tensord": true,
     "gpu_memory_limit": "6GiB"
    },
-   "run_s": 600
+   "run_s": 600,
+   "pod_sh": {
+    "after_s": 60,
+    "after": "for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr \"\\0\" \" \" < \"/proc/$p/cmdline\" | sed -n \"s/.*--root \\([^ ]*\\).*/\\1/p\"); [ -z \"$r\" ] || [ ! -f \"$r/stderr.log\" ] || { echo \"== stderr $p ($r)\"; tr \"\\r\" \"\\n\" < \"$r/stderr.log\" | grep -E \"cozy-runtime: |\\[lm\\]\" | tail -150; }; done"
+   }
   },
   {
    "name": "pq-48k-6",
@@ -170,7 +150,56 @@
     "max_tokens:=16",
     "seed:=64"
    ],
-   "run_s": 1200
+   "run_s": 1200,
+   "pod_sh": {
+    "after_s": 60,
+    "after": "for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr \"\\0\" \" \" < \"/proc/$p/cmdline\" | sed -n \"s/.*--root \\([^ ]*\\).*/\\1/p\"); [ -z \"$r\" ] || [ ! -f \"$r/stderr.log\" ] || { echo \"== stderr $p ($r)\"; tr \"\\r\" \"\\n\" < \"$r/stderr.log\" | grep -E \"cozy-runtime: |\\[lm\\]\" | tail -150; }; done"
+   }
+  },
+  {
+   "name": "qr-8k-6",
+   "tree": "rc",
+   "target": "qwen3/ask",
+   "args": [
+    "system=The vault code is 7351.",
+    "prompt=864 242 262 629 224 708 217 630 098 971 463 464 518 009 055 745 110 164 223 636 893 913 657 205 132 540 874 219 930 487 473 327 987 204 081 727 819 307 968 133 698 711 560 758 018 119 099 973 950 699 780 299 165 043 729 927 783 114 285 390 953 594 229 615 971 477 343 865 671 278 580 014 007 854 776 282 300 221 234 123 484 983 672 689 499 626 998 211 460 266 014 578 733 478 721 442 459 671 894 727 383 785 211 002 734 637 691 952 985 505 628 675 152 090 014 388 069 988 415 976 817 522 389 705 850 603 056 057 597 795 253 082 192 965 310 370 572 519 848 340 559 325 617 351 420 448 538 306 139 317 791 609 624 847 597 355 839 033 430 683 576 850 693 104 916 803 855 745 534 254 358 501 068 875 148 311 763 044 300 565 144 768 011 927 419 827 713 995 915 828 295 392 720 690 067 469 808 308 453 531 569 792 720 889 829 219 356 336 690 303 146 357 578 862 818 344 541 361 560 762 262 755 566 952 362 496 383 336 233 416 760 907 691 695 309 292 919 307 731 445 104 175 422 590 704 408 909 498 462 321 018 019 345 077 714 133 619 156 491 161 589 455 079 540 955 102 896 303 573 662 345 599 605 556 133 514 275 736 881 870 403 758 515 671 529 738 861 568 691 766 653 711 679 124 407 651 138 529 368 230 458 382 517 156 364 433 080 384 116 028 704 087 153 832 057 547 900 541 262 035 837 493 176 715 880 218 101 244 373 706 790 102 261 148 443 675 582 139 876 537 250 737 795 613 876 593 990 489 739 276 606 221 176 528 895 300 194 990 579 106 984 175 476 929 681 284 773 817 245 758 142 385 756 102 060 900 667 429 631 092 946 464 361 727 060 327 084 235 613 750 735 094 223 221 894 252 960 014 012 631 829 874 832 333 440 675 388 489 389 710 772 712 118 229 805 824 893 334 253 463 228 736 013 394 132 394 447 761 278 230 937 831 125 565 741 197 995 840 720 121 707 417 945 428 708 458 150 508 933 521 130 250 630 918 695 464 636 349 729 750 995 842 398 951 381 288 624 272 031 018 986 308 409 252 748 641 290 828 457 669 376 242 942 180 433 198 330 050 400 784 600 395 586 580 858 956 095 659 715 439 134 376 527 403 434 160 111 760 858 178 562 548 621 245 439 088 688 263 243 220 269 886 189 894 508 390 808 923 712 972 061 105 813 884 063 099 247 879 904 477 396 439 413 415 342 999 550 000 847 551 462 808 772 892 221 828 811 356 046 645 468 120 993 415 426 696 628 552 786 685 898 055 990 562 022 468 712 197 769 094 276 661 307 056 190 978 062 930 906 465 681 372 053 959 116 520 182 889 584 490 960 683 943 427 295 382 018 826 021 465 052 617 180 144 843 937 297 021 796 820 147 926 235 855 849 954 811 693 201 837 625 080 458 481 259 140 831 618 619 815 586 892 076 438 829 559 936 828 151 274 301 648 093 710 505 796 257 393 994 356 764 433 290 799 418 862 489 974 070 383 586 559 768 764 195 042 838 052 611 710 749 209 327 102 598 739 380 561 724 902 249 809 865 751 309 534 289 223 686 445 819 943 946 449 854 160 564 647 629 423 783 164 526 426 583 762 298 257 606 034 430 819 515 861 635 103 453 161 783 056 491 169 339 580 796 342 370 840 720 235 409 235 553 244 227 016 092 461 146 803 164 809 855 871 354 069 825 123 104 770 945 494 121 103 249 976 231 521 340 323 657 840 353 169 597 697 085 526 499 832 281 015 478 726 961 609 619 683 759 088 375 850 139 386 274 566 780 570 292 754 770 918 894 704 400 773 445 469 974 327 617 904 005 705 125 569 401 728 184 029 823 894 777 770 207 992 698 334 788 461 283 958 649 482 368 138 568 740 754 822 105 874 884 756 678 656 591 067 713 859 388 536 586 434 239 552 806 414 450 576 217 272 217 355 749 664 606 408 848 463 298 528 828 432 302 941 469 350 449 417 679 568 759 761 895 667 843 704 011 761 805 128 708 531 985 106 620 965 686 409 301 435 425 283 720 436 087 736 502 727 761 932 515 919 371 356 518 954 471 682 328 509 783 190 974 793 144 635 515 459 432 204 808 028 366 136 894 742 266 143 336 769 706 569 032 347 186 852 784 006 648 585 465 718 338 654 286 238 728 959 237 266 835 058 209 623 349 616 145 242 330 030 376 504 732 948 920 784 849 074 225 647 801 702 870 361 025 662 459 323 712 149 884 365 112 858 912 936 082 866 923 434 537 153 314 619 039 324 312 208 162 953 031 240 419 738 770 224 501 789 482 209 760 170 283 155 300 047 683 991 911 914 876 527 200 365 364 284 024 726 209 382 001 369 383 826 162 745 938 266 450 063 528 152 717 759 589 641 603 153 538 709 788 575 942 453 280 121 228 321 143 446 361 089 290 390 134 730 518 377 481 859 581 977 619 425 359 778 520 811 423 996 062 743 819 953 084 381 901 836 062 057 362 942 867 368 710 657 734 260 131 439 035 216 252 197 039 817 211 967 750 075 515 040 923 863 008 090 330 383 162 393 902 996 719 916 421 400 060 691 472 330 102 511 143 408 039 668 378 886 086 039 893 439 845 174 306 581 808 809 528 658 229 638 268 972 855 047 519 948 977 358 960 442 281 802 705 063 771 652 160 403 326 513 094 473 193 801 078 222 610 267 676 221 776 101 401 202 295 760 098 527 165 567 765 208 272 049 083 849 902 430 261 836 551 890 143 679 038 999 032 840 744 239 203 067 067 847 364 716 758 898 247 571 979 596 796 670 810 734 468 396 715 007 965 130 288 773 037 980 042 433 905 160 806 044 539 072 588 865 649 485 392 933 100 086 271 465 258 937 642 515 065 989 962 982 173 628 657 547 039 204 065 249 522 624 936 817 875 000 703 661 180 199 630 345 321 086 264 215 142 772 563 942 185 935 224 675 402 726 690 415 180 327 536 999 889 707 816 687 689 626 500 555 150 706 587 568 041 946 738 153 407 474 278 506 445 454 142 734 354 231 046 043 632 023 975 961 420 455 881 135 796 094 080 180 124 483 529 840 382 635 629 233 359 108 863 623 602 835 267 171 753 439 563 853 932 612 682 510 867 872 215 148 272 597 137 774 122 211 362 572 948 532 374 275 153 008 745 416 727 172 552 018 183 654 783 443 178 103 151 946 714 261 652 887 282 833 699 463 255 157 559 224 173 849 419 790 800 503 908 576 762 114 936 466 622 974 686 421 207 209 055 954 289 101 466 913 794 415 585 787 846 968 002 383 098 477 939 005 774 260 338 586 596 505 908 159 650 051 845 609 822 125 679 493 957 951 696 880 276 589 054 360 645 601 183 910 868 246 524 022 510 456 701 425 351 449 796 692 182 342 095 880 395 590 472 165 951 521 950 160 178 859 950 319 649 323 899 322 534 072 183 760 651 197 604 459 585 589 711 292 370 335 705 414 203 659 934 667 716 806 639 312 378 058 386 068 922 642 090 269 890 424 559 870 751 847 505 573 595 740 974 415 853 020 594 745 461 882 950 262 759 741 479 508 998 335 891 618 634 340 791 494 139 340 613 406 492 750 728 750 186 567 965 778 254 830 645 913 415 889 854 125 798 551 981 141 884 297 130 780 669 902 398 960 112 817 291 942 725 504 698 885 947 614 436 295 363 107 417 677 162 510 947 843 705 724 884 176 611 059 441 918 308 242 667 197 412 091 140 173 750 336 775 658 463 748 569 129 738 215 209 827 878 633 236 109 310 884 602 762 802 697 022 079 066 846 683 302 995 034 926 727 073 237 227 235 730 788 764 876 002 765 461 016 152 498 444 407 510 689 145 363 796 304 942 079 072 961 761 995 731 048 599 292 985 132 416 647 868 716 474 044 761 115 024 992 202 668 633 160 532 282 819 089 165 622 835 851 458 651 843 795 856 112 145 741 284 886 113 651 928 222 054 341 072 056 189 632 560 603 373 321 395 994 507 757 353 382 466 252 598 805 911 390 342 941 554 475 991 564 415 314 694 146 305 011 114 000 898 421 555 341 833 766 709 066 047 023 687 402 863 672 422 630 065 148 227 349 634 066 889 087 161 843 463 572 235 916 075 923 167 404 002 817 232 427 740 448 118 810 588 385 609 698 230 371 730 132 235 470 319 971 091 373 477 357 291 517 619 939 123 599 796 725 765 271 864 033 553 421 218 064 269 448 921 050 168 269 058 700 941 627 537 185 311 490 801 898 768 627 693 028 216 337 293 939 708 160 766 290 742 155 173 610 657 453 785 090 832 643 700 274 622 566 951 694 150 978 042 897 976 362 165 814 874 079 901 342 029 990 404 285 743 189 283 784 953 172 935 046 779 557 357 518 018 333 527 482 598 163 567 401 454 533 550 260 316 003 753 231 616 387 857 201 868 498 228 664 459 897 149 331 890 259 563 705 958 883 221 337 695 862 017 510 889 421 614 888 838 742 513 968 316 719 123 622 415 067 860 822 626 966 725 272 571 799 455 995 What is the vault code stated at the very start? Answer with the number only.",
+    "max_tokens:=16",
+    "seed:=65"
+   ],
+   "update": {
+    "runtime": "44643352923",
+    "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3541+gad3af62c-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "tensord": true,
+    "gpu_memory_limit": "6GiB"
+   },
+   "run_s": 600,
+   "pod_sh": {
+    "after_s": 60,
+    "after": "for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr \"\\0\" \" \" < \"/proc/$p/cmdline\" | sed -n \"s/.*--root \\([^ ]*\\).*/\\1/p\"); [ -z \"$r\" ] || [ ! -f \"$r/stderr.log\" ] || { echo \"== stderr $p ($r)\"; tr \"\\r\" \"\\n\" < \"$r/stderr.log\" | grep -E \"cozy-runtime: |\\[lm\\]\" | tail -150; }; done"
+   }
+  },
+  {
+   "name": "hr-6g-41",
+   "tree": "rc",
+   "target": "pan2/generate",
+   "args": [
+    "instructions={\"video_style\":\"one continuous shot, dusk atmosphere\",\"lighting\":\"warm interior glow contrasting with cool blue twilight and dynamic sea foam reflections\",\"perspective_view\":\"low-angle wide shot looking up the spiral staircase to capture vertical ascent and scale\",\"subjects_lifecycle\":[{\"subject_id\":\"<|Subject1|>\",\"display_name\":\"lighthouse keeper\",\"subject_attribute\":\"tall man in heavy wool coat and sturdy boots\"}],\"init_frame_visual_description\":\"The keeper stands at the base of a steep, iron spiral staircase, gripping the cold railing. Dusk light filters through high arched windows, casting long shadows. Below, the dark ocean churns against jagged rocks. The keeper looks upward, preparing to ascend.\",\"events\":[{\"event_index\":0,\"time_range_sec\":\"0 to 2.5\",\"event_description\":\"The keeper ascends the winding iron stairs, his boots clicking rhythmically on the metal treads. The camera tilts up to follow his steady climb, revealing the narrowing spiral as he gains height.\",\"camera_motion\":[{\"time_range_sec\":\"0 to 2.5\",\"camera_motion\":[\"tilt_up\"]},{\"time_range_sec\":\"2.5 to 2.5\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"0 to 2.5\",\"action\":\"<|Subject1|> climbs spiral stairs\"}]},{\"event_index\":1,\"time_range_sec\":\"2.5 to 5.0\",\"event_description\":\"Reaching the circular lamp room at the summit, the keeper stops and turns to the great glass lantern. He lifts the heavy wick, strikes a match, and plunges the room into brilliant, dancing light. Below, a massive wave crashes against the rocks, its white spray catching the sudden glow.\",\"camera_motion\":[{\"time_range_sec\":\"2.5 to 5.0\",\"camera_motion\":[\"static\"]}],\"contained_actions\":[{\"time_range_sec\":\"2.5 to 3.5\",\"action\":\"<|Subject1|> reaches lamp room\"},{\"time_range_sec\":\"3.5 to 5.0\",\"action\":\"<|Subject1|> lights the great lamp\"}]}],\"quality\":{\"video_quality\":\"crisp details, stable faces, localized reflections, slight motion blur on the crashing wave\",\"text_logos_overlays\":null,\"artifacts\":null}}",
+    "duration:=5",
+    "prompt_upsampling:=false",
+    "steps:=4",
+    "seed:=41"
+   ],
+   "run_s": 600,
+   "pod_sh": {
+    "after_s": 60,
+    "after": "for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr \"\\0\" \" \" < \"/proc/$p/cmdline\" | sed -n \"s/.*--root \\([^ ]*\\).*/\\1/p\"); [ -z \"$r\" ] || [ ! -f \"$r/stderr.log\" ] || { echo \"== stderr $p ($r)\"; tr \"\\r\" \"\\n\" < \"$r/stderr.log\" | grep -E \"cozy-runtime: |\\[lm\\]\" | tail -150; }; done"
+   },
+   "update": {
+    "runtime": "44643348943",
+    "tensorfs": "artifact:44632878046/tensorfs-wheel-7ab901b0ade8ba02d716f62ed22d6409abb2938a",
+    "tensord": true,
+    "gpu_memory_limit": "6GiB"
+   }
   },
   {
    "name": "cr-6g-41",
@@ -184,6 +213,10 @@
     "seed:=41"
    ],
    "run_s": 1500,
+   "pod_sh": {
+    "after_s": 60,
+    "after": "for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr \"\\0\" \" \" < \"/proc/$p/cmdline\" | sed -n \"s/.*--root \\([^ ]*\\).*/\\1/p\"); [ -z \"$r\" ] || [ ! -f \"$r/stderr.log\" ] || { echo \"== stderr $p ($r)\"; tr \"\\r\" \"\\n\" < \"$r/stderr.log\" | grep -E \"cozy-runtime: |\\[lm\\]\" | tail -150; }; done"
+   },
    "update": {
     "runtime": "44638963390",
     "tensorfs": "artifact:44632878046/tensorfs-wheel-7ab901b0ade8ba02d716f62ed22d6409abb2938a",
@@ -194,8 +227,8 @@
  ],
  "compare": [
   [
-   "rc-44",
-   "cs-44"
+   "rc-41",
+   "cs-41"
   ]
  ]
 }
