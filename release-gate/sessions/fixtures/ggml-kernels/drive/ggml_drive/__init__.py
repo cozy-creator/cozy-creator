@@ -37,3 +37,10 @@ async def runtime_version(ctx: Context) -> Measured:
     import cozy_runtime
 
     return Measured(cozy_runtime.__version__)
+
+
+@app.entrypoint(accelerator=False)
+async def ggml_probe(ctx: Context) -> Measured:
+    """The ggml matmuls' probe as a card runs it before its ggml leaves serve (dense rows, MUL_MAT_ID over an expert
+    table and a stack): the verdict, each case's error and a MUL_MAT_ID case's non-finite rows (xs-213)."""
+    return Measured((await call(bench.ggml_probe, bench.EmptyRequest())).detail)

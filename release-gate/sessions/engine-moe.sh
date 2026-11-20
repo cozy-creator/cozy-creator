@@ -18,7 +18,8 @@
 # params: tree (required: a packages checkout with qwen3), lanes (required: label=org/name@sha256:<checkpoint>, or
 #         label=org/name for that model's checkpoint in lane <label>; the first the one `room` caps), tensorfs, runtime (required), capped (24GiB; "" for none), llama (b12466; "" for none),
 #         gguf (unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf), seconds (5400), skus and quoted (preflight.sh),
-#         parts (the steps above to run, space-separated: "ready served engine bucket room llama"; ready always runs).
+#         parts (the steps above to run, space-separated: "ready served engine bucket room llama"; ready runs with any lane;
+#         "probe" first runs the ggml probe on the card, the ggml-kernels drive's `ggml_probe`: its verdict and every case).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/ggml-decode
@@ -30,7 +31,8 @@ part() { [[ $PARTS == *" $1 "* ]]; }
 [[ -z $CAPPED || $CAPPED =~ ^[0-9]+[MG]iB$ ]] || fail "capped: <n>GiB"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 read -ra lanes <<<"$LANES"
-[ "${#lanes[@]}" -ge 1 ] || fail "lanes: label=org/name@sha256:<checkpoint>, one or more"
+[ "${#lanes[@]}" -ge 1 ] || [ "$(xargs <<<"$PARTS")" = probe ] || fail "lanes: label=org/name@sha256:<checkpoint>, one or more"
+PROBE=$(cd "$HERE/fixtures/ggml-kernels/drive" && pwd)
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · ${lanes[*]}"
@@ -50,8 +52,8 @@ for i in "${!lanes[@]}"; do
 done
 kernels "$SOURCE/qwen3"
 . "$FIX/preflight.sh"
-drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"
-drive_lock "$FIX/drive"
+if [ "${#lanes[@]}" -ge 1 ]; then drive_check "$FIX/drive" ggml_logits "qwen3=$SOURCE/qwen3/uv.lock"; drive_lock "$FIX/drive"; fi
+if part probe; then drive_check "$PROBE" ggml_drive; drive_lock "$PROBE"; fi
 if [ -n "$LLAMA" ] && part llama; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
@@ -122,6 +124,18 @@ drive() {
 }
 STORY='Write a long, detailed story about a lighthouse keeper who finds a message in a bottle. Keep writing until you are stopped.'
 FAILED=()
+if part probe; then
+  if step probe run "$PROBE/ggml_probe" --on "$NAME"; then
+    record probe
+    jq -r '.result.detail // ""' "$OUT/probe.json" > "$OUT/probe-detail.json" 2> /dev/null
+    say "probe: $(jq -c '{ok, detail, ids}' "$OUT/probe-detail.json" | cut -c1-1500)"
+    say "probe ids cases: $(jq -c '.errors | with_entries(select(.key | test("ids")))' "$OUT/probe-detail.json" | cut -c1-3000)"
+    say "probe unfinite: $(jq -c '.unfinite' "$OUT/probe-detail.json" | cut -c1-2000)"
+    jq -e '.ok' "$OUT/probe-detail.json" > /dev/null || { say "FAILED: the ggml probe"; FAILED+=("probe"); }
+  else
+    tail -c 2000 "$OUT/probe.txt" | tee -a "$R"; FAILED+=("probe")
+  fi
+fi
 for pair in "${lanes[@]}"; do
   label=${pair%%=*} ref=${pair#*=}
   step "pull-$label" model install "$ref" --on "$NAME" || { FAILED+=("pull-$label"); continue; }
