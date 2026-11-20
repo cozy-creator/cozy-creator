@@ -337,27 +337,29 @@ def bucket(ctx: Context, model: VisionLM) -> Agreement:
     from cozy_runtime.engine import launcher
 
     index = int(getattr(model.engine, "index", 0))
-    deadline = time.monotonic() + 300
+    began = time.monotonic()
     while (paths := launcher.judged(index)) is None:
-        if time.monotonic() > deadline:
+        if time.monotonic() > began + 300:
             raise RuntimeError("the engine's launcher check never ended")
         time.sleep(1)
     if paths.launcher and paths.replayed:
         raise RuntimeError(f"this driver runs neither launch path: {paths.launcher}; {paths.replayed}")
-    return _bucket(model, launcher=not paths.launcher)
+    return _bucket(ctx, model, launcher=not paths.launcher, judged_s=time.monotonic() - began)
 
 
 @app.entrypoint(accelerator=True)
 def bucket_replayed(ctx: Context, model: VisionLM) -> Agreement:
     """`_bucket` with the host replaying the step's graph (`Decoder(launcher=False)`): no WHILE node."""
-    return _bucket(model, launcher=False)
+    return _bucket(ctx, model, launcher=False)
 
 
-def _bucket(model: VisionLM, launcher: bool) -> Agreement:
+def _bucket(ctx: Context, model: VisionLM, launcher: bool, judged_s: float = 0.0) -> Agreement:
     """The engine's decoder on `ASKS` as four rows of one bucket (a call `vlm.ask` serves: up to 16 rows), 256 greedy
     tokens each, drafted and plain: each row held against Transformers' teacher-forced forward at its clear positions
     (`forced`), and the same row decoded alone (a bucket of one) held the same way, with where the two first differ.
-    Its kernels are the model's declared set where CozyEngine installed one (`declared`), as a call's are."""
+    Its kernels are the model's declared set where CozyEngine installed one (`declared`), as a call's are. `s`: the wait
+    for the launcher's verdict and each mode's wall seconds (the bucket, the rows alone, the teacher-forced reads), each
+    stage also the run's progress."""
     from cozy_runtime.engine.decoder import Decoder, Request
     from cozy_runtime.engine.launch import JIT
 
@@ -368,22 +370,44 @@ def _bucket(model: VisionLM, launcher: bool) -> Agreement:
                                "declared": run is not None, "launcher": launcher}
     memo: dict[tuple[tuple[int, ...], tuple[int, ...]], torch.Tensor] = {}
     head = getattr(net, "mtp", None)
-    for mode in ("drafted", "plain") if head is not None else ("plain",):
+    modes = ("drafted", "plain") if head is not None else ("plain",)
+    seconds: dict[str, object] = {"judged": round(judged_s, 1)}
+    rows["s"] = seconds
+    stage, stages = 0, len(modes) * (2 + len(prompts))
+
+    def done() -> None:
+        nonlocal stage
+        ctx.progress(stage, stages)
+        stage += 1
+
+    for mode in modes:
         if mode == "plain" and head is not None:
             del net.mtp
         try:
             decoder = Decoder(net, max_rows=4, max_tokens=max(len(p) for p in prompts) + 300, run=run or JIT,
                               launcher=launcher)
+            began = time.monotonic()
             made = decoder(Request(prompts=prompts, max_new=256, stops=[])).tokens
+            torch.cuda.synchronize()
+            took = {"bucket": round(time.monotonic() - began, 1)}
+            done()
+            began = time.monotonic()
             alone = [decoder(Request(prompts=[p], max_new=256, stops=[])).tokens[0] for p in prompts]
+            torch.cuda.synchronize()
+            took["alone"] = round(time.monotonic() - began, 1)
+            done()
         finally:
             if head is not None:
                 net.mtp = head
-        rows[mode] = [
-            {"bucket": _forced(net, p, made[i], memo), "alone": _forced(net, p, alone[i], memo),
-             "same_as_alone": next((t for t, (x, y) in enumerate(zip(made[i], alone[i])) if x != y), None)}
-            for i, p in enumerate(prompts)
-        ]  # fmt: skip
+        began = time.monotonic()
+        held = []
+        for i, p in enumerate(prompts):
+            held.append({"bucket": _forced(net, p, made[i], memo), "alone": _forced(net, p, alone[i], memo),
+                         "same_as_alone": next((t for t, (x, y) in enumerate(zip(made[i], alone[i])) if x != y), None)})
+            done()
+        took["forced"] = round(time.monotonic() - began, 1)
+        seconds[mode] = took
+        rows[mode] = held
         # Every token made, as one digest: launched and replayed runs of the same rows compare by it.
         rows[f"{mode}_digest"] = hashlib.sha256(json.dumps([made, alone]).encode()).hexdigest()[:16]
         rows[f"{mode}_launched"] = bool(decoder.launcher)  # whether the decoder still launches after these calls

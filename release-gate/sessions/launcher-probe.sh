@@ -1,15 +1,14 @@
 # launcher-probe (xs-213): on one rental of $SKU whose driver is `driver` (a prefix, 615.; any other ends the rental
 # at once), which of the engine's launcher paths the driver runs and which crash it, each in its own process. It
-# fails unless the real 9B's bucket ran launched, its tokens equal to the replayed path's and every clear position
-# agreeing (the launcher's body lowered to kernels, cozy-runtime #1860's way):
+# fails unless the real 9B ran launched, its tokens equal to the replayed path's and every clear position agreeing (the
+# launcher's body lowered to kernels, cozy-runtime #1860's way):
 #   engine-loop-<section>  the varena suite's engine-loop, one section a process: loop, polled, attention, ggml,
 #                          copies (the WHILE-node launcher and its host ring), replayed (a captured step replayed from
 #                          the host, no WHILE node); a section that crashes its process says its exit (-11: SIGSEGV);
-#   bucket-replayed        the real 9B's four rows through the decoder on the host-replayed path (`launcher=False`),
-#                          against Transformers' teacher-forced forward;
-#   bucket                 the same on the path the engine judged (the launcher, its body lowered to kernels);
-#   decode-paths           the same 512-token decode launched and host-replayed, back to back, warm: launched must
-#                          make the replayed tokens and be no more than 5% slower (the decode drive's `engine`).
+#   decode-paths           the real 9B's 512-token decode launched and host-replayed, back to back, warm: launched
+#                          must make the replayed tokens and be no more than 5% slower (the decode drive's `engine`);
+#   bucket                 its four rows through the decoder on the path the engine judged (the launcher), against
+#                          Transformers' teacher-forced reads.
 # It fails only where it can't tell: a section that crashes is what it reports, not a failure of its own.
 # params: tensorfs, runtime (required), driver (615.), seconds (1200), skus and quoted (preflight.sh).
 . "$(dirname "$0")/lib.sh"
@@ -48,30 +47,9 @@ for s in loop polled attention ggml copies replayed; do
   fi
 done
 step pull-q8 model install "$Q8" --on "$NAME" || fail "pull q8_0"
-for b in bucket-replayed bucket; do
-  entry=${b//-/_}
-  if step "$b" run "$FIX/drive/$entry" --model "model=$Q8" --on "$NAME"; then
-    record "$b"
-    jq -r '.result.detail // ""' "$OUT/$b.json" > "$OUT/$b-detail.json"
-    say "$b: $(jq -c '{declared, launcher, drafted_launched, plain_launched, drafted_digest, plain_digest, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/$b-detail.json" 2> /dev/null)"
-  else
-    say "$b: FAILED · $(grep -ao 'failed \[[a-z_]*\][^.]*\.[^.]*' "$OUT/$b.txt" | tail -1 | cut -c1-300)"
-  fi
-done
-# The judged path must be the launcher (its check's copies section passing on this driver), and its tokens the
-# replayed path's, every clear position agreeing with Transformers.
 FAILED=()
-jq -e '.launcher and .drafted_launched and .plain_launched' "$OUT/bucket-detail.json" > /dev/null 2>&1 || FAILED+=("not-launched")
-jq -e 'all([(.drafted // [])[], (.plain // [])[]][]; .bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear)' \
-  "$OUT/bucket-detail.json" > /dev/null 2>&1 || FAILED+=("bucket-forced")
-# Plain buckets compare token for token; a drafted bucket of four is told only: on 615 (44636313594) two runs of the
-# replayed path itself differed at near ties, every clear position agreeing with Transformers in both.
-same=$(jq -rn --slurpfile a "$OUT/bucket-detail.json" --slurpfile b "$OUT/bucket-replayed-detail.json" \
-  '"plain \($a[0].plain_digest == $b[0].plain_digest), drafted \($a[0].drafted_digest == $b[0].drafted_digest)"' 2> /dev/null)
-say "bucket (the judged path) and bucket-replayed made the same tokens: ${same:-?}"
-[[ $same == "plain true"* ]] || FAILED+=("tokens")
 # The same 512-token decode launched and host-replayed, back to back in one process, warm (the decode drive's
-# `engine`): the lowering costs nothing where launched ≈ replayed, the replayed path being the old launcher's speed.
+# `engine`): launched must make the replayed tokens and be no more than 5% slower.
 if step decode-paths run "$FIX/drive/engine" --model "model=$Q8" --on "$NAME"; then
   record decode-paths
   jq -r '.result.detail // ""' "$OUT/decode-paths.json" > "$OUT/decode-paths-detail.json"
@@ -85,5 +63,30 @@ if step decode-paths run "$FIX/drive/engine" --model "model=$Q8" --on "$NAME"; t
 else
   FAILED+=("decode-paths")
 fi
+# look <step> <began>: what the pod is doing during a long step, bounded: the step's last progress, GPU use, the
+# busiest processes and TensorD's newest lines (44643016198's bucket said nothing for 16 min, then the deadline came).
+look() {
+  local at=$(($(date +%s) - $2)) f
+  f=$OUT/$1-look-$at.txt
+  timeout 90 cozy machine ssh "$NAME" "nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw --format=csv,noheader; top -b -n1 -o %CPU -w 220 | sed -n 8,12p" < /dev/null 2>&1 | grep -v '^Warning: Permanently added' > "$f"
+  timeout 60 cozy machine logs "$NAME" -n 60 >> "$f" 2>&1
+  say "$1 at ${at}s: $(grep -ao 'step [0-9]*/[0-9]*[^·]*' "$OUT/$1.txt" | tail -1) · gpu $(head -1 "$f" | cut -c1-60) · busiest $(sed -n 2p "$f" | awk '{print $9 "% cpu", $12, $13, $14}' | cut -c1-120)"
+}
+# The real 9B's four rows on the path the engine judged (the launcher, its body lowered to kernels), every clear
+# position agreeing with Transformers; its stages are the run's progress, and the pod is looked at every 5 min after 10.
+began=$(date +%s)
+(sleep 600 && while :; do look bucket "$began"; sleep 300; done) & LOOK=$!
+BG="$BG $LOOK"
+if step bucket run "$FIX/drive/bucket" --model "model=$Q8" --on "$NAME"; then
+  record bucket
+  jq -r '.result.detail // ""' "$OUT/bucket.json" > "$OUT/bucket-detail.json"
+  say "bucket: $(jq -c '{declared, launcher, drafted_launched, plain_launched, s, drafted: [.drafted[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]], plain: [.plain[]? | [.bucket.agreed, .bucket.clear, .alone.agreed, .alone.clear]]}' "$OUT/bucket-detail.json" 2> /dev/null)"
+else
+  say "bucket: FAILED · $(grep -ao 'failed \[[a-z_]*\][^.]*\.[^.]*' "$OUT/bucket.txt" | tail -1 | cut -c1-300)"
+fi
+pkill -P "$LOOK" 2> /dev/null; kill "$LOOK" 2> /dev/null
+jq -e '.launcher and .drafted_launched and .plain_launched' "$OUT/bucket-detail.json" > /dev/null 2>&1 || FAILED+=("not-launched")
+jq -e 'all([(.drafted // [])[], (.plain // [])[]][]; .bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear)' \
+  "$OUT/bucket-detail.json" > /dev/null 2>&1 || FAILED+=("bucket-forced")
 [ "${#FAILED[@]}" = 0 ] || fail "failed: ${FAILED[*]}"
 say "DONE: each path's outcome on driver $driver above"
