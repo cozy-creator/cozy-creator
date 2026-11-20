@@ -40,7 +40,7 @@ HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
 arm() { [[ $ARMS == *" $1 "* ]]; }
-QWEN=false; for a in free before after disk yield back; do arm "$a" && QWEN=true; done
+QWEN=false; for a in free before after disk yield hold back; do arm "$a" && QWEN=true; done
 H3=false; { arm h3-before || arm h3-after; } && H3=true
 SHOT=$(param shot '[{"description":"[Shot 1]\nA paper boat drifts down a rain-filled gutter past glowing shop windows at night. The camera follows at street level as drops ripple the water.","duration":5}]')
 if [ "$H3" = true ]; then
