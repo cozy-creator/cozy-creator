@@ -49,7 +49,9 @@ done
 cd "$OUT" || fail "no $OUT"
 before=$(installed)
 read -r free total store listed < <(show | jq -r '.status | "\(.disk_free_bytes) \(.disk_total_bytes) \(.disk_models_bytes) \(.models_bytes)"')
-derived=$((store - listed))
+# The bakes are in the OS's temporary storage on the same disk (`tensorfs::derived`, cl-1318), not in the store.
+derived=$(cozy machine ssh "$NAME" "du -sb /var/tmp/cozy-derived-*/ 2> /dev/null | awk '{n += \$1} END {print n + 0}'" 2> /dev/null | tail -1)
+[[ $derived =~ ^[0-9]+$ ]] || fail "setup: the bakes' bytes on the pod: $derived"
 say "installed: $before; store $((store >> 20)) MiB, $((listed >> 20)) MiB of it in listed models: $((derived >> 20)) MiB of bakes"
 # The disk is left 4 GiB short of Qwen-Image 2.1 int8 (its size from the Hub) past TensorFS's reserve (2% of the disk, 1 to 10
 # GiB): bakes no reader has open cover that. The idle SDXL executor keeps its last stacks' bakes open, about 4 of the ~13 GiB
@@ -78,8 +80,8 @@ held=$(grep -oE '[0-9.]+(TB|GB|MB|KB|B) in models nothing queued or running need
   | awk '{printf "%d", $1 * ($2 == "TB" ? 1e12 : $2 == "GB" ? 1e9 : $2 == "MB" ? 1e6 : $2 == "KB" ? 1e3 : 1)}')
 say "LTX-2.5: ${said:0:500}"
 [ -n "$said" ] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: $(tail -c 300 "$OUT/ltx.txt")"
-[ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + (1 << 30))) ] ||
-  fail "the refusal counts $((held >> 20)) MiB in models no call holds: want at least the $((derived >> 20)) MiB of bakes, at most the store's $((store >> 20)) MiB"
+[ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + derived + (1 << 30))) ] ||
+  fail "the refusal counts $((held >> 20)) MiB in models no call holds: want at least the $((derived >> 20)) MiB of bakes, at most the store's $((store >> 20)) MiB and the bakes"
 free=$(show | jq -r .status.disk_free_bytes)
 ballast $(( $(cozy machine ssh "$NAME" "stat -c %s /var/lib/cozy/cl1081-ballast" 2> /dev/null | tail -1) + free - reserve - (big - need) ))
 step big model install qwen/qwen-image-2.1 --lane int8 --on "$NAME" -y; landed=$?

@@ -1,7 +1,7 @@
 //! The store (design §2): the local cache of cozytensors that any process reads and writes.
 //!
 //! `<root>/{format, blobs/<aa>/<bb>/<sha256>, refs/<org>/<name>.json, holds/, files/, uses/,
-//! derived/<slot>, snapshots/<name>/, tmp/}`
+//! snapshots/<name>/, tmp/}`; derived weights live in the OS's temporary storage (`crate::derived`)
 //!
 //! - Objects are trees (commits), cozytensors headers, chunks, assets and repo files. A ref
 //!   records a model's releases and commits. A cozytensors is opened by its header
@@ -22,8 +22,6 @@
 mod checkpoint;
 mod borrowed;
 pub use borrowed::BorrowedObjects;
-mod derived;
-pub use derived::Derived;
 pub(crate) mod file;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
