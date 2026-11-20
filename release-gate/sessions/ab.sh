@@ -51,7 +51,7 @@
 #              while the cell's run lasts, into <cell>-pod-during.log; `after` once when it ends (up to `after_s` seconds, 900
 #              by default), into <cell>-pod-after.log); "run_s" (optional: the cell's run is cancelled once it has run this
 #              many seconds, a stalled cell leaving the pod to the next ones, after the executors' stacks into
-#              <cell>-pod-stall.log);
+#              <cell>-pod-stall.log and its record so far into <cell>-live.json: a cancelled run keeps none);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR; and
 #              their seconds, cold or warm (pairs.tsv)
 #   order      optional: `abba` (default: each two builds compared run in both orders) or `one-way`
@@ -340,7 +340,9 @@ for k in "${names[@]}"; do
   [ -z "$bound" ] || { ( sleep "$bound"; n=$(current "$k"); [ -z "$n" ] || {
     say "$k: past run_s ${bound}s: the executors' stacks, then cancelling $n"
     pod_sh "$STALL" 240 > "$OUT/$k-pod-stall.log" 2>&1
-    cd "$RUN_PROJECT" && cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
+    cd "$RUN_PROJECT" || exit 0
+    timeout 120 cozy run watch "$n" --once --json --full < /dev/null > "$OUT/$k-live.json" 2> /dev/null  # its record so far
+    cozy run cancel "$n" -y < /dev/null > "$OUT/$k-cancel.txt" 2>&1; } ) & CW=$!; }
   [ ! -e "$OUT/ending" ] || fail "$k: the pod is ending (lib.sh unpin): no run starts on it"
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$CW" ] || kill "$CW" 2> /dev/null
