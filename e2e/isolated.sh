@@ -715,7 +715,33 @@ PYH3
         || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model#e2e/}.json")" >&2; exit 1; }
     done
     publish "$here/cli/project/prefetched"
-    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0 and e2e-prefetched"
+    # prefetch_yields' swap (cl-1281): e2e/pre-lora-a, the default of e2e-prefetched-lora's `lora` slot, and e2e/pre-lora-b, what a
+    # box swaps it for; 128 MiB each in PEFT's names, random so no chunk of one is the other's, 13 s each at the swap's 10 MB/s.
+    for l in a b; do
+      python3 -I - "$seed/pre-lora-$l.safetensors" <<'PY'
+import json, os, struct, sys
+FINITE = bytes(b & 0xBF for b in range(256))  # a high byte without its exponent's top bit: no Inf or NaN
+rank, width, blocks = 16, 131072, 16
+header, offset = {}, 0
+for i in range(blocks):
+    for key, shape in ((f"blocks.{i}.proj.lora_A.weight", [rank, width]), (f"blocks.{i}.proj.lora_B.weight", [width, rank])):
+        header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [offset, offset + rank * width * 2]}
+        offset += rank * width * 2
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+with open(sys.argv[1], "wb") as out:
+    out.write(struct.pack("<Q", len(raw)) + raw)
+    left = offset
+    while left:
+        chunk = bytearray(os.urandom(min(left, 8 << 20)))
+        chunk[1::2] = chunk[1::2].translate(FINITE)
+        out.write(chunk)
+        left -= len(chunk)
+PY
+      standin_lora "$seed/pre-lora-$l.safetensors:transformer" "e2e/pre-lora-$l" "$page" '' || exit 1
+    done
+    publish "$here/cli/project/prefetchedlora"
+    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0, e2e/pre-req@0.1.0, e2e/pre-lora-a@0.1.0, e2e/pre-lora-b@0.1.0, e2e-prefetched and e2e-prefetched-lora"
     rm -f "$seed"/pre-*.safetensors
   fi
   if [[ " $needs " == *" slow "* ]]; then

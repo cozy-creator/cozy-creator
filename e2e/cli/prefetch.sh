@@ -358,6 +358,43 @@ echo "prefetch yields: its row said $((came >> 20)) MiB were there (320 of them 
 [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-b went on coming after its box was deleted: $first, then $second"
 J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"
+
+# A LoRA slot's choice swapped while its LoRA comes (cl-1281: a LoRA is a slot with a default a box overrides). `styled`'s slot
+# default, e2e/pre-lora-a (128 MiB), comes at 10 MB/s; once its row says 16 MiB are there, the box names e2e/pre-lora-b. The old one
+# stops where it was, and the new one comes whole before Render.
+local at_swap swapped b_ms=''
+jq -n '[{name: "styled", tool: "e2e-prefetched-lora/styled", kind: "image", fields: {instructions: "A still in a borrowed style."}}]' \
+  | boxes_in "$P" || { pre_end; return 0; }
+came=$(pre_wait "$P" styled 16)
+pre_machine stand-p "$OUT/pre-yields-lora.json"
+at_swap=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
+if [ "$came" -lt $((16 << 20)) ]; then
+  check "prefetch yields: stand-p fetched nothing of e2e/pre-lora-a, styled's slot default: its row: $(pre_row "$P" styled)"
+elif ! J 'all(.complete | all(. != true))' <<< "$at_swap"; then
+  check "prefetch yields: e2e/pre-lora-a was whole before styled's swap ($((came >> 20)) MiB in its row), nothing left to stop: $at_swap"
+else
+  swapped=$(date -u +%s%3N)
+  project_api "$P" /assets/styled -X PATCH -H 'content-type: application/json' \
+    -d '{"fields": {"instructions": "A still in a borrowed style.", "models": {"lora": {"ref": "e2e/pre-lora-b@0.1.0"}}}}' \
+    > "$OUT/pre-yields-swap.json" 2>&1 || check "prefetch yields: styled's lora wasn't swapped: $(tail -c 300 "$OUT/pre-yields-swap.json")"
+  for _ in $(seq 240); do
+    pre_machine stand-p "$OUT/pre-yields-lora.json"
+    J 'length > 0 and all(.complete | any)' <<< "$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)" && { b_ms=$(($(date -u +%s%3N) - swapped)); break; }
+    sleep 0.5
+  done
+  [ -n "$b_ms" ] || check "prefetch yields: e2e/pre-lora-b, styled's new LoRA, isn't whole on stand-p 2 min after the swap: $(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)"
+  # The machine lists a checkpoint's bytes once it is whole: had e2e/pre-lora-a gone on coming beside e2e/pre-lora-b on the one
+  # 10 MB/s link, its 111 MiB left would be whole within 15 s of e2e/pre-lora-b.
+  pre_machine stand-p "$OUT/pre-yields-lora.json"
+  first=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
+  sleep 15
+  pre_machine stand-p "$OUT/pre-yields-lora.json"
+  second=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
+  echo "prefetch yields: styled's slot swapped when its row said $((came >> 20)) MiB were there (e2e/pre-lora-a $at_swap); e2e/pre-lora-b whole ${b_ms:-never} ms after; e2e/pre-lora-a then $first, 15 s on $second"
+  [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-lora-a went on coming after styled's slot named e2e/pre-lora-b: $first, then $second"
+  J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-lora-a is whole on stand-p though styled's slot was swapped as it came: $second"
+  pre_ready "$P" styled stand-p 60 || true
+fi
 sudo tc qdisc del dev lo root 2> /dev/null; slow_store prefetch || { pre_end; return 0; }
 }
 
