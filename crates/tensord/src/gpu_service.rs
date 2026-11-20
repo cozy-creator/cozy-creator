@@ -4372,6 +4372,7 @@ impl Pool {
         let stoppable = session.followers.is_empty().then(|| session.executor.stoppable(id));
         engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
+        load_ahead::invoked(id);
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
                 tensorfs: calls.and_then(|calls| calls.tensorfs(id)),

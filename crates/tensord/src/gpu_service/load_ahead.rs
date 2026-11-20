@@ -28,8 +28,21 @@ use std::collections::BTreeSet;
 /// and a stage shares the disk with none (cl-1318: a stage that went on beside a call's cold load slowed the load it was for).
 static STEPPED: std::sync::LazyLock<Mutex<BTreeSet<String>>> = std::sync::LazyLock::new(Mutex::default);
 
-/// Run `id` reported a step (`calls::observe`): a stage may read beside it now, so the load step looks again.
+/// The calls on a GPU whose function TensorD has invoked (`invoked`): built, and into their own code. A construction's legs come
+/// timed and counted like steps (a stage restarted 0.4 s into SDXL's, 44655831537), so a step is only one of an invoked call's.
+static INVOKED: std::sync::LazyLock<Mutex<BTreeSet<String>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// Run `id`'s function is invoked now.
+pub(crate) fn invoked(id: &str) {
+    INVOKED.lock().unwrap().insert(id.to_owned());
+}
+
+/// Run `id` reported a step (`calls::observe`): once invoked, it is past its loads, a stage may read beside it now, and the load
+/// step looks again.
 pub(crate) fn stepped(engine: &Engine, id: &str) {
+    if !INVOKED.lock().unwrap().contains(id) {
+        return;
+    }
     let mut stepped = STEPPED.lock().unwrap();
     if !stepped.contains(id) {
         stepped.insert(id.to_owned());
@@ -40,6 +53,7 @@ pub(crate) fn stepped(engine: &Engine, id: &str) {
 
 /// Run `id` left its GPU.
 pub(crate) fn unstepped(id: &str) {
+    INVOKED.lock().unwrap().remove(id);
     STEPPED.lock().unwrap().remove(id);
 }
 
@@ -324,8 +338,9 @@ impl Pool {
         }
         let mut stepped = STEPPED.lock().unwrap();
         let lanes = self.lanes.lock().unwrap();
-        // A run off any GPU here (a CPU call's steps) is no one's to keep.
+        // A run off any GPU here (a CPU call's) is no one's to keep.
         stepped.retain(|id| lanes.contains_key(id));
+        INVOKED.lock().unwrap().retain(|id| lanes.contains_key(id));
         lanes.keys().any(|id| !stepped.contains(id))
     }
 

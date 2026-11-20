@@ -333,7 +333,7 @@ print(json.dumps({"q_bytes": q, "ceiling": c, "bounds_s": {k: round(v, 2) for k,
                   "back": {"held": held, "during": during}}, indent=1))
 PY
 grep -q "stage ahead: .* in RAM in" "$OUT/ahead.log" || fail_if "no stage ahead in this build's TensorD log"
-grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level ram in this build's TensorD log"
+! { arm after || arm disk || arm back; } || grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level ram in this build's TensorD log"
 ! arm free || jq -e '.renders.free.until_inference_s < 1' "$OUT/summary.json" > /dev/null || fail_if "free: the loaded render's first step waited on a load"
 ! { arm before && arm after; } || jq -e '.renders.after.until_inference_s < .renders.before.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "after: no sooner than before"
