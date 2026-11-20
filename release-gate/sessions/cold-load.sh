@@ -30,7 +30,9 @@
 #   update      `cozy machine update` flags every arm starts from, each with its value: `self` (this session's cozy, for
 #               --tensord), an https URL (a wheel, or a cozy binary), `artifact:<run id>/<name>` (a cozy-creator run's wheel),
 #               a cozy-runtime dev-build run id (--runtime), else as given ([]: the image's)
-#   arms        [{"name", "update": [flags over `update`]}], run in order (default [{"name": "rc"}]): A B B A is four
+#   arms        [{"name", "update": [flags over `update`], "models": [names], "repeats": n, "ident": bool}], run in order
+#               (default [{"name": "rc"}]): A B B A is four. `models`: the arm runs those only; `repeats`: at most n rounds
+#               (a model's own `repeats` may ask fewer); `ident`: in place of the session's
 #   need_s      seconds the cap must buy (default 9000)
 #   ident       true: after its rounds, each arm runs each model once more, cold, with one fixed request (seed 4242) in its
 #               own project (no call memo of another arm's answers it): the arms' outputs compared (default false)
@@ -198,22 +200,29 @@ cell() {
   fi
 }
 
+# runs <arm> <model>: whether the arm runs the model (its `models`).
+runs() { jq -e --arg a "$1" --arg m "$2" '.[] | select(.name == $a) | (.models // null) | . == null or index($m) != null' <<<"$ARMS" > /dev/null; }
 for A in "${arms[@]}"; do
   arm "$A"
+  AREPS=$(jq -r --arg a "$A" '.[] | select(.name == $a) | .repeats // empty' <<<"$ARMS")
+  AIDENT=$(jq -r --arg a "$A" --arg d "$IDENT" '.[] | select(.name == $a) | if has("ident") then .ident | tostring else $d end' <<<"$ARMS")
   for m in "${names[@]}"; do
+    runs "$A" "$m" || continue
     cell "$A" "$m" warmup "$A-$m-warmup"
     [ "$(jq -r .status "$OUT/$A-$m-warmup.json" 2> /dev/null)" = completed ] || fail "$A-$m-warmup didn't complete: no cell of $m would"
-    for r in $(seq 1 "$REPEATS"); do
+    reps=$(jq -r --arg m "$m" --argjson n "$REPEATS" '.[] | select(.name == $m) | .repeats // $n' <<<"$MODELS")
+    [ -z "${AREPS:-}" ] || [ "$AREPS" -ge "$reps" ] || reps=$AREPS
+    for r in $(seq 1 "$reps"); do
       for c in $(jq -r '.[]' <<<"$CONDITIONS"); do cell "$A" "$m" "$c" "$A-$m-$c$r"; done
     done
     if [ "$HOT" = true ] || [ "$(jq -r --arg m "$m" '.[] | select(.name == $m) | .warm // "step2"' <<<"$MODELS")" = hot ]; then
       cell "$A" "$m" hot
     fi
   done
-  if [ "$IDENT" = true ]; then
+  if [ "$AIDENT" = true ]; then
     shared=$RUN_PROJECT RUN_PROJECT=$OUT/ident-$A
     run_project "$RUN_PROJECT" > "$OUT/ident-$A.project.txt" 2>&1 || fail "arm $A: its ident project"
-    for m in "${names[@]}"; do cell "$A" "$m" cold "$A-$m-ident" ident; done
+    for m in "${names[@]}"; do runs "$A" "$m" && cell "$A" "$m" cold "$A-$m-ident" ident; done
     RUN_PROJECT=$shared
   fi
 done
