@@ -393,7 +393,10 @@ def policy(ckids: str, comps: Sequence[str], others: Sequence[str], tight: bool)
     held = None
     if tight:
         m = memory()
-        pin = max(0, m["limit"] - m["anon"] - load // 2 - (6 << 30))
+        # Only against a container's number (a host's whole RAM is no number to press), leaving TensorD 10 GiB.
+        if m["limit"] > 128 << 30:
+            return {**report, "error": f"no container memory number to press against ({m['limit'] / GB:.0f} GB)"}
+        pin = max(0, m["limit"] - m["anon"] - load // 2 - (10 << 30))
         began = time.perf_counter()
         # Touched anonymous memory: no swap on a pod, so the kernel can't take it back, as a pinned host tier's.
         # (Torch's pinned allocator rounds a request up to a power of two: past the number.)
