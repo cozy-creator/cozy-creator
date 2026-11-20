@@ -189,9 +189,9 @@ export function usePreview(video: boolean, initialHover?: PreviewHover) {
   }
 }
 
-/** `path`'s bytes in this page's memory while it's shown (Transport.media, cl-1215), for a `<video>` that shows them (`show`), holding no
- *  connection to Calcifer as it plays, loops and seeks. Undefined until they're here; the last let go once the next is drawn in its place,
- *  its element emptied first (cl-1314). */
+/** `path`'s URL for a `<video>` that shows it (`show`, Transport.media): asked of Calcifer in pieces, it holds no connection as it plays,
+ *  loops and seeks (cl-1220). Undefined until it's given; the last let go once the next is drawn in its place, its element emptied first
+ *  (cl-1314). */
 export function useHeldMedia(path: string | undefined): HeldMedia | undefined {
   const { client } = useConnection()
   const [held, setHeld] = useState<{ path: string; media: HeldMedia } | null>(null)
@@ -317,7 +317,7 @@ export function viewable(view: ElementView | undefined): boolean {
   return shown.field === "image" ? !shown.absent && FILE.test(shown.path) : shown.field === "video" && Boolean(sourceOf(view, shown))
 }
 
-/** Played on click, or at once with `auto`: a file Calcifer serves, by its API path, played from this page's memory (cl-1215), or one straight from a machine. */
+/** Played on click, or at once with `auto`: a file Calcifer serves, by its API path, asked of it in pieces (cl-1220), or one straight from a machine. */
 /** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own, and a file opens at once to show
  *  its own frame at its own size, not the poster's small one stretched over it (cl-1080; Paul, 11-16). */
 export function Player({ field, path, machine, sound, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; sound?: { project: string; sha256: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
@@ -405,7 +405,7 @@ export function Player({ field, path, machine, sound, seek, auto, from, onTime, 
     stopRef.current = stop
     const el = element.current
     if (!el) return stop()
-    // Every video in every tab plays at once: a file's bytes are in this page's memory, holding no connection to Calcifer (cl-1215; Paul,
+    // Every video in every tab plays at once: a file asked of Calcifer in pieces holds no connection to it (cl-1220; Paul,
     // 11-18: "why can't I have all 3 videos playing at the same time?").
     // A sound this browser can't decode plays Calcifer's FLAC copy of it (its `preview`), asked for as every preview is: one still being
     // made waits for its `thumb` event, and one that can't be made can't be played.
@@ -950,8 +950,8 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
-  // A video revision's bytes in the page's memory (cl-1215), shown by its element; the one before let go once this one is drawn in its place,
-  // its element emptied first if it still showed it (cl-1314).
+  // A video revision's URL (Transport.media), shown by its element; the one before let go once this one is drawn in its place, its element
+  // emptied first if it still showed it (cl-1314).
   const [held, setHeld] = useState<Pick<HeldMedia, "show" | "release"> | null>(null)
   useEffect(() => () => held?.release(), [held])
   const element = useRef<HTMLVideoElement>(null)

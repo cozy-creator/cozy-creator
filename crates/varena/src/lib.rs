@@ -669,9 +669,6 @@ impl PlanPhase {
     }
 }
 
-/// What the driver's own charge may grow by between samples under a development cap.
-const CAP_SLACK: usize = 128 << 20;
-
 thread_local! {
     /// This thread's demand is short only of the driver's room, with nothing idle and finished left
     /// to keep it from (`reclaim::acquire`): it takes the room.
@@ -907,18 +904,19 @@ impl Device {
         self.pages.load(Ordering::Acquire).saturating_add(self.working.load(Ordering::Acquire))
     }
 
-    /// The most our own bytes may reach right now.
+    /// The most our own bytes may reach right now. A cap is a smaller card: what the driver charges
+    /// beyond our books is in it, and so is the room a card leaves the driver for what it still takes
+    /// on its own (`driver_room`). Each map samples the charge. 128 MiB was left for its growth
+    /// between samples before, sized by one run (cr-253).
     fn capacity(&self) -> usize {
         let reserved = self.reservation.get().copied().unwrap_or(0);
         let ceiling = self.ceiling.load(Ordering::Acquire);
         let ceiling = if ceiling == usize::MAX { ceiling } else { ceiling.saturating_sub(reserved) };
         let ceiling = ceiling.min(self.total.load(Ordering::Acquire));
-        let cap = if ceiling == usize::MAX {
-            usize::MAX
-        } else {
-            ceiling.saturating_sub(self.outside.load(Ordering::Acquire).saturating_add(CAP_SLACK))
-        };
-        cap
+        if ceiling == usize::MAX {
+            return usize::MAX;
+        }
+        ceiling.saturating_sub(self.outside.load(Ordering::Acquire).saturating_add(self.room_kept()))
     }
 
     fn headroom(&self) -> usize {
@@ -951,7 +949,12 @@ impl Device {
 
     /// Of the driver's `free` bytes, what a map of ours may take: all but the driver's room.
     fn spare(&self, free: usize) -> usize {
-        if TAKES_ROOM.get() { free } else { free.saturating_sub(self.driver_room()) }
+        free.saturating_sub(self.room_kept())
+    }
+
+    /// The driver's room, unless this thread's demand takes it (`taking_room`).
+    fn room_kept(&self) -> usize {
+        if TAKES_ROOM.get() { 0 } else { self.driver_room() }
     }
 
     /// What every map leaves free for the driver's own allocations: the room as measured, less what the
@@ -980,15 +983,17 @@ impl Device {
         self.out_of_books_begin.store(own, Ordering::Release);
     }
 
-    /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the
-    /// card has free now. More than the card has free is the driver's to refuse; less, but not
-    /// beside the room, is `RoomShort`.
+    /// Room for `bytes` of new pages: within our limit, and beside the driver's room of what the card
+    /// (or its cap) has free now. More than the card has free is the driver's to refuse; less, but
+    /// not beside the room, is `RoomShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
-        if self.over(bytes) != 0 {
+        let over = self.over(bytes);
+        // Under a cap, as on a card of its size, short only of the driver's room is `RoomShort`.
+        if over != 0 && (!self.capped() || over > self.room_kept()) {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
-        if bytes <= free && bytes > self.spare(free) {
+        if over != 0 || (bytes <= free && bytes > self.spare(free)) {
             return Err(AllocationFailure::RoomShort(bytes));
         }
         Ok(())

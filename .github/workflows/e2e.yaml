@@ -800,7 +800,7 @@ jobs:
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
         # answers: Status answers while the journal's commits wait for the disk (cl-1202).
         # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
-        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
+        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -829,8 +829,8 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      # The project part's fixtures and probes (e2e/cli/project.sh) and llm_write's clip (xs-204); Calcifer, a service, fetches its own.
-      - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'runs' || startsWith(matrix.shard, 'runs@')) || matrix.shard == 'pickup-grid' || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
+      # The project part's fixtures and probes (e2e/cli/project.sh), llm_write's clip (xs-204), given_take's and pickup_grid's (cl-1317); Calcifer, a service, fetches its own.
+      - if: (matrix.shard == 'commands' || startsWith(matrix.shard, 'commands@')) || (matrix.shard == 'runs' || startsWith(matrix.shard, 'runs@')) || matrix.shard == 'given-take' || matrix.shard == 'pickup-grid' || (matrix.shard == 'web' || startsWith(matrix.shard, 'web@')) || startsWith(matrix.shard, 'web-') || (matrix.shard == 'local-code' || startsWith(matrix.shard, 'local-code@')) || (matrix.shard == 'coming' || startsWith(matrix.shard, 'coming@')) || (matrix.shard == 'control' || startsWith(matrix.shard, 'control@')) || startsWith(matrix.shard, 'projectvault') || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
       # The HMR fixtures: containment's, web-access's dev mode through Calcifer (web/access.js) and web-playback's. Their Vite serves the web of the
       # cozy under test (the candidate's own commit), never the harness's: a harness from another commit would test another page.

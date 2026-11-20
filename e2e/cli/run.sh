@@ -592,6 +592,10 @@ WEB_2D=(
   resize
   nogpu
 )
+# Many videos playing at once, reading this runner's sockets: the job to itself, Chrome then Firefox, one at a time (web.sh's lane `media`).
+WEB_MEDIA=(
+  pieces
+)
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
   upload
@@ -759,6 +763,7 @@ case $SHARD in
     describe
     first_run
     given_file
+    given_take
     llm_write
     llm_stream
     llm_caption
@@ -769,6 +774,7 @@ case $SHARD in
     run_overhead
     previews
     run_flags
+    describe_inputs
     run_playback
     hub_away
     lock_refresh
@@ -973,6 +979,7 @@ case $SHARD in
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
+  web-media) web_cells=(${WEB_MEDIA[@]+"${WEB_MEDIA[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
@@ -1176,6 +1183,10 @@ case $SHARD in
   typed-calls) parts="typed_calls logs" ;;
   # A run's own file at a box-shaped input, its first use and again (cl-1183).
   given-file) parts="given_file logs" ;;
+  # A plain video file as a pickup's take and as a take to redo, with its latents (cl-1317).
+  given-take) parts="given_take logs" ;;
+  # `cozy run <fn> --describe` with inputs runs nothing (cl-1317).
+  describe-inputs) parts="describe_inputs logs" ;;
   # A pickup lands on its function's frame grid: H3's and LTX's generate through the binder (cl-1317).
   pickup-grid) parts="pickup_grid logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.

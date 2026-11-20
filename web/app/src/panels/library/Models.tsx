@@ -7,7 +7,6 @@ import type { ModelCheckpoint, ModelDetail, ModelEdit, Submitted } from "../../a
 import { say } from "../../ui/notes"
 import { NSFW, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
-import { DropZone, FileRow, useFiles } from "../FileDrop"
 import { bytes, shown, stamp } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
@@ -19,44 +18,9 @@ function useFollowRun() {
   return ({ run }: Submitted) => navigate(to(run.project_id ? `runs/${run.number}` : `machines/${run.machine ?? "local"}`))
 }
 
-/** A dropped file becomes a private checkpoint of a model, on a machine that makes and uploads it. */
-function Upload({ destination }: { destination?: string }) {
-  const { client } = useConnection()
-  const follow = useFollowRun()
-  const files = useFiles()
-  const [typed, setTyped] = useState("")
-  const [lane, setLane] = useState("")
-  const file = files.files[0]
-  const to = destination ?? typed.trim()
-  return (
-    <div className="stack">
-      {!destination && (
-        <label>
-          Model
-          <input className="field" spellCheck={false} placeholder="org/name" value={typed} onChange={(event) => setTyped(event.target.value)} />
-        </label>
-      )}
-      <label>
-        Precision
-        <input className="field" spellCheck={false} placeholder="bf16, fp8, int8, …" value={lane} onChange={(event) => setLane(event.target.value)} />
-      </label>
-      {file ? <FileRow file={file} onRemove={() => files.remove(file.id)} /> : <DropZone onFiles={(chosen) => files.add(chosen)}>Drop the model file here, or choose one</DropZone>}
-      <OnMachine
-        body={{ source: file?.digest ?? "", destination: to, lane: lane.trim() }}
-        label="Upload"
-        disabled={!file?.digest || !to || !lane.trim()}
-        quote={(body) => client.jobQuote("cozy/model_upload", body)}
-        ask={(body, key) => client.job("cozy/model_upload", body, key)}
-        onDone={follow}
-      />
-    </div>
-  )
-}
-
 export function Models() {
   const { client } = useConnection()
   const to = useTo()
-  const signedIn = useSignedIn()
   const [typed, setTyped] = useState("")
   const q = useDeferredValue(typed.trim())
   const [limit, setLimit] = useState(50)
@@ -92,12 +56,6 @@ export function Models() {
         <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>
           Show {data?.older} more
         </button>
-      )}
-      {signedIn && (
-        <details className="sect">
-          <summary>Upload a model file</summary>
-          <Upload />
-        </details>
       )}
     </LibraryFrame>
   )
@@ -393,10 +351,6 @@ export function ModelDrawer() {
               ask={(body, key) => client.job("cozy/model_quantize", body, key)}
               onDone={follow}
             />
-          </details>
-          <details className="sect">
-            <summary>Upload a model file</summary>
-            <Upload destination={name} />
           </details>
           {member && data && (
             <details className="sect" open>

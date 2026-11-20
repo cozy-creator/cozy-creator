@@ -19,6 +19,19 @@ listed() {
   jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r or .alias == $r) and .state != "ended")' <<<"$j" > /dev/null
 }
 
+# unpin_runs <rental id or name> <project dir> <out dir>: this computer's runs still queued or in progress on that machine, listed from
+# the project they were asked from (as `run ls` lists runs: control-plane.sh, gpuless-render.sh; kept as <out>/unpin-<machine>.json),
+# canceled; a line each. A run asked on a machine (`--on`) whose machine ends is retried elsewhere, on another session's pod (cl-1316:
+# 44590881858, 44610448156, cr-348's goblin), by a cozy without cozy-creator #4094: so every end of a session's pod (its trap, its guard,
+# pod-session.yaml's cleanup) cancels them first.
+unpin_runs() {
+  local m; m=$(cozy --json machine show "$1" < /dev/null 2> /dev/null | jq -r '.name // empty' 2> /dev/null)
+  [ -n "$m" ] && [ -d "$2" ] || return 0
+  (cd "$2" && timeout 60 cozy --json run ls --all --limit 0 --on "$m" < /dev/null) > "$3/unpin-$m.json" 2>&1
+  jq -r '.runs[]? | select(.status == "queued" or .status == "in_progress") | .id' "$3/unpin-$m.json" 2> /dev/null |
+    while read -r id; do (cd "$2" && cozy run cancel "$id" -y < /dev/null) >> "$3/end.txt" 2>&1 && echo "canceled $id on $m"; done
+}
+
 # own [cli]: what this computer's Calcifer ordered and has not ended, a line each: its rental id, else (an order its Hub
 # has not answered) its name. On a fresh runner that is what this job ordered. The listing is the account's one pool (cl-1224)
 # and says nothing of who ordered a rental: an order here mints its key, ~/.cozy/keys/rental-<name>.pem, under the name it

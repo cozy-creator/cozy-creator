@@ -148,6 +148,10 @@ web-playback = ["web/app/src/api/events.ts", "web/app/src/api/transport.ts", "we
   "web/app/src/canvas/FocusFrame.tsx", "web/app/src/canvas/FocusedViewport.css", "web/app/src/canvas/FullScreen.ts", "web/app/src/canvas/Card.tsx",
   "web/app/src/canvas/CanvasHost.tsx", "web/app/src/canvas/board/**", "web/app/src/canvas/timeline/**", "web/app/src/main.tsx",
   "web/app/package.json", "web/app/pnpm-lock.yaml", "web/app/vite.config.*", "crates/calcifer/src/files.rs", "e2e/cli/web/playback.spec.js"]
+# What a player asks of Calcifer, and how browsers read it ahead (cl-1220): twelve videos at once in three windows, in Chrome and Firefox.
+web-media = ["web/app/src/api/transport.ts", "web/app/src/canvas/Media.tsx", "web/app/src/canvas/Orbit.tsx",
+  "web/app/src/canvas/TakeProgress.tsx", "web/app/src/canvas/board/Media.ts", "web/app/src/canvas/timeline/Preview.ts", "crates/calcifer/src/files.rs",
+  "crates/calcifer/src/outputs.rs", "crates/calcifer/src/project/thumbs.rs", "e2e/cli/web.sh", "e2e/cli/web/pieces.spec.js"]
 runs = ["crates/cli/src/run/**", "crates/calcifer/src/runs/**", "crates/calcifer/src/stages.rs", "crates/calcifer/src/previews.rs",
   "crates/calcifer/src/reports.rs", "crates/calcifer/src/play.rs", "crates/tensord/src/gpu_service.rs", "crates/tensord/src/execution.rs",
   "crates/tensord/src/seam.rs", "crates/tensord/src/access.rs", "crates/executor-api/**", "crates/tensorfs/**", "crates/varena*/**",

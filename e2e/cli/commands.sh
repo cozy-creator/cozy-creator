@@ -660,6 +660,46 @@ for n in first again member; do
 done
 }
 
+# cl-1317 (Paul, 11-19, se-177): continue any video from its last frames' motion, and redo a range of any video. `cozy run` renders
+# what the page renders (cl-956), and the page picks up an imported video's box, so a plain video file binds as a pickup's take and
+# as a take to redo, by the field's type (H3's `ShotVideo`), with the latents the take names when given. It refused a plain file as
+# `pickup.take` and dropped `video.latents` as an undeclared field. A phone clip goes as each, with and without its latents: each run
+# completes and reads the clip's bytes, its latents' too. A take named by mention (the run's own reference, as a box is) takes the
+# latents given beside it, whichever is written first; a take that declares no latents says once it ignored them, never drops them
+# unsaid (latents then a mention) or refuses (a mention then latents).
+given_take() {
+step "a plain video file as a pickup's take and as a take to redo, with its latents (cl-1317)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/given-take clip latents ref n fn want got
+rm -rf "$dir"; mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=72x128:rate=30:duration=1 -f lavfi -i sine=f=440:d=1 -c:v libx264 -pix_fmt yuv420p \
+  -c:a aac -shortest "$dir/phone.mp4"
+head -c 4096 /dev/urandom > "$dir/phone.latents"
+clip=$(sha256sum "$dir/phone.mp4" | cut -d' ' -f1) latents=$(sha256sum "$dir/phone.latents" | cut -d' ' -f1)
+ref="references:=$(jq -cn --arg video "$dir/phone.mp4" '[{name: "phone_take", video: $video}]')"
+for n in pick pick-latents redo redo-latents named-latents bare-latents bare-named-latents bare-named-after; do
+  case $n in
+    pick) want="$clip  12"; set -- pick "pickup.take=$dir/phone.mp4" pickup.out_frame=12 ;;
+    pick-latents) want="$clip $latents 12"; set -- pick "pickup.take=$dir/phone.mp4" "pickup.take.latents=$dir/phone.latents" pickup.out_frame=12 ;;
+    redo) want="$clip  -1"; set -- redo "video=$dir/phone.mp4" ;;
+    redo-latents) want="$clip $latents -1"; set -- redo "video=$dir/phone.mp4" "video.latents=$dir/phone.latents" ;;
+    named-latents) want="$clip $latents 12"; set -- pick "$ref" "pickup.take.latents=$dir/phone.latents" 'pickup.take=<phone_take>' pickup.out_frame=12 ;;
+    bare-latents) want="$clip  12"; set -- bare "pickup.take=$dir/phone.mp4" "pickup.take.latents=$dir/phone.latents" pickup.out_frame=12 ;;
+    bare-named-latents) want="$clip  12"; set -- bare "$ref" "pickup.take.latents=$dir/phone.latents" 'pickup.take=<phone_take>' pickup.out_frame=12 ;;
+    bare-named-after) want="$clip  12"; set -- bare "$ref" 'pickup.take=<phone_take>' "pickup.take.latents=$dir/phone.latents" pickup.out_frame=12 ;;
+  esac
+  fn=$1; shift
+  cell "take-$n" "$here/project/take.py/$fn" "$@" \
+    || { check "given take: the $n run ($*) $(run_get "$OUT" "take-$n" .status): $(run_get "$OUT" "take-$n" .reason.message | head -c 300) $(tail -c 300 "$OUT/take-$n.err" 2> /dev/null)"; continue; }
+  got=$(run_get "$OUT" "take-$n" '"\(.result.take) \(.result.latents) \(.result.out_frame)"')
+  [ "$got" = "$want" ] || check "given take: the $n run ($*) read '$got', not '$want'"
+  case $n in
+    bare-*) grep -qs 'takes no file called latents with it, so Cozy ignored it' "$OUT/take-$n".{ndjson,err,json} \
+      || check "given take: the $n run ($*) didn't say it ignored the latents: $(tail -c 300 "$OUT/take-$n.err" 2> /dev/null)" ;;
+  esac
+done
+}
+
 # xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
 # Qwen-Image-2.1 with its VAE replaced; its `vae` slot warned that 30.8 GiB doesn't fit for 1.35 GB). TensorD asks the Hub
 # with its GPUs, their free bytes and the slot's components; a CPU runner has no GPUs to send, so the cell asks it the same
@@ -1684,6 +1724,34 @@ for level in installed downloaded imported host; do
 done
 run_warm_cell "$OUT" warm-off "$(birefnet)" off --on local || check "warming API at off failed"
 cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "warming API at off: birefnet is still in the warm set"
+}
+
+# cl-1317 (the coordinator, 11-19: "a describe can rent and render"): `cozy run <fn> --describe` given inputs ignored --describe and ran
+# the function. Given inputs as terms or a request file, or a run's options, it describes as it does alone, byte for byte, says once
+# that it ignored them, and starts no run.
+describe_inputs() {
+step "--describe with inputs runs nothing (cl-1317)"
+local before code n
+before=$(cozy --json run ls --all --limit 0 | jq '[.runs[] | select(.kind == "call")] | length') || true
+printf 'text: described\n' > "$OUT/describe-inputs.yaml"
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe --on local) > "$OUT/describe-alone.json" 2> "$OUT/describe-alone.err" \
+  || { check "--describe alone failed: $(tail -c 300 "$OUT/describe-alone.err")"; return; }
+! grep -q 'ignored what was given' "$OUT/describe-alone.err" || check "--describe alone said it ignored inputs: $(tail -c 300 "$OUT/describe-alone.err")"
+for n in term input option; do
+  case $n in
+    term) set -- text=described ;;
+    input) set -- --input "$OUT/describe-inputs.yaml" ;;
+    option) set -- --lane bf16 ;;
+  esac
+  code=0
+  (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe "$@" --on local) > "$OUT/describe-$n.json" 2> "$OUT/describe-$n.err" || code=$?
+  [ "$code" = 0 ] && cmp -s "$OUT/describe-alone.json" "$OUT/describe-$n.json" \
+    || check "--describe $*: not the describe alone (exit $code): $(tail -c 300 "$OUT/describe-$n.json") $(tail -c 200 "$OUT/describe-$n.err")"
+  [ "$(grep -c 'ignored what was given to run it with' "$OUT/describe-$n.err")" = 1 ] \
+    || check "--describe $*: didn't say once that it ignored them: $(tail -c 300 "$OUT/describe-$n.err")"
+done
+[ "$(cozy --json run ls --all --limit 0 | jq '[.runs[] | select(.kind == "call")] | length')" = "$before" ] \
+  || check "--describe with inputs started a run: $(cozy --json run ls --all --limit 3 | jq -c '[.runs[] | {number, kind, target, status}]')"
 }
 
 # Calcifer's time left, on a weightless run whose stages and steps time it as a model's do (tool.py's `stepped`, its first step slow as a

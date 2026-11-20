@@ -1,0 +1,1 @@
+A box on a computer with no GPU, whose model only a GPU runs, again says beside Render how long a rented card takes and what it costs, and offers it (Slow here): since machines that can't run a job stopped being quoted for it, the estimate dropped the box altogether.

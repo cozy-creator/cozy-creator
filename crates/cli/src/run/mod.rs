@@ -88,7 +88,7 @@ struct RunArgs {
     /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Without a strength, its recommended one, else 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
-    /// Show the function's inputs and outputs.
+    /// Show the function's inputs and outputs. Runs nothing: inputs given with it are ignored.
     #[arg(long)]
     describe: bool,
     /// Export output copies to this directory. Project locks do not protect exported copies.
@@ -258,7 +258,21 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
     let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
-    if args.describe && !inputs {
+    if args.describe {
+        // A describe reads the function and runs nothing: what only a run reads is left out, said once (cl-1317).
+        let for_a_run = inputs
+            || !args.assets.is_empty()
+            || !args.loras.is_empty()
+            || !args.fidelities.is_empty()
+            || args.gpus.is_some()
+            || args.lane.is_some()
+            || args.attention_kernel.is_some()
+            || args.attention_capture.is_some()
+            || args.output.is_some()
+            || args.previews.is_some();
+        if for_a_run {
+            output::warn(&format!("--describe runs nothing, so Cozy ignored what was given to run it with. Leave out --describe to run {written}."));
+        }
         return match local(ctx, &written, &cwd)? {
             None => describe(ctx, &written, None, args.on.as_deref(), None).await,
             Some((package, function)) => {
