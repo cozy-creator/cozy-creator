@@ -1,0 +1,71 @@
+{
+  "need_s": 4400,
+  "max_failures": 4,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "cells": [
+    {
+      "name": "f2-up-rc",
+      "tree": "rc",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={pic1}",
+        "seed:=30039"
+      ],
+      "max_s": 900,
+      "update": {
+        "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2407+g55eca8b7-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "f2-up-fix",
+      "tree": "rc",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={pic1}",
+        "seed:=30039"
+      ],
+      "max_s": 1800,
+      "update": {
+        "runtime": "44652143319",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "relayvsr-hardest",
+      "tree": "se",
+      "target": "relayvsr/upscale",
+      "args": [
+        "--file",
+        "video={clip15}",
+        "resolution=2160p",
+        "aspect_ratio=16:9",
+        "window_size:=64"
+      ],
+      "max_s": 900,
+      "update": {
+        "runtime": "44651909375",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "moss-gen-hardest-control",
+      "tree": "se",
+      "target": "moss-image/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, studio shot",
+        "control:=[{\"kind\":\"depth\",\"image\":\"{depth}\"},{\"kind\":\"lineart\",\"image\":\"{lines}\"}]",
+        "megapixels:=4",
+        "seed:=30050"
+      ],
+      "max_s": 900
+    }
+  ]
+}
