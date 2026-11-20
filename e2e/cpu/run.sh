@@ -205,6 +205,14 @@ export -f one
 
 started=$SECONDS
 : > "$OUT/cells.txt"
+# proof only (never merged): each executor's RSS and the machine's used memory, twice a second, for pan2's host peak.
+( while sleep 0.5; do
+    used=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print int((t-a)/1024)}' /proc/meminfo)
+    ps -eo rss=,args= | awk -v t="$(date -u +%T.%N | cut -c1-12)" -v u="$used" '$0 ~ /cozy-e2e-cpu|\.cozy\/|executor|python/ && $1 > 200000 {
+      n = $2; if (match($0, /(envs|cozy-e2e-cpu|packages|environments)\/[^\/ ]+/)) n = substr($0, RSTART, RLENGTH)
+      printf "%s used_mb=%d rss_mb=%d %s\n", t, u, $1 / 1024, n }'
+  done > "$OUT/mem.tsv" 2>/dev/null ) & MEMP=$!
+trap 'kill $MEMP 2>/dev/null || true' EXIT
 for q in $absent; do echo "SKIP $q - package 0s: not applicable: the packages under test ($commit) carry no $q" | tee -a "$OUT/cells.txt"; done
 # The lane each slot's default resolves to on each GPU family, through cozy against tensorhub.com's releases (lanes.py,
 # cl-1076); `--cells lanes` runs it alone.
