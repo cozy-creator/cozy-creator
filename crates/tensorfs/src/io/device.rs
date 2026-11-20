@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::{AcqRel, R
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
+use std::fs::File;
+
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
 use super::{host, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
 
+/// Bytes a staged piece reads from its file in one request.
 const PIECE: usize = 2 << 20;
 const READERS: usize = 8;
 /// Slots each reader owns: one fills while the other's copy lands, and both stay in its caches.
@@ -732,6 +735,8 @@ impl Engine {
             lanes: lanes.get(),
         };
         let mut complete = false;
+        // Each file the run reads past the page cache, its O_DIRECT description opened once.
+        let mut files: Vec<(&File, std::sync::OnceLock<Option<File>>)> = Vec::new();
         let result = (|| {
             let owners = hold.owners.as_mut().expect("run owners live");
             let mut jobs = Vec::new();
@@ -785,6 +790,13 @@ impl Engine {
                         }
                     }
                 }
+                let file = match c.src {
+                    Src::File(f, _) if cold[copy] => Some(files.iter().position(|(known, _)| std::ptr::eq(*known, f)).unwrap_or_else(|| {
+                        files.push((f, std::sync::OnceLock::new()));
+                        files.len() - 1
+                    })),
+                    _ => None,
+                };
                 let step = if direct { c.dst.len() } else { PIECE };
                 for at in (0..c.dst.len()).step_by(step.max(1)) {
                     jobs.push(Job {
@@ -794,7 +806,7 @@ impl Engine {
                         at,
                         len: step.min(c.dst.len() - at),
                         direct,
-                        cold: cold[copy],
+                        cold: file,
                     });
                 }
             }
@@ -858,18 +870,20 @@ impl Engine {
             let held_rings = !rings.is_empty();
             let readers = rings.len();
             let rings = Mutex::new(rings);
+            let files = &files;
             let work = || {
                 self.near.enter();
                 let mut ring = ReaderRing {
                     staged: &staged,
                     slots: rings.lock().unwrap_or_else(|e| e.into_inner()).pop().expect("a ring for each reader"),
                 };
+                let mut bounce = host::Bounce::default();
                 let mut turn = 0;
                 while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
-                    match self.piece(lanes.get(), job, at % streams, opts, &tally, &mut ring.slots[turn % RING]) {
+                    match self.piece(lanes.get(), job, at % streams, files, &mut bounce, &tally, &mut ring.slots[turn % RING]) {
                         Ok(()) => done(job),
                         Err(failure) => {
                             error.lock().unwrap().get_or_insert(failure);
@@ -962,12 +976,16 @@ impl Engine {
         cuda::check("cuMemcpyAsync", result).map_err(|e| failed(job.copy, e))
     }
 
+    /// One staged piece: its bytes into `slot` (a file's in one read, past the page cache when its
+    /// copy is cold: `files` holds that file's O_DIRECT description), then its copy on `lane`.
+    #[allow(clippy::too_many_arguments)]
     fn piece(
         &self,
         lanes: &Lanes,
         job: &Job,
         lane: usize,
-        opts: &ReadOpts,
+        files: &[(&File, std::sync::OnceLock<Option<File>>)],
+        bounce: &mut host::Bounce,
         tally: &Tally,
         slot: &mut Slot,
     ) -> Result<(), Error> {
@@ -985,25 +1003,20 @@ impl Engine {
                 return Err(Error { copy: job.copy, source });
             }
             Src::File(file, offset) => {
-                let copy = Copy {
-                    src: Src::File(file, offset + job.at as u64),
-                    dst: Dst::Host {
-                        ptr: slot.ptr,
-                        len: job.len,
-                    },
-                };
-                let options = ReadOpts {
-                    threads: 1,
-                    ..opts.clone()
-                };
-                // SAFETY: the staging slot is this engine's own and the source is the caller's (read's contract).
-                let stats = unsafe { host::fill(&[copy], &[job.cold], &options, None) }.map_err(|e| Error {
-                    copy: job.copy,
-                    source: e.source,
-                })?;
-                tally.direct.fetch_add(stats.direct, Relaxed);
-                tally.cached.fetch_add(stats.cached, Relaxed);
-                tally.bounced.fetch_add(stats.bounced, Relaxed);
+                let direct = job.cold.and_then(|at| {
+                    files[at].1.get_or_init(|| platform::durable::open_direct(file).ok().flatten()).as_ref()
+                });
+                // SAFETY: the staging slot is this engine's own and holds a piece, `job.len` or more.
+                let dst = unsafe { std::slice::from_raw_parts_mut(slot.ptr, job.len) };
+                let read = host::read_piece(file, direct, offset + job.at as u64, dst, bounce)
+                    .map_err(|source| Error { copy: job.copy, source })?;
+                let n = job.len as u64;
+                if read.direct {
+                    tally.direct.fetch_add(n, Relaxed);
+                    tally.bounced.fetch_add(read.bounced, Relaxed);
+                } else {
+                    tally.cached.fetch_add(n, Relaxed);
+                }
             }
             // SAFETY: the host source covers `job.at + job.len` bytes (read's contract) and the slot holds `PIECE >= job.len`.
             Src::Host(ptr) => unsafe {
@@ -1155,8 +1168,8 @@ struct Job<'a> {
     at: usize,
     len: usize,
     direct: bool,
-    /// Its file bytes read past the page cache.
-    cold: bool,
+    /// Its file read past the page cache: that file's place in the run's O_DIRECT descriptions.
+    cold: Option<usize>,
 }
 
 #[derive(Default)]

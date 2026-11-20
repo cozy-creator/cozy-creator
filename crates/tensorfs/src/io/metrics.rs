@@ -18,15 +18,15 @@ pub(crate) use gpu::pci_address;
 use gpu::h2d_key;
 
 /// A run of reads from `files`, held to its volume's kept ceiling. Only a run the page cache had
-/// no part in measures the volume: one of a probe's size seeds the ceiling, any that beats it
-/// raises it.
+/// no part in measures the volume, and only to raise the ceiling a probe kept: a run's time holds
+/// what it waited for (another run's staging, its copies, a cancel), so its rate never seeds one.
 pub(crate) fn disk_run(files: &[&File], ns: u64, direct: u64, cached: u64) {
     let Some(volume) = files.first().and_then(|f| f.metadata().ok()).map(|m| volume(m.dev())) else {
         return;
     };
     let rate = direct as f64 / ns.max(1) as f64;
     let kept = probe::disk_known(volume).map(|(gbps, _)| gbps);
-    let measures = cached == 0 && (direct >= probe::KEEP || kept.is_some_and(|k| rate > k));
+    let measures = cached == 0 && kept.is_some_and(|k| rate > k);
     if measures {
         probe::disk_keep(volume, (rate, true));
     }

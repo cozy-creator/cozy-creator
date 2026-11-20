@@ -478,14 +478,33 @@ unsafe fn read_impl(
 /// pod read buffered at 0.45–0.95 GB/s against 1.26 GB/s direct, run 42010).
 fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
     let page = platform::durable::page_size();
-    let missing: Vec<u64> = copies.iter().map(|c| match c.src {
-        Src::File(f, at) if opts.direct && !c.dst.is_empty() => match platform::durable::cached_pages(f, at, c.dst.len() as u64) {
-            Some((held, of)) if held * 2 >= of => 0,
-            Some((held, of)) => (of - held) * page,
-            None => c.dst.len() as u64,
-        },
-        _ => 0,
-    }).collect();
+    let mut missing = vec![0u64; copies.len()];
+    // Each file's copies asked together: on overlayfs (a container's root) that is one mapping of
+    // the file, not one a copy, each of which took the mmap lock beside the reads (cl-1318).
+    let mut files: Vec<(&File, Vec<usize>)> = Vec::new();
+    for (i, c) in copies.iter().enumerate() {
+        if let Src::File(f, _) = c.src {
+            if opts.direct && !c.dst.is_empty() {
+                match files.iter_mut().find(|(known, _)| std::ptr::eq(*known, f)) {
+                    Some((_, of)) => of.push(i),
+                    None => files.push((f, vec![i])),
+                }
+            }
+        }
+    }
+    for (f, of) in files {
+        let ranges: Vec<(u64, u64)> = of.iter().map(|&i| match copies[i].src {
+            Src::File(_, at) => (at, copies[i].dst.len() as u64),
+            _ => unreachable!("only file copies"),
+        }).collect();
+        for (&i, held) in of.iter().zip(platform::durable::cached_pages_each(f, &ranges)) {
+            missing[i] = match held {
+                Some((held, of)) if held * 2 >= of => 0,
+                Some((held, of)) => (of - held) * page,
+                None => copies[i].dst.len() as u64,
+            };
+        }
+    }
     let need: u64 = missing.iter().sum();
     let past = need > 0 && varena_ledger::host::budget().cache() < i64::try_from(need).unwrap_or(i64::MAX);
     missing.iter().map(|&m| past && m > 0).collect()

@@ -171,6 +171,20 @@ pub fn cached_pages(file: &File, off: u64, len: u64) -> Option<(u64, u64)> {
     }
 }
 
+/// `cached_pages` for each of `ranges` of one file, asked together: on overlayfs, whose files report
+/// no pages of their own, one mapping of their span and one `mincore(2)`, not one of each a range.
+pub fn cached_pages_each(file: &File, ranges: &[(u64, u64)]) -> Vec<Option<(u64, u64)>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::cached_pages_each(file, ranges)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        vec![None; ranges.len()]
+    }
+}
+
 /// The OS's page size.
 pub fn page_size() -> u64 {
     #[cfg(target_os = "linux")]
@@ -291,12 +305,57 @@ mod linux {
         rustix::fs::fstatfs(file).is_ok_and(|fs| fs.f_type as i64 == OVERLAYFS_SUPER_MAGIC)
     }
 
+    pub(super) fn cached_pages_each(file: &File, ranges: &[(u64, u64)]) -> Vec<Option<(u64, u64)>> {
+        let (Some(from), Some(to)) = (ranges.iter().map(|r| r.0).min(), ranges.iter().map(|r| r.0 + r.1).max()) else {
+            return Vec::new();
+        };
+        if !overlay(file) {
+            return ranges.iter().map(|&(off, len)| cached_pages(file, off, len)).collect();
+        }
+        // mincore(2) looks up every page it is asked of in the page cache, ~1 ms a 64 MiB chunk: asked
+        // of every page, it cost a load 17-24 ms a GB on an RTX 4090 pod (cl-1318). A range's share
+        // held, from `SAMPLES` of its pages spread over it, is what its read needs.
+        let page = page_size();
+        let start = from - from % page;
+        let n = (to - start) as usize;
+        // SAFETY: a read-only shared mapping of our descriptor, unmapped below; nothing faults it in.
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), n, libc::PROT_READ, libc::MAP_SHARED, file.as_raw_fd(), start as libc::off_t) };
+        if p == libc::MAP_FAILED {
+            return vec![None; ranges.len()];
+        }
+        let held = |at: u64, pages: u64| -> Option<u64> {
+            let mut core = vec![0u8; pages as usize];
+            // SAFETY: `[at, at + pages)` lies inside the mapping, and `core` holds a byte a page.
+            let ok = unsafe { libc::mincore(p.cast::<u8>().add((at * page) as usize).cast(), (pages * page) as usize, core.as_mut_ptr()) } == 0;
+            ok.then(|| core.iter().filter(|b| *b & 1 == 1).count() as u64)
+        };
+        let out = ranges.iter().map(|&(off, len)| {
+            let (first, end) = (off / page - start / page, (off + len).div_ceil(page) - start / page);
+            let of = end - first;
+            if of <= SAMPLES {
+                return held(first, of).map(|h| (h, of));
+            }
+            let hits = (0..SAMPLES).map(|i| held(first + i * of / SAMPLES, 1)).sum::<Option<u64>>()?;
+            Some((hits * of / SAMPLES, of))
+        }).collect();
+        // SAFETY: unmaps the mapping made above, which nothing else references.
+        unsafe { libc::munmap(p, n) };
+        out
+    }
+
+    /// Pages of a range `cached_pages_each` asks of overlayfs, at most.
+    const SAMPLES: u64 = 8;
+
     /// The pages of `[off, off+len)` in core, by `mincore(2)` over a mapping (never faults).
     fn resident(file: &File, off: u64, len: u64, page: u64) -> Option<u64> {
         let start = off - off % page;
-        let n = (off + len - start) as usize;
+        residency(file, start, (off + len - start) as usize, page).map(|pages| pages.iter().filter(|b| *b & 1 == 1).count() as u64)
+    }
+
+    /// `mincore(2)`'s vector for `n` bytes of `file` from `start` (page aligned), over a mapping.
+    fn residency(file: &File, start: u64, n: usize, page: u64) -> Option<Vec<u8>> {
         if n == 0 {
-            return Some(0);
+            return Some(Vec::new());
         }
         // SAFETY: a read-only shared mapping of our descriptor, unmapped below.
         let p = unsafe {
@@ -317,6 +376,6 @@ mod linux {
         let ok = unsafe { libc::mincore(p, n, pages.as_mut_ptr()) } == 0;
         // SAFETY: unmaps the mapping made above, which nothing else references.
         unsafe { libc::munmap(p, n) };
-        ok.then(|| pages.iter().filter(|b| *b & 1 == 1).count() as u64)
+        ok.then_some(pages)
     }
 }
