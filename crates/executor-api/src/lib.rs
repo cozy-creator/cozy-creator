@@ -853,8 +853,6 @@ pub struct Publish {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct CheckpointItem {
     pub output: String,
-    /// Runtime 0.48 (TensorFS 0.27) names it `repo_id`: read either, as a machine not yet updated sends it (skew both ways, cl-1326).
-    #[serde(alias = "repo_id")]
     pub model_id: String,
     /// The commit (its tree id).
     pub revision: String,
