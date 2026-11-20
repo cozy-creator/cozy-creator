@@ -11,3 +11,4 @@ rental-idle-through-updates	cpu	cl-1203: hougetsu's RC updates every few minutes
 rental-stop-closes	cpu	th-404: vast stopped hougetsu and it sat "offline" at list price until 15 min after its last reach (Paul 11-17; suite rentals)
 edit-chain-hold	*	se-153: chained Qwen Image 2 edits lost the detail and colour of what none of them touched (Paul 11-17; suite edit)	packages=qwen-image-2
 edit-chain-crisp	*	se-153: what a Qwen Image 2 edit drew sharpened into crackle as later edits re-rendered it (Paul 11-17; suite edit)	packages=qwen-image-2
+ltx-u2-t2v-video	*	se-177: every 2-GPU LTX-2.5 text-to-video failed at its first transformer call, a planned input it left out read by position (ltx-2.5 0.4.0rc2-rc3, pod-session 44650415423; fixed in 0.4.0rc6; suite multi-gpu)	packages=ltx-2.5
