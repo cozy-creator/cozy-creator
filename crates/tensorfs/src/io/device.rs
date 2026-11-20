@@ -17,19 +17,8 @@ const READERS: usize = 8;
 /// Slots each reader owns: one fills while the other's copy lands, and both stay in its caches.
 /// A shared pool (LIFO or FIFO) measured 8-20% slower warm H2D.
 const RING: usize = 2;
+const STAGING: usize = READERS * RING;
 const STREAMS: usize = 4;
-
-/// The engine's sizes: a staged piece, its readers, and the slots each reader owns.
-#[derive(Clone, Copy)]
-struct Sizes {
-    piece: usize,
-    readers: usize,
-    ring: usize,
-}
-
-fn sizes() -> Sizes {
-    Sizes { piece: PIECE, readers: READERS, ring: RING }
-}
 
 /// A test's faults (cr-318, `_io_fail_pieces`): staged pieces to let pass, then how many to fail.
 #[cfg(feature = "fault-hooks")]
@@ -176,7 +165,7 @@ impl Slot {
         let mut ptr = std::ptr::null_mut();
         // SAFETY: `ptr` is a writable out-pointer and the slot's context is current.
         cuda::check("cuMemHostAlloc", unsafe {
-            (cuda::driver()?.mem_host_alloc)(&mut ptr, sizes().piece, cuda::MEMHOSTALLOC_PORTABLE)
+            (cuda::driver()?.mem_host_alloc)(&mut ptr, PIECE, cuda::MEMHOSTALLOC_PORTABLE)
         })?;
         Ok(Slot {
             ptr: ptr.cast(),
@@ -504,8 +493,7 @@ impl Engine {
                 near.enter();
                 let ctx = at as CUcontext;
                 let _ctx = CtxGuard::enter(ctx)?;
-                let Sizes { readers, ring, .. } = sizes();
-                (0..readers * ring)
+                (0..STAGING)
                     .map(|_| Slot::new(ctx))
                     .collect::<cuda::Result<Vec<_>>>()
             })
@@ -652,17 +640,16 @@ impl Engine {
         self.free.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Up to `wanted` rings of `ring` slots, as many as are free: none free, it waits for
+    /// Up to `wanted` rings of `RING` slots, as many as are free: none free, it waits for
     /// another run's, unless no run holds any (they are all retained by failed copies).
     fn rings(&self, wanted: usize) -> Option<Vec<Vec<Slot>>> {
-        let ring = sizes().ring;
         let mut free = self.free();
         loop {
-            let n = wanted.min(free.len() / ring);
+            let n = wanted.min(free.len() / RING);
             if n > 0 {
                 self.holding.fetch_add(1, AcqRel);
                 return Some((0..n).map(|_| {
-                    let at = free.len() - ring;
+                    let at = free.len() - RING;
                     free.split_off(at)
                 }).collect());
             }
@@ -748,7 +735,6 @@ impl Engine {
             lanes: lanes.get(),
         };
         let mut complete = false;
-        let piece = sizes().piece;
         // Each file the run reads past the page cache, its O_DIRECT description opened once.
         let mut files: Vec<(&File, std::sync::OnceLock<Option<File>>)> = Vec::new();
         let result = (|| {
@@ -811,7 +797,7 @@ impl Engine {
                     })),
                     _ => None,
                 };
-                let step = if direct { c.dst.len() } else { piece };
+                let step = if direct { c.dst.len() } else { PIECE };
                 for at in (0..c.dst.len()).step_by(step.max(1)) {
                     jobs.push(Job {
                         copy,
@@ -898,8 +884,7 @@ impl Engine {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
-                    let n = ring.slots.len();
-                    match self.piece(lanes.get(), job, at % streams, files, &mut bounce, &tally, &mut ring.slots[turn % n]) {
+                    match self.piece(lanes.get(), job, at % streams, files, &mut bounce, &tally, &mut ring.slots[turn % RING]) {
                         Ok(()) => done(job),
                         Err(failure) => {
                             error.lock().unwrap().get_or_insert(failure);
@@ -1073,7 +1058,7 @@ fn lane(at: usize, streams: usize) -> usize {
 /// Readers a run wants for its `staged` pieces: none without any, else as many as its threads
 /// allow (`Engine::rings` gives it as many as the free staging holds).
 fn readers(staged: usize, opts: &ReadOpts) -> usize {
-    if staged == 0 { 0 } else { opts.threads.clamp(1, sizes().readers).min(staged) }
+    if staged == 0 { 0 } else { opts.threads.clamp(1, READERS).min(staged) }
 }
 
 /// One run's lanes: `STREAMS` streams, each with the lock its copies issue under.
