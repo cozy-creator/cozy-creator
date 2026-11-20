@@ -4,8 +4,8 @@
 # quantize + GEMM, eager, the fused norm prologue), then the 9B's forward against its decode on bf16, on int8 as it runs,
 # on int8 with its decode given the prefill's kernel, and on the eager law, each against bf16's forward too.
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime.
-# `entries` picks the drive's calls in order (default int8_paths); paging_alone takes the reference alone (the pod's first
-# call: bf16 resident), paging_beside both (bf16 paged beside int8).
+# `entries` picks the drive's calls in order (default int8_paths); paging_alone and today_alone take the reference alone
+# (bf16 resident), paging_beside both (bf16 paged beside int8); `fresh` restarts TensorD between them.
 # params: tensorfs, runtime (required), model, reference (lanes, org/name@sha256:…), entries, seconds (1200), skus and
 #         quoted (preflight.sh pick_offer).
 . "$(dirname "$0")/lib.sh"
@@ -29,14 +29,20 @@ say "on: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) · Tens
 (while sleep 480; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done) & BG="$BG $!"
 step pull-model model install "$MODEL" --on "$NAME" || fail "pull $MODEL"
 step pull-reference model install "$REFERENCE" --on "$NAME" || fail "pull $REFERENCE"
-FAILED=()
+FAILED=() FRESH=0
 for entry in $(param entries int8_paths); do
   case $entry in
-    paging_alone) models=(--model "model=$REFERENCE") ;;
+    fresh) step "fresh-$((++FRESH))" machine update "$NAME" --gpu-memory-limit off -y > /dev/null || fail "restart TensorD"; continue ;;
+    paging_alone | today_alone) models=(--model "model=$REFERENCE") ;;
     *) models=(--model "reference=$REFERENCE" --model "model=$MODEL") ;;
   esac
-  step "$entry" run "$FIX/drive/$entry" "${models[@]}" --on "$NAME" ||
-    { tail -c 3000 "$OUT/$entry.txt" | tee -a "$R"; FAILED+=("$entry"); continue; }
+  if ! step "$entry" run "$FIX/drive/$entry" "${models[@]}" --on "$NAME"; then
+    tail -c 3000 "$OUT/$entry.txt" | tee -a "$R"; FAILED+=("$entry")
+    # A failed call's own lines in TensorD's log (a bounded tail): which kernel a GPU fault names.
+    cozy machine logs "$NAME" tensord -n 800 2> /dev/null | grep -aiE 'xid|assert|illegal|fault|error|traceback|exception' | tail -40 > "$OUT/$entry-log.txt" || true
+    say "$entry: TensorD's lines: $(cut -c1-300 "$OUT/$entry-log.txt" | tail -12 | paste -sd ';' -)"
+    continue
+  fi
   n=$(runno "$entry"); (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/$entry.json" 2> /dev/null
   jq -r '.result.detail // ""' "$OUT/$entry.json" > "$OUT/$entry-detail.json"
   say "$entry: $(head -c 6000 "$OUT/$entry-detail.json")"

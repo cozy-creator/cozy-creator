@@ -875,79 +875,120 @@ def _kv_rel(a: dict[int, tuple[torch.Tensor, torch.Tensor]], b: dict[int, tuple[
     return rows
 
 
-def _paging(net: torch.nn.Module, prompt: list[int]) -> dict[str, object]:
-    """On one lane as it is placed now: today's path (`lm.generate`, greedy, `PATH_TOKENS`) and its tokens held to the
-    one-pass forward (`today`); then Transformers' token-by-token decode of the same tokens against that forward, as
-    the drives run it (`decode`: its K/V a plain cache, outside the memory manager) and with every attention layer's
-    K/V held in `author.retained` between steps (`retained`). Each says the logits' gap, each layer's hidden state's
-    relative difference, and each attention layer's cached keys and values against the forward's (prompt, decoded)."""
+def _steps(net: torch.nn.Module, prompt: list[int], made: list[int] | None,
+           retain: bool) -> tuple[torch.Tensor, torch.Tensor, dict[int, tuple[torch.Tensor, torch.Tensor]], list[int]]:  # fmt: skip
+    """Transformers' token-by-token decode of `made` (greedy for `PATH_TOKENS` where None), its K/V a plain cache, or
+    with `retain` every attention layer's K/V held in `author.retained` between steps: the logits, each layer's hidden
+    state (`[layers + 1, tokens, H]`), the attention layers' cached K/V (as relative-difference rows) and the tokens."""
     from cozy_runtime.author import retained
 
-    ids = torch.tensor([prompt])
-    _, today = _timed(net, ids, PATH_TOKENS)
-    made = today[:PATH_TOKENS]
+    logits, hidden, stores, tokens = [], [], [], []
+    count = PATH_TOKENS if made is None else len(made)
+    try:
+        with torch.inference_mode():
+            step = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, output_hidden_states=True,
+                       logits_to_keep=1)  # fmt: skip
+            for t in range(count):
+                last = step.logits[0, -1].float()
+                logits.append(last)
+                hidden.append(torch.stack([h[0, -1].float() for h in step.hidden_states]))
+                token = int(last.argmax()) if made is None else made[t]
+                tokens.append(token)
+                cache = step.past_key_values
+                if retain:
+                    held = _kv(cache)
+                    store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                    for i, (k, v) in held.items():
+                        cache.layers[i].keys, cache.layers[i].values = store.put(k, v).get()
+                    del held
+                    stores.append(store)
+                    if len(stores) > 1:
+                        stores.pop(0).close()
+                if t + 1 < count:
+                    step = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=cache,
+                               use_cache=True, output_hidden_states=True, logits_to_keep=1)  # fmt: skip
+            kv = {i: (k.clone(), v.clone()) for i, (k, v) in _kv(cache).items()}
+    finally:
+        for store in stores:
+            store.close()
+    return torch.stack(logits).cpu(), torch.stack(hidden, 1).cpu(), kv, tokens
+
+
+def _paging(net: torch.nn.Module, prompt: list[int]) -> dict[str, object]:
+    """On one lane as it is placed now, its first work Transformers' token-by-token greedy decode (`cold`, as
+    int8_paths' bf16 decode was), then its one-pass forward over those tokens, then the same decode again (`warm`)
+    and with every attention layer's K/V held in `author.retained` between steps (`retained`). Each against the
+    forward: the logits' gap, each layer's hidden state's relative difference, and each attention layer's cached keys
+    and values (largest relative row difference over the prompt's positions, then the decoded ones)."""
+    found: dict[str, object] = {}
+    cold, cold_h, cold_kv, made = _steps(net, prompt, None, retain=False)
     inputs = torch.tensor([prompt + made[:-1]], device=net.device)
     with torch.inference_mode():
         out = net(input_ids=inputs, use_cache=True, output_hidden_states=True, logits_to_keep=len(made))
-    fwd = out.logits[0].float()
-    fwd_h = torch.stack([h[0, len(prompt) - 1 :].float() for h in out.hidden_states])
+    fwd = out.logits[0].float().cpu()
+    fwd_h = torch.stack([h[0, len(prompt) - 1 :].float() for h in out.hidden_states]).cpu()
     fwd_kv = _kv(out.past_key_values)
     del out
-    top = fwd.topk(2, dim=-1)
+    found["made"] = hashlib.sha256(json.dumps(made).encode()).hexdigest()[:16]
+    arms: dict[str, tuple[torch.Tensor, torch.Tensor, dict[int, tuple[torch.Tensor, torch.Tensor]]]] = {
+        "cold": (cold, cold_h, cold_kv)}
+    for arm, retain in (("warm", False), ("retained", True)):
+        try:
+            logits, hidden, kv, _ = _steps(net, prompt, made, retain=retain)
+            arms[arm] = (logits, hidden, kv)
+        except Exception as exc:  # told; the other arms stand
+            found[arm] = f"{type(exc).__name__}: {exc}"[:300]
+    for arm, (logits, hidden, kv) in arms.items():
+        row = _gap(fwd, logits, fwd_h, hidden, skip=1)
+        row["kv"] = _kv_rel(fwd_kv, kv, len(prompt))
+        found[arm] = row
+    return found
+
+
+def _today(net: torch.nn.Module, prompt: list[int]) -> dict[str, object]:
+    """Today's path (`lm.generate`, greedy, `PATH_TOKENS`) on `prompt`, its tokens held to the one-pass forward at the
+    positions the forward leads by `CLEAR`."""
+    _, today = _timed(net, torch.tensor([prompt]), PATH_TOKENS)
+    made = today[:PATH_TOKENS]
+    with torch.inference_mode():
+        logits = net(input_ids=torch.tensor([prompt + made[:-1]], device=net.device), logits_to_keep=len(made)).logits[0]
+    top = logits.float().topk(2, dim=-1)
     lead = (top.values[:, 0] - top.values[:, 1]).tolist()
     clear = [t for t in range(len(made)) if lead[t] >= CLEAR]
     missed = [t for t in clear if int(top.indices[t, 0]) != made[t]]
-    found: dict[str, object] = {"today": {"tokens": len(made), "clear": len(clear), "agreed": len(clear) - len(missed),
-                                          "misses": [{"at": t, "lead": round(lead[t], 3)} for t in missed[:8]],
-                                          "digest": hashlib.sha256(json.dumps(made).encode()).hexdigest()[:16]}}  # fmt: skip
-    for arm in ("decode", "retained"):
-        logits, hidden, stores = [], [], []
-        try:
-            with torch.inference_mode():
-                step = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True,
-                           output_hidden_states=True, logits_to_keep=1)  # fmt: skip
-                for t in range(len(made)):
-                    logits.append(step.logits[0, -1].float())
-                    hidden.append(torch.stack([h[0, -1].float() for h in step.hidden_states]))
-                    cache = step.past_key_values
-                    if arm == "retained":  # the attention layers' K/V the Runtime's memory holds, not plain tensors
-                        held = _kv(cache)
-                        store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
-                        for i, (k, v) in held.items():
-                            cache.layers[i].keys, cache.layers[i].values = store.put(k, v).get()
-                        del held
-                        stores.append(store)
-                        if len(stores) > 1:
-                            stores.pop(0).close()
-                    if t + 1 < len(made):
-                        step = net(input_ids=torch.tensor([[made[t]]], device=net.device), past_key_values=cache,
-                                   use_cache=True, output_hidden_states=True, logits_to_keep=1)  # fmt: skip
-                dec, dec_h = torch.stack(logits), torch.stack(hidden, 1)
-                row = _gap(fwd.cpu(), dec.cpu(), fwd_h.cpu(), dec_h.cpu(), skip=1)
-                row["kv"] = _kv_rel(fwd_kv, _kv(cache), len(prompt))
-                found[arm] = row
-        except Exception as exc:  # told; the other arm stands
-            found[arm] = f"{type(exc).__name__}: {exc}"[:300]
-        finally:
-            for store in stores:
-                store.close()
-    return found
+    return {"tokens": len(made), "clear": len(clear), "agreed": len(clear) - len(missed),
+            "misses": [{"at": t, "lead": round(lead[t], 3)} for t in missed[:8]],
+            "made": hashlib.sha256(json.dumps(made).encode()).hexdigest()[:16]}  # fmt: skip
 
 
 @app.entrypoint(accelerator=True)
 def paging_alone(ctx: Context, model: VisionLM) -> Agreement:
-    """`_paging` on `model` alone on the card (the session's first call: nothing else placed), on int8_paths' prompt."""
+    """`_paging` on `model` alone on the card (a fresh TensorD's first call: nothing else placed), int8_paths' prompt."""
     net = model.pipe.components["model"]
     prompt = _long_prompt(model.processor.tokenizer)
     return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_paging(net, prompt)}))
 
 
 @app.entrypoint(accelerator=True)
+def today_alone(ctx: Context, model: VisionLM) -> Agreement:
+    """`_today` on `model` alone on the card, int8_paths' prompt."""
+    net = model.pipe.components["model"]
+    prompt = _long_prompt(model.processor.tokenizer)
+    return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_today(net, prompt)}))
+
+
+@app.entrypoint(accelerator=True)
 def paging_beside(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
     """`_paging` on `reference` (bf16) after `model` (int8) ran a forward of the prompt, so both are placed and the
-    reference's weights don't all fit beside it: the paged case of int8_paths (44650186994)."""
+    reference's weights don't all fit beside it, its first work the decode: int8_paths' order (44650186994); then
+    `_today` on the reference."""
     net, other = reference.pipe.components["model"], model.pipe.components["model"]
     prompt = _long_prompt(model.processor.tokenizer)
     with torch.inference_mode():
         other(input_ids=torch.tensor([prompt], device=other.device), logits_to_keep=1)
-    return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_paging(net, prompt)}))
+    found = {"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_paging(net, prompt)}
+    try:
+        found["today"] = _today(net, prompt)
+    except Exception as exc:
+        found["today"] = f"{type(exc).__name__}: {exc}"[:300]
+    return Agreement(json.dumps(found))
