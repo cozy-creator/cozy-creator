@@ -40,3 +40,5 @@ h3_second() {
   expect h3-second "$([[ $got == PASS* ]] && echo PASS || echo FAIL)" "${got:-no record was read}"
 }
 h3_second
+# LTX-2.5 over two GPUs: text to video and a retake of it (se-177 regression: a planned input a call leaves out).
+source "$HERE/suites/execution/multi-gpu/ltx-group.sh"

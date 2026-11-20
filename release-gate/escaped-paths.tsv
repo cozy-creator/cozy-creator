@@ -20,3 +20,4 @@ rental-idle-through-updates	@machine rg:release-gate/suites/rentals/**
 rental-stop-closes	@machine rg:release-gate/suites/rentals/**
 edit-chain-hold	@run pk:qwen-image-2/** rg:release-gate/suites/edit/** rg:release-gate/sessions/fixtures/qwen-edit/**
 edit-chain-crisp	@run pk:qwen-image-2/** rg:release-gate/suites/edit/** rg:release-gate/sessions/fixtures/qwen-edit/**
+ltx-u2-t2v-video	@run pk:ltx-2.5/** rg:release-gate/suites/multi-gpu/** rg:release-gate/suites/execution/multi-gpu/**
