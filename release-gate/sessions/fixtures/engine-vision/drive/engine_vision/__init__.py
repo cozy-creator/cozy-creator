@@ -411,6 +411,270 @@ def bucket(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(_both(model, questions, lambda seed: _params(256, 0.0, seed), payload.runs)))
 
 
+class Probe(msgspec.Struct):
+    image: ImageFile
+    #: `<case>:<position>:<whose tokens>` items, space-separated; whose: `plain` or `drafted` (the engine's, alone) or
+    #: `today` (`lm.generate`'s)
+    at: str = ""
+
+
+class _Layers:
+    """Each decoder layer's token mixer output and output, and the head's logits, at the last position of a call while
+    `armed`; `single`: armed by itself on the `single`-th one-token call (a decode step's), as layer 0 is entered."""
+
+    def __init__(self, net: torch.nn.Module, single: int = 0) -> None:
+        self.mix: dict[int, torch.Tensor] = {}
+        self.out: dict[int, torch.Tensor] = {}
+        self.logits: torch.Tensor | None = None
+        self.armed, self.single, self.count = False, single, 0
+        layers = net.model.language_model.layers
+        self.handles = []
+        for i, layer in enumerate(layers):
+            mixer = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn")
+            self.handles.append(mixer.register_forward_hook(self._take(self.mix, i)))
+            self.handles.append(layer.register_forward_hook(self._take(self.out, i)))
+        self.handles.append(net.get_output_embeddings().register_forward_hook(self._head))
+        if single:
+            self.handles.append(layers[0].register_forward_pre_hook(self._enter, with_kwargs=True))
+
+    def _enter(self, module: torch.nn.Module, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+        hidden = args[0] if args else kwargs.get("hidden_states")
+        one = isinstance(hidden, torch.Tensor) and hidden.shape[1] == 1
+        self.count += int(one)
+        self.armed = one and self.count == self.single
+
+    def _take(self, into: dict[int, torch.Tensor], i: int):  # type: ignore[no-untyped-def]  # a torch hook
+        def hook(module: torch.nn.Module, args: object, out: object) -> None:
+            if self.armed:
+                made = out[0] if isinstance(out, tuple) else out
+                into[i] = made[0, -1].detach().float().clone()  # type: ignore[index]  # a tensor
+        return hook
+
+    def _head(self, module: torch.nn.Module, args: object, out: object) -> None:
+        if self.armed:
+            self.logits = out.reshape(-1, out.shape[-1])[-1].detach().float().clone()  # type: ignore[union-attr]  # logits
+
+    def close(self) -> None:
+        for handle in self.handles:
+            handle.remove()
+
+
+def _read(logits: torch.Tensor | None, target: int) -> dict[str, object]:
+    """A path's logits at the probed position: its choice, its lead, and how far the trajectory's token sits below its top."""
+    if logits is None:
+        return {"missing": True}
+    v, i = logits.topk(2)
+    return {"choice": int(i[0]), "lead": round(float(v[0] - v[1]), 3), "gap": round(float(v[0] - logits[target]), 3)}
+
+
+def _rel(a: dict[int, torch.Tensor], b: dict[int, torch.Tensor]) -> list[float | None]:
+    """Per layer, |a - b| / |b|."""
+    return [round(float((a[i] - b[i]).norm() / b[i].norm().clamp_min(1e-12)), 5) if i in a and i in b else None
+            for i in range(max(len(b), 1))]  # fmt: skip
+
+
+@app.entrypoint()
+def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
+    """At each probed position of a case, the trajectory's prefix (the engine's tokens, plain or drafted, or today's
+    path's) read five ways, each at that position: `forward`, Transformers' one-pass forward over the prompt and prefix;
+    `cached`, its cached decode of the prefix (K/V held in `author.retained`); `engine`, the engine's own plain decode,
+    its steps eager so each layer is read (where its tokens are the prefix); `engine_step`, the engine's one decode step
+    after a prefill of all but the prefix's last token, that token fed (the engine's step alone, no decode before it);
+    `lm`, `lm.generate` decoding eagerly (hooks make it), where its tokens are the prefix. Each: its choice, lead and the
+    trajectory token's gap, and per layer (`kinds`) its token mixer's and its output's distance from the forward's. On a
+    CPU (a pre-flight) the engine's reads are left out and every trajectory is today's path's."""
+    from cozy_runtime import lm
+    from cozy_runtime.author import retained
+    from cozy_runtime.engine import qwen35
+    from cozy_runtime.engine.decoder import Decoder, Request
+    from cozy_runtime.engine.launch import JIT
+    from cozy_runtime.engine.vision import Prompted
+
+    net, engine = model.pipe.components["model"], model.engine
+    run = getattr(engine, "run", None) or JIT
+    cases = _cases(payload.image.read(), long=True)
+    kinds = [str(k) for k in net.config.get_text_config(decoder=True).layer_types]
+    head = getattr(net, "mtp", None)
+    cuda = torch.cuda.is_available()
+    found: dict[str, object] = {"gpu": torch.cuda.get_device_name() if cuda else "cpu", "kinds": kinds}
+
+    def read(case: str):  # type: ignore[no-untyped-def]  # the case's tokens, media and encode
+        prompts, media = engine._read([cases[case]], _params(8))  # type: ignore[attr-defined]  # CozyEngine's
+        (prompted,) = engine._encoded(prompts, media)  # type: ignore[attr-defined]  # as above
+        return prompts[0], media[0], prompted
+
+    def decoder(max_tokens: int) -> Decoder:
+        return Decoder(net, max_rows=1, max_tokens=max_tokens, run=run, launcher=False)
+
+    def plain():  # type: ignore[no-untyped-def]  # the head out while the engine decodes plain
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():  # type: ignore[no-untyped-def]
+            if head is not None:
+                del net.mtp
+            try:
+                yield
+            finally:
+                if head is not None:
+                    net.mtp = head
+        return held()
+
+    def instrumented(dec: Decoder, at_body: int, first: int | None = None) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], list[torch.Tensor]]:
+        """`dec`'s steps eager, the `at_body`-th step's layers read through `_add_norm` and every logits call kept;
+        `first`: the token fed to the first step in place of the prefill's own."""
+        mix: dict[int, torch.Tensor] = {}
+        out: dict[int, torch.Tensor] = {}
+        seen: list[torch.Tensor] = []
+        state = {"body": 0, "on": False, "adds": 0}
+        real_body, real_logits, real_add, real_decode = dec.qwen.body, dec.qwen.logits, qwen35._add_norm, dec._decode
+        dec._capture = lambda *a, **k: None  # type: ignore[method-assign]  # every step eager
+
+        def body(ids, positions, tables):  # type: ignore[no-untyped-def]
+            state["body"] += 1
+            state["on"], state["adds"] = state["body"] == at_body, 0
+            try:
+                return real_body(ids, positions, tables)
+            finally:
+                state["on"] = False
+
+        def logits(hidden):  # type: ignore[no-untyped-def]
+            made = real_logits(hidden)
+            seen.append(made.reshape(-1, made.shape[-1])[0].detach().float().clone())
+            return made
+
+        def add(x, h, weight, eps, fused, run_):  # type: ignore[no-untyped-def]
+            total, normed = real_add(x, h, weight, eps, fused, run_)
+            if state["on"]:
+                layer, second = divmod(state["adds"], 2)
+                (out if second else mix)[layer] = (total if second else h).reshape(-1, total.shape[-1])[-1].detach().float().clone()
+                state["adds"] += 1
+            return total, normed
+
+        def decode(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if first is not None:
+                dec.rows.ids[0] = first
+            return real_decode(*args, **kwargs)
+
+        dec.qwen.body, dec.qwen.logits, dec._decode = body, logits, decode  # type: ignore[method-assign]
+        qwen35._add_norm = add
+        return mix, out, seen
+
+    def restore(dec: Decoder) -> None:
+        qwen35._add_norm = _ADD_NORM[0]
+
+    _ADD_NORM = [qwen35._add_norm]
+    probes = [item.split(":") for item in payload.at.split()]
+    trajectories: dict[str, list[int]] = {}
+    with torch.inference_mode():
+        for case, at, whose in probes:  # every trajectory first: hooks (the `lm` read) stop lm's drafting for good
+            prompt, media, prompted = read(case)
+            key = f"{case}:{whose}"
+            if key in trajectories:
+                continue
+            most = max(int(a) for c, a, w in probes if c == case and w == whose) + 1
+            if whose == "today" or not cuda:
+                made = lm.generate(net, engine.fallback.inputs([cases[case]], _params(8)), max_new_tokens=most, stop=[], pad=0)  # type: ignore[attr-defined]
+                trajectories[key] = [int(t) for t in made[0].tolist()]
+            else:
+                context = plain() if whose == "plain" else contextlib_null()
+                with context:
+                    dec = decoder(len(prompt) + most + 300)
+                    trajectories[key] = dec(Request(prompts=[prompt], max_new=most, stops=[], prompted=[prompted])).tokens[0]
+        for case, at_text, whose in probes:
+            at = int(at_text)
+            prompt, media, prompted = read(case)
+            tokens = trajectories[f"{case}:{whose}"]
+            prefix, target = tokens[:at], tokens[at]
+            row: dict[str, object] = {"target": target}
+            # forward
+            rec = _Layers(net)
+            try:
+                rec.armed = True
+                net(input_ids=torch.tensor([prompt + prefix], device=net.device), logits_to_keep=1, **_media_kwargs(media, len(prefix)))
+                forward = (dict(rec.mix), dict(rec.out), rec.logits)
+            finally:
+                rec.close()
+            # cached decode, K/V retained
+            rec = _Layers(net)
+            stores: list[object] = []
+            try:
+                out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, logits_to_keep=1, **_media_kwargs(media, 0))
+                for t, token in enumerate(prefix):
+                    cache = out.past_key_values
+                    held = _kv(cache)
+                    store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                    for layer, (k, v) in held.items():
+                        cache.layers[layer].keys, cache.layers[layer].values = store.put(k, v).get()
+                    del held
+                    stores.append(store)
+                    if len(stores) > 1:
+                        stores.pop(0).close()  # type: ignore[attr-defined]  # a Store
+                    rec.armed = t == len(prefix) - 1
+                    out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=cache, use_cache=True, logits_to_keep=1)
+                cached = (dict(rec.mix), dict(rec.out), rec.logits)
+            finally:
+                rec.close()
+                for store in stores:
+                    store.close()  # type: ignore[attr-defined]  # a Store
+            reads: dict[str, tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], torch.Tensor | None]] = {"forward": forward, "cached": cached}
+            if cuda:  # the engine decodes on CUDA
+                # the engine's own plain decode, eager
+                with plain():
+                    dec = decoder(len(prompt) + at + 300)
+                    mix, outs, seen = instrumented(dec, at)
+                    try:
+                        made_e = dec(Request(prompts=[prompt], max_new=at + 1, stops=[], prompted=[prompted])).tokens[0]
+                    finally:
+                        restore(dec)
+                row["engine_prefix"] = next((i for i, (x, y) in enumerate(zip(made_e[:at], prefix)) if x != y), None)
+                if row["engine_prefix"] is None:
+                    reads["engine"] = (mix, outs, seen[at] if len(seen) > at else None)
+                # the engine's one step after a prefill of all but the prefix's last token, that token fed
+                before = prompt + prefix[:-1]
+                given = None
+                if prompted is not None:
+                    more = torch.tensor(prefix[:-1], dtype=torch.long, device=net.device)
+                    extra = net.get_input_embeddings()(more[None])[0] if len(more) else prompted.embeds[:0]
+                    at_pos = (len(prompt) + torch.arange(len(more), device=net.device) + prompted.delta).expand(3, -1)
+                    given = Prompted(embeds=torch.cat([prompted.embeds, extra]),
+                                     positions=torch.cat([prompted.positions, at_pos], 1), delta=prompted.delta)  # fmt: skip
+                with plain():
+                    dec = decoder(len(before) + 300)
+                    mix, outs, seen = instrumented(dec, 1, first=prefix[-1])
+                    try:
+                        dec(Request(prompts=[before], max_new=2, stops=[], prompted=[given]))
+                    finally:
+                        restore(dec)
+                reads["engine_step"] = (mix, outs, seen[1] if len(seen) > 1 else None)
+            # lm.generate, eager under the hooks
+            rec = _Layers(net, single=at)
+            try:
+                made_l = lm.generate(net, engine.fallback.inputs([cases[case]], _params(8)), max_new_tokens=at + 1, stop=[], pad=0)  # type: ignore[attr-defined]
+                made_l = [int(t) for t in made_l[0].tolist()]
+                row["lm_prefix"] = next((i for i, (x, y) in enumerate(zip(made_l[:at], prefix)) if x != y), None)
+                if row["lm_prefix"] is None:
+                    reads["lm"] = (dict(rec.mix), dict(rec.out), rec.logits)
+            finally:
+                rec.close()
+            for name, (mix, outs, logits) in reads.items():
+                row[name] = _read(logits, target)
+                if name != "forward":
+                    row[name]["mix"] = _rel(mix, forward[0])  # type: ignore[index]
+                    row[name]["out"] = _rel(outs, forward[1])  # type: ignore[index]
+            for name in ("engine", "engine_step"):
+                if name in reads:
+                    row[f"{name}_vs_cached"] = {"mix": _rel(reads[name][0], cached[0]), "out": _rel(reads[name][1], cached[1])}
+            found[f"{case}:{at}:{whose}"] = row
+    return Agreement(json.dumps(found))
+
+
+def contextlib_null():  # type: ignore[no-untyped-def]
+    import contextlib
+
+    return contextlib.nullcontext()
+
+
 @app.entrypoint(accelerator=True)
 def ask(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
     """One case through `VisionLM.ask`, greedy, 48 tokens: its answer; the run's `.engine` note says which engine served it."""

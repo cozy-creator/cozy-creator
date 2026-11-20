@@ -14,6 +14,9 @@
 #             case held the same way, told; tokens kept a step on each;
 #   caption   Caption's question on both engines on one executor, each warmed twice, then alternating which goes first, the
 #             same seeds: CozyEngine must be faster a call;
+#   layers    (`probes_<lane>`, `<case>:<position>:<plain|drafted|today>`) at each probed position of a trajectory, the
+#             drive's `layers`: Transformers' forward, its cached decode, the engine's own decode and its one step, and
+#             `lm.generate`, each one's choice and lead, and per layer its distance from the forward's; told, not judged;
 #   bucket    the four cases as one call through both engines likewise (Transformers' engine reads their pictures in one
 #             vision pass, CozyEngine a row at a time; rows' lengths may differ, so a token is the fair figure): CozyEngine must be
 #             faster a token.
@@ -80,6 +83,12 @@ if ! part inputs; then
   say "inputs: not asked (parts)"
 elif step local-candidates machine update local --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y; then
   inputs inputs-cpu local "$SMALL"
+  if part layers; then  # the probe's Transformers and lm reads on the CPU, at $0
+    step layers-cpu run "$DRIVE/layers" --model "model=$SMALL" --file "image=$REF/seed.jpg" "at=picture:6:today text:6:plain" --on local ||
+      { tail -c 2000 "$OUT/layers-cpu.txt" | tee -a "$R"; FAILED+=("layers-cpu"); }
+    record layers-cpu; detail layers-cpu
+    say "layers-cpu: $(jq -c . "$OUT/layers-cpu-detail.json" 2> /dev/null | cut -c1-1200)"
+  fi
 else
   say "FAILED: the candidates on this runner's machine: $(tail -c 400 "$OUT/local-candidates.txt")"; FAILED+=("local-candidates")
 fi
@@ -135,6 +144,15 @@ for l in $LANES; do
   say "pictures-$l: the forward's alone (bucket, alone: agreed/clear): $(jq -c '[.drafted, .plain] | map(select(. != null) | with_entries(.value |= ["\(.bucket.forward_agreed)/\(.bucket.forward_clear)", "\(.alone.forward_agreed)/\(.alone.forward_clear)"]))' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
   say "pictures-$l: today's path (agreed/clear, forward's alone): $(jq -c '.today // {} | with_entries(.value |= ["\(.agreed)/\(.clear)", "\(.forward_agreed)/\(.forward_clear)"])' "$OUT/pictures-$l-detail.json" 2> /dev/null)"
   say "pictures-$l: misses by the forward's alone: $(jq -c '[.today, .drafted, .plain] | map(select(. != null) | with_entries(.value |= ([.misses?, .bucket.misses?, .alone.misses?] | map(select(. != null)) | add))) ' "$OUT/pictures-$l-detail.json" 2> /dev/null | cut -c1-1500)"
+  fi
+  if part layers; then
+    default=$([ "$l" = q8 ] && echo 'picture:81:plain earlier:67:plain earlier:94:plain' || echo 'earlier:118:drafted text:173:plain earlier:124:today')
+    step "layers-$l" run "$DRIVE/layers" --model "model=$model" --file "image=$REF/seed.jpg" "at=$(param "probes_$l" "$default")" --on "$NAME" ||
+      { tail -c 2000 "$OUT/layers-$l.txt" | tee -a "$R"; FAILED+=("layers-$l"); }
+    record "layers-$l"; detail "layers-$l"
+    for k in $(jq -r 'keys[] | select(. != "gpu" and . != "kinds")' "$OUT/layers-$l-detail.json" 2> /dev/null); do
+      say "layers-$l $k: $(jq -c --arg k "$k" '.[$k] | {target, engine_prefix, lm_prefix} + (to_entries | map(select(.value | type == "object" and has("lead"))) | map({(.key): ([.value.choice, .value.lead, .value.gap] + [(.value.out // [] | to_entries | map(select(.value != null and .value > 0.01)) | first | .key // null)])}) | add)' "$OUT/layers-$l-detail.json" 2> /dev/null)"
+    done
   fi
   if part caption; then
   step "caption-$l" run "$DRIVE/caption" --model "model=$model" --file "image=$REF/seed.jpg" runs:=3 --on "$NAME" ||
