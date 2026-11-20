@@ -412,7 +412,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       }
       await page.setViewportSize({ width: 1600, height: 1000 });
       await priced();
-      const machines = async () => (await cli.json('machine', 'ls')).machines.filter((one) => one.kind === 'rental' && one.ordered && one.state !== 'ended');
+      const machines = async () => (await cli.json('machine', 'ls')).machines.filter((one) => one.kind === 'rental' && one.state !== 'ended');
       expect(await machines(), 'no rental before it').toEqual([]);
       const ordered = stand.asked.length;
       const sent = page.waitForRequest(renderOf('shot'));
