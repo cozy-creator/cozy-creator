@@ -2,6 +2,7 @@
 # pinned-lost (proof only, cl-1316; never merged): a run asked on its pod (`--on`, `--gpus` from params `gpus`) whose pod ends under it
 # never moves. e2e/cli/weightless `wait` (600 s) runs on the pod; once it runs, the pod is ended:
 # - `lost` (Calcifer, #4094): ended under it (`machine end --force`): the run fails machine_lost, naming the pod, and runs nowhere else.
+# - `taken`: the same, ended once the pod took the run, before it executes.
 # - `unpin` (the harness, lib.sh `unpin`, as the trap and guard end a pod): its runs are canceled first: the run ends canceled on it.
 # params `legs` (default "lost"), each on a pod of its own, one after the other. A run ever placed on another machine is canceled at once
 # and the session fails.
@@ -20,10 +21,10 @@ started() { events "$1" | jq -se 'any(.[]; .run.started_at_ms != null)' > /dev/n
 last() { events "$1" | jq -sc 'map(select(.run != null)) | last | .run'; }
 # taken <ndjson>: `yes` once its machine took it (`unpin` needs no more: what it cancels is the machine's, installing or running).
 taken() { events "$1" | jq -se 'any(.[]; .type == "run.in_progress")' > /dev/null 2>&1 && echo yes || echo no; }
-far() { if [ "$leg" = unpin ]; then taken "$1"; else started "$1"; fi; }
+far() { if [ "$leg" = lost ]; then started "$1"; else taken "$1"; fi; }
 record() { last "$1" | jq -c '{status, machine, reason: {code: .reason.code, message: .reason.message}}' | cut -c1-400; }
 for leg in $LEGS; do
-  [[ $leg == lost || $leg == unpin ]] || fail "leg $leg"
+  [[ $leg == lost || $leg == taken || $leg == unpin ]] || fail "leg $leg"
   rent
   cozy machine update "$NAME" --runtime "$RW" --tensorfs "$TW" --tensord "$(command -v cozy)" -y > "$OUT/update-$leg.txt" 2>&1 ||
     fail "$leg: update $NAME: $(tail -c 300 "$OUT/update-$leg.txt")"
@@ -40,7 +41,7 @@ for leg in $LEGS; do
   [ "$(far "$OUT/$leg.ndjson")" = yes ] || fail "$leg: run $h never reached $NAME"
   say "$leg: run $h${GPUS_ASKED:+ (--gpus=$GPUS_ASKED)} is on $(last "$OUT/$leg.ndjson" | jq -r '.machine // empty'); ending $NAME under it"
   if [ "$leg" = unpin ]; then unpin "$RID"; cozy machine end "$RID" -y > "$OUT/end-$leg.txt" 2>&1 || fail "unpin: end $NAME: $(tail -c 300 "$OUT/end-$leg.txt")"
-  else cozy machine end "$NAME" -y --force > "$OUT/end-$leg.txt" 2>&1 || fail "lost: end $NAME: $(tail -c 300 "$OUT/end-$leg.txt")"; fi
+  else cozy machine end "$NAME" -y --force > "$OUT/end-$leg.txt" 2>&1 || fail "$leg: end $NAME: $(tail -c 300 "$OUT/end-$leg.txt")"; fi
   for _ in $(seq 1 60); do
     kill -0 "$P" 2> /dev/null || break
     m=$(events "$OUT/$leg.ndjson" | jq -r '.run.machine // empty' | grep -vx "$NAME" | head -1)
@@ -54,10 +55,10 @@ for leg in $LEGS; do
   say "$leg: its record: $(record "$OUT/$leg.ndjson")"
   [ -z "$(events "$OUT/$leg.ndjson" | jq -r '.run.machine // empty' | grep -vx "$NAME")" ] || fail "$leg: an event names another machine"
   ! grep -qs 'goes wherever\|places it again' "$OUT/$leg.ndjson" "$OUT/$leg.err" || fail "$leg: its log says it would be placed again"
-  if [ "$leg" = lost ]; then
+  if [ "$leg" != unpin ]; then
     jq -e --arg m "$NAME" '.status == "failed" and .reason.code == "machine_lost" and .machine == $m and (.reason.message | test("runs nowhere else"))' \
-      "$OUT/$leg-show.json" > /dev/null || fail "lost: not failed machine_lost on $NAME, saying it runs nowhere else"
-    say "PINNED lost: $h failed at once on $NAME's end and ran nowhere else"
+      "$OUT/$leg-show.json" > /dev/null || fail "$leg: not failed machine_lost on $NAME, saying it runs nowhere else"
+    say "PINNED $leg: $h failed at once on $NAME's end and ran nowhere else"
   else
     jq -e --arg m "$NAME" '.status == "canceled" and .machine == $m' "$OUT/$leg-show.json" > /dev/null || fail "unpin: not canceled on $NAME"
     say "PINNED unpin: $h canceled on $NAME before it ended, and ran nowhere else"
