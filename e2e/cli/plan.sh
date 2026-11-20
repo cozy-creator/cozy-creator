@@ -394,12 +394,14 @@ timeout 60 "$COZY" --json machine end stand-b --force -y > "$OUT/stand-b-end.jso
 # plan_queue (cl-1107; Paul, 11-16: "when I have two machines up, both set to 'preferred' status, all requests will keep going to the
 # first machine." "This should never happen."): pod-session 43996197790's third request, quoted again on two stand-ins that say only
 # the Status those machines pushed (fakemachine.py), so nothing is sent to them. queue-a is kubera, one RTX 5090 holding the shot's code
-# and two runs started on its CPU while their GPU work waits (`gpu_waits`): a shot whose 52 GB still come at 200 MB/s, then an edit no
-# benchmark times. queue-b is cibo, two RTX 4090s holding nothing of the code, a minute's install, and the 64 MiB of BiRefNet's weights
-# it lacks 300 s away. The shot is timed by its benchmarks.json as H3's generate (230 s on the 5090, 335 s on a 4090, 196 s on two).
-# queue-b finishes it in 120 + 300 + 196 s (616 s); queue-a's finish is unknown, behind the edit no row times (cl-1279, 11-19: no
-# minute assumed), so it goes to queue-b, on both GPUs. Before cl-1107's fix queue-a's runs ahead were a minute each (612 s) and queue-b
-# quoted one GPU (755 s): it went to queue-a. Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its
+# and two runs started on its CPU while their GPU work waits (`gpu_waits`): a shot whose 52 GB still come at 200 MB/s, then an edit
+# queue-a timed at a minute (its frame's `times`: no benchmark times it, and an untimed one would leave queue-a's finish unknown, cl-1279).
+# queue-b is cibo, two RTX 4090s holding nothing of the code, a minute's install, and the 64 MiB of BiRefNet's weights it lacks 300 s
+# away. The shot is timed by its benchmarks.json as H3's generate (230 s on the 5090, 335 s on a 4090, 196 s on two). queue-a finishes
+# it in 262 s of weights, 230 s and a minute ahead of it, then its own 230 s (782 s); queue-b in 120 + 300 + 196 s (616 s): it goes to
+# queue-b, on both GPUs. Before the fix queue-a's runs ahead were a minute each (612 s) and queue-b quoted one GPU (755 s): it went to
+# queue-a. queue-a's own quote is read from the walk's placement line (a render of second, which goes nowhere: a stand-in runs
+# nothing): with the fix reverted its shot ahead, named by local code, is untimed, and so is queue-a's finish. Asked as the page's estimate asks it (`POST /fit`); this computer runs the shot once first, so its
 # code is staged and its manifest kept.
 plan_queue() {
 step "plan queue (cl-1107): a machine's runs ahead count their time, so a shot goes where it finishes soonest"
@@ -431,7 +433,7 @@ jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --arg m "$man
       models: ["zhengpeng7/birefnet"], bytes_left: 52453916267},
      {function: "local/e2e-queued/edit", widths: [1], running: true, width: 1, started_at_unix_ms: ($now - 7000), gpu_waits: true,
       models: ["zhengpeng7/birefnet"], bytes_left: 0}],
-   times: []}' > "$OUT/queue-a.frame.json"
+   times: [{function: "local/e2e-queued/edit", runs: [{width: 1, size: {}, ms: 60000}]}]}' > "$OUT/queue-a.frame.json"
 jq -n --arg v "$version" --arg rt "$runtime" --arg tfs "$tensorfs" --argjson now "$now" --argjson lacks "$lacks" '
   {worker_id: "stand-in-queue-b", boot_id: "queue-b", version: $v, phase: "ready", platform: "linux/x86_64", runtime: $rt, tensorfs: $tfs,
    started_at_unix_ms: ($now - 60000), serving_gpus: 2, link_bytes_per_s: ($lacks / 300), disk: {total_bytes: 322122547200, free_bytes: 300000000000},
@@ -465,6 +467,18 @@ done
 echo "plan queue: second's estimate ${estimate:-none}"
 J '.machine == "queue-b" and .card == "RTX 4090" and (.run_ms - 196000 | fabs) < 4000' <<< "${estimate:-null}" \
   || check "plan queue: second goes to queue-b, on both its GPUs (196 s), not queue-a behind its two runs: ${estimate:-none} $(tail -c 300 "$OUT/queue-fit.json") $(tail -c 300 "$OUT/queue-fit.err") $(tail -c 300 "$OUT/queue-a.log")"
+# Each machine's quote, as the walk weighed them (`placement::said`), in its walk log (calcifer.diagnostics, run.sh).
+local placed='' walk=$P/.vault-calcifer/diagnostics/walk.log quoted
+coming_go second '["queue-a","queue-b"]'
+for _ in $(seq 60); do
+  placed=$(grep -h ' goes to queue-' "$walk" 2> /dev/null | tail -n 1 || true)
+  [ -n "$placed" ] && break
+  sleep 1
+done
+echo "plan queue: ${placed:-the walk placed second nowhere}"
+quoted=$(grep -oE 'queue-a finishes in [0-9]+ s' <<< "$placed" | grep -oE '[0-9]+' || true)
+[ -n "$quoted" ] && [ "$quoted" -ge 767 ] && [ "$quoted" -le 797 ] \
+  || check "plan queue: queue-a isn't quoted to finish in about 782 s, its runs ahead timed (cl-1107): ${placed:-no placement line} $(tail -c 300 "$walk" 2> /dev/null)"
 for name in queue-a queue-b; do
   timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true
 done
