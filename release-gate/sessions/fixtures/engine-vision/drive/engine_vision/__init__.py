@@ -424,6 +424,7 @@ class _Layers:
 
     def __init__(self, net: torch.nn.Module, single: int = 0) -> None:
         self.mix: dict[int, torch.Tensor] = {}
+        self.mlp: dict[int, torch.Tensor] = {}
         self.out: dict[int, torch.Tensor] = {}
         self.logits: torch.Tensor | None = None
         self.armed, self.single, self.count = False, single, 0
@@ -432,6 +433,7 @@ class _Layers:
         for i, layer in enumerate(layers):
             mixer = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn")
             self.handles.append(mixer.register_forward_hook(self._take(self.mix, i)))
+            self.handles.append(layer.mlp.register_forward_hook(self._take(self.mlp, i)))
             self.handles.append(layer.register_forward_hook(self._take(self.out, i)))
         self.handles.append(net.get_output_embeddings().register_forward_hook(self._head))
         if single:
@@ -481,11 +483,11 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
     its steps eager so each layer is read (where its tokens are the prefix); `engine_step`, the engine's one decode step
     after a prefill of all but the prefix's last token, that token fed (the engine's step alone, no decode before it);
     `lm`, `lm.generate` decoding eagerly (hooks make it), where its tokens are the prefix. Each: its choice, lead and the
-    trajectory token's gap, and per layer (`kinds`) its token mixer's and its output's distance from the forward's. On a
+    trajectory token's gap, and per layer (`kinds`) its token mixer's, its MLP's and its output's distance from the
+    forward's (the engine's output: its embedding plus each layer's two, summed in f32; Transformers': each layer's). On a
     CPU (a pre-flight) the engine's reads are left out and every trajectory is today's path's."""
     from cozy_runtime import lm
     from cozy_runtime.author import retained
-    from cozy_runtime.engine import qwen35
     from cozy_runtime.engine.decoder import Decoder, Request
     from cozy_runtime.engine.launch import JIT
     from cozy_runtime.engine.vision import Prompted
@@ -520,50 +522,72 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
                     net.mtp = head
         return held()
 
-    def instrumented(dec: Decoder, at_body: int, first: int | None = None) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], list[torch.Tensor]]:
-        """`dec`'s steps eager, the `at_body`-th step's layers read through `_add_norm` and every logits call kept;
-        `first`: the token fed to the first step in place of the prefill's own."""
-        mix: dict[int, torch.Tensor] = {}
-        out: dict[int, torch.Tensor] = {}
+    def instrumented(dec: Decoder, at_body: int, first: int | None = None):  # type: ignore[no-untyped-def]
+        """`dec`'s steps eager; in its `at_body`-th step each layer's token mixer and MLP output (its `_attention` or
+        `_delta`, its `_mlp`) and the residual stream after each layer (the embedding plus both, summed in f32), and every
+        logits call; `first`: the token fed to the first step in place of the prefill's own."""
+        reads: dict[str, dict[int, torch.Tensor]] = {"mix": {}, "mlp": {}, "out": {}}
         seen: list[torch.Tensor] = []
-        state = {"body": 0, "on": False, "adds": 0}
-        real_body, real_logits, real_add, real_decode = dec.qwen.body, dec.qwen.logits, qwen35._add_norm, dec._decode
+        state = {"body": 0, "on": False, "mix": 0, "mlp": 0}
+        stream: list[torch.Tensor] = []
+        qwen = dec.qwen
+        real_body, real_logits, real_decode = qwen.body, qwen.logits, dec._decode
+        real_attention, real_delta, real_mlp, real_embed = qwen._attention, qwen._delta, qwen._mlp, qwen.embed
         dec._capture = lambda *a, **k: None  # type: ignore[method-assign]  # every step eager
+
+        def last(t: torch.Tensor) -> torch.Tensor:
+            return t.reshape(-1, t.shape[-1])[-1].detach().float().clone()
 
         def body(ids, positions, tables):  # type: ignore[no-untyped-def]
             state["body"] += 1
-            state["on"], state["adds"] = state["body"] == at_body, 0
+            state["on"], state["mix"], state["mlp"] = state["body"] == at_body, 0, 0
+            stream.clear()
             try:
                 return real_body(ids, positions, tables)
             finally:
                 state["on"] = False
 
-        def logits(hidden):  # type: ignore[no-untyped-def]
-            made = real_logits(hidden)
-            seen.append(made.reshape(-1, made.shape[-1])[0].detach().float().clone())
+        def embed(ids):  # type: ignore[no-untyped-def]
+            made = real_embed(ids)
+            if state["on"]:
+                stream.append(last(made))
             return made
 
-        def add(x, h, weight, eps, fused, run_):  # type: ignore[no-untyped-def]
-            total, normed = real_add(x, h, weight, eps, fused, run_)
+        def mixer(real):  # type: ignore[no-untyped-def]
+            def call(*args, **kwargs):  # type: ignore[no-untyped-def]
+                made = real(*args, **kwargs)
+                if state["on"]:
+                    reads["mix"][state["mix"]] = last(made)
+                    stream.append(stream[-1] + reads["mix"][state["mix"]])
+                    state["mix"] += 1
+                return made
+            return call
+
+        def mlp(m, h):  # type: ignore[no-untyped-def]
+            made = real_mlp(m, h)
             if state["on"]:
-                layer, second = divmod(state["adds"], 2)
-                (out if second else mix)[layer] = (total if second else h).reshape(-1, total.shape[-1])[-1].detach().float().clone()
-                state["adds"] += 1
-            return total, normed
+                i = state["mlp"]
+                reads["mlp"][i] = last(made)
+                reads["out"][i] = stream[-1] + reads["mlp"][i]
+                stream.append(reads["out"][i])
+                state["mlp"] += 1
+            return made
+
+        def logits(hidden):  # type: ignore[no-untyped-def]
+            made = real_logits(hidden)
+            seen.append(last(made[:1]))
+            return made
 
         def decode(*args, **kwargs):  # type: ignore[no-untyped-def]
             if first is not None:
                 dec.rows.ids[0] = first
             return real_decode(*args, **kwargs)
 
-        dec.qwen.body, dec.qwen.logits, dec._decode = body, logits, decode  # type: ignore[method-assign]
-        qwen35._add_norm = add
-        return mix, out, seen
+        qwen.body, qwen.logits, qwen.embed = body, logits, embed  # type: ignore[method-assign]
+        qwen._attention, qwen._delta, qwen._mlp = mixer(real_attention), mixer(real_delta), mlp  # type: ignore[method-assign]
+        dec._decode = decode  # type: ignore[method-assign]
+        return reads, seen
 
-    def restore(dec: Decoder) -> None:
-        qwen35._add_norm = _ADD_NORM[0]
-
-    _ADD_NORM = [qwen35._add_norm]
     probes = [item.split(":") for item in payload.at.split()]
     trajectories: dict[str, list[int]] = {}
     with torch.inference_mode():
@@ -592,7 +616,7 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
             try:
                 rec.armed = True
                 net(input_ids=torch.tensor([prompt + prefix], device=net.device), logits_to_keep=1, **_media_kwargs(media, len(prefix)))
-                forward = (dict(rec.mix), dict(rec.out), rec.logits)
+                forward = (dict(rec.mix), dict(rec.mlp), dict(rec.out), rec.logits)
             finally:
                 rec.close()
             # cached decode, K/V retained
@@ -612,24 +636,22 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
                         stores.pop(0).close()  # type: ignore[attr-defined]  # a Store
                     rec.armed = t == len(prefix) - 1
                     out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=cache, use_cache=True, logits_to_keep=1)
-                cached = (dict(rec.mix), dict(rec.out), rec.logits)
+                cached = (dict(rec.mix), dict(rec.mlp), dict(rec.out), rec.logits)
             finally:
                 rec.close()
                 for store in stores:
                     store.close()  # type: ignore[attr-defined]  # a Store
-            reads: dict[str, tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], torch.Tensor | None]] = {"forward": forward, "cached": cached}
+            reads: dict[str, tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], dict[int, torch.Tensor], torch.Tensor | None]] = {
+                "forward": forward, "cached": cached}  # fmt: skip
             if cuda:  # the engine decodes on CUDA
                 # the engine's own plain decode, eager
                 with plain():
                     dec = decoder(len(prompt) + at + 300)
-                    mix, outs, seen = instrumented(dec, at)
-                    try:
-                        made_e = dec(Request(prompts=[prompt], max_new=at + 1, stops=[], prompted=[prompted])).tokens[0]
-                    finally:
-                        restore(dec)
+                    got, seen = instrumented(dec, at)
+                    made_e = dec(Request(prompts=[prompt], max_new=at + 1, stops=[], prompted=[prompted])).tokens[0]
                 row["engine_prefix"] = next((i for i, (x, y) in enumerate(zip(made_e[:at], prefix)) if x != y), None)
                 if row["engine_prefix"] is None:
-                    reads["engine"] = (mix, outs, seen[at] if len(seen) > at else None)
+                    reads["engine"] = (got["mix"], got["mlp"], got["out"], seen[at] if len(seen) > at else None)
                 # the engine's one step after a prefill of all but the prefix's last token, that token fed
                 before = prompt + prefix[:-1]
                 given = None
@@ -641,12 +663,9 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
                                      positions=torch.cat([prompted.positions, at_pos], 1), delta=prompted.delta)  # fmt: skip
                 with plain():
                     dec = decoder(len(before) + 300)
-                    mix, outs, seen = instrumented(dec, 1, first=prefix[-1])
-                    try:
-                        dec(Request(prompts=[before], max_new=2, stops=[], prompted=[given]))
-                    finally:
-                        restore(dec)
-                reads["engine_step"] = (mix, outs, seen[1] if len(seen) > 1 else None)
+                    got, seen = instrumented(dec, 1, first=prefix[-1])
+                    dec(Request(prompts=[before], max_new=2, stops=[], prompted=[given]))
+                reads["engine_step"] = (got["mix"], got["mlp"], got["out"], seen[1] if len(seen) > 1 else None)
             # lm.generate, eager under the hooks
             rec = _Layers(net, single=at)
             try:
@@ -654,17 +673,17 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
                 made_l = [int(t) for t in made_l[0].tolist()]
                 row["lm_prefix"] = next((i for i, (x, y) in enumerate(zip(made_l[:at], prefix)) if x != y), None)
                 if row["lm_prefix"] is None:
-                    reads["lm"] = (dict(rec.mix), dict(rec.out), rec.logits)
+                    reads["lm"] = (dict(rec.mix), dict(rec.mlp), dict(rec.out), rec.logits)
             finally:
                 rec.close()
-            for name, (mix, outs, logits) in reads.items():
+            for name, (mix, mlps, outs, logits) in reads.items():
                 row[name] = _read(logits, target)
                 if name != "forward":
-                    row[name]["mix"] = _rel(mix, forward[0])  # type: ignore[index]
-                    row[name]["out"] = _rel(outs, forward[1])  # type: ignore[index]
-            for name in ("engine", "engine_step"):
+                    row[name].update(mix=_rel(mix, forward[0]), mlp=_rel(mlps, forward[1]), out=_rel(outs, forward[2]))  # type: ignore[union-attr]
+            for name in ("engine", "engine_step", "lm"):
                 if name in reads:
-                    row[f"{name}_vs_cached"] = {"mix": _rel(reads[name][0], cached[0]), "out": _rel(reads[name][1], cached[1])}
+                    row[f"{name}_vs_cached"] = {"mix": _rel(reads[name][0], cached[0]), "mlp": _rel(reads[name][1], cached[1]),
+                                                "out": _rel(reads[name][2], cached[2])}  # fmt: skip
             found[f"{case}:{at}:{whose}"] = row
     return Agreement(json.dumps(found))
 

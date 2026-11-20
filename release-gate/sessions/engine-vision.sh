@@ -151,7 +151,12 @@ for l in $LANES; do
       { tail -c 2000 "$OUT/layers-$l.txt" | tee -a "$R"; FAILED+=("layers-$l"); }
     record "layers-$l"; detail "layers-$l"
     for k in $(jq -r 'keys[] | select(. != "gpu" and . != "kinds")' "$OUT/layers-$l-detail.json" 2> /dev/null); do
-      say "layers-$l $k: $(jq -c --arg k "$k" '.[$k] | {target, engine_prefix, lm_prefix} + (to_entries | map(select(.value | type == "object" and has("lead"))) | map({(.key): ([.value.choice, .value.lead, .value.gap] + [(.value.out // [] | to_entries | map(select(.value != null and .value > 0.01)) | first | .key // null)])}) | add)' "$OUT/layers-$l-detail.json" 2> /dev/null)"
+      # Each path: [choice, lead, the trajectory token's gap, the first layer whose mixer and whose MLP output sit 5% or more
+      # from the forward's, and the largest of each]; the whole rows are in layers-<lane>-detail.json.
+      say "layers-$l $k: $(jq -c --arg k "$k" 'def first5(a): (a // [] | to_entries | map(select(.value != null and .value >= 0.05)) | first | .key // null);
+        def most(a): (a // [] | map(select(. != null)) | max // null);
+        .[$k] | {target, engine_prefix, lm_prefix} + (to_entries | map(select(.value | type == "object" and has("lead")))
+        | map({(.key): [.value.choice, .value.lead, .value.gap, first5(.value.mix), first5(.value.mlp), most(.value.mix), most(.value.mlp)]}) | add)' "$OUT/layers-$l-detail.json" 2> /dev/null)"
     done
   fi
   if part caption; then
