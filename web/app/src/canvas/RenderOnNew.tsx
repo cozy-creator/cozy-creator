@@ -8,6 +8,7 @@ import { agreeable, NewOptions, offered, QuoteNotes } from "../panels/machines/q
 import { Icon } from "../ui/Icon"
 import { pressBeganOutside } from "../ui/press"
 import { useCanvasStore } from "./context"
+import type { Also } from "./CanvasStore"
 
 /** A notice's ✕, top right. */
 export function CloseInPlace({ onClose }: { onClose: () => void }) {
@@ -46,11 +47,12 @@ export function useClosesInPlace(open: boolean, inside: (element: Element) => bo
 
 /**
  * Render `name` on a new rental, in place where it's offered (Slow here, Waits for a machine: cl-1066). Its price is Calcifer's for exactly
- * this render (`render-quote`: one rental for all it sends), said on its button as the run form says one, and pressing it agrees to that
+ * this render (`render-quotes`: one rental for all it sends), said on its button as the run form says one, and pressing it agrees to that
  * price and renders there. `sku`: the product offered, Slow here's card; none, the run form's choice of new rentals. Another product takes
- * the price away until its own comes. Never a pop-up: it sits in the notice it was opened in, whose ✕ closes it; agreed, `onDone`.
+ * the price away until its own comes. `waiting`: the render waiting for a machine it goes on as, its take and pickup kept. Never a pop-up:
+ * it sits in the notice it was opened in, whose ✕ closes it; agreed, `onDone`.
  */
-export function RenderOnNew({ name, sku, onDone }: { name: string; sku?: string; onDone: () => void }) {
+export function RenderOnNew({ name, sku, waiting, onDone }: { name: string; sku?: string; waiting?: Also; onDone: () => void }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   const [on, setOn] = useState(sku ? `new:${sku.toLowerCase()}` : "new")
@@ -88,7 +90,7 @@ export function RenderOnNew({ name, sku, onDone }: { name: string; sku?: string;
             disabled={!answer || !agreeable(answer)}
             onClick={() => {
               if (!answer?.quote.agreed) return
-              store.run(name, { on, agreed: answer.quote.agreed })
+              store.run(name, { ...waiting, on, agreed: answer.quote.agreed })
               onDone()
             }}
           >

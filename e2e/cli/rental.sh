@@ -287,7 +287,7 @@ PY
 }
 
 # render_on_new (cl-1066; Paul: "`--on new`: `run` first, then `render`"): a project's `cozy render <box> --on new:cpu -y` quotes one
-# rental for all the render sends (POST /v1/projects/{id}/render-quote), agrees, orders it and renders there. Before, it was refused
+# rental for all the render sends (POST /v1/projects/{id}/render-quotes), agrees, orders it and renders there. Before, it was refused
 # `project_on_new` ("A project renders on machines you already have"). This Hub's docker rental never gets ready, so nothing lands on
 # it: that each render rents one machine and its box's work waits there, not failed, is the cell, for a plaintext project and an
 # encrypted one, whose order leaves Calcifer's asks naming none of it once it locks.

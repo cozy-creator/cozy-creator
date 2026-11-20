@@ -785,7 +785,7 @@ pub struct RentalDevelopment {
 }
 
 /// A product a rental may be bought as instead, at its GPU count (absent: one).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RentalFallback {
     pub sku: String,

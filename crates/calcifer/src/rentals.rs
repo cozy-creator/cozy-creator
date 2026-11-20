@@ -365,29 +365,55 @@ impl Machines {
         shape: Shape,
     ) -> Result<Rented, Error> {
         let sku = self.spelled_sku(hub, sku).await;
-        let (ask, fresh) = self.ask_rent(key, hub, &sku, shape, None).await?;
+        let (ask, fresh) = self.ask_rent(key, hub, &sku, shape, None, true).await?;
         self.rented(ask, fresh).await
     }
 
-    /// One rental for every job of `jobs` at `hub` (a render's, cl-1066), placed as `rental_quote` quotes it and at most the price
-    /// `agreed`, under `key`: the same key again answers the same order. Its record names none of what it's for (no traces).
-    pub(crate) async fn rent_for_jobs(
-        self: &Arc<Self>,
-        key: &str,
-        hub: &str,
-        sku: Option<&str>,
-        jobs: &[Placing],
-        agreed: Agreed,
-    ) -> Result<Rented, Error> {
-        let (ask, fresh) = match self.store().ask(key).map_err(internal)? {
-            Some(ask) => (ask, false),
-            None => {
-                let placed = self.placed_for(hub, jobs, sku).await?;
-                let shape = Shape { gpus: placed.gpus, disk_gb: placed.disk_gb, agreed: Some(agreed), fallbacks: placed.fallbacks, ..Shape::default() };
-                self.ask_rent(key, hub, &placed.sku, shape, None).await?
+    /// The one rental for every job of `jobs` at `hub` (a render's, cl-1066), placed as `rental_quote` quotes it, at most the price
+    /// `agreed`: what the render's ask keeps, for its walk to order once the ask is committed. Nothing is ordered here.
+    pub(crate) async fn render_order(&self, hub: &str, sku: Option<&str>, jobs: &[Placing], agreed: Agreed) -> Result<RenderOrder, Error> {
+        let placed = self.placed_for(hub, jobs, sku).await?;
+        Ok(RenderOrder { sku: placed.sku, gpus: placed.gpus, disk_gb: placed.disk_gb, fallbacks: placed.fallbacks, agreed })
+    }
+
+    /// Render `order`'s rental under `key` (a render's walk asks it as it sends its first job: cl-1066), its machine once its Hub takes
+    /// the order. The same key again joins that order; one asking another rental under it is refused (`ask_rent`). A Hub that doesn't
+    /// answer is asked again and waited on: a slow Hub reads as ordering, never a refusal. The order is its render's: once `over` says
+    /// the render is, it buys nothing more and what it placed is ended (`withdrawn`).
+    pub(crate) async fn rent_for_render(self: &Arc<Self>, key: &str, hub: &str, order: &RenderOrder, over: Over) -> Result<String, Error> {
+        lock(&self.renders).insert(key.to_owned(), over);
+        let rented: Result<String, Error> = async {
+            let shape = Shape { gpus: order.gpus, disk_gb: order.disk_gb, agreed: Some(order.agreed), fallbacks: order.fallbacks.clone(), ..Shape::default() };
+            let (mut ask, _) = self.ask_rent(key, hub, &order.sku, shape, None, false).await?;
+            while ask.state == AskState::Pending {
+                let (answer, answered) = tokio::sync::oneshot::channel();
+                let (me, asking) = (self.clone(), ask.clone());
+                // Its loop if none asks yet, else the loop's next answer.
+                self.spawn(async move {
+                    let _ = me.ask_hub(&asking, Some(answer)).await;
+                });
+                match answered.await {
+                    Ok(Ok(row)) => return Ok(row.name),
+                    Ok(Err(error)) if error.kind != Kind::Unavailable => return Err(error),
+                    Ok(Err(_)) => {}
+                    Err(_) => return Err(Error::new(Kind::Unavailable, STOPPING, "Cozy is stopping. Try again once it's back.")),
+                }
+                ask = self.store().ask(key).map_err(internal)?.ok_or_else(|| not_found(key))?;
             }
-        };
-        self.rented(ask, fresh).await
+            Ok(self.rented(ask, false).await?.machine.name)
+        }
+        .await;
+        // Settled, it has no owner to ask; a restart that finds it waiting asks again under its key.
+        lock(&self.renders).remove(key);
+        rented
+    }
+
+    /// Stops render order `key` if its Hub hasn't taken it: the render it was for was canceled (cl-1066).
+    pub(crate) fn stop_render_order(&self, key: &str) -> Result<(), Error> {
+        match self.store().ask(key).map_err(internal)? {
+            Some(ask) if ask.state == AskState::Pending => self.stop_order(ask).map(drop),
+            _ => Ok(()),
+        }
     }
 
     /// An order as its asker hears it: its machine once its Hub takes it, or why not.
@@ -428,7 +454,9 @@ impl Machines {
 
     /// Records a rent ask under `key` with the Hub's quote for its exact request, and the
     /// rental's key; an ask the key already names is answered, if it asked for the same. A rent
-    /// the Hub will not quote records nothing.
+    /// the Hub will not quote records nothing. `joins`: an order for the same rental its Hub hasn't
+    /// answered, under another key, answers it (a person's rent asked again); a run's or a render's
+    /// is its own.
     async fn ask_rent(
         &self,
         key: &str,
@@ -436,6 +464,7 @@ impl Machines {
         sku: &str,
         shape: Shape,
         run: Option<RunId>,
+        joins: bool,
     ) -> Result<(Ask, bool), Error> {
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
@@ -460,7 +489,7 @@ impl Machines {
         }
         // A rent its Hub has not answered is this computer's one order for what it asks: asking
         // again, under any key, never buys a second pod.
-        if run.is_none()
+        if joins
             && let Some(order) = self.unanswered_order(&digest)?
         {
             return Ok((order, false));
@@ -661,7 +690,9 @@ impl Machines {
             },
             None => false,
         };
-        Ok(stopped || run_over)
+        // A render's, by its walk here alone (cl-1066); one whose project isn't open now is not over, as a project's run.
+        let over = lock(&self.renders).get(&ask.key).cloned();
+        Ok(stopped || run_over || over.is_some_and(|over| over()))
     }
 
     /// Settles a withdrawn ask once its Hub answers: what an unanswered attempt may have placed is
@@ -762,6 +793,7 @@ impl Machines {
         Ok(asks.into_iter().find(|ask| {
             ask.kind == AskKind::Rent
                 && ask.run.is_none()
+                && !lock(&self.renders).contains_key(&ask.key)
                 && ask.digest == digest
                 && unanswered.contains_key(&ask.key)
                 && !RentBody::of(ask).is_ok_and(|body| body.stopped)
@@ -818,7 +850,7 @@ impl Machines {
                     fallbacks: placed.fallbacks,
                     ..Shape::default()
                 };
-                let asked = me.ask_rent(&key, hub, &placed.sku, shape, Some(run.id.clone()));
+                let asked = me.ask_rent(&key, hub, &placed.sku, shape, Some(run.id.clone()), false);
                 Ok(asked.await?.0)
             };
             // The order's run, here and in this Calcifer alone for a project's.
@@ -986,7 +1018,7 @@ impl Machines {
     }
 
     /// What one rental at `hub` for every job of `jobs` costs, on `sku` when named: a `new` run's (one job) and a render's (each job it
-    /// sends, cl-1066), as `rent_for` and `rent_for_jobs` would ask it. Nothing is rented.
+    /// sends, cl-1066), as `rent_for` and `render_order` would ask it. Nothing is rented.
     pub(crate) async fn rental_quote(&self, hub: &str, sku: Option<&str>, jobs: &[Placing]) -> Result<RunQuote, Error> {
         let placed = self.placed_for(hub, jobs, sku).await?;
         // A product named is honoured or refused, as `cozy machine rent` names it.
@@ -2074,6 +2106,22 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         nfs_drive: rental.nfs_drive,
     }
 }
+
+/// A render's one rental (cl-1066), as its quote placed it: kept with the render's ask in its project's journal, and ordered by its walk.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RenderOrder {
+    pub sku: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_gb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<types::RentalFallback>,
+    pub agreed: Agreed,
+}
+
+/// Whether the render a rental is ordered for is over (cl-1066): its walk's answer, read as the order is asked.
+pub(crate) type Over = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// The machine a rent asks for, beyond its SKU, and the most its renter agreed to pay.
 #[derive(Default)]

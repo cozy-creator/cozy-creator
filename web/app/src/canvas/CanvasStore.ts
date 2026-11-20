@@ -230,7 +230,7 @@ const NOT_YET = Number.POSITIVE_INFINITY
 
 /** What goes with one render: a pickup, its take's id, made at the click (cl-945), and a new rental it goes to (`new[:sku]`) at the price
  *  agreed (cl-1066). */
-type Also = { pickup?: Pickup; take?: string; on?: string; agreed?: Agreed }
+export type Also = { pickup?: Pickup; take?: string; on?: string; agreed?: Agreed }
 /** A box's failure when its machine shut down under its run (Calcifer's `MACHINE_LOST`, cl-1085): its note offers Retry. */
 const MACHINE_LOST = "machine_lost"
 const TYPING_PAUSE_MS = 300

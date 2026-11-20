@@ -3376,7 +3376,7 @@ pickup?: Pickup | null,
  */
 takes?: Array<string>,
 /**
- * With `on` `new[:sku]`, the price its asker agreed to (`POST /v1/projects/{id}/render-quote`): one rental for all it sends.
+ * With `on` `new[:sku]`, the price its asker agreed to (`POST /v1/projects/{id}/render-quotes`): one rental for all it sends.
  */
 agreed?: Agreed | null, };
 

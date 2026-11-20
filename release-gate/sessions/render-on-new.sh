@@ -1,5 +1,5 @@
 # render-on-new (cl-1066; Paul: "`--on new`: `run` first, then `render`"): `cozy render box --on new:$SKU -y` on a runner with no
-# GPU, as a person types it: the render's one rental quoted (POST /v1/projects/{id}/render-quote) and agreed, ordered by Calcifer, and the
+# GPU, as a person types it: the render's one rental quoted (POST /v1/projects/{id}/render-quotes) and agreed, ordered by Calcifer, and the
 # box's take made there and landed in the project. A weightless still, so the cheapest product answers it, written for the SDK of the
 # Runtime production's pods run: `ImageFile.from_image` from 0.47 on (44066012481's 0.46 pod had none), `Outputs.save_image` gone in 0.48. The rental is this
 # runner's Calcifer's order: the guard reads what the Hub bills for it, and the trap ends it and checks the Hub lists it ended.

@@ -112,7 +112,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         };
         // One rental for all it sends, quoted and agreed first as `cozy run --on new` is (cl-1066). None: it sends nothing to a machine.
         if matches!(runs.on.as_slice(), [On::New(_)]) {
-            let quoted: Option<RunQuote> = project.calcifer.post(&project.at(&["render-quote"]), &runs, None).await?;
+            let quoted: Option<RunQuote> = project.calcifer.post(&project.at(&["render-quotes"]), &runs, None).await?;
             runs.agreed = crate::machine::agreed(ctx, quoted.as_ref(), "nothing was rendered")?;
         }
         let answer: Asked = project.calcifer.post(&project.at(&["runs"]), &runs, Some(&mint_key())).await?;

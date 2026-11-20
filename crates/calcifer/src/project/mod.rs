@@ -244,7 +244,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/view", get(view::read).patch(view::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs).get(crate::api::project_list))
-        .route("/v1/projects/{id}/render-quote", post(render_quote))
+        .route("/v1/projects/{id}/render-quotes", post(render_quotes))
         .route("/v1/projects/{id}/runs/submit", post(crate::runs::submit_project))
         .route("/v1/projects/{id}/runs/{run}", get(crate::api::show))
         .route("/v1/projects/{id}/runs/{run}/cancel", post(crate::api::cancel))
@@ -3082,9 +3082,9 @@ async fn runs(
     Ok((StatusCode::ACCEPTED, Json(render(&api, &id, asked).await?)))
 }
 
-/// `POST /v1/projects/{id}/render-quote` (cl-1066): what a render of `Runs` on `new[:sku]` would rent, one rental for every job it would
+/// `POST /v1/projects/{id}/render-quotes` (cl-1066): what a render of `Runs` on `new[:sku]` would rent, one rental for every job it would
 /// send, and its price, as `cozy run --on new`'s is quoted; `null` for one that sends nothing to a machine. Nothing is rented, kept or sent.
-async fn render_quote(
+async fn render_quotes(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
@@ -3102,30 +3102,35 @@ async fn render_quote(
 }
 
 /// `asked` of project `id`: what `POST /v1/projects/{id}/runs` and a retry of a box's run (`retry`, cl-1085) add to its walk. On
-/// `new[:sku]` at the price its asker agreed (`render_quote`), one rental for all it sends is ordered first, and it goes there (cl-1066).
+/// `new[:sku]` at the price its asker agreed (`render_quotes`), the one rental for all it sends is kept with its ask as its quote placed
+/// it, and its walk orders it once the ask is committed (cl-1066): nothing is bought for a render that never begins.
 async fn render(api: &Arc<Api>, id: &str, asked: Runs) -> Result<Asked, Refusal> {
     let (agreed, names) = (asked.agreed, asked.names.join(" "));
     let mut plan = planned(api, id, asked).await?;
     if let [On::New(sku)] = plan.ask.target.on.clone().as_slice() {
         let jobs = plan.jobs(api).await.map_err(Refusal)?;
-        // What sends nothing to a machine rents nothing.
-        if !jobs.is_empty() {
+        if jobs.is_empty() {
+            // What sends nothing to a machine rents nothing, and is asked of no machine that could.
+            plan.goes(vec![On::Machine("local".into())]);
+        } else {
             let Some(agreed) = agreed else {
                 let said = "A render that rents a machine needs the price you agreed to.";
                 return Err(Refusal(Error::new(Kind::Usage, "quote_unagreed", said).next(format!("cozy render {names} --on {}", On::New(sku.clone())))));
             };
-            // Under its write's key, so its retry orders nothing more; digested with its project, so the order names neither.
-            let key = keyed::key_now().unwrap_or_else(new_key);
-            let key = format!("render-{}", &hex::encode(Sha256::digest(format!("cozy rent\0{}\0{key}", plan.project.id)))[..40]);
-            let hub = plan.ask.target.hub.clone();
-            let rented = api.machines.rent_for_jobs(&key, &hub, sku.as_deref(), &jobs, agreed).await.map_err(Refusal)?;
-            let name = rented.machine.name;
-            let message = format!("Rented {name} for this render: it renders there once it's up.");
+            let order = api.machines.render_order(&plan.ask.target.hub, sku.as_deref(), &jobs, agreed).await.map_err(Refusal)?;
+            let card = order.sku.replace(['-', '_'], " ").to_uppercase();
+            let message = format!("Renting {card} for this render: it renders there once it's up.");
             plan.lines.push(Said { level: NoteLevel::Info, message, names: vec![] });
-            plan.goes(vec![On::Machine(name)]);
+            plan.ask.order = Some(order);
         }
     }
     begin(api, plan)
+}
+
+/// The key render `ask` of project `project` orders its rental under (cl-1066): the same order across retries and restarts, digested so
+/// Calcifer's own row of it names neither.
+fn order_key(project: &str, ask: &str) -> String {
+    format!("render-{}", &hex::encode(Sha256::digest(format!("cozy rent\0{project}\0{ask}")))[..40])
 }
 
 /// What a render asks, planned as its walk would take it (`planned`): nothing kept or sent yet.
@@ -3284,7 +3289,7 @@ async fn planned(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Plan, Refu
         takes.is_empty()
     };
     let added = if resent { 0 } else { takes.len() as u32 };
-    let ask = Ask { id: new_key(), digest, target, sent: BTreeSet::new(), takes };
+    let ask = Ask { id: new_key(), digest, target, sent: BTreeSet::new(), takes, order: None };
     Ok(Plan { project, doc: Arc::new(doc), lock, snapshot, ask, added, resent, lines: lines.into_inner() })
 }
 
@@ -3484,7 +3489,7 @@ fn stop_jobs(api: &Api, project: &Project, wanted: &dyn Fn(&str, &str) -> bool, 
     };
     // In the walk's own write, so a send can't come between: one being sent that has no run yet sends nothing, its run being made is
     // the sender's to cancel, and what has a run is canceled here.
-    let (mut dropped, mut running) = (waiting, vec![]);
+    let (mut dropped, mut running, mut orders) = (waiting, vec![], vec![]);
     project.folder.update_walk(|walk| {
         for job in going {
             let on_its_way = walk.pending.iter().find(|(key, pending)| pending.job_of(key) == job.key).map(|(key, pending)| (key.clone(), pending.run));
@@ -3497,11 +3502,19 @@ fn stop_jobs(api: &Api, project: &Project, wanted: &dyn Fn(&str, &str) -> bool, 
         }
         let owed: Vec<String> = dropped.iter().map(|job| name_key(&job.asset)).collect();
         for ask in &mut walk.walk.asks {
+            let had = !ask.takes.is_empty();
             ask.takes.retain(|take| !wanted(&take.asset, &take.key));
             ask.sent.extend(owed.iter().cloned());
+            // A render on `new` with nothing left to make stops its order (cl-1066).
+            if had && ask.takes.is_empty() && ask.order.is_some() && matches!(ask.target.on.as_slice(), [On::New(_)]) {
+                orders.push(order_key(&project.id, &ask.id));
+            }
         }
         running = walk.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending.run).collect();
     })?;
+    for key in &orders {
+        api.machines.stop_render_order(key)?;
+    }
     for job in &dropped {
         project.jobs.ended(Job { id: job.key.clone(), asset: job.asset.clone(), state: JobState::Canceled, why: Some(why(&job.asset)), ..Job::default() });
     }
@@ -4361,6 +4374,38 @@ impl Walk {
         let mut on = target.on.clone();
         on.extend(now.into_iter().filter(|machine| !target.on.contains(machine)));
         on
+    }
+
+    /// The machine render `ask` on `new[:sku]` goes to (cl-1066): its one rental, ordered under the ask's key as its first job is sent and
+    /// waited on (a slow Hub reads as ordering), the ask and its takes moved there once its Hub takes it. The order is the ask's: once the
+    /// ask has ended it buys nothing more, and a cancel that leaves it nothing to make stops it (`stop_jobs`). None: `take` was canceled
+    /// meanwhile, so nothing is sent. An ask on `new` with no price agreed rents nothing.
+    async fn rented(&self, ask: &Ask, name: &str, take: Option<&str>) -> Result<Option<String>, Error> {
+        let Some(order) = &ask.order else {
+            return Err(Error::new(Kind::Usage, "quote_unagreed", format!("{name}: a render that rents a machine needs the price you agreed to.")));
+        };
+        let api = self.host.api();
+        let (project, id) = (Arc::downgrade(&self.project), ask.id.clone());
+        let over: crate::rentals::Over =
+            Arc::new(move || project.upgrade().is_some_and(|project| project.folder.walk_now().is_ok_and(|walk| !walk.walk.asks.iter().any(|mine| mine.id == id))));
+        let canceled = || -> Result<bool, Error> {
+            let walk = self.folder().walk_now()?;
+            let mine = walk.walk.asks.iter().find(|mine| mine.id == ask.id);
+            Ok(mine.is_none_or(|mine| take.is_some_and(|take| !mine.takes.iter().any(|still| still.key == take))))
+        };
+        let machine = match api.machines.rent_for_render(&order_key(&self.project.id, &ask.id), &ask.target.hub, order, over).await {
+            Ok(machine) => machine,
+            Err(_) if canceled()? => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let on = vec![On::Machine(machine.clone())];
+        self.folder().update_walk(|walk| {
+            if let Some(mine) = walk.walk.asks.iter_mut().find(|mine| mine.id == ask.id) {
+                let was = std::mem::replace(&mut mine.target.on, on.clone());
+                mine.takes.iter_mut().filter(|take| take.target.on == was).for_each(|take| take.target.on.clone_from(&on));
+            }
+        })?;
+        Ok(Some(machine))
     }
 
     /// Which of `on` render `ask` may still send to.
@@ -5881,6 +5926,12 @@ impl Walk {
             None => (ask.target.clone(), false),
             Some(take) => (take.target.clone(), take.approve),
         };
+        if let [On::New(_)] = target.on.as_slice() {
+            match self.rented(ask, &name, next.take.as_ref().map(|take| take.key.as_str())).await? {
+                Some(machine) => target.on = vec![On::Machine(machine)],
+                None => return Ok(()),
+            }
+        }
         target.on = self.sending(&ask.id, &self.wider(&target));
         if target.on.is_empty() {
             self.not_sent(&name);

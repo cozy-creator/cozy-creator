@@ -302,7 +302,7 @@ function WaitsNotice({ name, view }: { name: string; view: ElementView }) {
   if (!open) return null
   return (
     <div ref={own} className="status new-notice canvas-control" role="group" aria-label="Render on a new rental">
-      <RenderOnNew name={name} onDone={close} />
+      <RenderOnNew name={name} waiting={view.waiting} onDone={close} />
       <CloseInPlace onClose={close} />
     </div>
   )

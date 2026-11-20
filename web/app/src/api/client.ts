@@ -519,7 +519,7 @@ export class Client {
 
   /** What a render of `names` on `new[:sku]` would rent, one rental for all it sends, and its price; `null`: it sends nothing to a machine (cl-1066). */
   renderQuote(id: string, names: string[], on: string): Promise<RunQuote | null> {
-    return this.write("POST", `${project(id)}/render-quote`, { names, on: [on] })
+    return this.write("POST", `${project(id)}/render-quotes`, { names, on: [on] })
   }
 
   /** The machines the project's runs and renders go to, each to whichever finishes first; none: any. */

@@ -388,7 +388,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(notice).toBeVisible();
 
       // cl-1066 ("`--on new`: `run` first, then `render`"): Slow here renders on a new RTX 4090, in place. Its price for this render
-      // (`render-quote`), asked as it opens, is on the button that agrees to it; one press orders one rental, and the shot goes there.
+      // (`render-quotes`), asked as it opens, is on the button that agrees to it; one press orders one rental, and the shot goes there.
       const agree = notice.getByRole('button', { name: /^Render on a new 1× RTX-4090 at \$\d+\.\d{2}\/h$/ });
       await expect(agree, 'its price for this render, on the button that agrees to it').toBeEnabled({ timeout: 60_000 });
       await expect.soft(notice.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what renting costs').toBeVisible();
@@ -420,7 +420,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const render = await sent;
       expect.soft(render.postDataJSON(), 'the render: on a new RTX 4090, at the price agreed').toMatchObject({ names: ['shot'], on: [`new:${CARD.name}`], agreed: { usd_micros_per_hour: expect.any(Number) } });
       const said = await (await render.response())?.json();
-      expect.soft(said?.said?.map((one) => one.message), 'it says what it rented').toContainEqual(expect.stringMatching(/^Rented \S+ for this render: it renders there once it's up\.$/));
+      expect.soft(said?.said?.map((one) => one.message), 'it says what it rented').toContainEqual(expect.stringMatching(/^Renting .+ for this render: it renders there once it's up\.$/));
       await expect.soft(notice, 'agreed, it closes').toHaveCount(0);
       await expect.poll(async () => (await machines()).length, { message: 'one rental ordered', timeout: 60_000 }).toBe(1);
       const [rented] = await machines();
