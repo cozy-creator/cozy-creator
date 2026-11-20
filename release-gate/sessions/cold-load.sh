@@ -10,6 +10,10 @@
 #         first load
 #   ram   an immediate repeat: the page cache and the bakes the run before persisted are kept
 #   disk  the page cache dropped, the persisted bakes kept: a later load from disk
+#   lost  TensorD kept, the page cache kept, and every executor killed, its import-only parent too, as an OOM kill or a crash
+#         would; the request comes `lost_gap_s` later (cl-1327; Paul 11-19: "time until we've loaded it enough that we can
+#         start inference"). TensorD replaces the parent at once, so the request forks from a ready one: a cell that waited
+#         for its parent past its own executor's start (table.py `parent_wait_s`, over 1.5 s) is a flaw.
 # With `hot`, a last run on the last cell's executor: the warm reference for a loop of one step (`warm`: hot).
 # Each cell's request differs (seed, `{take}`): no call or stage memo answers it. Kernels, JIT caches and the package
 # environments' page cache stay (the warm-up built and read them); the drop is the store's, derived pages' objects included.
@@ -24,12 +28,14 @@
 #               {"name", "target": "<package>/<function>", "input": {…}, "loop": "<its steps' stage>", "warm": "step2"|"hot"}:
 #               `{take}` in the input is the cell's number, and its seed is the cell's own; no loop: its longest steps that
 #               decode nothing; warm: the step a cell's first is measured against (table.py), its own step 2 by default
-#   conditions  cold, ram and disk, in the order each round runs them (default ["cold", "ram"])
+#   conditions  cold, ram, disk and lost, in the order each round runs them (default ["cold", "ram"])
 #   repeats     rounds (default 2)
+#   lost_gap_s  seconds from a `lost` cell's kill to its request (default 20)
 #   hot         true: each model's `hot` run (default false)
 #   update      `cozy machine update` flags every arm starts from, each with its value: `self` (this session's cozy, for
 #               --tensord), an https URL (a wheel, or a cozy binary), `artifact:<run id>/<name>` (a cozy-creator run's wheel),
-#               a cozy-runtime dev-build run id (--runtime), else as given ([]: the image's)
+#               `artifact:<run id>` (a cozy-creator dev-build's cozy, for --tensord), a cozy-runtime dev-build run id
+#               (--runtime), else as given ([]: the image's)
 #   arms        [{"name", "update": [flags over `update`]}], run in order (default [{"name": "rc"}]): A B B A is four
 #   need_s      seconds the cap must buy (default 9000)
 . "$(dirname "$0")/lib.sh"
@@ -37,14 +43,15 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/cold-load
 TREE=$(param tree '') MODELS=$(param models '["h3", "qwen-image-2"]') CONDITIONS=$(param conditions '["cold", "ram"]')
 REPEATS=$(param repeats 2) BASE=$(param update '[]') ARMS=$(param arms '[{"name": "rc"}]') NEED=$(param need_s 9000)
-HOT=$(param hot false)
+HOT=$(param hot false) LOST_GAP=$(param lost_gap_s 20)
 [[ $HOT =~ ^(true|false)$ ]] || fail "hot $HOT: true or false"
+[[ $LOST_GAP =~ ^[0-9]+$ ]] || fail "lost_gap_s $LOST_GAP"
 for tool in jq python3 curl; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -n "$TREE" ] && [ -d "$PACKAGES/$TREE" ] || fail "dispatch with -f packages_refs=<name>=<ref> and params.tree=<name>"
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 [[ $REPEATS =~ ^[1-9]$ && $NEED =~ ^[0-9]+$ ]] || fail "repeats $REPEATS, need_s $NEED"
-jq -e 'type == "array" and length > 0 and all(.[]; . == "cold" or . == "ram" or . == "disk")' <<<"$CONDITIONS" > /dev/null ||
-  fail "conditions $CONDITIONS: of cold, ram, disk"
+jq -e 'type == "array" and length > 0 and all(.[]; . == "cold" or . == "ram" or . == "disk" or . == "lost")' <<<"$CONDITIONS" > /dev/null ||
+  fail "conditions $CONDITIONS: of cold, ram, disk, lost"
 PRESETS='{
   "h3": {"target": "minimax-h3/generate", "loop": "denoise", "input": {
     "summary": {"text": "A lighthouse on a rocky point at dusk, take {take}.", "references": []},
@@ -71,7 +78,9 @@ resolve() {
   local d=$1 flag=$2 v=$3 f
   case $v in
     self) command -v cozy ;;
-    https://*.whl | artifact:*) wheel_from "$d" "$v" ;;
+    artifact:*/* | https://*.whl) wheel_from "$d" "$v" ;;
+    artifact:*) gh run download "${v#artifact:}" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$d" > /dev/null 2>&1 &&
+      f=$(find "$d" -name cozy-linux-x86_64 | head -1) && [ -n "$f" ] && chmod +x "$f" && echo "$f" ;;
     https://*) mkdir -p "$d" && f=$d/${v##*/} && curl -fsSL --retry 5 -o "$f" "$v" && chmod +x "$f" && echo "$f" ;;
     *) if [ "$flag" = --runtime ] && [[ $v =~ ^[0-9]+$ ]]; then wheel_from "$d" "$v"; else echo "$v"; fi ;;
   esac
@@ -150,10 +159,12 @@ podpy() {
 }
 # prepare <label> <condition>: the cell's executor and caches.
 prepare() {
-  [ "$2" = hot ] || fresh "$1"
+  case $2 in hot | lost) ;; *) fresh "$1" ;; esac
   case $2 in
     cold) podpy "$1" forget; mv "$OUT/$1.census.json" "$OUT/$1.forget.json"; podpy "$1" drop ;;
     disk) podpy "$1" drop ;;
+    lost) podpy "$1" lose; mv "$OUT/$1.census.json" "$OUT/$1.lose.json"; say "$1: killed $(jq -c '.killed' "$OUT/$1.lose.json")"
+      sleep "$LOST_GAP"; podpy "$1" census ;;
     *) podpy "$1" census ;;
   esac
   say "$1 ($2): $(jq -c '{drop_caches, store_gb, store_resident_gb, derived_records, cached_gb}' "$OUT/$1.census.json")"

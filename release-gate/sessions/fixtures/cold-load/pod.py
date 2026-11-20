@@ -7,6 +7,8 @@ the census in it:
   forget  the derived pages' records (LoRA bakes), stage memos and learned peaks removed: what a first load on this machine
           finds
   settle  waits, up to 300 s, until the derived pages stop growing: a run's bakes are persisted after it ends
+  lose    every executor is killed (SIGKILL), its import-only parents too, as the kernel's OOM killer or a crash would:
+          TensorD stays up, and finds its parents gone (cl-1327)
 """
 
 import ctypes
@@ -14,6 +16,7 @@ import json
 import mmap
 import os
 import shutil
+import signal
 import sys
 import time
 
@@ -118,6 +121,18 @@ def mount(path: str) -> str:
     return said
 
 
+def executors() -> list[int]:
+    """Every Runtime executor's pid: import-only parents, the executors forked from them, spawned ones."""
+    found = []
+    for pid in os.listdir("/proc"):
+        try:
+            if pid.isdigit() and b"cozy_runtime.internal.executor" in open(f"/proc/{pid}/cmdline", "rb").read():
+                found.append(int(pid))
+        except OSError:
+            continue
+    return sorted(found)
+
+
 def census() -> dict[str, object]:
     store = store_files()
     derived = files(DERIVED) if os.path.isdir(DERIVED) else []
@@ -176,6 +191,19 @@ elif mode == "forget":
                 shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
             gone.append(d)
     said["cleared"] = sorted(set(gone))
+elif mode == "lose":
+    killed = executors()
+    for pid in killed:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    began = time.time()
+    while set(executors()) & set(killed) and time.time() - began < 30:
+        time.sleep(0.2)
+    said["killed"] = killed
+    said["left"] = sorted(set(executors()) & set(killed))
+    said["lose_s"] = round(time.time() - began, 2)
 elif mode == "settle":
     began, last, still = time.time(), -1, 0
     while time.time() - began < 300 and still < 3:

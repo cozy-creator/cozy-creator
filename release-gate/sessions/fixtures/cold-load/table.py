@@ -12,6 +12,9 @@ record. Prints a JSON row per cell, then the cells and the medians by arm, model
   H3 on a 24 GB card, streams in it too, so streaming stays in step time), or the arm's `hot` run's step 1 (`warm` hot).
   H3's hot step 1 is no reference: a fresh executor's runs it dense (`TURBO_DENSE_STEPS`), 48 s on a 4090, and the same
   executor's next request ran it in 25 s.
+- Executor start, from acceptance to construction: the executor's own legs (`fork_s` from its import-only parent, `cuda_init_s`,
+  its package's warm-up) and `parent_wait_s`, the rest: a launch waiting for its parent to start and import. A `lost` cell's
+  parent was killed before it (cl-1327): one that waited over 1.5 s for it, or spawned instead of forking, is a flaw.
 - Its parts, on the record's own clock: executor start (to construction), construction, models built on demand inside the
   request (`on_demand`: Qwen's prompt enhancer), each stage before the loop (its
   `<stage> / loading <slot>` loads apart), and from there to ready (the loop's model load, its LoRA bake, graph capture).
@@ -128,6 +131,16 @@ def row(label: str, arm: str, model: str, condition: str, loop: str, warm: str, 
     executor = obj(execution.get("executor"))
     if not executor or not num(executor.get("started_unix_ms")):
         flaws.append("no executor start: not a fresh executor")
+    legs = obj(executor.get("legs_ms"))
+    forked = "fork" in legs
+    # A forked executor's legs carry its parent's imports too: only its own count toward its start.
+    own = ("fork", "cuda_init", "package_warmup", "followers_spawned", "group_start", "group_links", "group_form")
+    own_ms = sum(num(v) for k, v in legs.items() if k in own) if forked else sum(num(v) for v in legs.values())
+    parent_wait = (began - t0 - own_ms) / 1000
+    if condition == "lost" and not forked:
+        flaws.append("lost: its executor spawned, not forked: the request paid its imports")
+    elif condition == "lost" and parent_wait > 1.5:
+        flaws.append(f"lost: waited {parent_wait:.1f} s for its import-only parent (cl-1327)")
     stages = {k: obj(v) for k, v in obj(obj(m.get("attribution")).get("stages")).items()}
     top = {k: v for k, v in stages.items() if " / " not in k and not k.startswith("host · ")}
     before = sorted((k for k, v in top.items() if k != loop and not k.startswith(("decod", "saving"))
@@ -197,7 +210,9 @@ def row(label: str, arm: str, model: str, condition: str, loop: str, warm: str, 
         "need_gb": round(need / 1e9, 2), "gpu_gb": round(gpu / 1e9, 2), "disk_s": round(disk_s, 2), "pcie_s": round(pcie_s, 2),
         "disk_gbps": round(disk_gbps, 2), "h2d_gbps": round(h2d_gbps, 1),
         "wait_s": round((t0 - num(rec.get("accepted_at_ms"))) / 1000, 2) if rec.get("accepted_at_ms") else None,
-        "executor_s": round((began - t0) / 1000, 2), "construct_s": round(prepare / 1000, 2),
+        "executor_s": round((began - t0) / 1000, 2), "fork_s": round(num(legs.get("fork")) / 1000, 2),
+        "cuda_init_s": round(num(legs.get("cuda_init")) / 1000, 2), "parent_wait_s": round(parent_wait, 2),
+        "construct_s": round(prepare / 1000, 2),
         "on_demand_s": round(on_demand / 1000, 2), "pre_load_s": round(pre_load / 1000, 2),
         "pre_compute_s": round(pre_compute / 1000, 2),
         "to_step1_s": round((ready_at - pre_end) / 1000, 2), "gap_s": round(ready - pieces, 2),
@@ -217,10 +232,12 @@ def row(label: str, arm: str, model: str, condition: str, loop: str, warm: str, 
     }
 
 
-COLS = ["label", "run", "ready_s", "bound_s", "x", "load_s", "x_load", "need_gb", "gpu_gb", "disk_s", "pcie_s", "executor_s", "construct_s",
+COLS = ["label", "run", "ready_s", "bound_s", "x", "load_s", "x_load", "need_gb", "gpu_gb", "disk_s", "pcie_s", "executor_s", "fork_s",
+        "cuda_init_s", "parent_wait_s", "construct_s",
         "on_demand_s", "pre_load_s", "pre_compute_s", "to_step1_s", "gap_s", "bake_host_s", "bake_device_s", "step1_s", "warm_step_s",
         "first_output_s", "total_s", "store_resident_gb"]
-MEDIAN = ["ready_s", "bound_s", "x", "load_s", "x_load", "need_gb", "gpu_gb", "disk_s", "pcie_s", "executor_s", "construct_s",
+MEDIAN = ["ready_s", "bound_s", "x", "load_s", "x_load", "need_gb", "gpu_gb", "disk_s", "pcie_s", "executor_s", "fork_s", "cuda_init_s",
+          "parent_wait_s", "construct_s",
           "on_demand_s", "pre_load_s", "pre_compute_s", "to_step1_s", "gap_s", "bake_host_s", "bake_device_s", "step1_s", "first_output_s", "total_s"]
 
 
