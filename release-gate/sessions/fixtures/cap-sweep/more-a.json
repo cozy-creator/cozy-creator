@@ -676,8 +676,8 @@
    "name": "q3-caption-cold",
    "target": "qwen3/caption",
    "args": [
-    "--file",
-    "images={seed}",
+    "instructions=<picture>",
+    "references:=[{\"name\":\"picture\",\"image\":\"{seed}\"}]",
     "seed:=40061"
    ],
    "max_s": 600,
@@ -687,8 +687,8 @@
    "name": "q3-caption-warm",
    "target": "qwen3/caption",
    "args": [
-    "--file",
-    "images={seed}",
+    "instructions=<picture>",
+    "references:=[{\"name\":\"picture\",\"image\":\"{seed}\"}]",
     "seed:=40062"
    ],
    "max_s": 600
