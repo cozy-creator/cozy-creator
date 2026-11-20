@@ -89,6 +89,7 @@ pub(crate) struct Counters {
     pub(crate) reclaim_longest_ns: AtomicU64,
     pub(crate) reclaim_longest_step: AtomicU64,
     pub(crate) reclaim_step_ns: [AtomicU64; crate::reclaim::STEPS],
+    pub(crate) reclaim_gpu_wait_ns: AtomicU64,
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -308,14 +309,24 @@ impl Driver {
         value
     }
 
-    /// A reclaim step's time, waits included.
-    pub(crate) fn note_reclaim(&self, step: usize, elapsed: Duration) {
-        let ns = elapsed.as_nanos() as u64;
+    /// A reclaim step's time, less what it spent waiting for the GPU to finish with what it would free
+    /// (`note_gpu_wait`): that is the GPU's work, and a busy GPU read as reclaim (klein-gen-hardest: 799 s).
+    pub(crate) fn note_reclaim(&self, step: usize, elapsed: Duration, gpu_wait: Duration) {
+        let ns = elapsed.saturating_sub(gpu_wait).as_nanos() as u64;
         self.counters.reclaim_ns.fetch_add(ns, Ordering::Relaxed);
         self.counters.reclaim_step_ns[step].fetch_add(ns, Ordering::Relaxed);
         if self.counters.reclaim_longest_ns.fetch_max(ns, Ordering::Relaxed) < ns {
             self.counters.reclaim_longest_step.store(step as u64, Ordering::Relaxed);
         }
+    }
+
+    /// Time reclaim waited on work the GPU was still running, on events or a join.
+    pub(crate) fn note_gpu_wait(&self, elapsed: Duration) {
+        self.counters.reclaim_gpu_wait_ns.fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn gpu_wait_ns(&self) -> u64 {
+        self.counters.reclaim_gpu_wait_ns.load(Ordering::Relaxed)
     }
 
     /// Reclaim time by step, in ORDER.

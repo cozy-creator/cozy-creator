@@ -175,9 +175,9 @@ impl<'a> Sequence<'a> {
             return Ok(true);
         }
         while let Some(step) = ORDER.get(self.step).copied() {
-            let (index, started) = (self.step, Instant::now());
+            let (index, started, waited) = (self.step, Instant::now(), GPU_WAIT.get());
             let done = self.run(step, want, physical);
-            self.gpu.driver().note_reclaim(index, started.elapsed());
+            self.gpu.driver().note_reclaim(index, started.elapsed(), GPU_WAIT.get().saturating_sub(waited));
             if done? {
                 return Ok(true);
             }
@@ -587,7 +587,13 @@ pub(crate) fn join(gpu: &Device) -> Result<()> {
     Ok(())
 }
 
+thread_local! {
+    /// This thread's time in `wait_outside`, which a reclaim step leaves out of its own.
+    static GPU_WAIT: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
 pub(crate) fn wait_outside(gpu: &Device, events: &[usize], join: bool) -> Result<()> {
+    let started = Instant::now();
     let result = (|| {
         let driver = gpu.driver();
         let _context = driver.enter()?;
@@ -601,6 +607,9 @@ pub(crate) fn wait_outside(gpu: &Device, events: &[usize], join: bool) -> Result
         }
         Ok(())
     })();
+    let waited = started.elapsed();
+    GPU_WAIT.set(GPU_WAIT.get() + waited);
+    gpu.driver().note_gpu_wait(waited);
     // A failed wait is a device fault: nothing here can prove completion any more.
     result.inspect_err(|error: &Error| {
         if let Ok(mut state) = gpu.state.lock() {
