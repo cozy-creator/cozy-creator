@@ -715,7 +715,7 @@ impl Tier {
 
     /// A page with bytes the caller is about to write for `key`, admitted and registered (faulted
     /// in first if `populate`), or None: `insert` it once they are written. One registered ahead if
-    /// there is, or will be soon, else a spare of its size, whose room the tier already holds.
+    /// there is, or will be soon.
     pub(super) fn reserve(&self, key: &str, set: &str, len: usize, populate: bool) -> PyResult<Option<Page>> {
         let (making, gone) = {
             let mut state = self.state();
@@ -730,9 +730,6 @@ impl Tier {
                 state.bytes -= reserved.page.len as u64;
                 state.reserved_ahead += 1;
                 return Ok(Some(reserved.page));
-            }
-            if let Some(at) = state.spare.iter().position(|(page, _)| page.len == len) {
-                return Ok(Some(state.spare.swap_remove(at).0));
             }
             self.admit(&mut state, key, set, len as u64)
         };
@@ -778,15 +775,30 @@ impl Tier {
     }
 
     /// A page to read a refill of `key`'s stored bytes into and keep (`Inner::read_kept`), if the
-    /// tier admits it. The next one of its size is made ahead on the tier's thread, in free room:
-    /// a loop's blocks are alike, so its next refill finds its page registered. None: the refill
-    /// reads onto the card alone.
+    /// tier admits it: a spare of its size made ahead, while the tier is under its cap and not
+    /// pressed (its room is held already), else one `reserve` admits. The next one of its size is
+    /// made ahead on the tier's thread, in free room: a loop's blocks are alike, so its next refill
+    /// finds its page registered. None: the refill reads onto the card alone.
     pub(super) fn keeping(self: &Arc<Self>, key: &str, set: &str, len: usize) -> Option<Page> {
-        let page = self.reserve(key, set, len, true).ok().flatten()?;
+        let spare = {
+            let mut state = self.state();
+            let fits = !state.pressed && !state.kept.contains_key(key) && self.under_cap(&state, len as u64);
+            let at = if fits { state.spare.iter().position(|(page, _)| page.len == len) } else { None };
+            at.map(|at| state.spare.swap_remove(at).0)
+        };
+        let page = match spare {
+            Some(page) => page,
+            None => self.reserve(key, set, len, true).ok().flatten()?,
+        };
         self.state().spare_wanted = Some(len);
         self.reserving.notify_all();
         self.reserver();
         Some(page)
+    }
+
+    /// Whether `bytes` more kept bytes stay within the cap.
+    fn under_cap(&self, state: &State, bytes: u64) -> bool {
+        state.bytes + bytes <= self.cap
     }
 
     /// `page` holds `key`'s stored bytes, read for a refill: kept.
@@ -819,7 +831,9 @@ impl Tier {
                         state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner());
                         continue;
                     };
-                    if state.spare.iter().all(|(page, _)| page.len != len) {
+                    let spares: u64 = state.spare.iter().map(|(page, _)| page.len as u64).sum();
+                    // Only a spare a kept refill could take: none of its size yet, and within the cap.
+                    if state.spare.iter().all(|(page, _)| page.len != len) && self.under_cap(&state, spares + len as u64) {
                         drop(state);
                         if let Ok(Some(page)) = self.new_page(len, false) {
                             self.spare(page);
