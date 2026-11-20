@@ -1,5 +1,5 @@
 {
-  "need_s": 8400,
+  "need_s": 9000,
   "max_failures": 3,
   "order": "one-way",
   "floor_mb_s": 100,
@@ -35,6 +35,23 @@
       "max_s": 2400,
       "tree": "rc",
       "unless": "h3-up-2160p-15s"
+    },
+    {
+      "name": "h3-1440p-6g",
+      "tree": "se",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip5}",
+        "to=1440p",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "max_s": 2400,
+      "update": {
+        "runtime": "44661440125",
+        "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
+        "gpu_memory_limit": "6GiB"
+      }
     }
   ]
 }
