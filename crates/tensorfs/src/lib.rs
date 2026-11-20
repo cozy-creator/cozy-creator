@@ -7,6 +7,8 @@
 
 /// File descriptor headroom: how many a process may hold open, and what's left.
 pub(crate) mod descriptors;
+/// Derived weights (merged LoRAs) in the OS's temporary storage, under a cap (cl-1318).
+pub mod derived;
 pub mod err;
 pub mod failure;
 pub use failure::{Failure, Kind, Result};
