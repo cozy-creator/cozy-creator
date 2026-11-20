@@ -137,7 +137,10 @@ for arm in $ARMS; do
       t=0; until [ "$(pod 'find /var/tmp/cozy-derived-*/ -name ".*.part" | wc -l')" -gt 0 ] 2> /dev/null; do
         sleep 1; t=$((t + 1)); [ "$t" -lt 900 ] || fail "kill: no merge writing within 900 s"
       done
-      pod 'kill -9 $(pgrep -n -f cozy_runtime.internal.executor) && echo killed' > "$OUT/killed.txt"; say "kill: $(cat "$OUT/killed.txt") the executor mid-write"
+      # The newest executor (no pgrep in the image): its pid, then kill -9.
+      pod 'p=$(for d in /proc/[0-9]*; do tr "\0" " " < $d/cmdline 2> /dev/null | grep -q "cozy_runtime.internal.executor" && echo ${d#/proc/}; done | sort -n | tail -1); [ -n "$p" ] && kill -9 $p && echo "killed $p"' > "$OUT/killed.txt"
+      grep -q killed "$OUT/killed.txt" || fail "kill: no executor to kill: $(cat "$OUT/killed.txt")"
+      say "kill: $(cat "$OUT/killed.txt"), the executor mid-write"
       disk killed
       wait "$KP"; say "kill: its call ended: $(tail -2 "$OUT/kill.txt" | tr '\n' ' ' | cut -c1-300)"
       disk after-kill
