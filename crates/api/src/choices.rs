@@ -156,6 +156,17 @@ impl<'a> Choices<'a> {
             None => self.lora_slots(written)?,
         };
         let scale = if strength.trim().is_empty() { String::new() } else { model_ref::strength(strength)? };
+        // A LoRA slot (a raw checkpoint of no layout, which the function hands to a call by its ref: Orbit's `lora`, cl-1281)
+        // takes the LoRA as its model, as `models.<slot>.ref` does: Paul, every LoRA is overridable.
+        if let [param] = slots.as_slice()
+            && let Some(own) = self.own(param).filter(|slot| lora_slot(slot))
+        {
+            let (param, default) = (own.param.clone(), own.default.clone().unwrap_or_default());
+            self.choose(&param, reference.to_owned())?;
+            let strength = if scale.is_empty() { String::new() } else { format!(" at its release's strength, not {scale} (a slot's LoRA takes none yet, cl-1320)") };
+            self.replaced.push(format!("--lora {written}: {reference} is the model of LoRA slot {param}, in place of {default}{strength}"));
+            return Ok(());
+        }
         let adapter = Adapter { reference: reference.to_owned(), scale };
         self.at(slots, |choice| {
             choice.adapters.push(adapter.clone());
@@ -192,6 +203,14 @@ impl<'a> Choices<'a> {
     /// model. More than one is refused, naming each.
     fn lora_slots(&self, written: &str) -> Result<Vec<String>, Error> {
         let (candidates, alternatives) = lora_models(self.own, &self.calls);
+        // A function that builds no model a LoRA applies to but declares one LoRA slot (Orbit's `lora`, which it hands to its
+        // call by its ref, cl-1281): the LoRA takes that slot. Paul: every LoRA is overridable.
+        let lora_slots: Vec<&Slot> = self.own.iter().filter(|slot| lora_slot(slot)).collect();
+        if let [one] = lora_slots.as_slice()
+            && candidates.iter().all(|(slot, _)| slot.contains(".models."))
+        {
+            return Ok(vec![one.param.clone()]);
+        }
         if alternatives {
             return Ok(candidates.into_iter().map(|(slot, _)| slot).collect());
         }
@@ -205,7 +224,18 @@ impl<'a> Choices<'a> {
         }
         let name = self.target;
         match models.len() {
-            0 => Err(usage("lora_slot_absent", format!("--lora {written}: {name} loads no model a LoRA applies to"))),
+            // Nothing it runs takes a LoRA, and two or more LoRA slots are a choice to name.
+            0 => match lora_slots.as_slice() {
+                [] => Err(usage("lora_slot_absent", format!("--lora {written}: {name} loads no model a LoRA applies to"))),
+                many => {
+                    let names: Vec<String> = many.iter().map(|slot| format!("--lora {}={written}", slot.param)).collect();
+                    Err(usage(
+                        "lora_slot_ambiguous",
+                        format!("--lora {written}: {name} has {} LoRA slots; name one: {}", many.len(), names.join(" or ")),
+                    )
+                    .remedy(names.join("\n  ")))
+                }
+            },
             1 => Ok(candidates.into_iter().map(|(slot, _)| slot).collect()),
             n => {
                 let each = |f: &dyn Fn(&str, &str) -> String| -> Vec<String> {
@@ -289,6 +319,12 @@ pub fn wire(models: &[Choice]) -> Result<Vec<ModelChoice>, Error> {
 
 fn ident(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// A LoRA slot: a raw checkpoint of no layout (a bare `Weights`, class `Model`), which its function hands to a call by its ref
+/// (cl-1281). A `Weights[M]` of a model's layout is that model's checkpoint, not a LoRA.
+fn lora_slot(slot: &Slot) -> bool {
+    slot.weights && slot.class == "Model"
 }
 
 /// A call's main model: its first constructed slot that loads with the call, which `--lane`

@@ -340,6 +340,20 @@ if cell lora-handed "$handed/handed" && cell lora-handed-plain "$handed/handed" 
     || check "lora handed: the slot's LoRA changed nothing: $(jq -c .result "$OUT/lora-handed.json") as without it"
 fi
 echo "lora handed: its call's LoRAs $(lora_called lora-handed), sums $(jq -c .result.sum "$OUT/lora-handed.json" 2> /dev/null) with, $(jq -c .result.sum "$OUT/lora-handed-plain.json" 2> /dev/null) without"
+# cl-1241 (the coordinator, 11-19; Paul: every LoRA is overridable): a LoRA naming no slot, on a function that builds no model a LoRA
+# applies to and declares one LoRA slot (Orbit's shape: `orbit/orbit --lora X` was refused lora_slot_absent, 44631422911), takes
+# that slot in place of its default, so the request names it there and no LoRA is stacked on its call. Before: lora_slot_absent
+# (Orbit), or stacked on the call's model (here). Two LoRA slots and nothing else a LoRA applies to: lora_slot_ambiguous.
+if cell lora-handed-bare "$handed/handed" --lora "$lora"; then
+  J --arg l "$lora" '((.request.input.models.lora.ref // "") | startswith($l)) and ([.request.input.models[]?.lora[]?] | length == 0)' \
+    "$OUT/lora-handed-bare.json" || check "lora handed bare: the LoRA didn't take handed's LoRA slot: $(jq -c .request.input.models "$OUT/lora-handed-bare.json")"
+  J '[.calls[]? | .measurements.models[]? | select(.slot == "model") | .adapters[]? | select(.layers > 0)] | length == 1' "$OUT/lora-handed-bare.json" \
+    || check "lora handed bare: its call's model didn't take its slot's one LoRA: $(lora_called lora-handed-bare)"
+fi
+ALLOW=lora_slot_ambiguous cell lora-handed-twin "$handed/twin" --lora "$lora" || true
+{ [ -f "$OUT/lora-handed-twin.refused" ] && grep -q -- "--lora first=$lora" "$OUT/lora-handed-twin.ndjson" "$OUT/lora-handed-twin.err" 2> /dev/null; } \
+  || check "lora handed: twin's LoRA was not refused as lora_slot_ambiguous naming --lora first=$lora"
+echo "lora handed bare: $(jq -c .request.input.models "$OUT/lora-handed-bare.json" 2> /dev/null), its call's LoRAs $(lora_called lora-handed-bare)"
 }
 
 # ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
