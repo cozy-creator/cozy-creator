@@ -34,7 +34,7 @@ import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
-import { fieldsOf, fullRows, heldTo, mainText, startingFields } from "./controls"
+import { fieldsOf, fullRows, heldTo, mainText, sliderEdits, startingFields } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
@@ -1584,6 +1584,9 @@ export class CanvasStore {
     if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
     const local = madeHere(asset.tool)
     const on = local ? ["local"] : this.machines()
+    const fields = this.tools.get().get(asset.tool ?? "")?.fields ?? []
+    const adjusted = sliderEdits(fields, (field) => this.valueOf(key, field))
+    for (const [field, value] of Object.entries(adjusted)) this.setDraft(key, field, value)
     const saved = this.save(key)
     if (!on.length) {
       this.patch(key, { waiting: also })

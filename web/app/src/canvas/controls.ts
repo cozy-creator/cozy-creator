@@ -68,6 +68,86 @@ export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
 
 export const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
 
+export const roundSliderNumber = (value: number) => Number(value.toFixed(2))
+
+/** The hundredth nearest each bound that the inference schema still accepts. */
+export function sliderBounds(field: ToolField) {
+  const min = field.min ?? undefined
+  const max = field.max ?? undefined
+  if (field.integer) return { min, max, step: field.step ?? 1 }
+  const lower = min === undefined ? undefined : roundSliderNumber(min)
+  const upper = max === undefined ? undefined : roundSliderNumber(max)
+  return {
+    min: lower !== undefined && min !== undefined && lower < min ? roundSliderNumber(lower + 0.01) : lower,
+    max: upper !== undefined && max !== undefined && upper > max ? roundSliderNumber(upper - 0.01) : upper,
+    step: Math.max(0.01, roundSliderNumber(field.step ?? 0.01)),
+  }
+}
+
+export function sliderValue(field: ToolField, value: number) {
+  if (field.integer) return value
+  const { min, max } = sliderBounds(field)
+  return Math.min(max ?? Infinity, Math.max(min ?? -Infinity, roundSliderNumber(value)))
+}
+
+const record = (value: unknown): Row | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined
+
+function adjusted(fields: ToolField[], read: (field: string) => unknown): Row {
+  const edits: Row = {}
+  for (const field of fields) {
+    const value = read(field.field)
+    const number = field.type === "number" && typeof value === "number" && Number.isFinite(value)
+    let next = number ? sliderValue(field, value) : value
+    if (field.type === "group" && field.members) {
+      const members = field.members
+      const adjustRow = (value: unknown) => {
+        const row = record(value)
+        if (!row) return value
+        const adjustedRow = adjusted(members, (name) => row[name])
+        return Object.keys(adjustedRow).length ? { ...row, ...adjustedRow } : value
+      }
+      if (field.list && Array.isArray(value)) {
+        const rows = value.map(adjustRow)
+        if (rows.some((row, at) => row !== value[at])) next = rows
+      } else next = adjustRow(value)
+    }
+    if (next !== value) edits[field.field] = next
+  }
+  return edits
+}
+
+function adjustedLoras(value: unknown) {
+  if (!Array.isArray(value)) return value
+  const rows = value.map((row: unknown) => {
+    const adapter = record(row)
+    const strength = adapter?.strength
+    if (typeof strength !== "number" || !Number.isFinite(strength)) return row
+    const rounded = roundSliderNumber(strength)
+    return strength === rounded ? row : { ...adapter, strength: rounded }
+  })
+  return rows.some((row, at) => row !== value[at]) ? rows : value
+}
+
+/** Older saved values can predate the slider's precision. Write their rounded values before inference. */
+export function sliderEdits(fields: ToolField[], read: (field: string) => unknown): Row {
+  const edits = adjusted(fields, read)
+  const lora = read("lora")
+  const next = adjustedLoras(lora)
+  if (next !== lora) edits.lora = next
+  const models = record(read("models"))
+  if (models) {
+    const slots: Row = {}
+    for (const [key, value] of Object.entries(models)) {
+      const slot = record(value)
+      if (!slot) continue
+      const updates = adjustedLoras(slot.lora)
+      if (updates !== slot.lora) slots[key] = { ...slot, lora: updates }
+    }
+    if (Object.keys(slots).length) edits.models = { ...models, ...slots }
+  }
+  return edits
+}
+
 /** Unset, or set to just what it would be unset. */
 export const atDefault = (field: ToolField, value: unknown) => empty(value) || JSON.stringify(value) === JSON.stringify(field.default)
 
