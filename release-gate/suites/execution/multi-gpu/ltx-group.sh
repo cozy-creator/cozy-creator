@@ -5,6 +5,10 @@
 # `video_keyframes_mask` to the plan, which only a canvas passes. Diffusers' split hook read the ones a call left out by
 # position, so every 2-GPU text-to-video failed at the transformer's first call ("Expected 5 arguments but got 0", then
 # IndexError; pod-session 44650415423, 2x rtx-5090, ltx-2.5 0.4.0rc3). One GPU never splits, so no other cell saw it.
+#
+# `ltx-u2-retake` waits on var-040 (varena: cuFFT scratch outside its books): on 2x RTX 4090 each GPU holds a full replica
+# (23.5 of 24 GiB), and the canvas's sound spectrogram fails CUFFT_INTERNAL_ERROR on GPU 1. It is red until that fix lands;
+# no package works around it.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # ltx_group <cell> <least frames> <target> <inputs...>: held to two ranks on two GPUs: a 704p video with audio whose DiT
 # call ran at degree 2 over 2 GPUs, and frames a broken shard does not make (frames.py coherent, the bounds h3_group holds).
