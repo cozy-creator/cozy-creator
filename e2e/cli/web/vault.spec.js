@@ -545,7 +545,10 @@ test.describe('encrypted video in a background tab', () => {
         : { playing: false, at: -1, same: false };
     });
 
-    await focus.getByRole('button', { name: 'Play', exact: true }).click();
+    await expect(video).toHaveCount(1);
+    await expect.poll(() => video.evaluate((player) => player.readyState)).toBeGreaterThan(0);
+    const play = focus.getByRole('button', { name: 'Play', exact: true });
+    if ((await sample()).playing === false) await play.click();
     await expect.poll(async () => (await sample()).at).toBeGreaterThan(0.3);
     await video.evaluate((player) => { window.backgroundVideo = player; });
     const before = await sample();
