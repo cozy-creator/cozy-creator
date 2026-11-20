@@ -1442,7 +1442,9 @@ impl Pool {
                 key.and_then(|key| sessions.remove(&key))
             };
             let Some(previous) = previous else { break };
-            say(engine, id, "freeing GPUs for the new group");
+            if !id.is_empty() {
+                say(engine, id, "freeing GPUs for the new group");
+            }
             let (plan, start) = (previous.env.clone(), previous.start);
             let births = executor_births(&previous.executor.birth, &previous.followers);
             let pid = previous.executor.birth.pid;
@@ -1461,9 +1463,9 @@ impl Pool {
         if self.config.host.mode != HostMode::Dedicated {
             return Ok(());
         }
-        let other: Vec<_> = self.tenants.lock().unwrap().values()
-            .filter(|tenant| tenant.exact.birth() != &incoming.executor.birth && !tenant.exact.ended())
-            .map(|tenant| tenant.start..tenant.start + tenant.width)
+        let other: Vec<_> = self.lanes.lock().unwrap().iter()
+            .filter(|(run, _)| run.as_str() != id)
+            .map(|(_, lane)| lane.clone())
             .collect();
         let check: Vec<_> = lane.filter(|index| !other.iter().any(|lane| lane.contains(index)))
             .filter_map(|index| platform::gpu::Device::open(&self.devices[index].entry).ok().map(|device| (index, device)))
@@ -1478,7 +1480,7 @@ impl Pool {
                 (!reading.display && used > IDLE_USE).then_some((*index, used))
             });
             let Some((index, used)) = busy else { return Ok(()) };
-            if engine.get(id)?.cancel_actor.is_some() {
+            if !id.is_empty() && engine.get(id)?.cancel_actor.is_some() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "canceled while waiting for GPU memory"));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1488,7 +1490,7 @@ impl Pool {
                     self.index(index), used as f64 / (1u64 << 30) as f64,
                 )));
             }
-            if !std::mem::replace(&mut waiting, true) {
+            if !id.is_empty() && !std::mem::replace(&mut waiting, true) {
                 say(engine, id, "waiting for GPU memory to be released");
             }
             engine.wait_activity(epoch, Some(remaining.min(std::time::Duration::from_millis(100))));
@@ -4165,6 +4167,11 @@ impl Pool {
         cold: Option<tensorfs::fetch::Starting>,
     ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
+        // Weightless plans hold their GPUs in one process without forming a group.
+        let ranks = if plan.slots.is_empty() { 1 } else { degree.max(1) };
+        if !session.started && ranks > 1 {
+            self.prepare_group_start(engine, id, session)?;
+        }
         let construction = plan.construction.clone();
         // Live before what it let go is read: a release after this refuses its construction (tfs-303).
         let _live = self.live(session.executor.birth.pid, &construction);
@@ -4193,9 +4200,6 @@ impl Pool {
             true => io::Error::other(Undelivered(format!("retained executor cannot prepare this request before entry: {error}"))),
             false => error,
         };
-        // A group runs one rank per GPU; a plan that constructs nothing holds its GPUs in one
-        // process (the Runtime refuses a group without constructed models).
-        let ranks = if plan.slots.is_empty() { 1 } else { degree.max(1) };
         let lane = self.lane_devices(start, degree)?;
         let mut callbacks = Callbacks {
             engine,
@@ -4215,9 +4219,6 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.started {
-            if ranks > 1 {
-                self.prepare_group_start(engine, id, session)?;
-            }
             if !load_only {
                 say(engine, id, "starting the executor");
             }
