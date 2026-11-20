@@ -814,6 +814,9 @@ pub(crate) struct Item {
     /// Saved by a browser under this name (cl-891, `files::save_as`).
     #[serde(default)]
     download: Option<String>,
+    /// A media element's request: each `Range` answer at most a megabyte (`files::Asked`, cl-1220).
+    #[serde(default)]
+    pieces: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -833,7 +836,7 @@ pub(crate) async fn serve(
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
-    let Item { index, member, download } = query?.0;
+    let Item { index, member, download, pieces } = query?.0;
     let run = path.run.as_deref().unwrap_or(&path.id);
     let project = path.run.as_ref().map(|_| path.id.as_str());
     let name = &path.name;
@@ -861,7 +864,7 @@ pub(crate) async fn serve(
         (item, file, landed_folder)
     };
     if let Some(dir) = landed_folder {
-        return folder(&dir, member.as_deref(), &number, &name, &headers).await.map(|response| protect(response, readable));
+        return folder(&dir, member.as_deref(), &number, &name, &headers, pieces).await.map(|response| protect(response, readable));
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
@@ -895,7 +898,7 @@ pub(crate) async fn serve(
         return Err(Refusal(refusal.0.next(format!("cozy run watch {number}"))));
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
+    let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers, pieces)
         .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?;
     if let Some(saved) = download {
         let ext = item.path.as_deref().and_then(Path::extension).and_then(|ext| ext.to_str()).unwrap_or_default();
@@ -925,7 +928,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
 }
 
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
-async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
+async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, headers: &HeaderMap, pieces: bool) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
         let message = format!("The result's folder {} is gone: {e}.", dir.display());
         Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
@@ -956,7 +959,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, head
         }
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    crate::files::send(file, len, &media_type, &etag, headers).map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))
+    crate::files::send(file, len, &media_type, &etag, headers, pieces).map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))
 }
 
 /// The item's name in its run's output directory (`api::calcifer::output_file_name`).

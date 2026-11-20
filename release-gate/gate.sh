@@ -543,14 +543,27 @@ if [ -z "$ON" ]; then
       RID=; rm -f acquisition.jsonl rental
       continue
     fi
+    # An order that ended unfilled under the market (`rental_ended` "…; above it the cheapest costs X", or "…; the cheapest that
+    # fits costs X") bills nothing, and one at the market's price can place: ordered again, as a repriced one. 44499695629: an
+    # order agreed 1.513 USD/h on offers whose provider's balance was short (th-425), ended under 1.536, and the gate failed.
+    ended=
+    if [ "$rc" != 0 ] && grep -qs '"code":"rental_ended"' rent.out rent.err; then
+      grep -ohsE '[^"(]*cheapest (that fits )?costs [0-9.]+ USD per hour' rent.out rent.err | head -1 > acquisition.repriced
+      [ ! -s acquisition.repriced ] || ended=1
+    fi
     [ -s acquisition.repriced ] || break
-    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
-    cat rent.err >> rent-orders.err
+    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*|^no .*' acquisition.repriced | head -1)"
+    cat rent.out rent.err >> rent-orders.err
     if [ "$order" = "$REORDERS" ]; then
       echo "$REORDERS orders, each under the market by the time it could place" > acquisition.stuck
       break
     fi
-    "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
+    # One that ended is checked gone; one still waiting is ended first.
+    if [ -n "$RID" ] && [ -n "$ended" ]; then
+      ! listed "$RID" "$CLI" || { log "rent failed: $RID ended unfilled, yet is still listed"; exit 1; }
+    elif [ -n "$RID" ]; then
+      "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
+    fi
     RID=; rm -f acquisition.repriced acquisition.jsonl rental
   done
   acquired
@@ -692,7 +705,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # contract refuses fails here by name, whatever its cells do (22 of 25 were refused from 0.43.1 to 0.45.0, unseen: xs-174).
 # Judged by its package lines (`ok   <suite>/<package>:`, `FAIL <suite>/<package>:`), each package's own verdict.
 if [ ${#GATE_PKGS[@]} -gt 0 ]; then
-  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
+  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} ${PKGS:+--packages "$PKGS"} --out interfaces "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
   gate_refused=$(grep -E '^FAIL [^ :]+/[^ :]+:' gate-packages.txt | cut -c1-160 | paste -sd';')
   gate_read=$(grep -cE '^ok   [^ :]+/[^ :]+:' gate-packages.txt)
   if [ -z "$gate_refused" ] && [ "$gate_read" = "${#GATE_PKGS[@]}" ]; then
@@ -744,6 +757,14 @@ verdict=${PIPESTATUS[0]}
 # The benchmark ledger (ledger.py): a row per package run into ledger.jsonl, each with its cell's verdict (what
 # --skip-unchanged stands on), appended to the tracker's benchmarks/ where this machine can push (CI: the
 # TRACKER_LEDGER_KEY deploy key). A suite that caps VRAM itself leaves its rows' cap unsaid: the records do not carry it.
+# Each --packages package a cell ran, described on the machine's Runtime (interfaces.sh: no GPU, seconds a package), so a row's
+# shape takes the function's own defaults for what its request left out (ledger.py defaults).
+if [ -n "$PKGS" ]; then
+  ran=$(jq -r 'objects | .target // empty' ./*.json 2> /dev/null | sed -n 's#^local/\([^/@]*\)/.*#\1#p' | sort -u)
+  dirs=(); for p in $ran; do [ -f "$PKGS/$p/pyproject.toml" ] && [ ! -f "interfaces/$p.json" ] && dirs+=("$PKGS/$p"); done
+  [ ${#dirs[@]} = 0 ] || "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} --packages "$PKGS" --out interfaces "${dirs[@]}" \
+    > interfaces.log 2>&1 || log "ledger: not every package described for its defaults: $(grep -E '^FAIL' interfaces.log | head -3 | paste -sd';')"
+fi
 ledger_cap=off
 for s in ${SUITES//,/ }; do ! grep -qs -- --gpu-memory-limit "$HERE/suites/$s/cells.sh" || ledger_cap=; done
 { python3 -I "$HERE/ledger.py" rows "$OUT" --sku "$SKU" --source "$([ "$SUITES" = bench ] && echo bench || echo gate)" ${PKGS:+--packages "$PKGS"} \

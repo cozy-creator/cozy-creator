@@ -2,18 +2,23 @@
 // time? currently if I play video-A it stops video-B from playing, which stops video-C, and so on. Why? stop this", and "a video playing in
 // the browser can play (it's cached in the browser, and doesn't need a persistent connection), it doesn't need a live connection". Three
 // windows of one browser (one pool of six connections to Calcifer) on one project, each in Focus: two videos playing and an orbit spinning.
-// For 20 s every clock and every picture moves, and every window's calls answer within a second. What holds connections is measured in
-// each window (DevTools' network events): every request for a video, how many are in flight at once, and how many still are after its
-// file came; it's printed and kept in the report. A video plays from its bytes in the page, none held open once its file has come.
-// Pictures of all three playing: $OUT/web/windows/.
+// For 20 s every clock and every picture moves, and every window's calls answer within a second. And none of them holds a connection,
+// playing or paused (cl-1220), read from this browser's sockets to Calcifer (web/sockets.js): none holding bytes at two looks in a row
+// while they play, none 6 s after all three pause. That's the property whichever way the bytes come: a file read whole into the page
+// (cl-1215) or asked for in pieces (cl-1220). Its videos are a take's size (120 MB each), more than a browser reads ahead, so an answer
+// that stays open holds bytes in its socket and is red here (the whole remainder unrationed, which froze the page; a DevTools request
+// can stay open with nothing held, so it isn't what's read). Pictures of all three playing: $OUT/web/windows/.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, focus, canvasVisible, fixtureTool, screenshotPixels } = require('./fixtures');
 const { ffmpeg, fit } = require('./hands');
+const { sockets } = require('./sockets');
 
 const TURN = fixtureTool('orbit.py/turn');
 const PLAY_MS = 20_000;
 // Between looks: not a multiple of the orbit's 2 s loop, so a look never lands on the frame it saw.
+// Also the bound on a socket holding bytes while they play: a megabyte piece in flight takes about 1.06 s on the slowest link cl-1220
+// measured (the page held to 1 MB/s, 44241061810: 10.3 MB in 10.4 s), so one holding bytes at two looks 3.3 s apart is held.
 const LOOK_MS = 3_300;
 
 /** What's on screen over `box`'s middle: a 16 × 9 grid over its middle 70 % across and 60 % down, clear of the orbit's bar and hint. */
@@ -24,25 +29,6 @@ async function look(page, box) {
   return seen;
 }
 const moved = (a, b) => a.filter((rgb, i) => Math.max(...rgb.map((value, c) => Math.abs(value - b[i][c]))) > 40).length;
-
-/** A video's requests in this window, as DevTools sees them: each, and how many are open at once, now and at most. */
-async function watchMedia(page) {
-  const cdp = await page.context().newCDPSession(page);
-  const open = new Map();
-  const seen = { requests: 0, most: 0, finished: 0, failed: 0, bytes: 0 };
-  const media = (url) => /\/v1\/projects\/[^/]+\/(files|outputs|previews?)\b|\/runs\/[^/]+\/outputs\//.test(url) && !/thumb/.test(url);
-  cdp.on('Network.requestWillBeSent', ({ requestId, request }) => {
-    if (!media(request.url)) return;
-    seen.requests++;
-    open.set(requestId, request.url);
-    seen.most = Math.max(seen.most, open.size);
-  });
-  cdp.on('Network.dataReceived', ({ requestId, dataLength }) => { if (open.has(requestId)) seen.bytes += dataLength; });
-  cdp.on('Network.loadingFinished', ({ requestId }) => { if (open.delete(requestId)) seen.finished++; });
-  cdp.on('Network.loadingFailed', ({ requestId }) => { if (open.delete(requestId)) seen.failed++; });
-  await cdp.send('Network.enable');
-  return { now: () => ({ ...seen, open: open.size }), reset: () => { seen.most = open.size; } };
-}
 
 /** One of the page's own calls, timed: how long its project took to answer. */
 const call = (page, id) => page.evaluate(async (id) => {
@@ -57,10 +43,14 @@ test('windows', async ({ page, project, cli, context, signIn }) => {
   await cli.json('machine', 'use', 'local');
   const shots = join(process.env.OUT, 'web', 'windows');
   mkdirSync(shots, { recursive: true });
+  // 40 s at a constant 24 Mbit/s (filler where the picture needs less): 120 MB, a take's size.
   for (const [name, source, x] of [['walk', 'testsrc2', 0], ['rush', 'mandelbrot', 520]]) {
     const clip = test.info().outputPath(`${name}.mp4`);
-    ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', `${source}=size=640x360:rate=24`, '-t', '40', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', clip);
-    await project.import(readFileSync(clip), { name, at: { x, y: 0 } });
+    ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', `${source}=size=640x360:rate=24`, '-t', '40', '-c:v', 'libx264', '-preset', 'veryfast',
+      '-b:v', '24M', '-minrate', '24M', '-maxrate', '24M', '-bufsize', '6M', '-x264-params', 'nal-hrd=cbr:force-cfr=1', '-pix_fmt', 'yuv420p', clip);
+    const bytes = readFileSync(clip);
+    expect(bytes.length, `${name}: 40 s at 24 Mbit/s`).toBeGreaterThan(100e6);
+    await project.import(bytes, { name, at: { x, y: 0 } });
   }
   await project.add({ name: 'turned', tool: TURN, kind: 'video', fields: { frames: 48 }, at: { x: 1040, y: 0 } });
   const rendered = await cli('--json', 'render', 'turned', '--on', 'local');
@@ -77,7 +67,6 @@ test('windows', async ({ page, project, cli, context, signIn }) => {
     await expect(one.page.locator('.stage')).toBeVisible();
     for (const name of ['walk', 'rush', 'turned']) await expect.poll(() => canvasVisible(one.page, name), { timeout: 60_000 }).toBe(true);
     await fit(one.page);
-    one.media = await watchMedia(one.page);
     one.region = one.page.getByRole('region', { name: 'Focused asset' });
   }
 
@@ -99,10 +88,12 @@ test('windows', async ({ page, project, cli, context, signIn }) => {
     }
   });
 
-  await test.step(`for ${PLAY_MS / 1000} s every clock and picture moves in every window, and every window's calls answer within a second`, async () => {
+  const port = new URL(project.url()).port;
+  const held = [];
+  await test.step(`for ${PLAY_MS / 1000} s every clock and picture moves in every window, every window's calls answer within a second, and no socket stays holding bytes`, async () => {
+    let holding = sockets(port).holding;
     for (const one of windows) {
       one.was = { clock: await one.video.evaluate((el) => ({ at: el.currentTime, paused: el.paused })), picture: await look(one.page, one.box) };
-      one.media.reset();
       one.calls = [];
     }
     const began = Date.now();
@@ -120,14 +111,31 @@ test('windows', async ({ page, project, cli, context, signIn }) => {
         one.calls.push(await call(one.page, project.id));
       }
       if (round === 2) for (const [i, one] of windows.entries()) await one.page.screenshot({ path: join(shots, `window-${i + 1}-${one.name}.png`) });
+      const now = sockets(port);
+      held.push({ round, ...now, still: now.holding.filter((local) => holding.includes(local)) });
+      holding = now.holding;
     }
-    const measured = windows.map((one) => ({ window: one.name, media: one.media.now(), calls: one.calls }));
+    for (const one of windows) {
+      expect.soft(one.calls.filter((answer) => answer.status !== 200 || answer.ms > 1000), `${one.name}: every call answered within a second`).toEqual([]);
+    }
+    expect.soft(Math.max(...held.map((one) => one.open)), "this browser's sockets to Calcifer are seen").toBeGreaterThan(0);
+    expect.soft(held.filter((one) => one.still.length).map(({ round, still, unread_kb, unsent_kb }) => ({ round, still, unread_kb, unsent_kb })),
+      'no socket holds bytes at two looks in a row while they play').toEqual([]);
+  });
+
+  await test.step('6 s after all three pause, no socket holds bytes', async () => {
+    for (const one of windows) {
+      await one.page.bringToFront();
+      const button = one.name === 'turned' ? one.region.locator('.orbit-bar').getByRole('button', { name: 'Stop', exact: true })
+        : one.region.locator('.tl-transport').getByRole('button', { name: 'Pause', exact: true });
+      await button.click();
+      await expect.poll(() => one.video.evaluate((el) => el.paused), { message: `${one.name} paused` }).toBe(true);
+    }
+    await new Promise((done) => setTimeout(done, 6_000));
+    const paused = sockets(port);
+    const measured = { calls: windows.map((one) => ({ window: one.name, calls: one.calls })), playing: held, paused };
     console.log(`windows, measured: ${JSON.stringify(measured)}`);
     test.info().annotations.push({ type: 'measured', description: JSON.stringify(measured) });
-    for (const one of measured) {
-      expect.soft(one.calls.filter((answer) => answer.status !== 200 || answer.ms > 1000), `${one.window}: every call answered within a second`).toEqual([]);
-      expect.soft(one.media.open, `${one.window}: no request for a video still open, its file come`).toBe(0);
-      expect.soft(one.media.most, `${one.window}: no request for a video open while it played`).toBe(0);
-    }
+    expect.soft({ unread: paused.unread, unsent: paused.unsent }, 'no socket holds bytes 6 s after all three pause').toEqual({ unread: 0, unsent: 0 });
   });
 });

@@ -183,7 +183,14 @@ async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec
     let mut job = tokio::time::timeout(ESTIMATED, read).await.ok()?.ok()?;
     job.size.refs = Some(media);
     let (offers, pictured) = placement::offers_now(api, std::slice::from_ref(&job)).await;
-    let chosen = placement::soonest(offers.first()?, now_ms())?.clone();
+    let offers = offers.first()?;
+    let chosen = match placement::soonest(offers, now_ms()) {
+        Some(chosen) => chosen.clone(),
+        // Nothing fits only because no machine has a GPU (`no_gpu`, cl-1279): the box is still answered, on the first of them, with no
+        // time, so its `faster` says what a rented card would do (Slow here, Render on a new rental).
+        None if !offers.is_empty() && offers.iter().all(placement::Offer::no_gpu) => placement::Offer { basis: Basis::None, ..offers[0].clone() },
+        None => return None,
+    };
     let gpu = (pictured.iter().flatten())
         .find(|picture| picture.on == chosen.machine)
         .and_then(|picture| picture.frame.gpus.first())

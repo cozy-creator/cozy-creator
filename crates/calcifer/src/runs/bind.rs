@@ -428,15 +428,24 @@ impl Binder<'_> {
                 continue;
             }
             let key = self.fold(key)?;
-            // Pick up from here: `pickup.take=<shot_1.3> pickup.out_frame=240`.
-            if let Some((head, member)) = key.split_once('.')
+            // Pick up from here: `pickup.take=<shot_1.3>` or a video file, its `pickup.take.latents=`, `pickup.out_frame=240`, each
+            // member as its type takes it: a file is attached as any input's is.
+            if let Some((head, _)) = key.split_once('.')
                 && self.callable.field(head).is_some_and(|field| matches!(field.ty.plain(), Type::Pickup(_)))
             {
-                let value = match member {
-                    "take" => Value::String(raw.to_owned()),
-                    _ => serde_json::from_str(raw).map_err(|_| usage("pickup_malformed", format!("{key}={raw} is not a number")))?,
+                let mention = !crate::project::graph::mentions(raw).is_empty();
+                if !structured && !mention && self.names_a_file(&key) {
+                    self.named_files.push(FileTerm { name: Some(key), file: raw.strip_prefix('@').unwrap_or(raw).to_owned() });
+                    continue;
+                }
+                let parts: Vec<String> = key.split('.').map(str::to_owned).collect();
+                let value = match self.type_at(&parts) {
+                    _ if structured => serde_json::from_str(raw).map_err(|_| usage("json_malformed", format!("{key}:=… is not JSON: {raw}")))?,
+                    Some(ty) if !mention => scalar(ty, raw).ok_or_else(|| usage("pickup_malformed", format!("{key}={raw} is not {}", describe::phrase(ty))))?,
+                    _ => Value::String(raw.to_owned()),
                 };
-                set_path(&mut self.document, &[head.to_owned(), member.to_owned()], value)?;
+                // A take's mention sits beside the latents written with it, either first, as an attached file does.
+                self.place(&parts, value)?;
                 continue;
             }
             // A mention is the project's box, which its binder fills.
@@ -546,11 +555,35 @@ impl Binder<'_> {
     fn boxed<'k>(&self, key: &'k str) -> &'k str {
         let Some(head) = key.strip_suffix(".file") else { return key };
         let parts: Vec<String> = head.split('.').map(str::to_owned).collect();
-        let field = self.fold(&parts[0]).ok().and_then(|first| self.callable.field(&first));
-        match field.and_then(|field| type_at(&field.ty, &parts[1..])) {
+        match self.type_at(&parts) {
             Some(Type::Media { .. }) => head,
             _ => key,
         }
+    }
+
+    /// The type at `parts` of the request, its first folded onto a declared field.
+    fn type_at(&self, parts: &[String]) -> Option<&Type> {
+        let field = self.fold(&parts[0]).ok().and_then(|first| self.callable.field(&first))?;
+        type_at(&field.ty, &parts[1..])
+    }
+
+    /// Writes `value` at `parts`: a file's digest or mention, or a member's value. A box-shaped input written whole (`{file, latents}`)
+    /// takes a file as its `file`, and one given a file beside its own (`video=… video.latents=…`) becomes that whole: the file and the
+    /// files it's given with.
+    fn place(&mut self, parts: &[String], value: Value) -> Result<(), Error> {
+        let media = |binder: &Self, at: &[String]| matches!(binder.type_at(at), Some(Type::Media { .. }));
+        for n in 1..parts.len() {
+            if media(self, &parts[..n])
+                && let Some(alone @ Value::String(_)) = node_mut(&mut self.document, &parts[..n])
+            {
+                *alone = Value::Object(Map::from_iter([("file".to_owned(), alone.take())]));
+            }
+        }
+        let mut parts = parts.to_vec();
+        if value.is_string() && media(self, &parts) && node_mut(&mut self.document, &parts).is_some_and(|whole| whole.is_object()) {
+            parts.push("file".to_owned());
+        }
+        set_path(&mut self.document, &parts, value)
     }
 
     /// A scalar spelled as the field's declared type.
@@ -748,11 +781,7 @@ impl Binder<'_> {
                     ),
                 ));
             }
-            set_path(
-                &mut self.document,
-                &parts,
-                Value::String(digest.to_string()),
-            )?;
+            self.place(&parts, Value::String(digest.to_string()))?;
             let order = parts
                 .iter()
                 .filter_map(|p| p.parse::<u32>().ok())
@@ -1234,9 +1263,32 @@ fn holds_file(ty: &Type) -> bool {
         Type::Asset(_) | Type::Media { .. } | Type::Tree => true,
         Type::Union { branches, .. } => branches.iter().any(holds_file),
         Type::List(item) | Type::Map(item) => holds_file(item),
-        Type::Struct(s) => s.fields.iter().any(|f| holds_file(&f.ty)),
+        Type::Struct(s) | Type::Pickup(s) => s.fields.iter().any(|f| holds_file(&f.ty)),
         _ => false,
     }
+}
+
+/// The members `ty` is written as an object of: a struct's fields, a pickup's, and the extras a box-shaped file is given beside its
+/// own `file` (H3's take: `latents`).
+fn members_of(ty: &Type) -> Option<&[Field]> {
+    match ty {
+        Type::Struct(members) | Type::Pickup(members) | Type::Media { extras: members, .. } => Some(&members.fields),
+        _ => None,
+    }
+}
+
+/// The value at `parts` of `document`, when it's there.
+fn node_mut<'d>(document: &'d mut Map<String, Value>, parts: &[String]) -> Option<&'d mut Value> {
+    let (first, rest) = parts.split_first()?;
+    let mut node = document.get_mut(first)?;
+    for part in rest {
+        node = match node {
+            Value::Object(object) => object.get_mut(part)?,
+            Value::Array(list) => list.get_mut(part.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(node)
 }
 
 /// The warning for a list of files cut to its limit.
@@ -1263,14 +1315,20 @@ fn asset_at(
 ) -> Option<(Vec<String>, Option<u64>)> {
     match ty {
         Type::Asset(_) | Type::Media { .. } if parts.is_empty() => Some((types.to_vec(), max)),
+        // A box-shaped file's own: `video.file`; a file it's given with is bound by its own declaration alone.
+        Type::Media { .. } if parts == ["file"] => Some((types.to_vec(), max)),
+        Type::Media { extras, .. } if !parts.is_empty() => {
+            let field = extras.fields.iter().find(|f| f.name == parts[0])?;
+            asset_at(&field.ty, &parts[1..], &field.asset_bound.media_types, field.asset_bound.max_bytes)
+        }
         Type::Union { branches, .. } => {
             branches.iter().find_map(|b| asset_at(b, parts, types, max))
         }
         Type::List(item) if !parts.is_empty() && parts[0].parse::<u32>().is_ok() => {
             asset_at(item, &parts[1..], types, max)
         }
-        Type::Struct(s) if !parts.is_empty() => {
-            let field = s.fields.iter().find(|f| f.name == parts[0])?;
+        Type::Struct(members) | Type::Pickup(members) if !parts.is_empty() => {
+            let field = members.fields.iter().find(|f| f.name == parts[0])?;
             let (types, max) = if field.asset_bound.media_types.is_empty() {
                 (types, field.asset_bound.max_bytes.or(max))
             } else {
@@ -1291,8 +1349,7 @@ fn type_at<'t>(ty: &'t Type, parts: &[String]) -> Option<&'t Type> {
     match ty.plain() {
         Type::Union { branches, .. } => branches.iter().find_map(|branch| type_at(branch, parts)),
         Type::List(item) if first.parse::<u32>().is_ok() => type_at(item, rest),
-        Type::Struct(members) => type_at(&members.fields.iter().find(|field| field.name == *first)?.ty, rest),
-        _ => None,
+        ty => type_at(&members_of(ty)?.iter().find(|field| field.name == *first)?.ty, rest),
     }
 }
 
@@ -1300,9 +1357,10 @@ fn type_at<'t>(ty: &'t Type, parts: &[String]) -> Option<&'t Type> {
 fn kind_at(ty: &Type, parts: &[String]) -> Option<String> {
     match ty {
         Type::Asset(kind) | Type::Media { kind, .. } if parts.is_empty() => Some(kind.clone()),
+        Type::Media { kind, .. } if parts == ["file"] => Some(kind.clone()),
         Type::Union { branches, .. } => branches.iter().find_map(|branch| kind_at(branch, parts)),
         Type::List(item) if !parts.is_empty() && parts[0].parse::<u32>().is_ok() => kind_at(item, &parts[1..]),
-        Type::Struct(members) if !parts.is_empty() => kind_at(&members.fields.iter().find(|field| field.name == parts[0])?.ty, &parts[1..]),
+        ty if !parts.is_empty() => kind_at(&members_of(ty)?.iter().find(|field| field.name == parts[0])?.ty, &parts[1..]),
         _ => None,
     }
 }
@@ -1341,7 +1399,18 @@ fn embedded_files(ty: &Type, value: &Value, path: &str, terms: &Terms, out: &mut
                 embedded_files(item, value, &format!("{path}.{i}"), terms, out)?;
             }
         }
-        (Type::Struct(s), Value::Object(object)) => {
+        // A box-shaped file written whole: its own `file` and the files it's given with (`{file, latents}`).
+        (Type::Media { extras, .. }, Value::Object(object)) => {
+            if let Some(file) = object.get("file") {
+                embedded_files(ty, file, &format!("{path}.file"), terms, out)?;
+            }
+            for field in &extras.fields {
+                if let Some(value) = object.get(&field.name) {
+                    embedded_files(&field.ty, value, &format!("{path}.{}", field.name), terms, out)?;
+                }
+            }
+        }
+        (Type::Struct(s) | Type::Pickup(s), Value::Object(object)) => {
             for field in &s.fields {
                 if let Some(value) = object.get(&field.name) {
                     embedded_files(&field.ty, value, &format!("{path}.{}", field.name), terms, out)?;

@@ -808,15 +808,11 @@ impl Holding {
         let stand = doc.stand(&lock);
         drop(_access);
         let mut fields = written;
-        let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
-        let pickup = match picked {
-            None => None,
-            Some(value) => Some(serde_json::from_value::<api::calcifer::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("Couldn't read the pickup ({why}). Write it as pickup.take=<box.N> and pickup.out_frame=<frame>.")))?),
-        };
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
         doc.worded(&mut fields, &reserved);
         let own: Vec<binder::Inline> = inline.iter().map(|(named, _)| named.clone()).collect();
-        let call = binder::Call { name: target, tool: target, package, title, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref(), inline: &own };
+        // Its pickup is written (`pickup.take=…`), which the binder reads as a run's own gesture.
+        let call = binder::Call { name: target, tool: target, package, title, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: None, inline: &own };
         let mut bound = binder::bind(&call)?;
         // The run's own files go as a cut clip does: by their digest, from where they are here.
         let mut cut: HashMap<String, PathBuf> = inline.iter().map(|(named, path)| (named.file.clone(), path.clone())).collect();
@@ -3774,7 +3770,7 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
 async fn file(
     State(api): State<Arc<Api>>,
     Path((id, file)): Path<(String, String)>,
-    Query(saved): Query<crate::files::Download>,
+    Query(asked): Query<crate::files::Asked>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -3784,9 +3780,9 @@ async fn file(
         let said = format!("{file} isn't a project file name. Project files are named <sha256>.<ext>.");
         return Err(Refusal(Error::new(Kind::Usage, "file_name", said)));
     }
-    let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
+    let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers, asked.pieces)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
-    if let Some(name) = saved.download {
+    if let Some(name) = asked.download {
         crate::files::save_as(&mut response, &name, ext);
     }
     Ok(response)
@@ -3796,6 +3792,7 @@ async fn file(
 async fn cut(
     State(api): State<Arc<Api>>,
     Path((id, cut)): Path<(String, String)>,
+    Query(asked): Query<crate::files::Asked>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -3809,18 +3806,18 @@ async fn cut(
     let path = project.folder.dir.join(&cut);
     let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let at = modified.and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |at| at.as_nanos());
-    send(&path, &format!("\"{at:x}\""), &headers)
+    send(&path, &format!("\"{at:x}\""), &headers, asked.pieces)
 }
 
-/// The file at `path` as `headers` ask for it (whole, or one range), or not found.
-fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
+/// The file at `path` as `headers` ask for it (whole, or one range, in `pieces` or whole), or not found.
+fn send(path: &FsPath, etag: &str, headers: &HeaderMap, pieces: bool) -> Result<Response, Refusal> {
     let missing = |e: std::io::Error| {
         let said = format!("{} is missing: {e}.", path.display());
         Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy open"))
     };
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
-    crate::files::send(file, len, media_type(path), etag, headers)
+    crate::files::send(file, len, media_type(path), etag, headers, pieces)
         .map_err(|e| Refusal(Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't read {}: {e}.", path.display()))))
 }
 
