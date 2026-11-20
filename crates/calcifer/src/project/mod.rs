@@ -808,15 +808,11 @@ impl Holding {
         let stand = doc.stand(&lock);
         drop(_access);
         let mut fields = written;
-        let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
-        let pickup = match picked {
-            None => None,
-            Some(value) => Some(serde_json::from_value::<api::calcifer::project::Pickup>(value).map_err(|why| Error::new(Kind::Usage, "pickup_malformed", format!("Couldn't read the pickup ({why}). Write it as pickup.take=<box.N> and pickup.out_frame=<frame>.")))?),
-        };
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
         doc.worded(&mut fields, &reserved);
         let own: Vec<binder::Inline> = inline.iter().map(|(named, _)| named.clone()).collect();
-        let call = binder::Call { name: target, tool: target, package, title, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref(), inline: &own };
+        // Its pickup is written (`pickup.take=…`), which the binder reads as a run's own gesture.
+        let call = binder::Call { name: target, tool: target, package, title, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: None, inline: &own };
         let mut bound = binder::bind(&call)?;
         // The run's own files go as a cut clip does: by their digest, from where they are here.
         let mut cut: HashMap<String, PathBuf> = inline.iter().map(|(named, path)| (named.file.clone(), path.clone())).collect();
