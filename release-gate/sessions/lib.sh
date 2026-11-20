@@ -16,7 +16,7 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 # Made up, and here so each published session shows its scrub ran (e2e/publish): in its log, results.txt and this file it reads `Bearer [scrubbed]`.
 say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
-RC=0 RID='' NAME='' WD='' BG='' DL='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
+RC=0 RID='' NAME='' WD='' BG='' DL='' STEP='' RENT_ARGS=''  # BG: a session's own background loop, ended with it; STEP: the running step's cozy
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 # ON: the pod of the session that runs this one (`on_this`): this one neither quotes, rents, guards, claims nor ends a pod.
 ON=${ON:-}
@@ -70,8 +70,9 @@ finish() {
   # From here a signal is noted, not obeyed: nothing the session started (the deadline watcher, a helper) or a cancel stops
   # the rental ends below. 43971316155's watcher TERMed this trap and the session exited without its RESULT.
   trap 'RC=1' INT TERM HUP
-  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting.
-  for p in $DL $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # The helpers stop first, each one's children before itself: a watcher whose sleep is killed exits without acting. So does
+  # the step in flight: left running, 44643016198's `cozy run --on guanshan` outlived the session and tried again elsewhere.
+  for p in $DL $WD $BG $STEP; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
   if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
@@ -238,6 +239,7 @@ step() {
   local kinds=''
   if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
   (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow=''
+  STEP=$p
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1))
     if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
@@ -251,10 +253,10 @@ step() {
     [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
-    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
+    [ "$still" -lt 900 ] || { pkill -P "$p"; kill "$p"; STEP=''; say "$n: no output for 15 min"; return 124; }
   done
   [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
-  wait "$p"; local c=$?
+  wait "$p"; local c=$?; STEP=''
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
   return $c
 }
