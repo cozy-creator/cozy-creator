@@ -847,3 +847,107 @@ def int8_paths(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
             leaf.__dict__.pop("forward", None)
     found["to_bf16"] = {name: _gap(ref_fwd, logits) for name, logits in {"bf16_decode": ref_dec, **arms}.items()}
     return Agreement(json.dumps(found))
+
+
+def _kv(cache: object) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """A Transformers cache's attention layers' keys and values, by layer."""
+    found = {}
+    for i, layer in enumerate(getattr(cache, "layers", ())):
+        keys, values = getattr(layer, "keys", None), getattr(layer, "values", None)
+        if isinstance(keys, torch.Tensor) and isinstance(values, torch.Tensor) and keys.numel():
+            found[i] = (keys, values)
+    return found
+
+
+def _kv_rel(a: dict[int, tuple[torch.Tensor, torch.Tensor]], b: dict[int, tuple[torch.Tensor, torch.Tensor]],
+            prompt: int) -> dict[str, object]:  # fmt: skip
+    """Each attention layer's keys and values in cache `b` against `a`'s, over the prompt's positions and the decoded
+    ones apart: the largest relative difference of a position's row."""
+    rows: dict[str, object] = {}
+    for i in sorted(set(a) & set(b)):
+        parts = {}
+        for name, x, y in (("k", a[i][0], b[i][0]), ("v", a[i][1], b[i][1])):
+            n = min(x.shape[-2], y.shape[-2])
+            x, y = x[..., :n, :].float(), y[..., :n, :].float()
+            rel = ((x - y).norm(dim=-1) / x.norm(dim=-1).clamp(min=1e-30)).amax(dim=(0, 1))
+            parts[name] = [round(float(rel[:prompt].max()), 5), round(float(rel[prompt:].max()) if n > prompt else 0.0, 5)]
+        rows[str(i)] = parts
+    return rows
+
+
+def _paging(net: torch.nn.Module, prompt: list[int]) -> dict[str, object]:
+    """On one lane as it is placed now: today's path (`lm.generate`, greedy, `PATH_TOKENS`) and its tokens held to the
+    one-pass forward (`today`); then Transformers' token-by-token decode of the same tokens against that forward, as
+    the drives run it (`decode`: its K/V a plain cache, outside the memory manager) and with every attention layer's
+    K/V held in `author.retained` between steps (`retained`). Each says the logits' gap, each layer's hidden state's
+    relative difference, and each attention layer's cached keys and values against the forward's (prompt, decoded)."""
+    from cozy_runtime.author import retained
+
+    ids = torch.tensor([prompt])
+    _, today = _timed(net, ids, PATH_TOKENS)
+    made = today[:PATH_TOKENS]
+    inputs = torch.tensor([prompt + made[:-1]], device=net.device)
+    with torch.inference_mode():
+        out = net(input_ids=inputs, use_cache=True, output_hidden_states=True, logits_to_keep=len(made))
+    fwd = out.logits[0].float()
+    fwd_h = torch.stack([h[0, len(prompt) - 1 :].float() for h in out.hidden_states])
+    fwd_kv = _kv(out.past_key_values)
+    del out
+    top = fwd.topk(2, dim=-1)
+    lead = (top.values[:, 0] - top.values[:, 1]).tolist()
+    clear = [t for t in range(len(made)) if lead[t] >= CLEAR]
+    missed = [t for t in clear if int(top.indices[t, 0]) != made[t]]
+    found: dict[str, object] = {"today": {"tokens": len(made), "clear": len(clear), "agreed": len(clear) - len(missed),
+                                          "misses": [{"at": t, "lead": round(lead[t], 3)} for t in missed[:8]],
+                                          "digest": hashlib.sha256(json.dumps(made).encode()).hexdigest()[:16]}}  # fmt: skip
+    for arm in ("decode", "retained"):
+        logits, hidden, stores = [], [], []
+        try:
+            with torch.inference_mode():
+                step = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True,
+                           output_hidden_states=True, logits_to_keep=1)  # fmt: skip
+                for t in range(len(made)):
+                    logits.append(step.logits[0, -1].float())
+                    hidden.append(torch.stack([h[0, -1].float() for h in step.hidden_states]))
+                    cache = step.past_key_values
+                    if arm == "retained":  # the attention layers' K/V the Runtime's memory holds, not plain tensors
+                        held = _kv(cache)
+                        store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                        for i, (k, v) in held.items():
+                            cache.layers[i].keys, cache.layers[i].values = store.put(k, v).get()
+                        del held
+                        stores.append(store)
+                        if len(stores) > 1:
+                            stores.pop(0).close()
+                    if t + 1 < len(made):
+                        step = net(input_ids=torch.tensor([[made[t]]], device=net.device), past_key_values=cache,
+                                   use_cache=True, output_hidden_states=True, logits_to_keep=1)  # fmt: skip
+                dec, dec_h = torch.stack(logits), torch.stack(hidden, 1)
+                row = _gap(fwd.cpu(), dec.cpu(), fwd_h.cpu(), dec_h.cpu(), skip=1)
+                row["kv"] = _kv_rel(fwd_kv, _kv(cache), len(prompt))
+                found[arm] = row
+        except Exception as exc:  # told; the other arm stands
+            found[arm] = f"{type(exc).__name__}: {exc}"[:300]
+        finally:
+            for store in stores:
+                store.close()
+    return found
+
+
+@app.entrypoint(accelerator=True)
+def paging_alone(ctx: Context, model: VisionLM) -> Agreement:
+    """`_paging` on `model` alone on the card (the session's first call: nothing else placed), on int8_paths' prompt."""
+    net = model.pipe.components["model"]
+    prompt = _long_prompt(model.processor.tokenizer)
+    return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_paging(net, prompt)}))
+
+
+@app.entrypoint(accelerator=True)
+def paging_beside(ctx: Context, reference: VisionLM, model: VisionLM) -> Agreement:
+    """`_paging` on `reference` (bf16) after `model` (int8) ran a forward of the prompt, so both are placed and the
+    reference's weights don't all fit beside it: the paged case of int8_paths (44650186994)."""
+    net, other = reference.pipe.components["model"], model.pipe.components["model"]
+    prompt = _long_prompt(model.processor.tokenizer)
+    with torch.inference_mode():
+        other(input_ids=torch.tensor([prompt], device=other.device), logits_to_keep=1)
+    return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), "prompt_tokens": len(prompt), **_paging(net, prompt)}))
