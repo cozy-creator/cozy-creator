@@ -5,6 +5,7 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
     python load.py <mode> <args>   (TENSORFS_HOME: the machine's store)
 
   ceiling                TensorFS's own ceilings: disk GB/s of the store's volume, pinned H2D GB/s to GPU 0
+  ceiling-empty          the disk probe of a TensorFS home that holds no weights, beside the store
   evict <ck>...          the checkpoints' chunk files out of the page cache
   disk <ck>...           the disk itself, no TensorFS: the checkpoints' chunk files read O_DIRECT on a grid of threads and
                          request sizes (each on files no other read touched), then buffered from an empty page cache
@@ -443,6 +444,15 @@ def main() -> None:
     try:
         if mode == "ceiling":
             out.update(ceiling())
+        elif mode == "ceiling-empty":
+            # A TensorFS home with no weights in it (a shell's own, `tensorfs.ceiling(device=0)` from it): its probe.
+            import tempfile
+
+            import tensorfs
+
+            with tempfile.TemporaryDirectory(dir=os.path.dirname(store())) as home:
+                c = tensorfs.ceiling(0, home)
+                out.update({"home": home, "disk_gbps": c.disk_gbps, "disk_direct": c.disk_direct})
         elif mode == "evict":
             files = chunk_files(args)
             evict(files)

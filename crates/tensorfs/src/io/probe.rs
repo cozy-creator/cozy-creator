@@ -56,7 +56,9 @@ pub fn ceiling(device: Option<i32>, path: &Path) -> io::Result<Ceiling> {
 
 /// GB/s reading the volume holding `path` (a file, or a folder of them): its largest files in
 /// whole blocks, up to 1 GiB, on 8 threads, O_DIRECT where the filesystem allows (else through
-/// the page cache, and `false`). A probe of under 256 MiB is returned, not kept.
+/// the page cache, and `false`). Where they hold under 256 MiB, a scratch file of `SCRATCH` bytes
+/// written beside them is read instead: a probe of a few small files measured their opening, not the
+/// disk (6e-06 GB/s on RTX 4090 pods whose TensorFS home was empty, against `dd`'s 3.7-5.5, cl-1318).
 pub fn disk(path: &Path) -> io::Result<(f64, bool)> {
     let volume = durable::device(path).map_err(io::Error::other)?;
     if let Some(seen) = disk_known(volume) {
@@ -65,14 +67,67 @@ pub fn disk(path: &Path) -> io::Result<(f64, bool)> {
     let mut found = Vec::new();
     files(path, volume, &mut found)?;
     found.sort_by_key(|f| Reverse(f.0));
+    let held: u64 = found.iter().map(|f| f.0).sum();
+    let scratch = (held < KEEP).then(|| written(path)).transpose()?;
+    if let Some(scratch) = &scratch {
+        found = vec![(SCRATCH, scratch.clone())];
+    }
+    let seen = read_blocks(&found);
+    if let Some(scratch) = scratch {
+        let _ = fs::remove_file(scratch);
+    }
+    let (read, seen) = seen?;
+    if read >= KEEP {
+        disk_keep(volume, seen);
+    }
+    Ok(seen)
+}
+
+/// Bytes of the scratch file a probe writes where the volume's files are too few to read.
+const SCRATCH: u64 = 512 << 20;
+
+/// A scratch file of `SCRATCH` bytes beside `path`, written, synced and out of the page cache: what a
+/// probe reads where the volume holds too few bytes of its own. Its bytes vary, so no filesystem
+/// compresses them away.
+fn written(path: &Path) -> io::Result<PathBuf> {
+    let dir = if path.is_dir() { path } else { path.parent().unwrap_or(Path::new(".")) };
+    let at = dir.join(format!(".tensorfs-disk-probe-{}", std::process::id()));
+    let made = (|| {
+        let mut f = File::create(&at)?;
+        let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ u64::from(std::process::id());
+        let mut chunk = vec![0u8; 8 << 20];
+        for _ in 0..SCRATCH / chunk.len() as u64 {
+            for word in chunk.chunks_exact_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                word.copy_from_slice(&state.to_le_bytes());
+            }
+            f.write_all(&chunk)?;
+        }
+        f.sync_all()?;
+        #[cfg(target_os = "linux")]
+        let _ = rustix::fs::fadvise(&f, 0, None, rustix::fs::Advice::DontNeed);
+        Ok(())
+    })();
+    if let Err(error) = made {
+        let _ = fs::remove_file(&at);
+        return Err(error);
+    }
+    Ok(at)
+}
+
+/// The largest of `found`, up to `PROBE` bytes, in whole blocks on `THREADS` threads, O_DIRECT where
+/// every file allows: the bytes read and (GB/s, whether O_DIRECT).
+fn read_blocks(found: &[(u64, PathBuf)]) -> io::Result<(u64, (f64, bool))> {
     let (mut opened, mut blocks, mut total) = (Vec::new(), Vec::new(), 0);
-    for (len, p) in found.into_iter().take_while(|(len, _)| *len > 0) {
+    for (len, p) in found.iter().take_while(|(len, _)| *len > 0) {
         if total >= PROBE {
             break;
         }
-        let f = File::open(&p)?;
+        let f = File::open(p)?;
         opened.push((durable::open_direct(&f).ok().flatten(), f));
-        for at in (0..len).step_by(BLOCK) {
+        for at in (0..*len).step_by(BLOCK) {
             if total >= PROBE {
                 break;
             }
@@ -82,10 +137,7 @@ pub fn disk(path: &Path) -> io::Result<(f64, bool)> {
         }
     }
     if blocks.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("{}: no bytes to read", path.display()),
-        ));
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no bytes to read"));
     }
     let direct = opened.iter().all(|(d, _)| d.is_some());
     let (next, bytes, error) = (AtomicUsize::new(0), AtomicU64::new(0), Mutex::new(None));
@@ -118,14 +170,7 @@ pub fn disk(path: &Path) -> io::Result<(f64, bool)> {
         return Err(e);
     }
     let read = bytes.into_inner();
-    let seen = (
-        read as f64 / start.elapsed().as_nanos().max(1) as f64,
-        direct,
-    );
-    if read >= KEEP {
-        disk_keep(volume, seen);
-    }
-    Ok(seen)
+    Ok((read, (read as f64 / start.elapsed().as_nanos().max(1) as f64, direct)))
 }
 
 /// The kept ceiling of volume `volume` this boot: GB/s and whether it was O_DIRECT.

@@ -72,6 +72,16 @@ def add(arm: str, case: str, gb: float, s: float, cold: bool, onto_card: bool, n
                  f"{s / braw:.2f}" if braw else "-", note])
 
 
+try:
+    dd = " ".join(line.split(",")[-1].strip() for line in open(f"{out}/dd.txt") if "copied" in line)
+except OSError:
+    dd = ""
+print(f"dd iflag=direct of the store's chunks: {dd or '-'}")
+for arm in arms:
+    e = load(f"{out}/{arm}-ceiling-empty.json")
+    if e:
+        print(f"{arm}: the disk probe of a TensorFS home with no weights: {e.get('disk_gbps', e.get('error'))} GB/s")
+print()
 for arm in arms:
     for name, label in (("fill", "qwen-image-2"), ("h3-fill", "h3 transformer")):
         f = load(f"{out}/{arm}-{name}.json")

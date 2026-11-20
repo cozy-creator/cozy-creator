@@ -4,7 +4,8 @@
 # loads as fast as its machine allows"): max(bytes / disk GB/s, bytes / pinned H2D GB/s); from RAM, the H2D part alone.
 # On one rental: Qwen-Image 2's generate (its weights all resident on a 24 GB card), SDXL's, and with `h3` H3's (its transformer
 # paged on a 24 GB card) download their weights and make the executor environment. Then, before any arm:
-#   ceiling  TensorFS's own ceilings on the pod (fixtures/tfs-bound/load.py)
+#   ceiling  TensorFS's own ceilings on the pod (fixtures/tfs-bound/load.py), and `dd iflag=direct` of the store's chunks
+#            beside them; per arm, the disk probe of a TensorFS home holding no weights (a shell's own)
 #   disk     the disk without TensorFS: the models' chunk files read O_DIRECT over a grid of threads x request sizes, and
 #            buffered from an empty page cache: what the disk itself reaches
 # Per arm (its TensorFS by `cozy machine update`, and unpacked beside the executor environment for load.py), every executor
@@ -123,6 +124,9 @@ for a in "${names[@]}"; do
 done
 fresh
 load ceiling "${names[0]}" '' ceiling
+# The disk as `dd` reads it past the page cache, for the ceilings beside it: the store's four largest chunks.
+T=300 pod "cd $HOME_TFS/blobs && for f in \$(find . -type f -size +60M | head -4); do dd if=\$f of=/dev/null bs=4M iflag=direct 2>&1 | tail -1; done" < /dev/null > "$OUT/dd.txt" 2>&1
+say "dd iflag=direct: $(tr '\n' ';' < "$OUT/dd.txt" | cut -c1-400)"
 ALLCK=$QCK${HCK:+,$HCK}
 load disk "${names[0]}" '' disk "${ALLCK//,/ }"
 
@@ -133,6 +137,10 @@ for a in "${names[@]}"; do
     say "$a: $(cozy machine show "$NAME" --json | jq -r '"TensorFS \(.status.tensorfs)"')"
   fi
   fresh
+  # The newest executor environment: an update and the runs after it make new ones, and the old ones are collected.
+  PY=$(T=60 pod "ls -t /var/lib/cozy/tensord/generations/*/env/bin/python | head -1" < /dev/null 2> /dev/null | tail -1)
+  [[ $PY == /var/lib/cozy/* ]] || fail "$a: no executor environment ($PY)"
+  load "$a-ceiling-empty" "$a" '' ceiling-empty
   load "$a-fill" "$a" '' fill "$QCK" transformer,text_encoder,vae 2 alone
   # Read through the page cache or past it (cl-1318): a cache full of other weights, then memory pinned besides.
   if [ "$(param policy true)" = true ] && [ -n "$HCK" ]; then
