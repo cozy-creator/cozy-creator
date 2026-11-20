@@ -30,7 +30,7 @@ for arm in $kinds; do
     declare "${arm^^}_${kind^^}=$f"
   done
 done
-BASE_TENSORD=''
+BASE_TENSORD='' BASE_RUNTIME='' BASE_TENSORFS=''
 if [[ " $ARMS " == *" base "* ]]; then
   mkdir -p "$OUT/base-cozy"
   gh run download "$(param base '{}' | jq -r .tensord)" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$OUT/base-cozy" > /dev/null 2>&1 ||
