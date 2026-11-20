@@ -1,0 +1,47 @@
+{
+  "need_s": 1800,
+  "max_failures": 2,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "compare": [
+    [
+      "f2-up-fix",
+      "f2-up-rc"
+    ]
+  ],
+  "cells": [
+    {
+      "name": "f2-up-fix",
+      "tree": "rc",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={pic1}",
+        "seed:=30039"
+      ],
+      "max_s": 1200,
+      "update": {
+        "runtime": "44660740442",
+        "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "f2-up-rc",
+      "tree": "rc",
+      "target": "flux-2/upscale",
+      "args": [
+        "--file",
+        "image={pic1}",
+        "seed:=30039"
+      ],
+      "max_s": 600,
+      "update": {
+        "runtime": "44660743488",
+        "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
+        "gpu_memory_limit": "6GiB"
+      }
+    }
+  ]
+}

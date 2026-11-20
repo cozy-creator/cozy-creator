@@ -471,7 +471,13 @@ for k in "${names[@]}"; do
     [ "$keep" = true ] || derived_state "$k" reset
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
-    say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
+    sw=$(cozy machine show "$NAME" --json | jq -r '"\(.status.runtime) \(.status.tensorfs)"')
+    say "$k: pod Runtime ${sw% *}, TensorFS ${sw#* }"
+    for w in ${UPDATE[$k]}; do  # the pod runs the builds the arm names, or nothing runs on it
+      case $w in
+        *.whl) v=${w##*/}; v=${v#*-}; v=${v%%-*}; [ "$v" = "${sw% *}" ] || [ "$v" = "${sw#* }" ] || fail "$k: the pod runs ${sw}, not ${w##*/}";;
+      esac
+    done
     derived_state "$k" settle
     [ "$keep" = true ] || derived_zero || fail "$k: its arm starts with derived state it did not make: $DERIVED"
     SEEN=()
@@ -521,8 +527,10 @@ for k in "${names[@]}"; do
   # max_s: the cell's run is canceled this long in, and said UNFINISHED with where it stood: slow is not failed.
   ms=$(jq -r '.max_s // 0' <<<"$c"); [[ $ms =~ ^[0-9]+$ ]] || fail "cell $k: max_s $ms"; MS=''; rm -f "$OUT/$k.capped"
   if [ "$ms" != 0 ]; then
-    ( sleep "$ms" || exit 0; clock=$(run_clock "$NAME") || exit 0; echo "$ms" > "$OUT/$k.capped"
-      for r in ${clock#* }; do cozy run cancel "$r" > /dev/null 2>&1; done ) 9>&- & MS=$!
+    ( sleep "$ms" || exit 0; clock=$(run_clock "$NAME") || exit 0; echo "$ms" > "$OUT/$k.capped"; cd "$RUN_PROJECT" || exit 0
+      for r in ${clock#* }; do  # its record so far first: a canceled run keeps none (f8094eeb22)
+        timeout 120 cozy run watch "$r" --once --json --full < /dev/null > "$OUT/$k-live.json" 2> /dev/null
+        cozy run cancel "$r" > /dev/null 2>&1; done ) 9>&- & MS=$!
   fi
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   [ -z "$MS" ] || { pkill -P "$MS" 2> /dev/null; kill "$MS" 2> /dev/null; MS=''; }
@@ -575,7 +583,8 @@ for k in "${names[@]}"; do
     say "$k: the GPU now: $(gpu | paste -sd';')"
   fi
   if [ -s "$OUT/$k.capped" ] && [ "$st" != completed ]; then
-    say "$k UNFINISHED at its $(cat "$OUT/$k.capped") s cap: at $(jq -r '"\(.progress.stage // "-") \(.progress.completed // 0)/\(.progress.total // 0)"' "$OUT/$k.json" 2> /dev/null), execution $(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2> /dev/null) s"
+    lv=$OUT/$k-live.json; [ -s "$lv" ] || lv=$OUT/$k.json
+    say "$k UNFINISHED at its $(cat "$OUT/$k.capped") s cap: at $(jq -r '"\(.progress.stage // "-") \(.progress.completed // 0)/\(.progress.total // 0)"' "$lv" 2> /dev/null), execution $(jq -r '(.execution_ms // 0) / 1000' "$lv" 2> /dev/null) s"
     continue
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.

@@ -1,0 +1,28 @@
+{
+  "need_s": 3600,
+  "max_failures": 3,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "cells": [
+    {
+      "name": "f2-gen-probe",
+      "tree": "rc",
+      "target": "flux-2/generate",
+      "args": [
+        "prompt=Put <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, <P10> together on a quay at dusk, photo",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"P10\",\"image\":\"{pic10}\"}]",
+        "megapixels:=4",
+        "prompt_upsampling:=true",
+        "seed:=30034",
+        "steps:=2"
+      ],
+      "max_s": 1800,
+      "update": {
+        "runtime": "44660930346",
+        "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "need_s": 9000,
+  "max_failures": 4,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "cells": [
+    {
+      "name": "h3-gen-refs12",
+      "target": "minimax-h3/generate",
+      "args": [
+        "summary=A quiet harbour at dusk, with <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, moving as in <V1>, <V2> and <V3>.",
+        "beats:=[{\"description\":\"<P1> walks along the quay past <P2> while the camera pans slowly; gulls, water, footsteps.\",\"duration\":15}]",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"V1\",\"video\":\"{clip5}\"},{\"name\":\"V2\",\"video\":\"{clip5}\"},{\"name\":\"V3\",\"video\":\"{clip5}\"}]",
+        "quality=full",
+        "seed:=30001"
+      ],
+      "max_s": 1800,
+      "tree": "rc",
+      "update": {
+        "runtime": "44660740442",
+        "tensorfs": "artifact:44660746388/tensorfs-wheel-20989d75d26ebb1cb5b93a4418f24bdaccfdc138",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "h3-edit-hardest",
+      "target": "minimax-h3/edit",
+      "args": [
+        "--file",
+        "plate={clip15}",
+        "edit=character_swap",
+        "summary=<Hero> stands in the scene.",
+        "references:=[{\"name\":\"Hero\",\"image\":\"{pic1}\"}]",
+        "beats:=[{\"description\":\"<Hero> replaces the subject and follows its motion.\",\"duration\":15}]",
+        "quality=full",
+        "seed:=30007"
+      ],
+      "max_s": 2400,
+      "tree": "rc"
+    },
+    {
+      "name": "h3-gen-full-fbcache",
+      "target": "minimax-h3/generate",
+      "args": [
+        "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+        "turbo:=false",
+        "quality=draft",
+        "seed:=30031"
+      ],
+      "max_s": 2400,
+      "tree": "rc"
+    },
+    {
+      "name": "h3-gen-full-easycache",
+      "target": "minimax-h3/generate",
+      "args": [
+        "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}]",
+        "turbo:=false",
+        "quality=full",
+        "seed:=30003"
+      ],
+      "max_s": 2400,
+      "tree": "rc"
+    }
+  ]
+}
