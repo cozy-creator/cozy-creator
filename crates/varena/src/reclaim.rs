@@ -291,7 +291,7 @@ impl<'a> Sequence<'a> {
         let prefix = state.prefix(&order);
         let mut candidates: Vec<_> = state.entries.iter()
             .filter(|(id, entry)| entry.idle() && !self.protect.regions.is_some_and(|ids| ids.contains(id)))
-            .map(|(id, entry)| (state.rank(*id, entry, &order, prefix), *id, entry.bytes))
+            .map(|(id, entry)| (state.rank(*id, entry, &order, &prefix), *id, entry.bytes))
             .filter(|(rank, ..)| classes.contains(&rank.0))
             .collect();
         candidates.sort_unstable();
@@ -579,7 +579,7 @@ fn ahead(device: i32, group: &BTreeSet<u64>, want: usize, into: Option<u64>, evi
     let classes = if at.is_some() { CONTENTLESS..=PHASE_NEXT } else { UNPLANNED..=PHASE_FRESH };
     let mut candidates: Vec<_> = state.entries.iter()
         .filter(|(id, entry)| entry.idle() && !group.contains(id))
-        .map(|(id, entry)| (state.rank(*id, entry, &order, prefix), *id, entry.bytes))
+        .map(|(id, entry)| (state.rank(*id, entry, &order, &prefix), *id, entry.bytes))
         .filter(|(rank, ..)| rank.0 == CONTENTLESS || classes.contains(&rank.0))
         .collect();
     candidates.sort_unstable();

@@ -1,0 +1,1 @@
+A loop that streams its weights keeps the widest of them on the card first, then the rest in plan order, so it keeps as many bytes as the card holds: an LM's head stays put instead of being read again every token.
