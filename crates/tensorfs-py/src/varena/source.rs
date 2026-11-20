@@ -417,6 +417,55 @@ impl Inner {
         Ok(())
     }
 
+    /// A page the tier keeps for this refill of its stored bytes (`Tier::keeping`), when each byte
+    /// comes from the store: it is read again, so it reads into RAM once. A first fill reads onto
+    /// the card alone (`read`), at the store's rate: nothing says it is read again.
+    fn refill_page<'a>(self: &'a Arc<Self>, stored: &Stored, fill: &varena::Fill) -> Option<(&'a str, Page)> {
+        let key = self.page.as_deref()?;
+        if !fill.target().refilled() || fill.len() != self.bytes || !self.stored_bytes() {
+            return None;
+        }
+        if self.tier.holders(self, &stored.items).iter().any(|held| !held.is_empty()) {
+            return None;
+        }
+        Some((key, self.tier.keeping(key, &self.set, self.bytes)?))
+    }
+
+    /// Its stored bytes into `page`, kept as `key`'s, then onto the card from it, one DMA: the next
+    /// refill reads no store. A failed read leaves the page a spare.
+    fn read_kept(&self, stored: &Stored, fill: &varena::Fill, key: &str, page: Page, ahead: bool) -> Result<(), tensorfs::io::source::Error> {
+        let began = Instant::now();
+        let control = Arc::new(ReadControl::default());
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+        let placements = [Placement { items: &stored.items, origin: 0, dst: Dst::Host { ptr: page.ptr(), len: self.bytes } }];
+        // SAFETY: the tier's unshared page holds `bytes` bytes, which the items tile; padding is zeroed.
+        // A refill reads this disk (`read`'s rule).
+        let read = unsafe { stored.local.read_placements_cancelable(&placements, READERS, Mode::Buffered, &IoTally::default(), &control) };
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let stats = match read {
+            Ok(stats) => stats,
+            Err(error) => {
+                self.tier.spare(page); // Never unregistered on a fill's thread.
+                return Err(error);
+            }
+        };
+        let page = self.tier.keep_read(key, &self.set, page);
+        self.from_page(fill, &page)?;
+        self.row(stats.bytes, "store", ahead, began);
+        self.tier.read_source(&self.set, self.block, &stats);
+        Ok(())
+    }
+
+    /// A refill through its kept page (`read_kept`), published.
+    fn fill_kept(&self, stored: &Stored, fill: varena::Fill, key: &str, page: Page, consumer: Option<u64>) -> varena::Result<Option<varena::Pin>> {
+        let ahead = consumer.is_none();
+        if let Err(error) = self.read_kept(stored, &fill, key, page, ahead) {
+            let (error, failed) = storage(error);
+            return Err(self.failed(fill, error, failed, ahead));
+        }
+        publish(fill, consumer)
+    }
+
     /// Where `other`'s stored bytes are now: its Region on this GPU, pinned while ready (no use of
     /// it: a copied page keeps its reclaim order), else its kept page.
     fn bytes_of(&self, other: &Arc<Inner>, device: i32) -> Option<Bytes> {
@@ -610,6 +659,11 @@ impl varena::Source for PageSource {
                 }
             }
         }
+        if let (None, Some(stored)) = (derive, &this.stored) {
+            if let Some((key, page)) = this.refill_page(stored, &fill) {
+                return this.fill_kept(stored, fill, key, page, consumer);
+            }
+        }
         // A derive's stored bytes the tier read ahead (`Tier::read_ahead`), else the store's.
         let staged = derive.and(this.stored_key())
             .and_then(|key| this.tier.take(&key, &this.set, fill.len(), false).map(|page| (key, page)));
@@ -684,7 +738,16 @@ pub(super) fn fill_together(batch: &[(Arc<varena::Region>, Arc<Inner>)], consume
                     continue;
                 }
             };
-            let Some((store, mode)) = inner.together(&fill) else {
+            let together = inner.together(&fill);
+            // A refill the tier keeps reads alone, through its page.
+            if let (Some(_), Some(stored)) = (&together, &inner.stored) {
+                if let Some((key, page)) = inner.refill_page(stored, &fill) {
+                    let kept = inner.fill_kept(stored, fill, key, page, Some(consumer));
+                    out[index] = Some(kept.and_then(|pin| pin.ok_or(varena::Error::Invalid("a published fill returned no pin"))));
+                    continue;
+                }
+            }
+            let Some((store, mode)) = together else {
                 let alone = <PageSource as varena::Source>::fill(&PageSource(Arc::clone(inner)), fill, Some(consumer));
                 out[index] = Some(alone.and_then(|pin| pin.ok_or(varena::Error::Invalid("a Source returned no pin to its consumer"))));
                 continue;
