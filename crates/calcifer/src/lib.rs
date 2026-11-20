@@ -1575,12 +1575,16 @@ impl Calcifer {
     }
 
     /// `events` of the runs `name` held in Calcifer's own journal, and every project's the same (`why`): each is told and woken,
-    /// and nothing dials the address it had.
+    /// and nothing dials the address it had. A project whose requeue errs is said and passed over: its runs' drivers, woken by the
+    /// machine's change, settle them (`drive`'s ended machine).
     fn requeued(&self, name: &str, mut events: Vec<(RunId, Event)>, why: &str) -> Result<(), Error> {
         for owner in self.owners() {
             // Tried, as every project is: one under a lock keeps its runs as they were.
             if let Ok(store) = owner.try_store() {
-                events.extend(store.requeue_machine(name, why)?);
+                match store.requeue_machine(name, why) {
+                    Ok(left) => events.extend(left),
+                    Err(e) => warn!(machine = name, "a project's runs on it, back to the queue: {e}"),
+                }
             }
         }
         let mut woken = HashSet::new();
@@ -2321,7 +2325,27 @@ impl Calcifer {
                 let reason = machine.reason.unwrap_or_else(|| "the machine ended".into());
                 if let Err(e) = self.machine_ended(&name, &reason) {
                     warn!(run = %id, "{e}");
-                    pause.wait(wake, None).await;
+                }
+                // This run's own store, again: a run whose machine ended never stays on it. A requeue that errs fails it at once in one
+                // line naming the machine (cl-1316: a project's requeue erred, and its run sat on a destroyed pod for 5 min).
+                let why = store::ended_why(&name, &reason);
+                match self.with_run_store(id.as_str(), |store| store.requeue_machine(&name, &why)) {
+                    Ok(left) if left.is_empty() => pause.wait(wake, None).await,
+                    Ok(left) => {
+                        for (run, event) in left {
+                            self.publish(&run, vec![event]);
+                            self.wake(&run);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(run = %id, machine = %name, "back to the queue: {e}");
+                        let message = format!("{why}, and Calcifer couldn't place it again: {e}");
+                        let reason = Reason { code: ::api::calcifer::MACHINE_LOST.into(), message, ..Default::default() };
+                        match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                    }
                 }
                 continue;
             }
