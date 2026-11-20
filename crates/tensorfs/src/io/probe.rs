@@ -21,9 +21,10 @@ use super::host::{read_at, Bounce};
 const PROBE: u64 = 1 << 30;
 /// Bytes a probe must read for its rate to stand for the volume (and be kept).
 pub(super) const KEEP: u64 = 256 << 20;
-/// Reads as a cold device read does: 1 MiB requests (`ReadOpts::default().request`) on 8 threads.
-/// 8 MiB blocks measured 3-7% under that on the same volumes.
-const BLOCK: usize = 1 << 20;
+/// 4 MiB requests on 8 threads: on four RTX 4090 pods' volumes within 5% of the fastest O_DIRECT
+/// case of a thread x request grid (3.3-6.2 GB/s), where 1 MiB requests read 3-20% under it, and a
+/// ceiling taken so made every bound that lenient (cl-1318).
+const BLOCK: usize = 4 << 20;
 const THREADS: usize = 8;
 
 /// The measured ceilings for a volume and, optionally, a GPU.

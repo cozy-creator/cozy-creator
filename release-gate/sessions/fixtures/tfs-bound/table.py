@@ -93,24 +93,21 @@ for arm in arms:
             continue
         for temp, cold in (("cold", True), ("warm", False)):
             r = obj(f.get(temp))
-            note = f"{busy}{r.get('blocks')} blocks, {r.get('alone')} alone, reads {json.dumps(r.get('rows'))}"
+            note = (f"{busy}{r.get('blocks')} blocks, {r.get('alone')} alone, O_DIRECT {r.get('o_direct_gb')} GB, through the cache "
+                    f"{r.get('through_cache_gb')} GB, reads {json.dumps(r.get('rows'))}")
             if temp == "cold":
                 note += f", cached before {f.get('cached_before_cold')}, after {f.get('cached_after_cold')}"
             add(arm, f"{label} fill {'disk' if cold else 'RAM'} -> card", num(r.get("gb")), num(r.get("s")), cold, True, note)
-    for kind in ("full", "tight"):
-        f = load(f"{out}/{arm}-policy-{kind}.json")
-        if not f:
-            continue
-        if f.get("error"):
-            rows.append([arm, f"policy {kind}", "-", "-", "-", "-", "-", "-", str(f["error"])[:120]])
-            continue
-        mem = f"memory before {json.dumps(f.get('memory_before'))}, held {json.dumps(f.get('held_gb'))}"
-        r = obj(f.get("cold"))
-        add(arm, f"policy {kind}: disk -> card", num(r.get("gb")), num(r.get("s")), True, True,
-            f"cached after {f.get('cached_after_cold')}; {mem}; reads {json.dumps(r.get('rows'))}")
-        r = obj(f.get("again"))
-        add(arm, f"policy {kind}: the same again", num(r.get("gb")), num(r.get("s")), False, True,
-            f"a bound of RAM: the again row is from disk where the first read went past the cache; reads {json.dumps(r.get('rows'))}")
+    f = load(f"{out}/{arm}-policy-full.json")
+    if f.get("error"):
+        rows.append([arm, "policy: cache filled first", "-", "-", "-", "-", "-", "-", str(f["error"])[:160]])
+    elif f:
+        for key, case, cold in (("cold", "disk -> card", True), ("again", "the same again", False)):
+            r = obj(f.get(key))
+            note = f"O_DIRECT {r.get('o_direct_gb')} GB, through the cache {r.get('through_cache_gb')} GB"
+            if key == "cold":
+                note += f"; cached after {f.get('cached_after_cold')}; filler {json.dumps(f.get('filler'))}; memory {json.dumps(f.get('memory_before'))}"
+            add(arm, f"policy, cache filled first: {case}", num(r.get("gb")), num(r.get("s")), cold, True, note)
     paged = [("", f"{out}/{arm}-h3-paged.json")]
     i = 1
     while os.path.exists(f"{out}/{arm}-paged-sweep-{i}.json"):
