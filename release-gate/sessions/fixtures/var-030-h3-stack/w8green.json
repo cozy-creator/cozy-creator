@@ -1,0 +1,27 @@
+{
+  "need_s": 2700,
+  "max_failures": 1,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "cells": [
+    {
+      "name": "ltx-i2v-5s",
+      "tree": "rc",
+      "target": "ltx-2.5/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+        "--file",
+        "first_frame={pic1}",
+        "seed:=30070"
+      ],
+      "max_s": 900,
+      "host_free_gib": 35,
+      "update": {
+        "runtime": "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-0.28.0/cozy_runtime-0.49.0.dev2399+g0d19c555-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "tensorfs": "artifact:44635144596/tensorfs-wheel-72efcf55296f2ca1c7c399bd964257ac7388fee2",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    }
+  ]
+}
