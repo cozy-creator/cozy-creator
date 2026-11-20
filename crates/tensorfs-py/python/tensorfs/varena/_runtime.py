@@ -281,6 +281,11 @@ class Pages:
         """`set`'s pages go, or every page."""
         self._native.forget(set)
 
+    def flush(self) -> None:
+        """Waits until every derived page sent to disk is written there (`tensorfs::derived`): what a
+        merge made ahead reaches the OS's temporary storage before the tier lets its pages go."""
+        self._native.flush()
+
     def request_ended(self) -> None:
         self._native.request_ended()
 
