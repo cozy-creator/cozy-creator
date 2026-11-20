@@ -15,8 +15,8 @@
 # Last, with TensorD restarted and the GPU free, stock llama.cpp (`llama`, unpatched) decodes the drive's prompt from
 # `gguf` ("<hf repo> <file>"), plain and with MTP (fixtures/ggml-decode/llama.sh).
 # The pod runs this session's cozy as its TensorD and the candidate TensorFS and Runtime (a native dev build: `_ggml`).
-# params: tree (required: a packages checkout with qwen3), lanes (required: label=org/name@sha256:<checkpoint>, the first
-#         the one `room` caps), tensorfs, runtime (required), capped (24GiB; "" for none), llama (b12466; "" for none),
+# params: tree (required: a packages checkout with qwen3), lanes (required: label=org/name@sha256:<checkpoint>, or
+#         label=org/name for that model's checkpoint in lane <label>; the first the one `room` caps), tensorfs, runtime (required), capped (24GiB; "" for none), llama (b12466; "" for none),
 #         gguf (unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf), seconds (5400), skus and quoted (preflight.sh).
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -31,11 +31,19 @@ read -ra lanes <<<"$LANES"
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version) · ${lanes[*]}"
-# Each lane's checkpoint, as the Hub has it, before anything is rented.
-for pair in "${lanes[@]}"; do
-  cozy --json model show "${pair#*=}" > "$OUT/show-${pair%%=*}.json" 2> "$OUT/show-${pair%%=*}.err" ||
-    fail "lane ${pair%%=*}: the Hub has no ${pair#*=} ($(tail -c 300 "$OUT/show-${pair%%=*}.err"))"
-  say "lane ${pair%%=*}: $(head -c 600 "$OUT/show-${pair%%=*}.json" | tr '\n' ' ')"
+# Each lane's checkpoint, as the Hub has it, before anything is rented: a lane given as org/name is that model's
+# checkpoint in the lane its label names.
+for i in "${!lanes[@]}"; do
+  label=${lanes[$i]%%=*} ref=${lanes[$i]#*=}
+  cozy --json model show "$ref" > "$OUT/show-$label.json" 2> "$OUT/show-$label.err" ||
+    fail "lane $label: the Hub has no $ref ($(tail -c 300 "$OUT/show-$label.err"))"
+  if [[ $ref != *@* ]]; then
+    say "lanes of $ref: $(jq -c '[.lanes[]? | {lane, checkpoint}]' "$OUT/show-$label.json" | cut -c1-1500)"
+    checkpoint=$(jq -r --arg l "$label" '[.lanes[]? | select(.lane == $l) | .checkpoint] | first // ""' "$OUT/show-$label.json")
+    [ -n "$checkpoint" ] || fail "lane $label: $ref has no $label lane"
+    ref=$ref@$checkpoint lanes[$i]=$label=$ref
+  fi
+  say "lane $label: $ref · $(jq -c '[.lanes[]? | {lane, checkpoint}]' "$OUT/show-$label.json" | cut -c1-400)"
 done
 kernels "$SOURCE/qwen3"
 . "$FIX/preflight.sh"
