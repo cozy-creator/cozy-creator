@@ -9,7 +9,7 @@ use std::time::Instant;
 use std::fs::File;
 
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
-use super::{host, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
+use super::{host, Cold, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
 
 /// Bytes a staged piece reads from its file in one request.
 const PIECE: usize = 2 << 20;
@@ -713,7 +713,7 @@ impl Engine {
     fn run(
         self: &Arc<Self>,
         copies: &[(usize, Copy)],
-        cold: &[bool],
+        cold: &[Cold],
         opts: &ReadOpts,
         staged_host: bool,
         issued: Option<Issued>,
@@ -805,7 +805,7 @@ impl Engine {
                     }
                 }
                 let file = match c.src {
-                    Src::File(f, _) if cold[copy] => Some(files.iter().position(|(known, _)| std::ptr::eq(*known, f)).unwrap_or_else(|| {
+                    Src::File(f, _) if cold[copy].direct() => Some(files.iter().position(|(known, _)| std::ptr::eq(*known, f)).unwrap_or_else(|| {
                         files.push((f, std::sync::OnceLock::new()));
                         files.len() - 1
                     })),
@@ -820,7 +820,8 @@ impl Engine {
                         at,
                         len: step.min(c.dst.len() - at),
                         direct,
-                        cold: file,
+                        cold: &cold[copy],
+                        file,
                     });
                 }
             }
@@ -1018,20 +1019,16 @@ impl Engine {
                 return Err(Error { copy: job.copy, source });
             }
             Src::File(file, offset) => {
-                let direct = job.cold.and_then(|at| {
+                let direct = || job.file.and_then(|at| {
                     files[at].1.get_or_init(|| platform::durable::open_direct(file).ok().flatten()).as_ref()
                 });
                 // SAFETY: the staging slot is this engine's own and holds a piece, `job.len` or more.
                 let dst = unsafe { std::slice::from_raw_parts_mut(slot.ptr, job.len) };
-                let read = host::read_piece(file, direct, offset + job.at as u64, dst, bounce)
+                let read = host::read_parts(file, direct, job.cold, offset + job.at as u64, dst, bounce)
                     .map_err(|source| Error { copy: job.copy, source })?;
-                let n = job.len as u64;
-                if read.direct {
-                    tally.direct.fetch_add(n, Relaxed);
-                    tally.bounced.fetch_add(read.bounced, Relaxed);
-                } else {
-                    tally.cached.fetch_add(n, Relaxed);
-                }
+                tally.direct.fetch_add(read.direct, Relaxed);
+                tally.bounced.fetch_add(read.bounced, Relaxed);
+                tally.cached.fetch_add(read.cached, Relaxed);
             }
             // SAFETY: the host source covers `job.at + job.len` bytes (read's contract) and the slot holds `PIECE >= job.len`.
             Src::Host(ptr) => unsafe {
@@ -1183,8 +1180,10 @@ struct Job<'a> {
     at: usize,
     len: usize,
     direct: bool,
-    /// Its file read past the page cache: that file's place in the run's O_DIRECT descriptions.
-    cold: Option<usize>,
+    /// How its copy's file bytes read (`super::cold`).
+    cold: &'a Cold,
+    /// Its file, where any of it reads past the page cache: its place in the run's O_DIRECT descriptions.
+    file: Option<usize>,
 }
 
 #[derive(Default)]
@@ -1200,7 +1199,7 @@ struct Tally {
 /// `cold` is by each copy's index (`super::cold`).
 pub(super) unsafe fn fill(
     copies: &[(usize, Copy)],
-    cold: &[bool],
+    cold: &[Cold],
     opts: &ReadOpts,
     staged_host: bool,
     issued: Option<Issued>,
