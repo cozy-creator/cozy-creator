@@ -39,7 +39,7 @@ pub(crate) fn invoked(id: &str) {
 
 /// Run `id` reported a step (`calls::observe`): once invoked, it is past its loads, a stage may read beside it now, and the load
 /// step looks again.
-pub(crate) fn stepped(engine: &Engine, id: &str) {
+pub(crate) fn stepped(engine: &Engine, id: &str, frame: &crate::device_executor::Frame) {
     if !INVOKED.lock().unwrap().contains(id) {
         return;
     }
@@ -47,6 +47,7 @@ pub(crate) fn stepped(engine: &Engine, id: &str) {
     if !stepped.contains(id) {
         stepped.insert(id.to_owned());
         drop(stepped);
+        tracing::info!(run = %id, "its first step: {} {:?}/{:?}, {:?} ms: a stage may read beside it", frame.stage, frame.position, frame.total, frame.step_ms);
         engine.notify_activity();
     }
 }
