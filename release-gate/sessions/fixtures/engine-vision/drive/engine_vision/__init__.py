@@ -135,19 +135,48 @@ def _forced(net: torch.nn.Module, prompt: list[int], made: list[int], media: obj
     return found
 
 
+def _kv(cache: object) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """A Transformers cache's attention layers' keys and values, by layer."""
+    found = {}
+    for i, layer in enumerate(getattr(cache, "layers", ())):
+        keys, values = getattr(layer, "keys", None), getattr(layer, "values", None)
+        if isinstance(keys, torch.Tensor) and isinstance(values, torch.Tensor) and keys.numel():
+            found[i] = (keys, values)
+    return found
+
+
 def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], media: object) -> torch.Tensor:
     """Transformers' cached decode of `prompt` (its pictures and videos too) then `made`, a token at a time: at each
-    position its top choice, its lead over the next, and how far `made`'s token sits below its top, `[len(made), 3]`."""
+    position its top choice, its lead over the next, and how far `made`'s token sits below its top, `[len(made), 3]`. Its
+    attention layers' K/V are held in `author.retained` between steps, as the decode drive's (44654637279: as plain
+    tensors the Runtime's memory reused them under the cache, and the decode read 19 logits off its forward)."""
+    from cozy_runtime.author import retained
+
     rows: list[torch.Tensor] = []
-    with torch.inference_mode():
-        out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, **_media_kwargs(media, 0))
-        for t, token in enumerate(made):
-            last = out.logits[0, -1].float()
-            v, i = last.topk(2)
-            rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
-            if t + 1 < len(made):
-                out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=out.past_key_values,
-                          use_cache=True)  # fmt: skip
+    stores: list[object] = []
+    try:
+        with torch.inference_mode():
+            out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, logits_to_keep=1,
+                      **_media_kwargs(media, 0))  # fmt: skip
+            for t, token in enumerate(made):
+                last = out.logits[0, -1].float()
+                v, i = last.topk(2)
+                rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
+                if t + 1 < len(made):
+                    cache = out.past_key_values
+                    held = _kv(cache)
+                    store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                    for layer, (k, v) in held.items():
+                        cache.layers[layer].keys, cache.layers[layer].values = store.put(k, v).get()
+                    del held
+                    stores.append(store)
+                    if len(stores) > 1:
+                        stores.pop(0).close()  # type: ignore[attr-defined]  # a Store
+                    out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=cache,
+                              use_cache=True, logits_to_keep=1)  # fmt: skip
+    finally:
+        for store in stores:
+            store.close()  # type: ignore[attr-defined]  # a Store
     return torch.stack(rows).cpu()
 
 
@@ -169,6 +198,7 @@ def inputs(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
       forward with eager attention in place of its own, language model and vision tower alike).
     `features`: the vision tower's output in the engine's encode against Transformers' forward's (a hook on the tower),
     and under eager attention; `tower`: each call's attention implementation and dtypes. Also the rope delta."""
+    from cozy_runtime.author import retained
     from transformers import DynamicCache
 
     net, engine = model.pipe.components["model"], model.engine
@@ -216,10 +246,23 @@ def inputs(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
                 ours = head(decoder(inputs_embeds=embeds[None], position_ids=at).last_hidden_state[0, -1:])[0]
                 ours_3 = head(decoder(inputs_embeds=embeds[None], position_ids=positions[:, None]).last_hidden_state[0, -1:])[0]
                 cache = DynamicCache(config=net.config.get_text_config(decoder=True))
-                for c0 in range(0, len(prompt), 64):
-                    y = decoder(inputs_embeds=embeds[None, c0 : c0 + 64], position_ids=at[..., c0 : c0 + 64],
-                                past_key_values=cache, use_cache=True).last_hidden_state  # fmt: skip
-                chunked = head(y[0, -1:])[0]
+                stores: list[object] = []
+                try:  # the cache's attention K/V held in `author.retained` between chunks, as `_decoded`'s
+                    for c0 in range(0, len(prompt), 64):
+                        y = decoder(inputs_embeds=embeds[None, c0 : c0 + 64], position_ids=at[..., c0 : c0 + 64],
+                                    past_key_values=cache, use_cache=True).last_hidden_state  # fmt: skip
+                        held = _kv(cache)
+                        store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                        for layer, (k, v) in held.items():
+                            cache.layers[layer].keys, cache.layers[layer].values = store.put(k, v).get()
+                        del held
+                        stores.append(store)
+                        if len(stores) > 1:
+                            stores.pop(0).close()  # type: ignore[attr-defined]  # a Store
+                    chunked = head(y[0, -1:])[0]
+                finally:
+                    for store in stores:
+                        store.close()  # type: ignore[attr-defined]  # a Store
                 eager: dict[str, object] = {}
                 try:
                     net.set_attn_implementation("eager")
