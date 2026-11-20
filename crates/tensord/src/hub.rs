@@ -185,7 +185,8 @@ struct Held {
 /// The runs a capability serves: renewed while one of them is not over.
 #[derive(Default)]
 struct Served {
-    runs: BTreeSet<String>,
+    /// Each with the private scope it was sent in: a project's run is journaled under it, and found only within it.
+    runs: BTreeMap<String, Option<api::machine::LocalPrivateStorage>>,
     /// Runs being accepted, which the engine knows of only once they are: live meanwhile.
     accepting: BTreeSet<String>,
     /// A renewal runs for them.
@@ -335,7 +336,7 @@ impl Capability {
     /// at once): it is renewed until every run it serves is over.
     pub(crate) fn serves(self: &Arc<Self>, run: &str, engine: &Arc<crate::execution::Engine>) -> Accepting {
         let mut runs = self.runs.lock().unwrap();
-        runs.runs.insert(run.to_string());
+        runs.runs.insert(run.to_string(), crate::private_io::current());
         runs.accepting.insert(run.to_string());
         let accepting = Accepting(self.clone(), run.to_string());
         if runs.renewing {
@@ -369,10 +370,14 @@ impl Capability {
                 let mut served = self.runs.lock().unwrap();
                 let engine = engine.upgrade();
                 let Served { runs, accepting, .. } = &mut *served;
-                // A run by its caller's id, as its signer named it.
-                runs.retain(|id| {
+                // A run by its caller's id, as its signer named it, read in the scope it was sent in: this thread has none, and a
+                // project's run read outside its own was never found, so a renewal that first looked once its run was accepted ended
+                // unredeemed and its reads went anonymous (44636417703).
+                runs.retain(|id, scope| {
                     accepting.contains(id)
-                        || engine.as_ref().is_some_and(|engine| engine.get_public(Some(&self.actor), id).is_ok_and(|run| !run.state.terminal()))
+                        || engine.as_ref().is_some_and(|engine| {
+                            crate::private_io::within(scope.clone(), || engine.get_public(Some(&self.actor), id)).is_ok_and(|run| !run.state.terminal())
+                        })
                 });
                 if served.runs.is_empty() {
                     served.renewing = false;
