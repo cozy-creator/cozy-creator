@@ -1,0 +1,1 @@
+The page renders a box on a new rental in place: Slow here's "Render on a new <card>" and a box waiting for a machine show this render's price on the button that agrees to it, then order that one rental and render there.

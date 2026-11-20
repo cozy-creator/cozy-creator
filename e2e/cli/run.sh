@@ -1169,6 +1169,7 @@ case $SHARD in
     queued_elsewhere
     run_on_new
     rental_quote
+    render_on_new
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a

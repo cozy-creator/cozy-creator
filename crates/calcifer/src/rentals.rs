@@ -365,7 +365,59 @@ impl Machines {
         shape: Shape,
     ) -> Result<Rented, Error> {
         let sku = self.spelled_sku(hub, sku).await;
-        let (ask, fresh) = self.ask_rent(key, hub, &sku, shape, None).await?;
+        let (ask, fresh) = self.ask_rent(key, hub, &sku, shape, None, true).await?;
+        self.rented(ask, fresh).await
+    }
+
+    /// The one rental for every job of `jobs` at `hub` (a render's, cl-1066), placed as `rental_quote` quotes it, at most the price
+    /// `agreed`: what the render's ask keeps, for its walk to order once the ask is committed. Nothing is ordered here.
+    pub(crate) async fn render_order(&self, hub: &str, sku: Option<&str>, jobs: &[Placing], agreed: Agreed) -> Result<RenderOrder, Error> {
+        let placed = self.placed_for(hub, jobs, sku).await?;
+        Ok(RenderOrder { sku: placed.sku, gpus: placed.gpus, disk_gb: placed.disk_gb, fallbacks: placed.fallbacks, agreed })
+    }
+
+    /// Render `order`'s rental under `key` (a render's walk asks it as it sends its first job: cl-1066), its machine once its Hub takes
+    /// the order. The same key again joins that order; one asking another rental under it is refused (`ask_rent`). A Hub that doesn't
+    /// answer is asked again and waited on: a slow Hub reads as ordering, never a refusal. The order is its render's: once `over` says
+    /// the render is, it buys nothing more and what it placed is ended (`withdrawn`).
+    pub(crate) async fn rent_for_render(self: &Arc<Self>, key: &str, hub: &str, order: &RenderOrder, over: Over) -> Result<String, Error> {
+        lock(&self.renders).insert(key.to_owned(), over);
+        let rented: Result<String, Error> = async {
+            let shape = Shape { gpus: order.gpus, disk_gb: order.disk_gb, agreed: Some(order.agreed), fallbacks: order.fallbacks.clone(), ..Shape::default() };
+            let (mut ask, _) = self.ask_rent(key, hub, &order.sku, shape, None, false).await?;
+            while ask.state == AskState::Pending {
+                let (answer, answered) = tokio::sync::oneshot::channel();
+                let (me, asking) = (self.clone(), ask.clone());
+                // Its loop if none asks yet, else the loop's next answer.
+                self.spawn(async move {
+                    let _ = me.ask_hub(&asking, Some(answer)).await;
+                });
+                match answered.await {
+                    Ok(Ok(row)) => return Ok(row.name),
+                    Ok(Err(error)) if error.kind != Kind::Unavailable => return Err(error),
+                    Ok(Err(_)) => {}
+                    Err(_) => return Err(Error::new(Kind::Unavailable, STOPPING, "Cozy is stopping. Try again once it's back.")),
+                }
+                ask = self.store().ask(key).map_err(internal)?.ok_or_else(|| not_found(key))?;
+            }
+            Ok(self.rented(ask, false).await?.machine.name)
+        }
+        .await;
+        // Settled, it has no owner to ask; a restart that finds it waiting asks again under its key.
+        lock(&self.renders).remove(key);
+        rented
+    }
+
+    /// Stops render order `key` if its Hub hasn't taken it: the render it was for was canceled (cl-1066).
+    pub(crate) fn stop_render_order(&self, key: &str) -> Result<(), Error> {
+        match self.store().ask(key).map_err(internal)? {
+            Some(ask) if ask.state == AskState::Pending => self.stop_order(ask).map(drop),
+            _ => Ok(()),
+        }
+    }
+
+    /// An order as its asker hears it: its machine once its Hub takes it, or why not.
+    async fn rented(self: &Arc<Self>, ask: Ask, fresh: bool) -> Result<Rented, Error> {
         let quote = quote_of(&RentBody::of(&ask)?.quote);
         let row = match ask.state {
             AskState::Done => {
@@ -402,7 +454,9 @@ impl Machines {
 
     /// Records a rent ask under `key` with the Hub's quote for its exact request, and the
     /// rental's key; an ask the key already names is answered, if it asked for the same. A rent
-    /// the Hub will not quote records nothing.
+    /// the Hub will not quote records nothing. `joins`: an order for the same rental its Hub hasn't
+    /// answered, under another key, answers it (a person's rent asked again); a run's or a render's
+    /// is its own.
     async fn ask_rent(
         &self,
         key: &str,
@@ -410,6 +464,7 @@ impl Machines {
         sku: &str,
         shape: Shape,
         run: Option<RunId>,
+        joins: bool,
     ) -> Result<(Ask, bool), Error> {
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
@@ -434,7 +489,7 @@ impl Machines {
         }
         // A rent its Hub has not answered is this computer's one order for what it asks: asking
         // again, under any key, never buys a second pod.
-        if run.is_none()
+        if joins
             && let Some(order) = self.unanswered_order(&digest)?
         {
             return Ok((order, false));
@@ -635,7 +690,9 @@ impl Machines {
             },
             None => false,
         };
-        Ok(stopped || run_over)
+        // A render's, by its walk here alone (cl-1066); one whose project isn't open now is not over, as a project's run.
+        let over = lock(&self.renders).get(&ask.key).cloned();
+        Ok(stopped || run_over || over.is_some_and(|over| over()))
     }
 
     /// Settles a withdrawn ask once its Hub answers: what an unanswered attempt may have placed is
@@ -736,6 +793,7 @@ impl Machines {
         Ok(asks.into_iter().find(|ask| {
             ask.kind == AskKind::Rent
                 && ask.run.is_none()
+                && !lock(&self.renders).contains_key(&ask.key)
                 && ask.digest == digest
                 && unanswered.contains_key(&ask.key)
                 && !RentBody::of(ask).is_ok_and(|body| body.stopped)
@@ -752,7 +810,7 @@ impl Machines {
     /// Calcifer that stops mid-ask asks again for the same rental. Unless the run names both the
     /// product and its GPUs, the Hub places it (on the named product): the cheapest per run of the
     /// machines fast enough, named on the run.
-    pub(crate) fn rent_for(self: &Arc<Self>, run: &RunRow, sku: Option<&str>, gpus: u32) {
+    pub(crate) fn rent_for(self: &Arc<Self>, run: &RunRow, sku: Option<&str>) {
         if !lock(&self.renting).insert(run.id.clone()) {
             return;
         }
@@ -770,31 +828,29 @@ impl Machines {
                     return Ok(ask);
                 }
                 let hub = run.hub.as_deref().unwrap_or_default();
-                let sku = match sku {
-                    Some(sku) => Some(me.spelled_sku(hub, &sku).await),
-                    None => None,
-                };
-                let (sku, gpus, disk_gb, fallbacks) = match sku {
-                    Some(sku) if gpus > 0 => (sku, Some(gpus), None, vec![]),
-                    sku => me.placed(&run, sku.as_deref()).await?,
-                };
+                let placed = me.placed_for(hub, &[Placing::of(&run.spec)], sku.as_deref()).await?;
+                // The Hub's placement is kept on the run as a warning naming the product, its price and why.
+                if !placed.why.is_empty() {
+                    let warning = Warning { code: "placement".into(), message: placed.why.clone() };
+                    me.calcifer.warn(&run.id, &warning).map_err(internal)?;
+                }
                 // Until its machine is named, the run says what it rents.
-                let card = sku.replace(['-', '_'], " ").to_uppercase();
-                me.calcifer.renting(&run.id, match gpus {
+                let card = placed.sku.replace(['-', '_'], " ").to_uppercase();
+                me.calcifer.renting(&run.id, match placed.gpus {
                     Some(n) if n > 1 => format!("renting {n}× {card}"),
                     _ => format!("renting {card}"),
                 });
                 // The placement's disk is sized for the run's weights; a run whose price nobody agreed to gets at least the
                 // default. One agreed to a price keeps the disk that price was quoted at: more would be refused as dearer.
-                let disk_gb = disk_gb.map(|gb| if run.agreed.is_none() { gb.max(DISK_GB) } else { gb });
+                let disk_gb = placed.disk_gb.map(|gb| if run.agreed.is_none() { gb.max(DISK_GB) } else { gb });
                 let shape = Shape {
-                    gpus,
+                    gpus: placed.gpus,
                     disk_gb,
                     agreed: run.agreed,
-                    fallbacks,
+                    fallbacks: placed.fallbacks,
                     ..Shape::default()
                 };
-                let asked = me.ask_rent(&key, hub, &sku, shape, Some(run.id.clone()));
+                let asked = me.ask_rent(&key, hub, &placed.sku, shape, Some(run.id.clone()), false);
                 Ok(asked.await?.0)
             };
             // The order's run, here and in this Calcifer alone for a project's.
@@ -829,30 +885,36 @@ impl Machines {
         });
     }
 
-    /// Asks the run's Hub where to run it, on `sku` when the run names one: the product to rent, its
-    /// GPU count and the machines the Hub may buy instead. The answer is kept on the run as a
-    /// warning naming the product, its price and why.
-    async fn placed(
-        &self,
-        run: &RunRow,
-        sku: Option<&str>,
-    ) -> Result<(String, Option<u32>, Option<u32>, Vec<types::RentalFallback>), Error> {
-        let hub = run.hub.as_deref().unwrap_or_default();
-        let placed = self.place(hub, &run.spec, sku).await?;
-        if !placed.why.is_empty() {
-            let warning = Warning {
-                code: "placement".into(),
-                message: placed.why,
-            };
-            self.calcifer.warn(&run.id, &warning).map_err(internal)?;
+    /// The one rental at `hub` for every job of `jobs` (a run sends one, a render several: cl-1066), on `sku` when named: the product
+    /// to rent, its GPU count and the machines the Hub may buy instead. A product and GPU count named are rented as named; else each
+    /// job is placed, and the pick with the most memory a GPU rents for all, with as many GPUs and as large a disk as any of them needs.
+    async fn placed_for(&self, hub: &str, jobs: &[Placing], sku: Option<&str>) -> Result<Placed, Error> {
+        let sku = match sku {
+            Some(sku) => Some(self.spelled_sku(hub, sku).await),
+            None => None,
+        };
+        let gpus = jobs.iter().map(|job| job.gpus).max().filter(|gpus| *gpus > 0);
+        if let (Some(sku), Some(_)) = (&sku, gpus) {
+            return Ok(Placed { sku: sku.clone(), gpus, ..Placed::default() });
         }
-        Ok((placed.sku, placed.gpus, placed.disk_gb, placed.fallbacks))
+        let mut distinct: Vec<&Placing> = vec![];
+        jobs.iter().for_each(|job| if !distinct.contains(&job) { distinct.push(job) });
+        let each = futures_util::future::try_join_all(distinct.into_iter().map(|job| self.place(hub, job, sku.as_deref()))).await?;
+        let (most, disk_gb) = (each.iter().filter_map(|placed| placed.gpus).max(), each.iter().filter_map(|placed| placed.disk_gb).max());
+        let largest = each.into_iter().max_by_key(|placed| (placed.vram_gb, placed.gpus.unwrap_or(1)));
+        let placed = largest.ok_or_else(|| Error::new(Kind::Usage, "rent_nothing", "Nothing here needs a machine, so nothing was rented."))?;
+        // Another job's pick takes more GPUs: the rental has as many, and the Hub buys nothing smaller instead.
+        if most > placed.gpus {
+            let why = format!("{} With {} GPUs, as another of its jobs takes.", placed.why, most.unwrap_or(1)).trim_start().to_owned();
+            return Ok(Placed { gpus: most, disk_gb, fallbacks: vec![], why, ..placed });
+        }
+        Ok(Placed { gpus: placed.gpus.or(gpus), disk_gb, ..placed })
     }
 
-    /// Where `hub` places a run of `spec`, on `sku` when the run names one. A named product the Hub
-    /// cannot place on (local code, weights it does not hold) is rented as named, at one GPU.
-    async fn place(&self, hub: &str, spec: &v1::RunSpec, sku: Option<&str>) -> Result<Placed, Error> {
-        match (self.placement(hub, spec, sku).await, sku) {
+    /// Where `hub` places `job`, on `sku` when named. A named product the Hub cannot place on (local
+    /// code, weights it does not hold) is rented as named, at one GPU.
+    async fn place(&self, hub: &str, job: &Placing, sku: Option<&str>) -> Result<Placed, Error> {
+        match (self.placement(hub, job, sku).await, sku) {
             (Ok(placed), _) => Ok(placed),
             (Err(e), Some(sku)) => Ok(Placed {
                 sku: sku.into(),
@@ -866,10 +928,10 @@ impl Machines {
         }
     }
 
-    /// What `hub` places a run of `spec` on: the pick, why in words, and the alternatives a quote
-    /// shows (the cheapest per run and the fastest, else the next machines in the Hub's order).
-    async fn placement(&self, hub: &str, spec: &v1::RunSpec, sku: Option<&str>) -> Result<Placed, Error> {
-        let Some(v1::Source::Release(release)) = &spec.source else {
+    /// What `hub` places `job` on: the pick, why in words, and the alternatives a quote shows (the
+    /// cheapest per run and the fastest, else the next machines in the Hub's order).
+    async fn placement(&self, hub: &str, job: &Placing, sku: Option<&str>) -> Result<Placed, Error> {
+        let Some((package, release)) = &job.release else {
             return Err(Error::new(
                 Kind::Usage,
                 "placement_needs_release",
@@ -879,11 +941,11 @@ impl Machines {
             .next("cozy machine rent"));
         };
         let request = types::RentalPlacementRequest {
-            package: release.package.clone(),
-            release: Some(release.release.clone()).filter(|r| !r.is_empty()),
-            function: spec.entrypoint.clone(),
-            lane: Some(spec.lane.clone()).filter(|lane| !lane.is_empty()),
-            gpus: Some(spec.gpus).filter(|gpus| *gpus > 0),
+            package: package.clone(),
+            release: Some(release.clone()).filter(|r| !r.is_empty()),
+            function: job.function.clone(),
+            lane: Some(job.lane.clone()).filter(|lane| !lane.is_empty()),
+            gpus: Some(job.gpus).filter(|gpus| *gpus > 0),
             sku: sku.map(str::to_owned),
         };
         let client = self.hubs.client(hub)?;
@@ -938,6 +1000,7 @@ impl Machines {
             boot_ms: top.boot_seconds.filter(|s| s.is_finite() && *s > 0.0).map(|s| (s * 1e3) as i64),
             weight_bytes: u64::try_from(placement.weight_bytes).unwrap_or_default(),
             gpus: u32::try_from(top.accelerator_count).ok(),
+            vram_gb: u32::try_from(top.vram_gb).unwrap_or_default(),
             disk_gb: u32::try_from(disk).ok().filter(|d| *d > 0),
             fallbacks,
             why,
@@ -951,25 +1014,22 @@ impl Machines {
         let On::New(sku) = &submit.on else {
             return Err(Error::new(Kind::Usage, "quote_needs_new", "Only a run on a new rental has a price."));
         };
-        let gpus = (submit.spec.gpus > 0).then_some(submit.spec.gpus);
-        let sku = match sku {
-            Some(sku) => Some(self.spelled_sku(&submit.hub, sku).await),
-            None => None,
-        };
-        let placed = match (&sku, gpus) {
-            (Some(sku), Some(_)) => Placed { sku: sku.clone(), gpus, ..Placed::default() },
-            (sku, _) => self.place(&submit.hub, &submit.spec, sku.as_deref()).await?,
-        };
-        let gpus = placed.gpus.or(gpus);
-        // A product the run names is honoured or refused, as `cozy machine rent` names it.
+        self.rental_quote(&submit.hub, sku.as_deref(), &[Placing::of(&submit.spec)]).await
+    }
+
+    /// What one rental at `hub` for every job of `jobs` costs, on `sku` when named: a `new` run's (one job) and a render's (each job it
+    /// sends, cl-1066), as `rent_for` and `render_order` would ask it. Nothing is rented.
+    pub(crate) async fn rental_quote(&self, hub: &str, sku: Option<&str>, jobs: &[Placing]) -> Result<RunQuote, Error> {
+        let placed = self.placed_for(hub, jobs, sku).await?;
+        // A product named is honoured or refused, as `cozy machine rent` names it.
         if sku.is_some() {
-            self.admit_sku(&submit.hub, &placed.sku, gpus.unwrap_or(1)).await?;
+            self.admit_sku(hub, &placed.sku, placed.gpus.unwrap_or(1)).await?;
         }
-        let shape = Shape { gpus, disk_gb: placed.disk_gb, ..Shape::default() };
-        let quote = self.quote(&submit.hub, &placed.sku, shape).await?;
+        let shape = Shape { gpus: placed.gpus, disk_gb: placed.disk_gb, ..Shape::default() };
+        let quote = self.quote(hub, &placed.sku, shape).await?;
         Ok(RunQuote {
             sku: placed.sku,
-            gpus,
+            gpus: placed.gpus,
             quote,
             why: Some(placed.why).filter(|w| !w.is_empty()),
             alternatives: placed.alternatives,
@@ -980,7 +1040,7 @@ impl Machines {
     /// What a `new` run of `spec` would rent, as `rent_for` would ask the Hub to place it, for weighing against machines up or on their
     /// way (cl-915): its product, card and GPUs, how long a rental of it takes to serve, and the weights it fetches. Nothing is rented.
     pub(crate) async fn new_rental(&self, hub: &str, spec: &v1::RunSpec) -> Result<NewRental, Error> {
-        let placed = self.placement(hub, spec, None).await?;
+        let placed = self.placement(hub, &Placing::of(spec), None).await?;
         Ok(NewRental {
             card: placed.card,
             gpus: placed.gpus.unwrap_or(1).max(1),
@@ -1634,6 +1694,27 @@ fn exports(event: &api::calcifer::Event) -> bool {
     )
 }
 
+/// One job a rental is placed for, as its Hub places it: a published function's `(package, release)` (none: local code, which the Hub
+/// can't place), its lane and GPUs (0: the Hub's pick). A run is one; a render sends several (cl-1066).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Placing {
+    pub release: Option<(String, String)>,
+    pub function: String,
+    pub lane: String,
+    pub gpus: u32,
+}
+
+impl Placing {
+    /// What a run of `spec` is placed by.
+    pub(crate) fn of(spec: &v1::RunSpec) -> Self {
+        let release = match &spec.source {
+            Some(v1::Source::Release(release)) => Some((release.package.clone(), release.release.clone())),
+            _ => None,
+        };
+        Self { release, function: spec.entrypoint.clone(), lane: spec.lane.clone(), gpus: spec.gpus }
+    }
+}
+
 /// Where a Hub places a run: the product, its GPU count, why in words, and other machines.
 #[derive(Default)]
 struct Placed {
@@ -1644,6 +1725,8 @@ struct Placed {
     /// The weights a run fetches there.
     weight_bytes: u64,
     gpus: Option<u32>,
+    /// Each of its GPUs' memory.
+    vram_gb: u32,
     /// The disk the Hub priced the pick at (sized for the weights the run fetches), as large as
     /// any fallback's: the rental asks for it.
     disk_gb: Option<u32>,
@@ -2023,6 +2106,22 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         nfs_drive: rental.nfs_drive,
     }
 }
+
+/// A render's one rental (cl-1066), as its quote placed it: kept with the render's ask in its project's journal, and ordered by its walk.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RenderOrder {
+    pub sku: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_gb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<types::RentalFallback>,
+    pub agreed: Agreed,
+}
+
+/// Whether the render a rental is ordered for is over (cl-1066): its walk's answer, read as the order is asked.
+pub(crate) type Over = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// The machine a rent asks for, beyond its SKU, and the most its renter agreed to pay.
 #[derive(Default)]

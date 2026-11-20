@@ -3375,7 +3375,11 @@ pickup?: Pickup | null,
  * The ids of the takes it asks for, one each, made by whoever asks (the page, as Render is pressed): a take is known by its id
  * from here to its version. Only for one box named; asked again with an id it already has, it's the same take. None: Calcifer's.
  */
-takes?: Array<string>, };
+takes?: Array<string>,
+/**
+ * With `on` `new[:sku]`, the price its asker agreed to (`POST /v1/projects/{id}/render-quotes`): one rental for all it sends.
+ */
+agreed?: Agreed | null, };
 
 /**
  * A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the

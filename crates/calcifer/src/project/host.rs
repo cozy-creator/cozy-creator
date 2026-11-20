@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     api::{Api, Refusal},
     local_code,
+    rentals::Placing,
     runs::target::{self, Resolved},
     store::State,
 };
@@ -329,6 +330,20 @@ impl Host {
             let summary = read.from.map(|from| from.summary).unwrap_or_default();
             let document = read.interface.unwrap_or_default();
             Ok(Package { name: read.package, release, local: Some(path), manifest, moved: None, named, digest: String::new(), summary, document })
+        }).await
+    }
+
+    /// What a job of `with` is placed by on a new rental (cl-1066), its package as this computer knows it, nothing installed or moved
+    /// for it: a published function's release; local code, which no Hub places, by nothing. None: it names no function, so goes nowhere.
+    pub(crate) async fn placing(&self, hub: &str, with: &str, folder: &Path) -> Result<Option<Placing>, Error> {
+        let scope = crate::private_io::of_path(folder)?;
+        crate::private_io::context(scope, async {
+            let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
+            if local_code::target(with, Some(folder), &home).is_some() {
+                return Ok(Some(Placing::default()));
+            }
+            let Some(renderer) = self.published(hub, with, None).await?.maker()? else { return Ok(None) };
+            Ok(Some(Placing { release: Some((renderer.package, renderer.release)), function: renderer.function, ..Placing::default() }))
         }).await
     }
 

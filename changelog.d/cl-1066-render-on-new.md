@@ -1,0 +1,1 @@
+`cozy render <names> --on new[:<sku>]` rents one machine for everything the render sends, quoted (`POST /v1/projects/{id}/render-quotes`) and agreed as `cozy run --on new` is, then renders there; before, a project's render was refused `project_on_new`.

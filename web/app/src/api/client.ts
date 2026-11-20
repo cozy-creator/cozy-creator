@@ -511,9 +511,15 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name }, undefined, write)
   }
 
-  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box. */
-  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
+  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box.
+   *  On `new[:sku]`, `agreed` is the price agreed to (`renderQuote`): Calcifer orders that one rental and renders there (cl-1066). */
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "takes" | "agreed"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
+  }
+
+  /** What a render of `names` on `new[:sku]` would rent, one rental for all it sends, and its price; `null`: it sends nothing to a machine (cl-1066). */
+  renderQuote(id: string, names: string[], on: string): Promise<RunQuote | null> {
+    return this.write("POST", `${project(id)}/render-quotes`, { names, on: [on] })
   }
 
   /** The machines the project's runs and renders go to, each to whichever finishes first; none: any. */

@@ -1,7 +1,8 @@
 // account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. On the stand-in too, render-time
 // (cl-1004): beside Render, how long a box takes where it would go, from 15 s (a slow box once it ran, none for a fast one), and Slow here
 // on an H3 shot this computer, which has no GPU, would run on its CPU: its release's benchmark of the stand-in's rtx-4090, what a render
-// there costs, and Rent with it. Signed out by Account's inline
+// there costs, and Render on a new one (cl-1066, Paul: "`--on new`: `run` first, then `render`"): its price for this render on the
+// button that agrees to it, in place, one rental ordered, and the shot sent there. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
 // it), a box this computer would render poorly renders here at once, asking nothing (cl-1066: Slow here already offers the rental),
@@ -29,7 +30,10 @@ const DRAW = `${join(__dirname, '..', 'project', 'draw.py')}/draw`;
 const CONTAINERS = ['ps', '-aq', '--filter', 'label=com.cozy.tensorhub.provider=docker'];
 
 // The isolated Hub sells no GPU (its docker provider offers CPU machines alone) and so places no GPU tool. The stand-in sells one card as a
-// provider would: listed in its catalog, and the pick of a placement that found none. Everything else is the Hub's own answer, passed through.
+// provider would: listed in its catalog, and the pick of a placement that found none. An order of it (its status, quote and rental) is the
+// Hub's cpu's, so Render on a new one (cl-1066) rents a container here that never gets ready. Everything else is the Hub's own answer, passed through.
+/** What the stand-in fills an order of its card with: the isolated Hub's docker cpu. */
+const FILLED_BY = 'cpu';
 const CARD = {
   name: 'rtx-4090', accelerator_model: 'NVIDIA GeForce RTX 4090', base_worker_profile: '', compute_capability: '8.9', vram_gb: 24,
   python_provisionable_minors: ['3.12'], python_interpreters: [],
@@ -45,7 +49,12 @@ function standIn(upstream) {
     const { pathname } = new URL(request.url, 'http://hub');
     const sold = request.method === 'GET' && pathname === '/v1/rental-skus';
     const placing = request.method === 'POST' && pathname === '/v1/rental-placements';
-    const ask = http.request({ host: to.hostname, port: to.port, method: request.method, path: request.url, headers: { ...request.headers, host: to.host } }, (answer) => {
+    // Its card's order: the product's status, a quote of it and the rental itself, each the Hub's cpu's.
+    const status = request.method === 'GET' && pathname === `/v1/rental-skus/${CARD.name}`;
+    const ordering = request.method === 'POST' && ['/v1/rental-quotes', '/v1/rentals'].includes(pathname);
+    const path = status ? request.url.replace(`/v1/rental-skus/${CARD.name}`, `/v1/rental-skus/${FILLED_BY}`) : request.url;
+    const ask = http.request({ host: to.hostname, port: to.port, method: request.method, path, headers: { ...request.headers, host: to.host } }, (answer) => {
+      if (status || ordering) asked.push(`${request.method} ${pathname} ${answer.statusCode}${request.filled ? ` ${CARD.name} as ${FILLED_BY}` : ''}`);
       if (!sold && !placing) {
         response.writeHead(answer.statusCode, answer.headers);
         answer.pipe(response);
@@ -75,7 +84,21 @@ function standIn(upstream) {
       response.writeHead(502);
       response.end(String(error));
     });
-    request.pipe(ask);
+    if (!ordering) return void request.pipe(ask);
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      let body = Buffer.concat(chunks);
+      try {
+        const asked = JSON.parse(body.toString() || '{}');
+        if (asked.sku === CARD.name) {
+          request.filled = true;
+          body = Buffer.from(JSON.stringify({ ...asked, sku: FILLED_BY }));
+        }
+      } catch {}
+      ask.setHeader('Content-Length', body.length);
+      ask.end(body);
+    });
   });
   return new Promise((done) => server.listen(0, '127.0.0.1', () => done({
     origin: `http://127.0.0.1:${server.address().port}`,
@@ -95,11 +118,13 @@ const codesFor = (email) => readFileSync(need('E2E_HUB_LOG'), 'utf8').split('\n'
 
 /** `cozy --json login <email>` in `cwd`, answered with the code the Hub logs after it asks, as rental.sh's signin does. Refused as too soon,
  *  asked again after the wait the Hub states. What it said. */
-async function cliSignIn(email, cwd) {
+async function cliSignIn(email, cwd, hub) {
   for (let tries = 1; ; tries += 1) {
     const before = codesFor(email).length;
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `--json\x1flogin\x1f${email}\x1f\x1e`);
-    const child = spawn(need('COZY'), ['--json', 'login', email], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    // `hub`: signed in at that Hub, as a person whose cozy names it is (its key is that origin's).
+    const env = hub ? { ...process.env, COZY_HUB_URL: hub } : process.env;
+    const child = spawn(need('COZY'), ['--json', 'login', email], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     const said = { out: '', err: '', exit: null };
     child.stdout.on('data', (chunk) => { said.out += chunk; });
     child.stderr.on('data', (chunk) => { said.err += chunk; });
@@ -141,6 +166,8 @@ async function zoomToFit(page) {
 }
 
 test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calciferControl, guards }, testInfo) => {
+  // Render on a new RTX 4090 signs in at the stand-in, orders one rental and ends it, looked at in six pictures (cl-1066).
+  test.setTimeout(480_000);
   const email = need('E2E_HUB_EMAIL');
   const seeded = JSON.parse(readFileSync(join(need('OUT'), 'web', 'fixtures.json'), 'utf8')).hub;
   // Qwen Image 2 from the Hub, which the Hub places on a card: by the stand-in, its rtx-4090.
@@ -162,6 +189,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
   const renderOf = (name) => (request) => request.method() === 'POST' && new URL(request.url()).pathname === renders && request.postDataJSON()?.names?.includes(name);
   let stand = null;
   let rental = null;
+  /** The rental Render on a new RTX 4090 ordered (cl-1066). */
+  let renting = null;
   let failure = null;
   // Two boxes this computer would render poorly, on the open canvas.
   await project.add({ name: 'heavy', tool: HEAVY, kind: 'image', fields: { instructions: 'a lantern in fog', seconds: 8 }, at: { x: 0, y: 0 } });
@@ -245,11 +274,13 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await page.goto('about:blank');
       await calciferControl.hub(stand.origin);
       expect.soft((await api.get('/v1/rental-skus')).rental_skus.map((sku) => sku.name), 'the stand-in sells a GPU').toContain(CARD.name);
+      // Calcifer keeps a key per Hub origin: signed in at the stand-in too, which Render on a new RTX 4090 orders through (cl-1066).
+      await cliSignIn(email, project.path, stand.origin);
       // A machine that hasn't said what it has isn't judged: this one has said it has no GPU.
       await expect.poll(async () => (await api.get('/v1/machines/local')).status?.gpus, { message: "local's GPUs", timeout: 60_000 }).toEqual([]);
     });
 
-    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot opens Rent with its card', async () => {
+    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot renders on a new one of its card', async () => {
       const fits = `/v1/projects/${encodeURIComponent(project.id)}/fit`;
       /** The next estimate the page asks for `name`, as Calcifer answers it. */
       const estimated = async (name) => {
@@ -355,9 +386,60 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(page.getByRole('region', { name: 'Focused asset' }), 'and only it').toHaveAttribute('data-focused-asset', 'shot');
       await slowHere.click();
       await expect(notice).toBeVisible();
-      await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
-      await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
-      expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
+
+      // cl-1066 ("`--on new`: `run` first, then `render`"): Slow here renders on a new RTX 4090, in place. Its price for this render
+      // (`render-quotes`), asked as it opens, is on the button that agrees to it; one press orders one rental, and the shot goes there.
+      const agree = notice.getByRole('button', { name: /^Render on a new 1× RTX-4090 at \$\d+\.\d{2}\/h$/ });
+      await expect(agree, 'its price for this render, on the button that agrees to it').toBeEnabled({ timeout: 60_000 });
+      await expect.soft(notice.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what renting costs').toBeVisible();
+      expect.soft(asked.filter((one) => one.names?.includes('shot')), 'its price renders nothing').toEqual([]);
+      const priced = async () => {
+        await opened();
+        await expect(agree).toBeEnabled({ timeout: 60_000 });
+      };
+      // Looked at where Paul looks: 1280×800, 1920×1080 and a phone's 390×844, paper and dark.
+      for (const theme of ['dark', 'paper']) {
+        await project.look(theme);
+        await page.reload();
+        await themed(page, theme);
+        await priced();
+        for (const [width, height] of [[1280, 800], [1920, 1080], [390, 844]]) {
+          await page.setViewportSize({ width, height });
+          await agree.scrollIntoViewIfNeeded();
+          await canvasIdle(page);
+          await page.screenshot({ path: join(shots, `render-on-new-${width}x${height}-${theme}.png`) });
+        }
+      }
+      await page.setViewportSize({ width: 1600, height: 1000 });
+      await priced();
+      const machines = async () => (await cli.json('machine', 'ls')).machines.filter((one) => one.kind === 'rental' && one.state !== 'ended');
+      expect(await machines(), 'no rental before it').toEqual([]);
+      const ordered = stand.asked.length;
+      const sent = page.waitForRequest(renderOf('shot'));
+      await agree.click();
+      const render = await sent;
+      expect.soft(render.postDataJSON(), 'the render: on a new RTX 4090, at the price agreed').toMatchObject({ names: ['shot'], on: [`new:${CARD.name}`], agreed: { usd_micros_per_hour: expect.any(Number) } });
+      const said = await (await render.response())?.json();
+      expect.soft(said?.said?.map((one) => one.message), 'it says what it rented').toContainEqual(expect.stringMatching(/^Renting .+ for this render: it renders there once it's up\.$/));
+      await expect.soft(notice, 'agreed, it closes').toHaveCount(0);
+      await expect.poll(async () => (await machines()).length, { message: 'one rental ordered', timeout: 60_000 }).toBe(1);
+      const [rented] = await machines();
+      renting = rented.rental_id;
+      const orders = stand.asked.slice(ordered).filter((one) => one.startsWith('POST /v1/rentals '));
+      expect.soft(orders, 'one order at the Hub').toEqual([expect.stringMatching(new RegExp(`^POST /v1/rentals 2\\d\\d ${CARD.name} as ${FILLED_BY}$`))]);
+      // Where the render goes: the walk waits on that rental, by its handle or its host's name.
+      const names = [rented.name, rented.alias].filter(Boolean);
+      let job = null;
+      await expect.poll(async () => {
+        job = ((await project.state()).board?.jobs ?? []).find((one) => one.asset === 'shot' && ['waiting', 'running'].includes(one.state));
+        return names.some((name) => job?.machine === name || (job?.why ?? '').includes(name));
+      }, { message: `the shot's render waits on ${names.join(' or ')}`, timeout: 60_000 }).toBe(true);
+      console.log(`render-on-new: ${renting} (${names.join(', ')}), the shot ${JSON.stringify({ state: job?.state, machine: job?.machine, why: job?.why })}`);
+      // Nothing of it left: the render canceled first (an ended rental's work goes elsewhere), then the rental, its container gone.
+      await api.post(project.at('/cancel'), { names: ['shot'] });
+      const ended = await cli('machine', 'end', renting, '--force', '-y');
+      expect.soft(ended.code, `machine end ${renting}: ${`${ended.stdout}${ended.stderr}`.slice(-300)}`).toBe(0);
+      await expect.poll(async () => (await run('docker', CONTAINERS)).stdout.trim(), { message: "the rental's container", timeout: 90_000 }).toBe('');
     });
 
     await test.step("Render time from source: a packages checkout's H3 is timed by its own benchmarks.json before any run", async () => {
@@ -534,11 +616,11 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         left.push(`${what}: ${error.message}`);
       }
     };
-    if (failure) await attempt('its renders canceled', () => api.post(project.at('/cancel'), { names: ['heavy', 'kite'] }));
-    if (rental) {
-      await attempt(`${rental} ended`, async () => {
-        if (!(await cli.json('machine', 'ls')).machines.some((one) => one.rental_id === rental && one.state !== 'ended')) return;
-        const said = await cli('machine', 'end', rental, '--force', '-y');
+    if (failure) await attempt('its renders canceled', () => api.post(project.at('/cancel'), { names: ['heavy', 'kite', 'shot'] }));
+    for (const one of [renting, rental].filter(Boolean)) {
+      await attempt(`${one} ended`, async () => {
+        if (!(await cli.json('machine', 'ls')).machines.some((machine) => machine.rental_id === one && machine.state !== 'ended')) return;
+        const said = await cli('machine', 'end', one, '--force', '-y');
         if (said.code !== 0) throw new Error(`exit ${said.code}: ${`${said.stdout}${said.stderr}`.slice(-300)}`);
       });
     }

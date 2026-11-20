@@ -683,6 +683,9 @@ pub(crate) struct Ask {
     /// New versions of named assets, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
+    /// On `new[:sku]`, the one rental it agreed to (cl-1066): its walk orders it as it sends, and its work goes there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<crate::rentals::RenderOrder>,
 }
 
 fn is_zero<T: Default + PartialEq>(n: &T) -> bool {

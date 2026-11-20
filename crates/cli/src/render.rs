@@ -9,7 +9,7 @@ use std::{
 
 use api::{
     calcifer::{
-        NoteLevel, ProjectShowReply, Shown, StreamEvent,
+        NoteLevel, On, ProjectShowReply, RunQuote, Shown, StreamEvent,
         project::{Asked, AssetVersions, Board, Job, JobState, Pickup, Runs, Said, State},
         tool::Tools,
     },
@@ -41,6 +41,7 @@ const EXAMPLES: &str = "Examples
   cozy render film                    a new take of film, from what it reads now
   cozy render shot_1 shot_2 film      each in turn: film reads the takes shot_1 and shot_2 make here
   cozy render shot_2 -n 3             three takes of shot_2
+  cozy render film --on new           film on one new rental, its price agreed first
   cozy render shot_2 --pickup '<shot_2.1>@243'
                                       Pick up from here: take 1 up to frame 243 kept, the rest rendered again
 
@@ -55,7 +56,8 @@ pub(crate) struct Args {
     /// The nodes to render.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
-    /// The machines it may go to: `local`, a machine, or several (`a,b`). Default: the project's machines, else any.
+    /// The machines it may go to: `local`, a machine, or several (`a,b`); or `new[:SKU]`, one new rental for all of it, its price
+    /// agreed first (a prompt, or --yes). Default: the project's machines, else any.
     #[arg(long = "on", value_name = "MACHINE[,MACHINE]")]
     on: Option<String>,
     /// Takes of each named node.
@@ -98,7 +100,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let mut said = joined.iter().map(|name| Said { level: NoteLevel::Info, message: format!("{name} is rendering: joined"), names: vec![name.clone()] }).collect::<Vec<_>>();
     let mut ask = None;
     if !asked.is_empty() {
-        let runs = Runs {
+        let mut runs = Runs {
             names: asked,
             n,
             on,
@@ -106,7 +108,13 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             approve: false,
             pickup,
             takes: vec![],
+            agreed: None,
         };
+        // One rental for all it sends, quoted and agreed first as `cozy run --on new` is (cl-1066). None: it sends nothing to a machine.
+        if matches!(runs.on.as_slice(), [On::New(_)]) {
+            let quoted: Option<RunQuote> = project.calcifer.post(&project.at(&["render-quotes"]), &runs, None).await?;
+            runs.agreed = crate::machine::agreed(ctx, quoted.as_ref(), "nothing was rendered")?;
+        }
         let answer: Asked = project.calcifer.post(&project.at(&["runs"]), &runs, Some(&mint_key())).await?;
         follow.board(answer.board.clone());
         said.extend(answer.said.clone());

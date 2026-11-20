@@ -22,7 +22,7 @@ mod rent;
 
 pub(crate) use list::status_fields;
 pub(crate) use live::Following;
-pub(crate) use rent::{Followed, Notices, agree, follow as until_ready};
+pub(crate) use rent::{Followed, Notices, agreed, follow as until_ready};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {

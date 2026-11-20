@@ -84,6 +84,8 @@ pub(crate) struct Machines {
     pub(crate) asking: Mutex<HashMap<String, Vec<tokio::sync::oneshot::Sender<Result<MachineRow, Error>>>>>,
     /// The rent asks a Hub has not answered, by key, and why.
     pub(crate) unanswered: Mutex<HashMap<String, String>>,
+    /// Each render's order, by key: whether its render is over (cl-1066).
+    pub(crate) renders: Mutex<HashMap<String, crate::rentals::Over>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
     /// Told when an end stops waiting for its machine's outputs (`--force`).
@@ -195,6 +197,7 @@ impl Machines {
             renting: Mutex::default(),
             asking: Mutex::default(),
             unanswered: Mutex::default(),
+            renders: Mutex::default(),
             placing: Notify::new(),
             end_waits: Notify::new(),
             local,
@@ -1832,7 +1835,7 @@ impl Machines {
         let Some(api) = self.calcifer.api.get().and_then(std::sync::Weak::upgrade) else { return };
         for run in unplaced {
             if run.wants != "any" {
-                self.rent_for(&run, run.wants.strip_prefix("new:"), run.spec.gpus);
+                self.rent_for(&run, run.wants.strip_prefix("new:"));
                 continue;
             }
             let set = Box::pin(crate::project::queue_set(&api, &run)).await;

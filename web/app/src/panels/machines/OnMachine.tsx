@@ -8,6 +8,7 @@ import type { Agreed, RunQuote } from "../../api/calcifer"
 import { Failure, useAsk, useSignedIn } from "../common"
 import { usd } from "../format"
 import { lost } from "./order"
+import { NewOptions, offered, QuoteNotes } from "./quote"
 import { called, gpusWords } from "./words"
 
 export interface Placed {
@@ -81,7 +82,7 @@ export function OnMachine<Body extends object, Answer>({
 
   const needsPrice = isNew(on) && !current
   const stated = current?.answer
-  const priced = stated && `${stated.gpus ?? 1}× ${stated.sku.toUpperCase()} at ${usd(stated.quote.usd_micros_per_hour)}/h`
+  const priced = stated && offered(stated)
   const busy = pricing.busy || sending.busy
   const blocked = disabled || busy || (isNew(on) && Boolean(stated) && !stated?.quote.agreed)
 
@@ -109,13 +110,7 @@ export function OnMachine<Body extends object, Answer>({
                 </option>
               ))}
             {machines.length > 1 && <option value="any">Any of these</option>}
-            {signedIn && <option value="new">A new rental (the Hub picks)</option>}
-            {signedIn &&
-              skus?.map((sku) => (
-                <option key={sku.name} value={`new:${sku.name.toLowerCase()}`}>
-                  A new {sku.name} rental, {usd(sku.widths[0]?.price_usd_micros_per_hour ?? 0)}/h
-                </option>
-              ))}
+            {signedIn && <NewOptions skus={skus} />}
           </select>
         </label>
         <span className="sp" />
@@ -139,30 +134,13 @@ export function OnMachine<Body extends object, Answer>({
         </p>
       )}
       {stated && (
-        <div className="quoted">
-          {stated.why && <p className="muted">{stated.why}</p>}
-          {[...(stated.quote.warnings ?? []), ...(stated.warnings ?? [])].map((warning) => (
-            <p className="warn" key={warning}>
-              {warning}
-            </p>
-          ))}
-          {!stated.quote.agreed && <p className="warn">Cozy didn't confirm this price, so you can't rent it from here.</p>}
-          {stated.alternatives?.map((other) => (
-            <button
-              type="button"
-              className="more alt"
-              key={`${other.sku}:${other.gpus}`}
-              onClick={() => {
-                setChosen(`new:${other.sku.toLowerCase()}`)
-                setGpus(other.gpus > 1 ? other.gpus : undefined)
-              }}
-            >
-              or {other.gpus}× {other.sku.toUpperCase()}
-              {other.label ? ` (${other.label})` : ""}: {other.time.toFixed(2)}× the time at {usd(other.usd_micros_per_hour)}/h
-            </button>
-          ))}
-          <p className="muted">You pay for it until you end it. It also ends by itself after 15 minutes idle.</p>
-        </div>
+        <QuoteNotes
+          quote={stated}
+          onOther={(other) => {
+            setChosen(`new:${other.sku.toLowerCase()}`)
+            setGpus(other.gpus > 1 ? other.gpus : undefined)
+          }}
+        />
       )}
       <Failure error={pricing.error} lead="Couldn't get a price" />
       <Failure error={sending.error} lead={isNew(on) && lost(sending.error) ? "No answer came back, so it may have gone through. Trying again won't send it twice" : undefined} />

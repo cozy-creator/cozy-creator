@@ -19,6 +19,7 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
+import { CloseInPlace, RenderOnNew, useClosesInPlace } from "./RenderOnNew"
 import { SlowNotice } from "./RenderTime"
 import { TakeProgress } from "./TakeProgress"
 
@@ -282,11 +283,28 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
   )
 }
 
-function Act({ label, onClick }: { label: string; onClick: () => void }) {
+function Act({ label, onClick, opens, box }: { label: string; onClick: () => void; opens?: boolean; box?: string }) {
   return (
-    <button type="button" className="act canvas-control" onClick={onClick}>
+    <button type="button" className="act canvas-control" aria-expanded={opens} data-box={box} onClick={onClick}>
       {label}
     </button>
+  )
+}
+
+/** Waiting for a machine, Render on a new rental opened under it: the product chosen, its price for this render, agreed in place (cl-1066).
+ *  Closes on its ✕, Escape, or a click whose press began outside it and its opener. */
+function WaitsNotice({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  const own = useRef<HTMLDivElement>(null)
+  const open = Boolean(view.waiting && view.newOpen)
+  const close = () => store.patch(store.resolveName(name), { newOpen: undefined })
+  useClosesInPlace(open, (element) => Boolean(own.current?.contains(element) || element.closest(".act[data-box]")?.getAttribute("data-box") === name), close)
+  if (!open) return null
+  return (
+    <div ref={own} className="status new-notice canvas-control" role="group" aria-label="Render on a new rental">
+      <RenderOnNew name={name} waiting={view.waiting} onDone={close} />
+      <CloseInPlace onClose={close} />
+    </div>
   )
 }
 
@@ -303,9 +321,13 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (!asset) return null
   if (view.waiting) {
     return (
-      <div className="status mak">
-        Waits for a machine <Act label="Machines" onClick={store.askMachine} />
-      </div>
+      <>
+        <div className="status mak">
+          Waits for a machine <Act label="Machines" onClick={store.askMachine} />{" "}
+          <Act label="Render on a new rental" opens={Boolean(view.newOpen)} box={name} onClick={() => store.patch(store.resolveName(name), { newOpen: !view.newOpen || undefined })} />
+        </div>
+        <WaitsNotice name={name} view={view} />
+      </>
     )
   }
   // How far it's got is on its picture, in one line, and an Edit's film on its own bar: here, only what's to be done about it.

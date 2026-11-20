@@ -4,6 +4,7 @@ import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, keepLastWord, type LastWord, lastWordsOf, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
 import type {
+  Agreed,
   Ahead,
   ToolField as BoxField,
   Imported,
@@ -22,6 +23,7 @@ import type {
   RentFor,
   Card,
   Run,
+  RunQuote,
   Splice,
   Standing,
   Tool,
@@ -127,6 +129,8 @@ export interface ElementView {
   waiting?: Also
   /** Its Slow here notice is open, under its fields (cl-1004). */
   slowOpen?: boolean
+  /** Waiting for a machine, its Render on a new rental is open under it (cl-1066). */
+  newOpen?: boolean
   /** Seconds into a video, scrubbed to. */
   scrub?: number
   /** Its ratio while it's being reshaped. */
@@ -224,8 +228,9 @@ const GAP_BESIDE = 48
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 
-/** What goes with one render: a pickup, and its take's id, made at the click (cl-945). */
-type Also = { pickup?: Pickup; take?: string }
+/** What goes with one render: a pickup, its take's id, made at the click (cl-945), and a new rental it goes to (`new[:sku]`) at the price
+ *  agreed (cl-1066). */
+export type Also = { pickup?: Pickup; take?: string; on?: string; agreed?: Agreed }
 /** A box's failure when its machine shut down under its run (Calcifer's `MACHINE_LOST`, cl-1085): its note offers Retry. */
 const MACHINE_LOST = "machine_lost"
 const TYPING_PAUSE_MS = 300
@@ -1584,7 +1589,7 @@ export class CanvasStore {
     also = { ...also, take }
     if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
     const local = madeHere(asset.tool)
-    const on = local ? ["local"] : this.machines()
+    const on = also.on ? [also.on] : local ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
       this.patch(key, { waiting: also })
@@ -1606,7 +1611,7 @@ export class CanvasStore {
     const once = `take-${crypto.randomUUID()}`
     this.act(key, {
       // None named but here: Calcifer places it, as a `cozy run` naming none.
-      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], local ? on : [], once, { pickup: also.pickup, takes: [take] }, write.once) : null),
+      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], local || also.on ? on : [], once, { pickup: also.pickup, takes: [take], ...(also.agreed ? { agreed: also.agreed } : {}) }, write.once) : null),
       done: (answer) => {
         settle(answer ? nextProjectOrder() : undefined)
         this.readAfter([id])
@@ -1616,6 +1621,15 @@ export class CanvasStore {
         say(`Couldn't render ${name}`, error)
       },
     })
+  }
+
+  /** What a render of `name` on `on` (`new[:sku]`) would rent, and its price, as it stands once what's typed is saved: null, it sends nothing to
+   *  a machine (cl-1066). Its Render on a new rental agrees to it (`run` with `on` and `agreed`). */
+  async renderQuote(name: string, on: string): Promise<RunQuote | null> {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    if (!this.projectId || !(await this.save(key))) throw new Error(`${name} isn't saved yet`)
+    return this.client.renderQuote(this.projectId, [this.served.get(id ?? "") ?? key], on)
   }
 
   /** `name`'s render failed, said. One its machine's shutdown stopped offers Retry (Paul, 11-16, cl-1085): "you push the retry button and

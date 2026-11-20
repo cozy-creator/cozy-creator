@@ -55,12 +55,7 @@ async fn submit_once(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submi
     if matches!(ask.on.as_slice(), [On::New(_)]) && ask.agreed.is_none() {
         // None: it rents nothing, as what Calcifer does itself.
         let quoted: Option<RunQuote> = calcifer.post("/v1/run-quotes", &ask, None).await?;
-        if let Some(quoted) = quoted {
-            if !crate::machine::agree(ctx, &quoted)? {
-                return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
-            }
-            ask.agreed = Some(quoted.quote.agreed);
-        }
+        ask.agreed = crate::machine::agreed(ctx, quoted.as_ref(), "the run was not sent")?;
     }
     let route = match &ask.project {
         Some(project) => crate::calcifer_client::path(&["v1", "projects", project, "runs", "submit"]),
