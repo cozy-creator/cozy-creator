@@ -14,9 +14,14 @@
 # params: tree (a packages_refs name), tool (`<package>/<function>`), args (its call's arguments, a JSON list; each arm adds its
 #   seed), fields (its box's, a JSON object; the arm sets its seed), arms (default "base cold second ahead kill"), base and cand
 #   ({"runtime", "tensorfs"} wheel sources, lib.sh `wheel_from`; base's "tensord" a cozy-creator run id whose cozy-* artifact is
-#   the RC's TensorD; base only for a base arm), wait_s (how long the box may take to merge, default 1800), need_s
+#   the RC's TensorD; base only for a base arm), wait_s (how long the box may take to merge, default 1800), hold_gib (the
+#   ahead arm: another program holds GPU 0 but this many GiB while the box is prepared, so its GPU can't hold it whole and
+#   it is built at level `ram`; let go before the render), need_s
 . "$(dirname "$0")/lib.sh"
 TREE=$PACKAGES/$(param tree pk) WAIT=$(param wait_s 1800) TOOL=$(param tool minimax-h3/generate) ARMS=$(param arms 'base cold second ahead kill')
+HOLD_GIB=$(param hold_gib '') VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
+[[ -z $HOLD_GIB || $HOLD_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "hold_gib $HOLD_GIB"
+[ -z "$HOLD_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 SHOT='[{"description":"[Shot 1]\nA paper boat drifts down a rain-filled gutter past glowing shop windows at night. The camera follows at street level as drops ripple the water.","duration":15}]'
 mapfile -t ARGS < <(param args "$(jq -nc --arg b "$SHOT" '["beats:=\($b)", "soundscape=Rain on pavement, distant traffic.", "turbo:=true"]')" | jq -r '.[]')
 FIELDS=$(param fields "$(jq -nc --arg b "$SHOT" '{beats: ($b | fromjson), soundscape: "Rain on pavement, distant traffic.", turbo: true}')")
@@ -94,6 +99,16 @@ record() {
   find "$OUT/$1" -type f \( -name '*.mp4' -o -name '*.png' -o -name '*.webp' -o -name '*.jpg' \) -exec sha256sum {} + 2> /dev/null | sed "s/^/$1 /" >> "$OUT/outputs.txt"
 }
 readiness() { cozy machine show "$NAME" --json 2> /dev/null | jq -c '[.status.ahead[]? | .readiness | {stage, reason}] | first // empty'; }
+# hold <on|off>: suites/bench/vram.py, from the pod's root shell, holds all of GPU 0 but HOLD_GIB (ab.sh's `hold`), or ends.
+hold() {
+  if [ "$1" = off ]; then pod 'kill $(cut -d" " -f1 /var/tmp/la-vram.ready) 2> /dev/null; rm -f /var/tmp/la-vram.ready; sleep 2'; return 0; fi
+  pod "echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/la-vram.py && rm -f /var/tmp/la-vram.ready
+    setsid nohup python3 /var/tmp/la-vram.py $(awk -v g="$HOLD_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/la-vram.ready > /var/tmp/la-vram.out 2>&1 < /dev/null &
+    i=0; while [ ! -s /var/tmp/la-vram.ready ] && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done; cat /var/tmp/la-vram.ready 2> /dev/null || tail -c 300 /var/tmp/la-vram.out" > "$OUT/hold.txt"
+  read -r _ held free _ < <(tail -1 "$OUT/hold.txt")
+  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "no holder: $(head -c 300 "$OUT/hold.txt")"
+  say "holder: $((held >> 20)) MiB of GPU 0 held, $((free >> 20)) MiB left free"
+}
 
 seed=1318
 builds fetch "$([[ " $ARMS " == *" base "* ]] && echo base || echo cand)"
@@ -106,6 +121,7 @@ for arm in $ARMS; do
     second) builds second cand; restart second; call second "$seed"; disk second ;;
     ahead)
       builds ahead cand; derived_state ahead reset; restart ahead
+      [ -z "$HOLD_GIB" ] || hold on
       # The project shown as a page shows it, and the tool's box, which Calcifer guesses onto the pod.
       python3 "$RUN_PAGE" show "$RUN_PROJECT" > "$OUT/shown.txt" 2>&1 & BG="$BG $!"
       for _ in $(seq 1 30); do grep -q '"held"' "$OUT/shown.txt" && break; sleep 1; done
@@ -122,6 +138,11 @@ for arm in $ARMS; do
       done
       say "ahead: merged $(( $(date +%s) - ASK )) s after the box, readiness $(readiness): $(cut -c1-600 "$OUT/merge-ahead.txt")"
       disk ahead; sums ahead
+      if [ -n "$HOLD_GIB" ]; then
+        grep -q '"level": "ram"' "$OUT/merge-ahead.txt" || fail "ahead: the merge wasn't a ram-level map's: $(cut -c1-300 "$OUT/merge-ahead.txt")"
+        say "ahead: merged in a ram-level map while the GPU was held"
+        hold off
+      fi
       python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$NAME" box > "$OUT/render.txt" 2>&1 || fail "the render: $(tail -c 400 "$OUT/render.txt")"
       (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 10) > "$OUT/runs.json" 2>&1
       record ahead "$(jq -r '[.runs[]? | select(.status == "completed")] | max_by(.created_at_ms) | .number // empty' "$OUT/runs.json")"
