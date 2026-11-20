@@ -1202,6 +1202,65 @@ fi
   || check "rc floor: the published e2e-rcfloor's run failed: $(run_get "$OUT" rc-floor-hub .reason.message | head -c 300)"
 }
 
+# cl-1321 (the coordinator, 11-20; rc-e2e 44627854599 cpu 3/3 failed lock_failed describing orbit): a first-party sibling that raises
+# its Runtime floor relocks the packages that take it. A tree of e2e-rcdep (the relay, taking e2e-rcsib by path, cl-1211) and
+# e2e-rcsib, both on an RC floor. The first run locks e2e-rcdep on the RC's newest build; its lock is then put on the RC's oldest
+# build, as orbit's was on dev2376, and e2e-rcsib's floor rises to the newest. Before (rc/0.28.0): the lock kept the oldest, which
+# met e2e-rcdep's own floor, and uv refused it ("e2e-rcsib ... unsatisfiable"). Now its floor is its siblings' too: relocked on the
+# newest, it runs.
+rc_floor_sibling() {
+step "a sibling's raised Runtime floor relocks the package that takes it (cl-1321)"
+[ -n "$LOCAL" ] || return 0
+cozy --version | awk '{exit !($2 ~ /-/)}' || { echo "rc floor sibling: not an RC cozy"; return 0; }
+local tree=$OUT/rcsib rc base sums old new old_file new_file old_sha new_sha major minor cap
+rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] ".0"}')
+base=https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc
+curl -fsSL --retry 5 --retry-all-errors "$base/SHA256SUMS" 2> /dev/null \
+  | awk '$2 ~ /^cozy_runtime-.*-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2], $2, $1}' | sort -V > "$OUT/rcsib-builds.txt"
+read -r old old_file old_sha < <(head -1 "$OUT/rcsib-builds.txt")
+read -r new new_file new_sha < <(tail -1 "$OUT/rcsib-builds.txt")
+[ -n "$old" ] && [ "$old" != "$new" ] || { check "rc floor sibling: the RC serves fewer than two Runtime builds: $(wc -l < "$OUT/rcsib-builds.txt")"; return; }
+IFS=. read -r major minor _ <<< "$old"
+cap="<$major.$((minor + 1))"
+echo "rc floor sibling: the RC's Runtime builds run from $old to $new"
+rm -rf "$tree" && mkdir -p "$tree/sib/e2e_rcsib" && cp -r "$here/relay" "$tree/dep"
+sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcdep"/' -e "s/\"cozy-runtime[^\"]*\"/\"cozy-runtime>=$major.$minor.0.dev0,$cap\", \"e2e-rcsib>=0.1.0\"/" "$tree/dep/pyproject.toml"
+printf 'e2e-rcsib = { index = "tensorhub" }\n' >> "$tree/dep/pyproject.toml"
+sib_floor() {
+  cat > "$tree/sib/pyproject.toml" <<TOML
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-rcsib"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=$1,$cap"]
+
+[tool.uv.build-backend]
+module-name = "e2e_rcsib"
+module-root = ""
+TOML
+}
+: > "$tree/sib/e2e_rcsib/__init__.py"
+sib_floor "$major.$minor.0.dev0"
+cell rc-floor-sibling-first "$tree/dep/relay" "text=on the RC's newest" \
+  || { check "rc floor sibling: the first run failed: $(run_get "$OUT" rc-floor-sibling-first .reason.message | head -c 300)"; return; }
+grep -q "$new_file" "$tree/dep/uv.lock" 2> /dev/null \
+  || { check "rc floor sibling: the first lock isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" 2> /dev/null | tail -1)"; return; }
+# The lock on the oldest build, as a lock made before the sibling's floor rose holds it; the sibling's floor at the newest.
+sed -i -e "s|$new_file|$old_file|g" -e "s|$new_sha|$old_sha|g" -e "s|version = \"$new\"|version = \"$old\"|" "$tree/dep/uv.lock"
+sib_floor "${new%%+*}"
+if cell rc-floor-sibling "$tree/dep/relay" "text=after its sibling's floor rose"; then
+  grep -q "$new_file" "$tree/dep/uv.lock" \
+    || check "rc floor sibling: the relock isn't on the RC's newest $new: $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" | tail -1)"
+else
+  check "rc floor sibling: e2e-rcdep, locked on $old, didn't run once e2e-rcsib floored at $new: $(run_get "$OUT" rc-floor-sibling .reason.message | head -c 400)"
+fi
+echo "rc floor sibling: after the sibling's floor rose, e2e-rcdep's lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$tree/dep/uv.lock" 2> /dev/null | tail -1)"
+}
+
 # cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
 # an older one, and says so. isolated.sh publishes e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. Put on a released
 # Runtime by hand, local refuses a project's run, naming the update (cl-1055). Holding e2e-newer 0.1.0 (asked by name), an

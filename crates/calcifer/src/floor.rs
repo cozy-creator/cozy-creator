@@ -18,7 +18,7 @@ use api::{
     release::{series, Bound},
 };
 use api::hub::types::Software;
-use pep440_rs::{Version, VersionSpecifiers};
+use pep440_rs::{Version, VersionSpecifier, VersionSpecifiers};
 use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -455,7 +455,18 @@ pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
     api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")
 }
 
-/// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`, xs-194), unless
+/// The `cozy-runtime` requirement a lock of `src` meets: its own and each first-party sibling's that its tree holds and it takes,
+/// transitively (`api::code::siblings`, cl-1211), all at once. A sibling that raises its floor (minimax-h3 to 0.49.0.dev2387) moves
+/// each dependent's lock (orbit's, on dev2376) with it, with no relock by hand (cl-1321).
+pub(crate) fn lock_requirement(src: &Path) -> Option<VersionSpecifiers> {
+    let all: Vec<VersionSpecifier> = (std::iter::once(src.to_path_buf()).chain(api::code::siblings(src).into_values()))
+        .filter_map(|folder| requirement_of(&folder))
+        .flat_map(|requirement| requirement.iter().cloned().collect::<Vec<_>>())
+        .collect();
+    (!all.is_empty()).then(|| all.into_iter().collect())
+}
+
+/// The Runtime `src` takes where its `cozy-runtime` floor (`lock_requirement`: its own and its first-party siblings') is an RC build that no release meets (`>=0.47.0.dev0`, xs-194), unless
 /// the developer explicitly selected a wheel, which the completed lock binds. The RC build the first of `held` (locks it holds)
 /// takes while that build meets the floor, the RC still serves it and its lock's TensorFS is this cozy's series; else the RC's
 /// newest build that meets the floor and runs on this cozy's TensorFS (cl-1199). Its lock takes the RC's TensorFS build beside
@@ -463,7 +474,7 @@ pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
 /// new environment on every machine and a new key for every guess made of it, and a machine following the RC runs its own
 /// build over the lock's anyway (TensorD's `stands_in`). None: it names no RC floor, a release meets it, or no RC build does.
 pub(crate) async fn rc_runtime(src: &Path, held: &[&str]) -> Result<Option<Wheel>, Error> {
-    let Some(requirement) = requirement_of(src) else { return Ok(None) };
+    let Some(requirement) = lock_requirement(src) else { return Ok(None) };
     if !requirement.iter().any(|s| s.version().is_dev()) {
         return Ok(None);
     }
