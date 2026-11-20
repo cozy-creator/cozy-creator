@@ -246,8 +246,8 @@ jobs:
           # A cancel kills the Session step before its trap: the session's runs are canceled here first (cl-1316), its `cozy run`
           # followers stopped before that (this runner's own processes; Calcifer, `cozy calcifer`, stays up to end the pods).
           for p in $(pgrep -x cozy); do tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -qE '(^| )run( |$)' && kill "$p" 2> /dev/null; done
+          cancel_runs "$OUT/project" "$OUT" cleanup || true
           for rid in $({ cat "$OUT/rental" 2> /dev/null; own; } | sort -u); do
-            listed "$rid" && unpin_runs "$rid" "$OUT/project" "$OUT" || true
             for _ in $(seq 1 30); do
               listed "$rid" || { echo "$rid is gone"; continue 2; }
               cozy machine end "$rid" -y < /dev/null || true; sleep 10
