@@ -464,7 +464,7 @@ def holes(ckids: str, comps: Sequence[str]) -> dict[str, object]:
         chosen.append((source, n))
         total += n
     card.pages.drain()
-    regions = [card.dev.region(n, s, "tfs-bound/holes") for s, n in chosen]
+    regions = [card.dev.region(n, s, "tfs-bound/holes") for s, n in chosen]  # type: ignore[arg-type]
     card.torch.cuda.synchronize()
     began = time.perf_counter()
     uses = card.varena.fill(regions, [s for s, _ in chosen], card.s)
