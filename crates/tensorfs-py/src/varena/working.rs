@@ -375,12 +375,18 @@ fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
+#[pyo3(signature = (device, begin, work=None, completed=false))]
+fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool, work: Option<String>, completed: bool) {
     py.detach(|| {
-        varena::request_boundary(device, begin);
+        varena::request_boundary(device, begin, work.as_deref(), completed);
         #[cfg(feature = "store")]
         super::host::boundary(begin);
     });
+}
+
+#[pyfunction]
+fn _varena_make_driver_room(py: Python<'_>, device: i32) -> PyResult<bool> {
+    py.detach(|| varena::make_driver_room(device)).map_err(|e| super::raise(py, e))
 }
 
 #[pyfunction]
@@ -998,6 +1004,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_make_driver_room, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_ooms, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_answered, module)?)?;

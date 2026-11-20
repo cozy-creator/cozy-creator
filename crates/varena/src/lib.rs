@@ -627,7 +627,9 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 /// first one running here is also a phase boundary, for eager callers too: the last call's regions
 /// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
 /// turbo streaming in the same process, run 39070).
-pub fn request_boundary(device: i32, begin: bool) {
+/// `work` names the call's function (None for construction); an ending request says whether it
+/// `completed` (`cooperative::request_boundary`).
+pub fn request_boundary(device: i32, begin: bool, work: Option<&str>, completed: bool) {
     if let Ok(gpu) = gpu(device) {
         if !begin {
             // The last request out returns the host memory its last resort pinned (`working::host`).
@@ -642,9 +644,19 @@ pub fn request_boundary(device: i32, begin: bool) {
         }
     }
     #[cfg(target_os = "linux")]
-    cooperative::request_boundary(device, begin);
+    cooperative::request_boundary(device, begin, work, completed);
     #[cfg(not(target_os = "linux"))]
-    let _ = (device, begin);
+    let _ = (device, begin, work, completed);
+}
+
+/// A library's or the driver's own allocation was refused (its code says out of memory; varena refused
+/// nothing): the card is given the driver's room, at least the context's measured cost (what is kept
+/// for growth nothing measured), from what is idle and finished, with no wait. Whether anything came
+/// free; if so, the caller runs that op once more (var-040).
+pub fn make_driver_room(device: i32) -> Result<bool> {
+    let gpu = gpu(device)?;
+    let want = gpu.driver_room().max(gpu.context_cost.load(Ordering::Acquire));
+    reclaim::free_for_driver(device, want)
 }
 
 /// The active plan phase. One that ran through last time with no region coming back is a single
@@ -735,8 +747,9 @@ pub struct Device {
     /// kernel's code at its first launch, local memory, a library's handle): its refusal fails that
     /// launch, not an allocation of ours, so no reclaim answers it (cr-293: a cold H3 on a full 5090
     /// failed its first `index_select`). What it is still expected to take for this process, measured
-    /// (`cooperative::expect`); 0 where nothing is known.
+    /// (`cooperative::expect`), a function's first run here included; 0 where nothing is known.
     /// The room is soft: kept only by evicting what is idle and finished, with no wait, it never fails a demand.
+    /// A request's begin makes it at once (`reclaim::free_for_driver`).
     /// As measured; what the driver takes after that comes out of it (`driver_room`).
     driver_room: AtomicUsize,
     /// `outside` when the room was measured.
