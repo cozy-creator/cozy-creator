@@ -32,12 +32,16 @@
 #               a cozy-runtime dev-build run id (--runtime), else as given ([]: the image's)
 #   arms        [{"name", "update": [flags over `update`]}], run in order (default [{"name": "rc"}]): A B B A is four
 #   need_s      seconds the cap must buy (default 9000)
+#   ident       true: after its rounds, each arm runs each model once more, cold, with one fixed request (seed 4242) in its
+#               own project (no call memo of another arm's answers it): the arms' outputs compared (default false)
+#   trace       true: after each cell, the pod's /tmp/cozy-trace (a proof build's stack samples) as <label>.trace.tgz
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$HERE/fixtures/cold-load
 TREE=$(param tree '') MODELS=$(param models '["h3", "qwen-image-2"]') CONDITIONS=$(param conditions '["cold", "ram"]')
 REPEATS=$(param repeats 2) BASE=$(param update '[]') ARMS=$(param arms '[{"name": "rc"}]') NEED=$(param need_s 9000)
-HOT=$(param hot false)
+HOT=$(param hot false) IDENT=$(param ident false) TRACE=$(param trace false)
+[[ $IDENT =~ ^(true|false)$ && $TRACE =~ ^(true|false)$ ]] || fail "ident $IDENT, trace $TRACE: true or false"
 [[ $HOT =~ ^(true|false)$ ]] || fail "hot $HOT: true or false"
 for tool in jq python3 curl; do command -v "$tool" > /dev/null || fail "no $tool"; done
 [ -n "$TREE" ] && [ -d "$PACKAGES/$TREE" ] || fail "dispatch with -f packages_refs=<name>=<ref> and params.tree=<name>"
@@ -161,13 +165,14 @@ prepare() {
 printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$OUT/states.tsv"
 : > "$OUT/cold-load.tsv"
 K=0
-# cell <arm> <model> <condition> [label]: one run of the model, its record in <label>.json.
+# cell <arm> <model> <condition> [label] [ident]: one run of the model, its record in <label>.json. ident: the fixed request.
 cell() {
-  local a=$1 m=$2 c=$3 label=${4:-$1-$2-$3} n target loop
-  K=$((K + 1))
+  local a=$1 m=$2 c=$3 label=${4:-$1-$2-$3} n target loop take seed
+  K=$((K + 1)) take=$K seed=$((7000 + K))
+  [ -z "${5:-}" ] || take=ident seed=4242
   target=$(jq -r --arg m "$m" '.[] | select(.name == $m) | .target' <<<"$MODELS")
   loop=$(jq -r --arg m "$m" '.[] | select(.name == $m) | .loop // ""' <<<"$MODELS")
-  jq --arg m "$m" --arg take "$K" --argjson seed "$((7000 + K))" '.[] | select(.name == $m) | .input
+  jq --arg m "$m" --arg take "$take" --argjson seed "$seed" '.[] | select(.name == $m) | .input
     | walk(if type == "string" then gsub("\\{take\\}"; $take) else . end) | .seed = $seed' <<<"$MODELS" > "$OUT/$label.req.json"
   prepare "$label" "$c"
   step "$label" run "$SOURCE/$target" --input "$OUT/$label.req.json" --on "$NAME"
@@ -187,6 +192,10 @@ cell() {
        (($r.execution_ms // 0) / 1000), $dl] | @tsv' "$OUT/$label.json" >> "$OUT/states.tsv" 2> /dev/null
   # Its bakes persist after it: settled before anything ends its executor.
   podpy "$label-after" settle
+  if [ "$TRACE" = true ]; then
+    T=300 pod "cd /tmp && tar -czf - cozy-trace 2> /dev/null; rm -rf /tmp/cozy-trace" < /dev/null > "$OUT/$label.trace.tgz" 2> "$OUT/$label.trace.err"
+    say "$label: trace $(stat -c %s "$OUT/$label.trace.tgz") bytes"
+  fi
 }
 
 for A in "${arms[@]}"; do
@@ -201,6 +210,12 @@ for A in "${arms[@]}"; do
       cell "$A" "$m" hot
     fi
   done
+  if [ "$IDENT" = true ]; then
+    shared=$RUN_PROJECT RUN_PROJECT=$OUT/ident-$A
+    run_project "$RUN_PROJECT" > "$OUT/ident-$A.project.txt" 2>&1 || fail "arm $A: its ident project"
+    for m in "${names[@]}"; do cell "$A" "$m" cold "$A-$m-ident" ident; done
+    RUN_PROJECT=$shared
+  fi
 done
 kill $BG 2> /dev/null; BG=''
 
