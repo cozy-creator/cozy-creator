@@ -125,12 +125,17 @@ same=$(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE" | while read -r a b; do [ "
 wheel() { wheel_from "$OUT/wheels/$1-$2" "$3"; }
 declare -A UPDATE=()
 for k in "${names[@]}"; do
-  w=()
+  w=(); unset got; declare -A got=()
   for kind in runtime tensorfs; do
     src=$(jq -r --arg k "$k" --arg t "$kind" 'map(select(.name==$k)) | first | .update[$t] // empty' <<<"$CELLS"); [ -n "$src" ] || continue
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
-    say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
+    say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f"); got[$kind]=$f
   done
+  # Both named: they install together, and over the cell's package lock, before anything is rented.
+  if [ -n "${got[runtime]:-}" ] && [ -n "${got[tensorfs]:-}" ]; then
+    c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); tree=$(jq -r '.tree // empty' <<<"$c")
+    installs_together "cell $k" "${got[runtime]}" "${got[tensorfs]}" "${tree:+$PACKAGES/$tree/$(jq -r '.target | ltrimstr("./") | split("/") | first' <<<"$c")}"
+  fi
   if [ "$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.tensord // false' <<<"$CELLS")" = true ]; then
     say "cell $k: updates TensorD to this session's $(cozy --version)"; w+=(--tensord "$(command -v cozy)")
   fi
