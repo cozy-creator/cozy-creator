@@ -206,8 +206,8 @@ jobs:
     timeout-minutes: 10
     outputs:
       selection: ${{ steps.changed.outputs.selection || steps.select.outputs.selection }}
-      cli_shards: ${{ steps.changed.outputs.shards }}
-      edge: ${{ steps.changed.outputs.edge || '[]' }}
+      cli_edge: ${{ steps.changed.outputs.edge_shards || '[]' }}
+      cli_rest: ${{ steps.changed.outputs.rest_shards || '[]' }}
       linux: ${{ steps.select.outputs.linux }}
       runners: ${{ steps.select.outputs.runners }}
       native_runners: ${{ steps.select.outputs.native_runners }}
@@ -435,8 +435,10 @@ jobs:
                 + (if ($green | index("imports 1/2")) and ($green | index("imports 2/2")) then [{key: "imports", value: $oid}] else [] end)]
               | flatten | reverse | from_entries' "$RUNNER_TEMP/history.json" > "$RUNNER_TEMP/bases.json"
           picked=$(cd .creator && python3 ci/affected --shards "$REF" "$RUNNER_TEMP/bases.json")
-          echo "shards=$(jq -c .shards <<< "$picked")" >> "$GITHUB_OUTPUT"
-          echo "edge=$(python3 -c 'import json, tomllib; print(json.dumps(tomllib.load(open(".creator/ci/suites.toml", "rb"))["cozy-creator"]["shards"]["edge"]))')" >> "$GITHUB_OUTPUT"
+          edge=$(python3 -c 'import json, tomllib; print(json.dumps(tomllib.load(open(".creator/ci/suites.toml", "rb"))["cozy-creator"]["shards"]["edge"]))')
+          # The edge set runs first (`cli-edge`, fail-fast), the rest once it is green (`cli`).
+          echo "edge_shards=$(jq -c --argjson e "$edge" '[.shards[] | select(. as $s | $e | index($s))]' <<< "$picked")" >> "$GITHUB_OUTPUT"
+          echo "rest_shards=$(jq -c --argjson e "$edge" '[.shards[] | select(. as $s | $e | index($s) | not)]' <<< "$picked")" >> "$GITHUB_OUTPUT"
           echo "selection=$(jq -c --argjson picked "$picked" '.suites |= map(select((. != "cpu" and . != "imports") or ($picked.suites | index(.))))' <<< "$SELECTION")" >> "$GITHUB_OUTPUT"
           { echo "### What this RC run runs (cl-1128)"; echo '```'; jq -r '.why | to_entries[] | "\(.key): \(.value)"' <<< "$picked"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
@@ -785,12 +787,14 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  cli:
+  # cl-1128, the coordinator 11-20 ("a red must read as red"): on an RC run the edge set runs first and fails fast, and the other
+  # shards run once it is green (`cli`). A red edge shard ends the run `failure`, the rest skipped.
+  cli-edge:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate, hub]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && (inputs.shards != 'changed' || needs.affected.outputs.cli_shards != '[]') && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards == 'changed' && needs.affected.outputs.cli_edge != '[]'
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # web-1, web-2, web-3, web-2d and web-2d-solo (the canvas in 2D, as with no GPU), web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
@@ -800,7 +804,7 @@ jobs:
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
         # answers: Status answers while the journal's commits wait for the disk (cl-1202).
         # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
-        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_shards || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
+        shard: ${{ fromJSON(needs.affected.outputs.cli_edge) }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -810,7 +814,7 @@ jobs:
         shell: bash
     env:
       BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
-    steps:
+    steps: &cli-steps
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
@@ -979,21 +983,37 @@ jobs:
         with:
           name: project-${{ matrix.shard }}-receipt
           path: ${{ runner.temp }}/e2e/containment/receipt.json
-      # Fail fast on the edge set (cl-1128): a red edge shard of an RC run ends the run's other jobs, its logs kept; rc-e2e's
-      # `since` still names what merged since green.
-      - name: An edge shard went red, so the run ends here
-        if: failure() && inputs.shards == 'changed' && contains(fromJSON(needs.affected.outputs.edge), matrix.shard)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # The run ends "cancelled": its face says which shard ended it and its first failure (lib.sh `check`'s failures.txt).
-          first=$(find "$RUNNER_TEMP/e2e" -name failures.txt -size +0 2> /dev/null | head -1 | xargs -r head -n1 | cut -c1-300) || true
-          echo "### Ended: cli ${{ matrix.shard }} (edge) is red${first:+: $first}; the run's other jobs end" >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=Ended: cli ${{ matrix.shard }} red::${first:-cli ${{ matrix.shard }} (edge) is red}"
-          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
 
 
   # Each native runner builds or reuses cozy once for the CLI partitions.
+
+  cli:
+    name: cli ${{ matrix.shard }}
+    needs: [affected, candidate, hub, cli-edge]
+    if: ${{ !cancelled() && needs.affected.result == 'success' && needs.candidate.result == 'success' && needs.hub.result == 'success' && contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && (inputs.shards != 'changed' || ((needs.cli-edge.result == 'success' || needs.cli-edge.result == 'skipped') && needs.affected.outputs.cli_rest != '[]')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
+        # web-1, web-2, web-3, web-2d and web-2d-solo (the canvas in 2D, as with no GPU), web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
+        # remain available.
+        # ondemand (ondemand-share its install's share of the link, ondemand-enhancers the enhancer a request's rule names), plan,
+        # prefetch, coming, lines, disk, disk-room and selfupdate guard features Paul asked for (xs-199): each on every RC run, as any cell.
+        # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
+        # answers: Status answers while the journal's commits wait for the disk (cl-1202).
+        # held-memo: a run repeated on another computer's machine is answered from its held memo (cl-1225).
+        shard: ${{ fromJSON(inputs.shards == 'changed' && needs.affected.outputs.cli_rest || inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-2d-solo","web-engines","web-media","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","ondemand-enhancers","plan","queue","prefetch","coming","lines","answers","held-memo","disk","disk-room","selfupdate","typed-calls","dev-start","hold-wins","rc-moves","any-places","log-since"]') }}
+    runs-on: ubuntu-24.04
+    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
+    # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || matrix.shard == 'web-2d-solo' && 40 || 90 }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
+    steps: *cli-steps
+
   candidate-os:
     name: candidate ${{ matrix.runner }}
     needs: affected
@@ -1474,7 +1494,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu, skew-candidate]
+    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli-edge, cli, cli-os, cli-release, imports, cpu, skew-candidate]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
