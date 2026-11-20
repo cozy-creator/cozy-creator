@@ -81,12 +81,15 @@ if jq -e 'any(.[].args[]?; contains("{clip}"))' <<<"$CELLS" > /dev/null; then
   ffmpeg -v error -y -loop 1 -i "$REF/seed.jpg" -vf "scale=1280:-2,crop=640:360:'(iw-640)*t/4':'(ih-360)/2',fps=24,format=yuv420p" \
     -t 4 -c:v libx264 -crf 18 "$CLIP" || fail "the clip"
 fi
-# STALL: a cell past its run_s, as a root shell on the pod: each executor's threads (state, kernel wait) and its Python stack.
+# STALL: a cell past its run_s, as a root shell on the pod: each executor's threads (state, kernel wait), its Python stack
+# where py-spy can attach (a container without SYS_PTRACE refuses it), and the tail of its own stderr (TensorD's <root>/stderr.log).
 STALL='for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== executor $p"; ps -o pid,stat,pcpu,rss,etime -p "$p";
   for t in /proc/$p/task/*; do echo "$(basename "$t") $(cut -d" " -f3 "$t/stat") $(cat "$t/wchan" 2> /dev/null)"; done | sort -k2 | uniq -c -f1 | head -40; done
 spy=$(command -v py-spy); uv=$(command -v uv || find / -xdev -maxdepth 6 -name uv -type f -perm -u+x 2> /dev/null | head -1)
 [ -n "$spy" ] || [ -z "$uv" ] || spy="$uv tool run py-spy"; echo "py-spy: ${spy:-none}"
 for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== py-spy $p"; [ -z "$spy" ] || timeout 120 $spy dump --pid "$p" 2>&1 | head -200; done
+for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr "\\0" " " < "/proc/$p/cmdline" | sed -n "s/.*--root \\([^ ]*\\).*/\\1/p")
+  [ -z "$r" ] || [ ! -f "$r/stderr.log" ] || { echo "== stderr $p ($r)"; tail -c 30000 "$r/stderr.log" | tr "\\r" "\\n" | grep -v "it/s\\]$" | tail -120; }; done
 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv'
 # {pic1}..{pic16} and {digits}: cap-sweep's 2048x2048 pictures and its 65,000-character prompt, made the same way.
 PICS=$OUT/pics FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd)
