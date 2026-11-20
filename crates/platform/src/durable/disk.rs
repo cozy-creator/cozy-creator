@@ -185,20 +185,6 @@ pub fn cached_pages_each(file: &File, ranges: &[(u64, u64)]) -> Vec<Option<(u64,
     }
 }
 
-/// The runs of `[off, off+len)` the page cache does not hold, as `[start, end)` byte ranges clipped
-/// to it, by `mincore(2)` over a mapping (it never faults one in); `None` where the OS cannot say.
-pub fn uncached_runs(file: &File, off: u64, len: u64) -> Option<Vec<(u64, u64)>> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::uncached_runs(file, off, len)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (file, off, len);
-        None
-    }
-}
-
 /// The OS's page size.
 pub fn page_size() -> u64 {
     #[cfg(target_os = "linux")]
@@ -359,25 +345,6 @@ mod linux {
 
     /// Pages of a range `cached_pages_each` asks of overlayfs, at most.
     const SAMPLES: u64 = 8;
-
-    pub(super) fn uncached_runs(file: &File, off: u64, len: u64) -> Option<Vec<(u64, u64)>> {
-        let page = page_size();
-        let start = off - off % page;
-        let core = residency(file, start, (off + len - start) as usize, page)?;
-        let (end, mut runs, mut open) = (off + len, Vec::new(), None);
-        for (i, byte) in core.iter().chain([&1]).enumerate() {
-            let at = (start + i as u64 * page).clamp(off, end);
-            match (byte & 1 == 0 && i < core.len(), open) {
-                (true, None) => open = Some(at),
-                (false, Some(from)) => {
-                    runs.push((from, at));
-                    open = None;
-                }
-                _ => (),
-            }
-        }
-        Some(runs)
-    }
 
     /// The pages of `[off, off+len)` in core, by `mincore(2)` over a mapping (never faults).
     fn resident(file: &File, off: u64, len: u64, page: u64) -> Option<u64> {

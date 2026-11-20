@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 
 use platform::durable;
 
-use super::{Cold, Copy, Dst, Error, ReadControl, ReadOpts, ReadStats, Src};
+use super::{Copy, Dst, Error, ReadControl, ReadOpts, ReadStats, Src};
 use crate::format::layout::ALIGN;
 
 /// O_DIRECT's alignment of offsets, lengths and addresses.
@@ -40,14 +40,14 @@ struct Tally {
     bounced: AtomicU64,
 }
 
-/// `cold[i]`: how copy `i` reads (`super::cold`). `cancel` stops it between pieces
+/// `cold[i]`: copy `i` reads past the page cache (`super::cold`). `cancel` stops it between pieces
 /// and counts each finished piece as issued.
 ///
 /// # Safety
 /// As [`super::read`], for host destinations only.
 pub(super) unsafe fn fill(
     copies: &[Copy],
-    cold: &[Cold],
+    cold: &[bool],
     opts: &ReadOpts,
     cancel: Option<&ReadControl>,
 ) -> Result<ReadStats, Error> {
@@ -88,8 +88,7 @@ pub(super) unsafe fn fill(
                 && pieces.last().is_some_and(|p| {
                     let (first, last) = (&segs[p.segs.start], &segs[p.segs.end - 1]);
                     let last_end = last.offset + last.len as u64;
-                    p.file == file && cold[first.copy] == cold[i] && !matches!(cold[i], Cold::Holes(_))
-                        && at >= last_end && at - last_end <= MERGE_GAP
+                    p.file == file && cold[first.copy] == cold[i] && at >= last_end && at - last_end <= MERGE_GAP
                         && next - first.offset <= grid
                 });
             segs.push(Seg { copy: i, offset: at, len: (next - at) as usize, dst: ptr as usize + (at - offset) as usize });
@@ -124,15 +123,8 @@ pub(super) unsafe fn fill(
             };
             let (file, last) = (files[i], &segs[segs.len() - 1]);
             let (from, to) = (segs[0].offset, last.offset + last.len as u64);
-            let open = || direct[i].get_or_init(|| durable::open_direct(file).ok().flatten()).as_ref();
-            let kind = &cold[segs[0].copy];
-            let r = match (kind.direct().then(open).flatten(), segs) {
-                // A partly held copy (never merged): its holes past the cache, the rest from it.
-                (_, [s]) if matches!(kind, Cold::Holes(_)) => read_parts(file, open, kind, s.offset, dst(s), &mut bounce).map(|read| {
-                    tally.direct.fetch_add(read.direct, Relaxed);
-                    tally.bounced.fetch_add(read.bounced, Relaxed);
-                    tally.cached.fetch_add(read.cached, Relaxed);
-                }),
+            let d = cold[segs[0].copy].then(|| direct[i].get_or_init(|| durable::open_direct(file).ok().flatten()).as_ref());
+            let r = match (d.flatten(), segs) {
                 (Some(d), [s]) => direct_piece(d, s.offset, dst(s), &mut bounce, &tally),
                 (Some(d), _) => bounce.fill(d, from, (to - from) as usize).map(|cover| {
                     for s in segs {
@@ -183,39 +175,23 @@ fn invalid(copy: usize, detail: &str) -> Error {
     Error { copy, source: io::Error::new(io::ErrorKind::InvalidInput, detail) }
 }
 
-/// The bytes a read moved: past the page cache, of them through a bounce buffer, and through it.
-#[derive(Default)]
-pub(super) struct Read {
-    pub direct: u64,
+/// How a staged piece's bytes were read: past the page cache or through it, and of the former how
+/// many went through `bounce`.
+pub(super) struct Piece {
+    pub direct: bool,
     pub bounced: u64,
-    pub cached: u64,
 }
 
-/// `dst.len()` bytes of `file` at `at`, as `cold` says: each hole past the page cache through
-/// `direct` (an O_DIRECT description of the file; none: through the cache), the rest through it.
-/// The device engine's staged piece, read whole, and a host read's partly held copy.
-pub(super) fn read_parts<'f>(
-    file: &File,
-    direct: impl Fn() -> Option<&'f File>,
-    cold: &Cold,
-    at: u64,
-    dst: &mut [u8],
-    bounce: &mut Bounce,
-) -> io::Result<Read> {
-    let (tally, mut read) = (Tally::default(), Read::default());
-    for (from, to, past) in cold.parts(at, at + dst.len() as u64) {
-        let part = &mut dst[(from - at) as usize..(to - at) as usize];
-        match past.then(&direct).flatten() {
-            Some(d) => direct_piece(d, from, part, bounce, &tally)?,
-            None => {
-                read_exact_at(file, part, from)?;
-                read.cached += part.len() as u64;
-            }
-        }
-    }
-    read.direct = tally.direct.into_inner();
-    read.bounced = tally.bounced.into_inner();
-    Ok(read)
+/// `dst.len()` bytes of `file` at `at` in one read: through `direct` (an O_DIRECT description of
+/// it) when given, else through the page cache. The device engine's staged piece, read whole.
+pub(super) fn read_piece(file: &File, direct: Option<&File>, at: u64, dst: &mut [u8], bounce: &mut Bounce) -> io::Result<Piece> {
+    let Some(d) = direct else {
+        read_exact_at(file, dst, at)?;
+        return Ok(Piece { direct: false, bounced: 0 });
+    };
+    let tally = Tally::default();
+    direct_piece(d, at, dst, bounce, &tally)?;
+    Ok(Piece { direct: true, bounced: tally.bounced.into_inner() })
 }
 
 /// `dst.len()` bytes at `at` past the page cache: the aligned middle straight into `dst` when

@@ -431,7 +431,7 @@ unsafe fn read_impl(
     } else {
         #[cfg(unix)]
         let host_start = Instant::now();
-        let host_cold: Vec<Cold> = host.iter().map(|&(i, _)| cold[i].clone()).collect();
+        let host_cold: Vec<bool> = host.iter().map(|&(i, _)| cold[i]).collect();
         // SAFETY: host copies keep `read`'s contract.
         let stats = unsafe { host::fill(&host_copies, &host_cold, opts, cancel) }.map_err(|e| Error {
             copy: host[e.copy].0,
@@ -469,63 +469,16 @@ unsafe fn read_impl(
     Ok(stats)
 }
 
-/// How a copy's file bytes are read (`cold`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Cold {
-    /// Through the page cache: the pages it holds from memory, the rest from disk into it.
-    #[default]
-    Cached,
-    /// Past the page cache (O_DIRECT): it holds none of them and has no room to keep them.
-    Direct,
-    /// Past the page cache in these `[start, end)` file ranges only, the holes in what it holds: a
-    /// byte already in memory is never read again from disk.
-    Holes(Vec<(u64, u64)>),
-}
-
-impl Cold {
-    /// Whether any of it reads past the page cache.
-    pub(crate) fn direct(&self) -> bool {
-        !matches!(self, Cold::Cached)
-    }
-
-    /// `[at, end)` cut where it enters or leaves a hole: each part, and whether it reads past the cache.
-    pub(crate) fn parts(&self, at: u64, end: u64) -> Vec<(u64, u64, bool)> {
-        let holes = match self {
-            Cold::Cached => return vec![(at, end, false)],
-            Cold::Direct => return vec![(at, end, true)],
-            Cold::Holes(holes) => holes,
-        };
-        let (mut out, mut cursor) = (Vec::new(), at);
-        for &(from, to) in holes {
-            let (from, to) = (from.max(at), to.min(end));
-            if from >= to {
-                continue;
-            }
-            if from > cursor {
-                out.push((cursor, from, false));
-            }
-            out.push((from, to, true));
-            cursor = to;
-        }
-        if cursor < end {
-            out.push((cursor, end, false));
-        }
-        out
-    }
-}
-
-/// How each copy reads (`Cold`, O_DIRECT only where `opts.direct` allows), judged once a read,
-/// never per piece. Every copy reads through the page cache while it could hold this read's
-/// missing bytes once the clean cache it holds now gives way (`varena_ledger::host::Budget::room`:
-/// memory nothing pins or holds), so weights read again (a fresh executor, a paged step) or staged
-/// ahead come from memory. Judged by memory nothing holds, a cache full of older bytes sent every
-/// later read past it: H3's text encoder in a fresh executor read 9.6 GB of 26.4 again from disk
-/// (cl-1318). Past the room, memory pinned and held leaves the cache nowhere to keep them: a copy
-/// reads O_DIRECT, except what the cache holds of it, which reads from the cache.
-fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<Cold> {
+/// Whether each copy reads past the page cache (O_DIRECT, where `opts.direct` allows), sampled
+/// once a read, never per piece. A range the cache mostly holds reads through it: the disk serves
+/// only its holes. So does the rest while varena's host number leaves cache room for this read's
+/// missing bytes (`varena_ledger::host::Budget::cache`: memory nothing holds), so a second read of
+/// them hits memory. Past it the read goes O_DIRECT: caching it would displace other cache, a
+/// store larger than memory its own earlier bytes, and the cache then thrashes (Flux-2 on a 31 GiB
+/// pod read buffered at 0.45–0.95 GB/s against 1.26 GB/s direct, run 42010).
+fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
     let page = platform::durable::page_size();
-    // Each copy's pages the cache holds, and of how many: None where the OS can't say (cold).
-    let mut seen: Vec<Option<(u64, u64)>> = vec![Some((0, 0)); copies.len()];
+    let mut missing = vec![0u64; copies.len()];
     // Each file's copies asked together: on overlayfs (a container's root) that is one mapping of
     // the file, not one a copy, each of which took the mmap lock beside the reads (cl-1318).
     let mut files: Vec<(&File, Vec<usize>)> = Vec::new();
@@ -539,33 +492,22 @@ fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<Cold> {
             }
         }
     }
-    for (f, of) in &files {
+    for (f, of) in files {
         let ranges: Vec<(u64, u64)> = of.iter().map(|&i| match copies[i].src {
             Src::File(_, at) => (at, copies[i].dst.len() as u64),
             _ => unreachable!("only file copies"),
         }).collect();
         for (&i, held) in of.iter().zip(platform::durable::cached_pages_each(f, &ranges)) {
-            seen[i] = held;
+            missing[i] = match held {
+                Some((held, of)) if held * 2 >= of => 0,
+                Some((held, of)) => (of - held) * page,
+                None => copies[i].dst.len() as u64,
+            };
         }
     }
-    let missing = |i: usize| match seen[i] {
-        Some((held, of)) => (of - held) * page,
-        None => copies[i].dst.len() as u64,
-    };
-    let need: u64 = (0..copies.len()).map(missing).sum();
-    let past = need > 0 && varena_ledger::host::budget().room() < i64::try_from(need).unwrap_or(i64::MAX);
-    if !past {
-        return vec![Cold::Cached; copies.len()];
-    }
-    // Short of room: what the cache holds still reads from it, and only its holes from disk.
-    (0..copies.len()).map(|i| match (copies[i].src, seen[i]) {
-        (Src::File(..), _) if missing(i) == 0 => Cold::Cached,
-        (Src::File(f, at), Some((held, _))) if held > 0 => {
-            platform::durable::uncached_runs(f, at, copies[i].dst.len() as u64).map_or(Cold::Direct, Cold::Holes)
-        }
-        (Src::File(..), _) => Cold::Direct,
-        _ => Cold::Cached,
-    }).collect()
+    let need: u64 = missing.iter().sum();
+    let past = need > 0 && varena_ledger::host::budget().cache() < i64::try_from(need).unwrap_or(i64::MAX);
+    missing.iter().map(|&m| past && m > 0).collect()
 }
 
 /// The file reads among `copies`, as one disk run against their volume's ceiling (`metrics`).
