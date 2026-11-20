@@ -12,9 +12,11 @@
 #             the pixel values at every clear position (both its one-pass forward and its own cached decode lead by 0.5 with
 #             the same top, as the decode drive's; the forward's alone told beside it); today's path (`lm.generate`) on each
 #             case held the same way, told; tokens kept a step on each;
-#   caption   Caption's question on both engines on one executor, warm, the same seeds: CozyEngine must be faster a call;
+#   caption   Caption's question on both engines on one executor, each warmed twice, then alternating which goes first, the
+#             same seeds: CozyEngine must be faster a call;
 #   bucket    the four cases as one call through both engines likewise (Transformers' engine reads their pictures in one
-#             vision pass, CozyEngine a row at a time): CozyEngine must be faster a call.
+#             vision pass, CozyEngine a row at a time; rows' lengths may differ, so a token is the fair figure): CozyEngine must be
+#             faster a token.
 # Then on q8_0, through `cozy run` as a person runs them (`routes`), each note "by the engine", no engine kernel compiled on the
 # request: `qwen3/caption` (a mentioned picture), `qwen3/ask` with a picture and with a video file, the drive's `ask` with a
 # picture in an earlier turn; and (`cap`) a picture call with the GPU limited to 6 GiB completes, its `.engine` note told.
@@ -145,8 +147,8 @@ for l in $LANES; do
     step "bucket-$l" run "$DRIVE/bucket" --model "model=$model" --file "image=$REF/seed.jpg" runs:=3 --on "$NAME" ||
       { tail -c 2000 "$OUT/bucket-$l.txt" | tee -a "$R"; FAILED+=("bucket-$l"); }
     record "bucket-$l"; detail "bucket-$l"
-    say "bucket-$l: $(jq -c '{call_x, engine: [.engine[] | [.s, .tokens, .prefill_s, .decode_s]], transformers: [.transformers[] | [.s, .tokens]]}' "$OUT/bucket-$l-detail.json" 2> /dev/null)"
-    jq -e '.call_x > 1' "$OUT/bucket-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket-$l: CozyEngine is no faster a call"; FAILED+=("bucket-$l-speed"); }
+    say "bucket-$l: $(jq -c '{call_x, token_x, engine: [.engine[] | [.s, .tokens, .prefill_s, .decode_s]], transformers: [.transformers[] | [.s, .tokens]]}' "$OUT/bucket-$l-detail.json" 2> /dev/null)"
+    jq -e '.token_x > 1' "$OUT/bucket-$l-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket-$l: CozyEngine is no faster a token"; FAILED+=("bucket-$l-speed"); }
   fi
 done
 if part routes; then

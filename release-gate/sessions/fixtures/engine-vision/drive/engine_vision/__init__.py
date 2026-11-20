@@ -11,6 +11,7 @@
 
 import json
 import time
+from collections.abc import Callable
 
 import msgspec
 import torch
@@ -310,73 +311,61 @@ def pictures(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
     return Agreement(json.dumps(rows))
 
 
+#: Untimed calls each engine makes first: the second still recorded graphs Transformers' engine had not (44639542665).
+WARM = 2
+
+
+def _both(model: VisionLM, questions: list[Question], params: Callable[[int], Params], runs: int) -> dict[str, object]:
+    """`questions` through CozyEngine and through Transformers' engine on this executor: each warmed by `WARM` calls,
+    then `runs` timed calls each, the two arms alternating which goes first, both at seed k on call k. CozyEngine must
+    serve each itself (its `Final` carries the engine's timings). `call_x`: Transformers' mean call over the engine's;
+    `token_x`: its seconds a token made over the engine's."""
+    engine = model.engine
+    arms = {"engine": engine, "transformers": engine.fallback}  # type: ignore[attr-defined]  # CozyEngine's
+    if why := engine._why(questions, params(0)):  # type: ignore[attr-defined]  # CozyEngine's routing
+        raise RuntimeError(f"CozyEngine doesn't serve these: {why}")
+
+    def call(name: str, seed: int) -> dict[str, object]:
+        torch.cuda.synchronize()
+        began = time.perf_counter()
+        final = arms[name].generate(questions, params(seed), on_delta=lambda _d: None)
+        torch.cuda.synchronize()
+        seconds = time.perf_counter() - began
+        if name == "engine" and "decode" not in final.timings:
+            raise RuntimeError(f"seed {seed}: CozyEngine handed the call on (no engine timings)")
+        return {"seed": seed, "s": round(seconds, 3), "tokens": final.usage.completion,
+                "prefill_s": round(final.timings.get("prefill", 0.0), 3), "decode_s": round(final.timings.get("decode", 0.0), 3),
+                "words": final.texts[0][:200]}  # fmt: skip
+
+    for k in range(WARM):
+        for name in arms:
+            call(name, 1000 + k)
+    timed: dict[str, list[dict[str, object]]] = {name: [] for name in arms}
+    for k in range(1, runs + 1):
+        for name in (("engine", "transformers") if k % 2 else ("transformers", "engine")):
+            timed[name].append(call(name, k))
+    seconds = {n: sum(float(c["s"]) for c in calls) for n, calls in timed.items()}  # type: ignore[arg-type]
+    tokens = {n: sum(int(c["tokens"]) for c in calls) for n, calls in timed.items()}  # type: ignore[call-overload]
+    return {"gpu": torch.cuda.get_device_name(), "warm": WARM, **timed,
+            "call_x": round(seconds["transformers"] / seconds["engine"], 3),
+            "token_x": round((seconds["transformers"] / max(tokens["transformers"], 1)) / (seconds["engine"] / max(tokens["engine"], 1)), 3)}  # fmt: skip
+
+
 @app.entrypoint(accelerator=True)
 def caption(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
-    """Caption's question about the picture (its sampling: Qwen's card, top-k 20, presence 1.5) through CozyEngine and
-    through Transformers' engine on this executor: each warmed by one call, then `runs` calls each at seeds 1 to `runs`,
-    timed to their end. CozyEngine must serve each itself (its `Final` carries the engine's timings)."""
-    engine = model.engine
-    fallback = engine.fallback  # type: ignore[attr-defined]  # CozyEngine's Transformers' engine
+    """Caption's question about the picture (its sampling: Qwen's card, top-k 20, presence 1.5) through both engines,
+    warm, alternating (`_both`)."""
     questions = [Question(parts=[f"{CAPTION}\n\n", payload.image.read()])]
-    if why := engine._why(questions, _params(1024, 0.7)):  # type: ignore[attr-defined]  # CozyEngine's routing
-        raise RuntimeError(f"CozyEngine doesn't serve Caption: {why}")
-    timed: dict[str, list[dict[str, object]]] = {}
-    seconds_of: dict[str, float] = {}
-    ms_of: dict[str, float] = {}
-    for name, serving in (("engine", engine), ("transformers", fallback)):
-        calls: list[dict[str, object]] = []
-        total = per = 0.0
-        for seed in range(payload.runs + 1):
-            torch.cuda.synchronize()
-            began = time.perf_counter()
-            final = serving.generate(questions, _params(1024, 0.7, seed), on_delta=lambda _d: None)
-            torch.cuda.synchronize()
-            seconds = time.perf_counter() - began
-            if name == "engine" and "decode" not in final.timings:
-                raise RuntimeError(f"seed {seed}: CozyEngine handed Caption on (no engine timings)")
-            if seed:  # seed 0 warms
-                ms = 1e3 * seconds / max(final.usage.completion, 1)
-                total, per = total + seconds, per + ms
-                calls.append({"seed": seed, "s": round(seconds, 3), "tokens": final.usage.completion, "ms_token": round(ms, 2),
-                              "prefill_s": round(final.timings.get("prefill", 0.0), 3), "words": final.texts[0][:200]})  # fmt: skip
-        timed[name], seconds_of[name], ms_of[name] = calls, total / payload.runs, per / payload.runs
-    return Agreement(json.dumps({
-        "gpu": torch.cuda.get_device_name(), **timed,
-        "call_x": round(seconds_of["transformers"] / seconds_of["engine"], 3),
-        "token_x": round(ms_of["transformers"] / ms_of["engine"], 3),
-    }))  # fmt: skip
+    return Agreement(json.dumps(_both(model, questions, lambda seed: _params(1024, 0.7, seed), payload.runs)))
 
 
 @app.entrypoint(accelerator=True)
 def bucket(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
     """The four cases as one call (a picture, a picture in an earlier turn, a video, text), greedy, at most 256 tokens a
-    row, through CozyEngine and through Transformers' engine on this executor: each warmed by one call, then `runs` calls
-    timed to their end. Transformers' engine reads the rows' pictures and videos in one vision pass; CozyEngine a row at a
-    time. CozyEngine must serve each itself; its prefill and decode seconds and tokens kept a step are told."""
-    engine = model.engine
-    fallback = engine.fallback  # type: ignore[attr-defined]  # CozyEngine's Transformers' engine
+    row, through both engines, warm, alternating (`_both`). Transformers' engine reads the rows' pictures and videos in
+    one vision pass, CozyEngine a row at a time; the rows' lengths may differ, so `token_x` is the fair figure."""
     questions = list(_cases(payload.image.read()).values())
-    if why := engine._why(questions, _params(256)):  # type: ignore[attr-defined]  # CozyEngine's routing
-        raise RuntimeError(f"CozyEngine doesn't serve the bucket: {why}")
-    timed: dict[str, list[dict[str, object]]] = {}
-    seconds_of: dict[str, float] = {}
-    for name, serving in (("engine", engine), ("transformers", fallback)):
-        calls: list[dict[str, object]] = []
-        for seed in range(payload.runs + 1):
-            torch.cuda.synchronize()
-            began = time.perf_counter()
-            final = serving.generate(questions, _params(256, 0.0, seed), on_delta=lambda _d: None)
-            torch.cuda.synchronize()
-            seconds = time.perf_counter() - began
-            if name == "engine" and "decode" not in final.timings:
-                raise RuntimeError(f"call {seed}: CozyEngine handed the bucket on (no engine timings)")
-            if seed:  # the first warms
-                calls.append({"s": round(seconds, 3), "tokens": final.usage.completion,
-                              "prefill_s": round(final.timings.get("prefill", 0.0), 3),
-                              "decode_s": round(final.timings.get("decode", 0.0), 3), "steps": final.timings.get("steps")})  # fmt: skip
-        timed[name], seconds_of[name] = calls, sum(float(c["s"]) for c in calls) / payload.runs  # type: ignore[arg-type]
-    return Agreement(json.dumps({"gpu": torch.cuda.get_device_name(), **timed,
-                                 "call_x": round(seconds_of["transformers"] / seconds_of["engine"], 3)}))  # fmt: skip
+    return Agreement(json.dumps(_both(model, questions, lambda seed: _params(256, 0.0, seed), payload.runs)))
 
 
 @app.entrypoint(accelerator=True)
