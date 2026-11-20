@@ -62,6 +62,9 @@
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   file       optional: a JSON file in this checkout (from its root) holding all of these, for a matrix past the
 #              dispatch input's 65,535 characters
+#   max_bound_gib  optional: the pod's memory bound (MemTotal, or its container's cgroup limit when less) must be at most
+#              this many GiB, else the session fails at once and its pod ends: a cell that needs the host tier over its cap
+#              (half of that bound) needs a small host, which an order can't ask for (var-038)
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
@@ -157,6 +160,27 @@ NEED=$(param need_s 3600)
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
 quote "$NEED"
 rent
+MAX_BOUND=$(param max_bound_gib '')
+if [ -n "$MAX_BOUND" ]; then
+  [[ $MAX_BOUND =~ ^[0-9]+$ ]] || fail "max_bound_gib $MAX_BOUND"
+  BOUND_SH='m=$(awk '"'"'/MemTotal/{printf "%d\n", $2 * 1024}'"'"' /proc/meminfo)
+for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+  [ -r "$f" ] || continue
+  c=$(cat "$f")
+  case $c in ""|max|*[!0-9]*) continue ;; esac
+  [ "$c" -lt "$m" ] && m=$c
+done
+echo "$m"'
+  BOUND=
+  for _ in 1 2 3; do
+    BOUND=$(timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$BOUND_SH") | base64 -d | sh" 2> /dev/null | grep -E '^[0-9]+$' | tail -1)
+    [ -n "$BOUND" ] && break
+    sleep 10
+  done
+  [ -n "$BOUND" ] || fail "no memory bound read on $NAME"
+  say "memory bound: $((BOUND >> 30)) GiB on $NAME (max_bound_gib $MAX_BOUND)"
+  [ "$BOUND" -le $((MAX_BOUND << 30)) ] || fail "$NAME's memory bound is $((BOUND >> 30)) GiB, over max_bound_gib $MAX_BOUND: it ends now"
+fi
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
 if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
