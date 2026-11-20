@@ -17,7 +17,7 @@
 #   ceiling    512 tokens asked of an engine whose rows hold 256: the engine, clamped at the start with a warning;
 #   bucket     the real 9B's four rows in a bucket through the model's declared set, drafted and plain, against
 #              Transformers' teacher-forced forward at every clear position (the decode drive's `bucket`);
-#   unknown    the q4_k_m lane (ggml.q4_k and q6_k, outside the engine's LANES): Transformers' engine;
+#   unknown    the w4a8 lane (w4a8.convrot, outside the engine's LANES): Transformers' engine;
 #   rows       17 questions in one `VisionLM.ask` (the drive's `rows`; AskRequest takes 16): Transformers' engine;
 #   room       the q8_0 lane with the GPU memory limited to `capped`: its weights' lease is refused at the call's start, so
 #              Transformers' engine serves it ("don't fit at the call's start").
@@ -43,7 +43,7 @@ GGUF=$(param gguf 'unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-Q8_0.gguf')
 SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
 Q8=qwen/qwen3.5-9b@sha256:c1059b7b191259ecd579df4640b6abd4e419aa25761135f0bd12c8e4b040393c
 INT8=qwen/qwen3.5-9b@sha256:37a131b745e22e0c074592f349d6fd6778e5b127dd2a4b277e64ffd053742bd7
-Q4=qwen/qwen3.5-9b@sha256:60f445fa7b568f666e6c44b7e53532ddaa486016529946b05d8ab00b8c10dde9
+W4A8=qwen/qwen3.5-9b@sha256:4cad23902bdeedeafc46936033839d19fe1e4ba28339da5505ca21c72bd1ac2e
 TENSORFS=$(wheel_from "$OUT/wheels/tensorfs" "$(param tensorfs '')") && [ -n "$TENSORFS" ] || fail "no TensorFS wheel"
 RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$(param runtime '')") && [ -n "$RUNTIME" ] || fail "no Runtime wheel"
 say "tensorfs ${TENSORFS##*/} · runtime ${RUNTIME##*/} · cozy $(cozy --version)"
@@ -110,7 +110,7 @@ STORY='Write a long, detailed story about a lighthouse keeper who finds a messag
 FAILED=()
 step pull-q8 model install "$Q8" --on "$NAME" || fail "pull q8_0"
 want int8 && { step pull-int8 model install "$INT8" --on "$NAME" || fail "pull int8"; }
-want unknown && { step pull-q4 model install "$Q4" --on "$NAME" || fail "pull q4_k_m"; }
+want unknown && { step pull-w4a8 model install "$W4A8" --on "$NAME" || fail "pull w4a8"; }
 ready cold "$Q8"
 # records <label>: the launcher check's records on the machine (passes by path; crash markers, this boot's).
 records() { there "find /var/lib/cozy -name 'cozy-engine-launcher*' -printf '%f\n' 2> /dev/null | sort | paste -sd ' ' -" < /dev/null; }
@@ -159,7 +159,7 @@ say "bucket-replayed: $(jq -c '{declared, launcher, drafted: [.drafted[]? | [.bu
 jq -e '.declared and (.launcher | not) and ([(.drafted // [])[], (.plain // [])[]] | length == 8) and ([(.drafted // [])[], (.plain // [])[]] | all(.bucket.agreed == .bucket.clear and .alone.agreed == .alone.clear))' \
   "$OUT/bucket-replayed-detail.json" > /dev/null 2>&1 || { say "FAILED: bucket-replayed: a clear position disagreed"; FAILED+=("bucket-replayed-forced"); }
 fi
-route unknown "which the engine's cells have not passed" "$SOURCE/qwen3/ask" --model "model=$Q4" "prompt=$STORY" \
+route unknown "which the engine's cells have not passed" "$SOURCE/qwen3/ask" --model "model=$W4A8" "prompt=$STORY" \
   max_tokens:=32 temperature:=0
 route rows "at most 16 rows" "$FIX/drive/rows" --model "model=$Q8"
 if want room; then
