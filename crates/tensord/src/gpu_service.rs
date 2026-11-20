@@ -710,8 +710,12 @@ struct Launch {
 
 /// A generation's import-only executor that executors fork from (`fork/1`). Its children
 /// die with it, so it ends only with the pool or, childless, to give its host memory back.
-#[derive(Default)]
+/// One that exits otherwise (killed, crashed) is replaced at once (`Pool::reap`, cl-1327).
 struct Zygote {
+    /// What it imports: its replacement imports the same.
+    held: HeldGeneration,
+    /// Started because its predecessor was lost: lost again before any fork, it isn't replaced.
+    replacement: bool,
     state: Mutex<ZygoteState>,
     changed: Condvar,
     /// Executors forked from it that may still live.
@@ -733,6 +737,17 @@ enum ZygoteState {
     Failed(String),
 }
 impl Zygote {
+    fn new(held: HeldGeneration, replacement: bool) -> Self {
+        Self {
+            held,
+            replacement,
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            children: Mutex::default(),
+            used: Mutex::default(),
+            served: Default::default(),
+        }
+    }
     fn set(&self, state: ZygoteState) {
         if let ZygoteState::Off(reason) | ZygoteState::Failed(reason) = &state {
             tracing::info!("executor prespawn off: {reason}");
@@ -758,11 +773,11 @@ impl Zygote {
         while matches!(*state, ZygoteState::Starting) {
             state = self.changed.wait(state).unwrap();
         }
-        let ZygoteState::Ready(parent) = &mut *state else {
-            return Ok(Forked::Refused(
-                Box::new(config),
-                "no import-only executor".into(),
-            ));
+        let parent = match &mut *state {
+            ZygoteState::Ready(parent) => parent,
+            // Lost and replaced meanwhile: the launch forks from its replacement.
+            ZygoteState::Off(reason) if reason == ENDED => return Ok(Forked::Lost(Box::new(config), ENDED.into())),
+            _ => return Ok(Forked::Refused(Box::new(config), "no import-only executor".into())),
         };
         let forked = parent.fork(config, on_birth)?;
         match &forked {
@@ -796,6 +811,10 @@ impl Zygote {
     fn ahead(&self) -> bool {
         !self.served.load(Ordering::Acquire)
             && matches!(*self.state.lock().unwrap(), ZygoteState::Starting | ZygoteState::Ready(_))
+    }
+    /// Ready, and its process has exited.
+    fn exited(&self) -> bool {
+        matches!(&*self.state.lock().unwrap(), ZygoteState::Ready(parent) if parent.birth.ended().unwrap_or(false))
     }
     /// Ready and with no live child: ending it ends nothing else.
     fn childless(&self) -> bool {
@@ -893,6 +912,11 @@ pub(crate) const DISPLAY_FLOOR: u64 = 384 << 20;
 /// varena's host number has room for one more import-only parent ([`PARENT_BYTES`]).
 fn room_for_parent() -> bool {
     varena_ledger::host::budget().room() >= PARENT_BYTES
+}
+
+/// What process `pid` holds of the host now, as `0.81 GB`.
+fn resident(pid: u32) -> String {
+    host_memory::process(pid).map_or_else(|error| format!("? ({error})"), |memory| format!("{:.2} GB", memory.rss as f64 / 1e9))
 }
 
 /// The manifests live executors read. A download's GC must not evict them: an evicted file a
@@ -1030,9 +1054,9 @@ fn earlier_executor(pid: u32) -> bool {
     executor
 }
 
-/// While the pool lives, its idle executors are watched for their exit: one killed or crashed
-/// while idle leaves the pool and is reaped at once, never left a zombie until the next call.
-/// Dropped with the pool, its thread ends.
+/// While the pool lives, its idle executors and import-only parents are watched for their exit:
+/// one killed or crashed while idle leaves the pool and is reaped at once, never left a zombie
+/// until the next call, and a parent is replaced at once. Dropped with the pool, its thread ends.
 struct Exits(Arc<platform::signal::Signal>);
 impl Exits {
     fn watch(pool: Weak<Pool>) -> io::Result<Exits> {
@@ -1049,6 +1073,7 @@ impl Exits {
             if ready.iter().any(|ready| ready.index > 0) {
                 let Some(pool) = pool.upgrade() else { return };
                 pool.reap();
+                pool.replace_lost_parents();
             }
         })?;
         Ok(Exits(changed))
@@ -2507,11 +2532,50 @@ impl Pool {
             }
         }
     }
-    /// Every idle executor's exit handle, for [`Exits`].
+    /// Every idle executor's and ready import-only parent's exit handle, for [`Exits`].
     fn idle_handles(&self) -> Vec<std::fs::File> {
         let mut handles: Vec<_> = self.sessions.lock().unwrap().values().filter_map(|s| s.executor.observer_pidfd().ok()).collect();
         handles.extend(self.deviceless.lock().unwrap().iter().filter_map(|s| s.executor.observer_pidfd().ok()));
+        let parents: Vec<Arc<Zygote>> = self.zygotes.lock().unwrap().values().cloned().collect();
+        handles.extend(parents.iter().filter_map(|zygote| match &*zygote.state.lock().unwrap() {
+            ZygoteState::Ready(parent) => parent.observer_pidfd().ok(),
+            _ => None,
+        }));
         handles
+    }
+    /// Import-only parents that exited while still their generation's (killed, crashed, out of
+    /// memory): each leaves, and another starts at once in its place, under `prespawn`'s budget,
+    /// so no request waits for its imports (cl-1327: 6–7.5 s on the request that found it gone).
+    /// A replacement lost before it forked anything is not replaced: the next call starts one.
+    fn replace_lost_parents(self: &Arc<Self>) {
+        let lost: Vec<Arc<Zygote>> = {
+            let mut zygotes = self.zygotes.lock().unwrap();
+            let gone: Vec<App> = zygotes.iter().filter(|(_, zygote)| zygote.exited()).map(|(app, _)| app.clone()).collect();
+            gone.iter().filter_map(|app| zygotes.remove(app)).collect()
+        };
+        for zygote in lost {
+            let ZygoteState::Ready(parent) = std::mem::replace(&mut *zygote.state.lock().unwrap(), ZygoteState::Off(ENDED.into())) else {
+                continue;
+            };
+            zygote.changed.notify_all();
+            let pid = parent.birth.pid;
+            let how = match parent.terminate() {
+                Ok(reaped) if reaped.oom_killed => format!("{}, by the kernel's OOM killer", reaped.status),
+                Ok(reaped) => reaped.status.to_string(),
+                Err(error) => error.to_string(),
+            };
+            let package = &zygote.held.record.package;
+            if zygote.replacement && !zygote.served.load(Ordering::Acquire) {
+                tracing::warn!("import-only executor {pid} of {package} exited ({how}) before it forked an executor, as the one it replaced did: the next call starts one");
+                continue;
+            }
+            tracing::warn!("import-only executor {pid} of {package} exited ({how}): starting another");
+            self.prespawn_as(zygote.held.clone(), true);
+        }
+    }
+    /// The exit watch sees the parents as they are now.
+    fn parents_changed(&self) {
+        self.exits.get().into_iter().for_each(Exits::changed);
     }
     /// Idle executors that exited leave the pool, and their processes are reaped as they go.
     fn reap(&self) {
@@ -3442,6 +3506,10 @@ impl Pool {
     /// machine holds at most one parent imported ahead of its request. Past it, only its import
     /// pages are read ahead; its parent starts when its call does.
     pub(crate) fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
+        self.prespawn_as(held, false);
+    }
+    /// `prespawn`, of a parent that replaces one lost (`replace_lost_parents`) when `replacement`.
+    fn prespawn_as(self: &Arc<Self>, held: HeldGeneration, replacement: bool) {
         if crate::private_io::is_private_path(&held.record.python) { return; }
         {
             let zygotes = self.zygotes.lock().unwrap();
@@ -3451,11 +3519,14 @@ impl Pool {
             let shared_full = self.config.host.mode == HostMode::Shared && zygotes.values().any(|z| z.ahead());
             if shared_full || !room_for_parent() {
                 drop(zygotes);
+                if replacement {
+                    tracing::info!("no room for another import-only executor of {}: its pages are read ahead, and its next call starts one", held.record.package);
+                }
                 crate::import_pages::read_ahead_later(vec![held]);
                 return;
             }
         }
-        let Some((zygote, true)) = self.zygote(&held) else {
+        let Some((zygote, true)) = self.zygote_as(&held, replacement) else {
             return;
         };
         *zygote.used.lock().unwrap() = Some(Instant::now());
@@ -3557,6 +3628,9 @@ impl Pool {
     /// when this pool spawns every executor (no GPU, or no fork here) or the generation
     /// constructs no model.
     fn zygote(&self, held: &HeldGeneration) -> Option<(Arc<Zygote>, bool)> {
+        self.zygote_as(held, false)
+    }
+    fn zygote_as(&self, held: &HeldGeneration, replacement: bool) -> Option<(Arc<Zygote>, bool)> {
         let stopped = self.stopped.load(Ordering::Acquire);
         if stopped || !FORKS || self.devices.is_empty() || !binds_models(&held.record.interface) {
             return None;
@@ -3566,7 +3640,7 @@ impl Pool {
         if let Some(zygote) = zygotes.get(&key) {
             return Some((zygote.clone(), false));
         }
-        let zygote = Arc::new(Zygote::default());
+        let zygote = Arc::new(Zygote::new(held.clone(), replacement));
         zygotes.insert(key, zygote.clone());
         Some((zygote, true))
     }
@@ -3574,9 +3648,13 @@ impl Pool {
     /// Brings `zygote` up as `held`'s import-only parent, and tells the engine it did (or failed).
     /// Its first import records its environment's import pages (`import_pages`).
     fn start_parent(&self, zygote: &Zygote, held: &HeldGeneration) {
+        let started = Instant::now();
         zygote.set(self.import_only(held));
         if let Some(parent) = zygote.birth() {
+            tracing::info!("import-only executor {} of {} ready in {:.1} s, holding {} of host memory and nothing on a GPU",
+                parent.pid, held.record.package, started.elapsed().as_secs_f64(), resident(parent.pid));
             crate::import_pages::record_later(held, parent);
+            self.parents_changed();
         }
         if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
             engine.notify_activity();
