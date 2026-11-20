@@ -383,12 +383,14 @@ else
     sleep 0.5
   done
   [ -n "$b_ms" ] || check "prefetch yields: e2e/pre-lora-b, styled's new LoRA, isn't whole on stand-p 2 min after the swap: $(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-b)"
+  # The machine lists a checkpoint's bytes once it is whole: had e2e/pre-lora-a gone on coming beside e2e/pre-lora-b on the one
+  # 10 MB/s link, its 111 MiB left would be whole within 15 s of e2e/pre-lora-b.
   pre_machine stand-p "$OUT/pre-yields-lora.json"
   first=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
-  sleep 5
+  sleep 15
   pre_machine stand-p "$OUT/pre-yields-lora.json"
   second=$(pre_held "$OUT/pre-yields-lora.json" e2e/pre-lora-a)
-  echo "prefetch yields: styled's slot swapped when its row said $((came >> 20)) MiB were there (e2e/pre-lora-a $at_swap); e2e/pre-lora-b whole ${b_ms:-never} ms after; e2e/pre-lora-a then $first, 5 s on $second"
+  echo "prefetch yields: styled's slot swapped when its row said $((came >> 20)) MiB were there (e2e/pre-lora-a $at_swap); e2e/pre-lora-b whole ${b_ms:-never} ms after; e2e/pre-lora-a then $first, 15 s on $second"
   [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-lora-a went on coming after styled's slot named e2e/pre-lora-b: $first, then $second"
   J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-lora-a is whole on stand-p though styled's slot was swapped as it came: $second"
   pre_ready "$P" styled stand-p 60 || true
