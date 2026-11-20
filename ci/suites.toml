@@ -163,7 +163,8 @@ executors = ["crates/tensord/src/machine/**", "crates/tensord/src/gpu_service.rs
 local-code = ["crates/calcifer/src/local_code*", "crates/calcifer/src/local_code/**", "crates/calcifer/src/checkout.rs",
   "crates/calcifer/src/rc.rs", "crates/calcifer/src/floor*", "crates/tensord/src/local_source.rs", "crates/tensord/src/trees.rs",
   "crates/tensord/src/published*", "crates/tensord/src/calls.rs", "crates/tensord/src/child_launcher.rs",
-  "crates/calcifer/src/rentals.rs", "e2e/cli/source.sh", "e2e/cli/rental.sh", "e2e/cli/relay/**", "e2e/cli/returned-media/**"]
+  "crates/calcifer/src/rentals.rs", "crates/calcifer/src/store.rs", "e2e/cli/source.sh", "e2e/cli/rental.sh", "e2e/cli/relay/**",
+  "e2e/cli/returned-media/**"]
 ondemand = ["crates/tensord/src/ahead.rs", "crates/tensord/src/runs*", "crates/tensord/src/runs/**", "crates/tensord/src/line.rs",
   "crates/tensord/src/queue.rs", "crates/tensord/src/held_models.rs", "crates/tensorfs/src/fetch/**", "crates/needs/**",
   "e2e/cli/ondemand.sh", "e2e/cli/slow_proxy.py"]
