@@ -16,6 +16,10 @@
 #           built, it stays `built` and never reads as failed (44660502447: a GPU load tried beside the holder, and failed).
 #   back    this build: as `after` up to q `built` with its weights in RAM; a program then takes the host's free memory a while,
 #           and what q held in RAM is given back, nothing ended (its executor still holds it built).
+#   h3-before / h3-after  the RC's TensorD / this build: an H3 Shot box (`minimax-h3/generate`, a composite: its models are
+#           its segment's, which its rules pick) from the packages checkout `tree`; the RC leaves it `ready`, this build builds its
+#           segment at level ram (`built`) and stages it. Rendered, each one's time until its denoise loop could begin is
+#           fixtures/cold-load/table.py's `ready` (cold-load's measure), with its executor start, construction and LoRA bake.
 # A render's time until inference starts is its stages before its first denoising step (and that stage's loads), against its bound:
 # its bytes over PCIe from RAM, or the larger of over the disk and over PCIe from disk: PCIe at the pod's own ceiling
 # (`tensorfs.ceiling`), the disk as read past the page cache here (`dd iflag=direct`). Each arm's boxes have seeds of their own: the
@@ -26,11 +30,33 @@
 #   arms     which arms run, in this order (default "free before after disk yield hold back")
 #   yield_gb what the other program holds of the GPU in yield (default 6)
 #   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
+#   tree     the packages_refs checkout H3 runs from (`-f packages_refs=pk=<ref>`, tree pk), for the h3 arms: a dev home
+#   shot     the H3 Shot's beats (default one 5 s beat: "shorter is quadratically faster"; the load is the same)
 . "$(dirname "$0")/lib.sh"
 ARMS=" $(param arms 'free before after disk yield hold back') " YIELD_GB=$(param yield_gb 6)
 HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
+arm() { [[ $ARMS == *" $1 "* ]]; }
+QWEN=false; for a in free before after disk yield back; do arm "$a" && QWEN=true; done
+H3=false; { arm h3-before || arm h3-after; } && H3=true
+SHOT=$(param shot '[{"description":"[Shot 1]\nA paper boat drifts down a rain-filled gutter past glowing shop windows at night. The camera follows at street level as drops ripple the water.","duration":5}]')
+if [ "$H3" = true ]; then
+  TREE=$(param tree '')
+  [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/minimax-h3/pyproject.toml" ] || fail "the h3 arms run H3 from a packages checkout: -f packages_refs=pk=<ref>, params.tree pk"
+  SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
+  # A dev home, its first-party packages from the checkout; Calcifer started again on it (load-ahead.sh).
+  cfg=$HOME/.cozy/config.toml
+  mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
+  { echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+  awk -v source="$SOURCE" '
+    function ours() { print "diagnostics = true"; print "packages = \"" source "\""; put = 1 }
+    /^(diagnostics|packages) *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
+    "$cfg" > "$cfg.next" && mv "$cfg.next" "$cfg" || fail "[calcifer] not written"
+  cozy restart > "$OUT/restart-calcifer.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart-calcifer.txt")"
+  kernels "$SOURCE/minimax-h3"
+  say "a dev home, minimax-h3 $(grep -m1 '^version' "$SOURCE/minimax-h3/pyproject.toml") from the checkout $TREE"
+fi
 PROMPT="a red lighthouse on a cliff at dusk, waves below, photo"
 Q_FIELDS() { jq -nc --arg p "$PROMPT" --argjson s "$1" --argjson up "${2:-false}" '{instructions: $p, turbo: false, prompt_upsampling: $up, megapixels: 1, aspect_ratio: "1:1", seed: $s}'; }
 P_FIELDS() { jq -nc --argjson s "$1" '{prompt: "a brass compass on a walnut desk", seed: $s}'; }
@@ -169,9 +195,12 @@ called() {
   record "$1"
 }
 
-# Both models' weights onto the pod by a call of each, then the pod's ceilings (a call has measured them this boot).
-step fetch-q run "$TOOL" --on "$NAME" instructions="$PROMPT" turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first $TOOL"
-step fetch-p run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=1 || fail "the first $OTHER"
+# The models' weights onto the pod by a call of each, then the pod's ceilings (a call has measured them this boot).
+if [ "$QWEN" = true ]; then
+  step fetch-q run "$TOOL" --on "$NAME" instructions="$PROMPT" turbo:=false prompt_upsampling:=false megapixels:=1 aspect_ratio=1:1 seed:=1 || fail "the first $TOOL"
+  step fetch-p run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" seed:=1 || fail "the first $OTHER"
+fi
+[ "$H3" = false ] || step fetch-h3 run "$SOURCE/minimax-h3/generate" "beats:=$SHOT" turbo:=true seed:=1 --on "$NAME" || fail "the first H3 Shot"
 CEILING='import glob, json, os, subprocess
 for py in sorted(glob.glob("/var/lib/cozy/tensord/generations/*/env/bin/python"), key=os.path.getmtime, reverse=True) + ["python3"]:
     out = subprocess.run([py, "-c", "import json, tensorfs; c = tensorfs.ceiling(device=0); print(json.dumps({\"disk_gbps\": c.disk_gbps, \"disk_direct\": c.disk_direct, \"h2d_gbps\": c.h2d_gbps}))"], capture_output=True, text=True)
@@ -187,8 +216,6 @@ DISK_GBPS=$(python3 -c "import sys; b, s, e = map(float, sys.argv[1:4]); print(r
 jq --argjson d "${DISK_GBPS:-0}" '. + {disk_direct_read_gbps: $d}' "$OUT/ceiling.json" > "$OUT/ceiling.json.new" && mv "$OUT/ceiling.json.new" "$OUT/ceiling.json"
 say "ceilings: $(cat "$OUT/ceiling.json"); $(meminfo)"
 
-# arm <name>: whether it runs.
-arm() { [[ $ARMS == *" $1 "* ]]; }
 Q_BYTES=0 HELD=0 DURING=0
 # free: q alone on a free GPU loads ahead as before.
 if arm free; then
@@ -321,10 +348,35 @@ say "back: the program ended ($(cat "$OUT/hog.txt")): q $(item "$Q_ID" stage), $
 [ "$(cozy machine show "$NAME" --json | jq -r .status.phase)" = ready ] || fail "back: $NAME isn't ready after the program"
 [ "$(item "$Q_ID" stage)" = built ] || fail_if "back: q's executor didn't keep it built through the program ($(item "$Q_ID" stage))"
 fi
+# h3 <arm> <bin> <version> <seed>: an H3 Shot box predicted onto the pod, then rendered; its record a cold-load cell.
+h3() {
+  tensord "$2" "$3" "$1"
+  evict "$1"
+  project "$1"
+  run_page add shot --tool minimax-h3/generate --fields "$(jq -nc --arg b "$SHOT" --argjson s "$4" '{beats: ($b | fromjson), turbo: true, seed: $s}')" \
+    > "$OUT/box-$1.json" 2>&1 || fail "$1: the shot box: $(tail -c 300 "$OUT/box-$1.json")"
+}
+if arm h3-before; then
+  h3 h3-before "$RC_BIN" "$RC_V" 61
+  until_item -none ready h3-before
+  sleep 20
+  say "h3-before: shot $(item "$ID" stage) 20 s later; $(meminfo)"
+  render h3-before shot
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' h3-before rc h3 disk denoise run-h3-before.json step2 >> "$OUT/cold-load.tsv"
+fi
+if arm h3-after; then
+  h3 h3-after "$(command -v cozy)" "$WANT" 71
+  until_item -none 'built|loaded' h3-after
+  until_held "$ID" h3-after
+  say "h3-after: $(meminfo)"
+  render h3-after shot
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' h3-after this h3 ram denoise run-h3-after.json step2 >> "$OUT/cold-load.tsv"
+fi
+
 close; unhold; kill $BG 2> /dev/null; BG=''
 collect
 
-grep -aE "stage ahead|load ahead|first step|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
+grep -aE "stage ahead|load ahead|loads ahead as|first step|queue: goes after|planned in|what it needs is here|items admitted" "$OUT/tensord.log" | cut -c1-360 | tee -a "$R" > "$OUT/ahead.log"
 # Each render: its time until inference starts (its stages before the first with denoising steps) against its bound.
 python3 -I - "$OUT" "$Q_BYTES" "$HELD" "$DURING" <<'PY' | tee -a "$R" > "$OUT/summary.json"
 import json, sys
@@ -374,6 +426,13 @@ again = next((l for l in lines if "stage ahead: its weights into RAM" in l and a
 print(f"yield: stage stopped {stop.split()[0]}; the call's first step {first and first.split()[0]}; the stage again {again and again.split()[0]}")
 sys.exit(0 if first and (again is None or at(again) >= at(first)) else 1)
 PY2
+if [ "$H3" = true ]; then
+  python3 -I "$(dirname "$0")/fixtures/cold-load/table.py" "$OUT" > "$OUT/h3-table.txt" 2> "$OUT/h3-table.err" || fail_if "h3: table.py: $(tail -c 300 "$OUT/h3-table.err")"
+  grep '^{' "$OUT/h3-table.txt" | jq -c '{label, ready_s, bound_s, x, executor_s, construct_s, on_demand_s, bake_host_s, bake_device_s, to_step1_s, need_gb, gpu_gb, calls}' | tee -a "$R" > "$OUT/h3.json"
+  grep -q "loads ahead as the calls its rules pick" "$OUT/ahead.log" || fail_if "h3: its list item wasn't prepared as its segment call"
+  ! { arm h3-before && arm h3-after; } || [ "$(jq -s 'map({(.label): .ready_s}) | add | .["h3-after"] < .["h3-before"]' "$OUT/h3.json")" = true ] ||
+    fail_if "h3: the Shot started no sooner than before"
+fi
 ! { arm after && arm disk; } || jq -e '.renders.after.until_inference_s < .renders.disk.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "disk: the built executor reading the disk started no later than reading RAM: the stage bought nothing"
 [ "$RC" = 0 ] && say "PASS: a predicted box the GPU couldn't take was staged in RAM, its render's load read RAM; a free GPU loaded ahead; the RAM went back"
