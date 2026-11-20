@@ -5,7 +5,7 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
     python load.py <mode> <args>   (TENSORFS_HOME: the machine's store)
 
   ceiling                TensorFS's own ceilings: disk GB/s of the store's volume, pinned H2D GB/s to GPU 0
-  ceiling-empty          the disk probe of a TensorFS home that holds no weights, beside the store
+  ceiling-empty          `tensorfs.ceiling(device=0)` from a shell with no TENSORFS_HOME: a home of a few small files
   evict <ck>...          the checkpoints' chunk files out of the page cache
   disk <ck>...           the disk itself, no TensorFS: the checkpoints' chunk files read O_DIRECT on a grid of threads and
                          request sizes (each on files no other read touched), then buffered from an empty page cache
@@ -13,9 +13,8 @@ so this follows io-fault.sh; the same models also run through `cozy run`.
                          a whole-resident load the way the Runtime binds one (cr-318): one Region a block, every block's
                          Source over its stored parts, all filled by one `varena.fill`; from disk (evicted), then from RAM.
                          `alone`: then each Region by its own `use`, in order (a fill ahead of demand, a demand fill)
-  policy <ck> <comps> <other cks> full|tight
-                         where a load's bytes end up: the page cache full of other weights (`tight`: memory pinned too,
-                         until the cache could hold half the load), then the load from disk and the same load again
+  policy <ck> <comps>    where a load's bytes end up: the page cache filled to the container's number with other bytes,
+                         then the load from disk and the same load again
   paged <ck> <comp>      a paged model's host tier: its blocks' pages read ahead from disk into pinned RAM (`Pages.read_ahead`),
                          each read whole into pinned RAM by its Source (`read_host`), then filled onto the card from those pages
 
@@ -263,6 +262,9 @@ class Card:
         self.stream.synchronize()
         took = time.perf_counter() - began
         rows = self.pages.drain()
+        self.pages.request_ended()  # its store reads become `stats()["store_reads"]`: (set, block, O_DIRECT, cached, ns)
+        reads = self.pages.stats()["store_reads"]
+        past, through = sum(r[2] for r in reads), sum(r[3] for r in reads)
         by: dict[str, list[float]] = {}
         for _set, _block, nbytes, origin, _ahead, ns, _at in rows:
             row = by.setdefault(origin, [0, 0, 0])
@@ -271,6 +273,7 @@ class Card:
             row[2] += 1
         out = {"blocks": len(chosen), "gb": round(total / GB, 2), "s": round(took, 3), "gb_s": round(total / took / GB, 2),
                "together_s": round(together, 3), "alone": len(alone), "refused": refused,
+               "o_direct_gb": round(past / GB, 2), "through_cache_gb": round(through / GB, 2),
                "rows": {k: {"gb": round(v[0] / GB, 2), "read_s": round(v[1] / 1e9, 3), "n": int(v[2])} for k, v in by.items()}}
         del uses, alone, regions
         gc.collect()
@@ -374,43 +377,65 @@ def memory() -> dict[str, int]:
             "file": int(stat.get("file", stat.get("cache", -1))), "anon": int(stat.get("anon", stat.get("rss", -1)))}
 
 
-def policy(ckids: str, comps: Sequence[str], others: Sequence[str], tight: bool) -> dict[str, object]:
-    """Where a load's bytes end up (cl-1318): the page cache filled first with other weights' bytes, so memory nothing
-    holds is gone but clean cache can give way; `tight`, memory held besides until the cache could hold only half of
-    the load. Then the load from disk, how much of it the cache holds after, and the same load again (a fresh
-    executor's): from memory where the first read kept it, else from disk."""
-    import numpy as np
-
+def policy(ckids: str, comps: Sequence[str]) -> dict[str, object]:
+    """Where a load's bytes end up (cl-1318): the page cache first filled to the container's number with other bytes
+    (written and synced, so clean: the kernel can take them back), so memory nothing holds is gone. Then the load from
+    disk, the share of it the cache holds after, and the same load again (a fresh executor's): from memory where the
+    first read kept it, else from disk again."""
     ck = pick(ckids, comps)
     files = chunk_files([ck.id])  # type: ignore[attr-defined]
-    mine = {p for p, _ in files}
-    other = [f for f in chunk_files(others) if f[0] not in mine]
     blocks = blocks_of(ck, comps)
     card = Card()
     limit = card.room() - (2 << 30)
-    load = sum(placed(p)[1] for _, p in blocks)
-    report: dict[str, object] = {"checkpoint": ck.id, "load_gb": round(load / GB, 2), "tight": tight}  # type: ignore[attr-defined]
-    held = None
-    if tight:
-        m = memory()
-        # Only against a container's number (a host's whole RAM is no number to press), leaving TensorD 10 GiB.
-        if m["limit"] > 128 << 30:
-            return {**report, "error": f"no container memory number to press against ({m['limit'] / GB:.0f} GB)"}
-        pin = max(0, m["limit"] - m["anon"] - load // 2 - (10 << 30))
+    m = memory()
+    report: dict[str, object] = {"checkpoint": ck.id, "load_gb": round(sum(placed(p)[1] for _, p in blocks) / GB, 2),  # type: ignore[attr-defined]
+                                 "number_gb": round(m["limit"] / GB, 1)}
+    if m["limit"] > 128 << 30:
+        return {**report, "error": f"no container number to fill ({m['limit'] / GB:.0f} GB): the case needs a pod with one"}
+    filler = os.path.join(store(), "tmp", "tfs-bound-filler")
+    os.makedirs(filler, exist_ok=True)
+    try:
+        evict(files)
+        want, chunk, n = m["limit"] - max(m["charged"], 0) + (2 << 30), memoryview(os.urandom(1 << 20) * 64), 0
         began = time.perf_counter()
-        # Touched anonymous memory: no swap on a pod, so the kernel can't take it back, as a pinned host tier's.
-        # (Torch's pinned allocator rounds a request up to a power of two: past the number.)
-        held = np.ones(pin, np.uint8) if pin else None
-        report["held_gb"] = {"gb": round(pin / GB, 2), "s": round(time.perf_counter() - began, 1)}
-    evict(files)
-    report["other_read"] = read_grid(other, 8, 4 << 20, False) if other else None
-    report["memory_before"] = {k: round(v / GB, 2) for k, v in memory().items()}
-    report["cold"] = card.fill(card.sources(ck, blocks, "policy-cold", False), "policy-cold", limit)
-    report["cached_after_cold"] = cached_share(files)
-    report["again"] = card.fill(card.sources(ck, blocks, "policy-again", False), "policy-again", limit)
-    report["memory_after"] = {k: round(v / GB, 2) for k, v in memory().items()}
-    del held
+        while n < want:
+            with open(os.path.join(filler, f"{n >> 30}"), "wb") as f:
+                for _ in range(16):
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+            n += 1 << 30
+        report["filler"] = {"gb": round(n / GB, 1), "s": round(time.perf_counter() - began, 1)}
+        report["memory_before"] = {k: round(v / GB, 2) for k, v in memory().items()}
+        report["cold"] = card.fill(card.sources(ck, blocks, "policy-cold", False), "policy-cold", limit)
+        report["cached_after_cold"] = cached_share(files)
+        report["again"] = card.fill(card.sources(ck, blocks, "policy-again", False), "policy-again", limit)
+        report["memory_after"] = {k: round(v / GB, 2) for k, v in memory().items()}
+    finally:
+        for name in os.listdir(filler):
+            os.remove(os.path.join(filler, name))
     return report
+
+
+def ceiling_empty() -> dict[str, object]:
+    """`tensorfs.ceiling(device=0)` as a shell calls it with no TENSORFS_HOME: a home of a few small files (its own
+    table, a header), in a process of its own, so nothing kept answers for the volume."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(store())) as home:
+        root = os.path.join(home, ".cache", "tensorfs")
+        os.makedirs(os.path.join(root, "tmp", "ceilings"))
+        for i in range(3):
+            with open(os.path.join(root, f"small-{i}"), "wb") as f:
+                f.write(os.urandom(4096))
+        env = {k: v for k, v in os.environ.items() if k != "TENSORFS_HOME"} | {"HOME": home}
+        code = "import json, tensorfs; c = tensorfs.ceiling(device=0); print(json.dumps({'disk_gbps': c.disk_gbps, 'disk_direct': c.disk_direct}))"
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=600)
+        try:
+            return {"home": root, **json.loads(done.stdout.strip().splitlines()[-1])}
+        except (ValueError, IndexError):
+            return {"home": root, "error": done.stderr[-400:]}
 
 
 def memcpy(threads: int, each: int = 256 << 20, rounds: int = 8) -> float:
@@ -439,6 +464,10 @@ def ceiling() -> dict[str, object]:
 
 
 def main() -> None:
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))  # a grid read holds every file of a checkpoint open
     mode, args = sys.argv[1], sys.argv[2:]
     import tensorfs
 
@@ -448,14 +477,7 @@ def main() -> None:
         if mode == "ceiling":
             out.update(ceiling())
         elif mode == "ceiling-empty":
-            # A TensorFS home with no weights in it (a shell's own, `tensorfs.ceiling(device=0)` from it): its probe.
-            import tempfile
-
-            import tensorfs
-
-            with tempfile.TemporaryDirectory(dir=os.path.dirname(store())) as home:
-                c = tensorfs.ceiling(0, home)
-                out.update({"home": home, "disk_gbps": c.disk_gbps, "disk_direct": c.disk_direct})
+            out.update(ceiling_empty())
         elif mode == "evict":
             files = chunk_files(args)
             evict(files)
@@ -465,7 +487,7 @@ def main() -> None:
         elif mode == "fill":
             out.update(fill(args[0], args[1].split(","), float(args[2]) if len(args) > 2 else 2.0, "alone" in args[3:]))
         elif mode == "policy":
-            out.update(policy(args[0], args[1].split(","), args[2].split(","), args[3] == "tight"))
+            out.update(policy(args[0], args[1].split(",")))
         elif mode == "paged":
             out.update(paged(args[0], args[1], float(args[2]) if len(args) > 2 else 2.0))
         else:
