@@ -9,6 +9,9 @@
 #           all its bytes in the page cache) before its render.
 #   disk    this build: as `after`, then the page cache dropped just before Render: the same built executor reading the disk, so
 #           what the stage itself buys is after against disk.
+#   yield   this build: an SDXL call sent cold while q is being staged (q can't fit beside another program holding `yield_gb`
+#           of the GPU), against the same cold call with nothing staging (yield-control): a stage reads no disk from the call's
+#           dispatch to its first step, so the call starts no later (TensorD's log: the stage stopped, and went on after).
 #   back    this build: as `after` up to q `built` with its weights in RAM; a program then takes the host's free memory a while,
 #           and what q held in RAM is given back, nothing ended (its executor still holds it built).
 # A render's time until inference starts is its stages before its first denoising step (and that stage's loads), against its bound:
@@ -18,10 +21,11 @@
 #   before   a dev-build run id whose cozy is the RC's (required)
 #   tool, other  the boxes' tools (default qwen-image-2/image, sdxl/generate)
 #   wait_s   how long a box may take to reach its stage (default 600)
-#   arms     which arms run, in this order (default "free before after disk back")
+#   arms     which arms run, in this order (default "free before after disk yield back")
+#   yield_gb what the other program holds of the GPU in yield (default 6)
 #   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
 . "$(dirname "$0")/lib.sh"
-ARMS=" $(param arms 'free before after disk back') "
+ARMS=" $(param arms 'free before after disk yield back') " YIELD_GB=$(param yield_gb 6)
 HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
@@ -146,8 +150,21 @@ render() {
   [ -n "$n" ] || fail "$1: the render's run: $(head -c 300 "$OUT/runs-$1.json")"
   (cd "$RUN_PROJECT" && cozy --json run watch "$n" --once --full) > "$OUT/run-$1.json" 2>&1 || fail "$1: run $n unread"
   [ "$(jq -r '.memo.memoized // false' "$OUT/run-$1.json")" = false ] || fail "$1: the call memo answered its render: it never ran"
+  record "$1"
+}
+# record <arm>: its run's record (run-<arm>.json) as a report: its stages and its weights' bytes.
+record() {
   jq -c --arg arm "$1" '{arm: $arm, run: .number, status, memoized: (.memo.memoized // false), accepted_to_started_ms: (.started_at_ms - .accepted_at_ms),
+    bytes: ((.measurements.weights.has // 0) + (.measurements.weights.needs // 0)),
     stages: [.report.measured[0].stages[]? | {name, ms: (.ms | floor), steps: (.steps != null)}]}' "$OUT/run-$1.json" | tee -a "$R" > "$OUT/report-$1.json"
+}
+# called <arm> <seed>: the other tool called cold on the pod (`cozy run`, no box), its record kept.
+called() {
+  step "$1" run "$OTHER" --on "$NAME" prompt="a brass compass on a walnut desk" "seed:=$2" || fail "$1: the call"
+  local n; n=$(runno "$1")
+  (cd "$RUN_PROJECT" && cozy --json run watch "$n" --once --full) > "$OUT/run-$1.json" 2>&1 || fail "$1: run $n unread"
+  [ "$(jq -r '.memo.memoized // false' "$OUT/run-$1.json")" = false ] || fail "$1: the call memo answered it: it never ran"
+  record "$1"
 }
 
 # Both models' weights onto the pod by a call of each, then the pod's ceilings (a call has measured them this boot).
@@ -221,6 +238,26 @@ say "disk: q $(item "$Q_ID" stage), $(item "$Q_ID" done) bytes in RAM now"
 render disk q
 fi
 
+if arm yield; then
+  # Its control: the call cold with nothing staging.
+  tensord "$(command -v cozy)" "$WANT" yield-control
+  evict yield-control
+  HOLD_GB=$YIELD_GB hold yield-control
+  called yield-control 81
+  # The same call sent the moment q's stage reads.
+  tensord "$(command -v cozy)" "$WANT" yield
+  evict yield
+  project yield
+  HOLD_GB=$YIELD_GB hold yield
+  run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 83)" > "$OUT/box-yield.json" 2>&1 || fail "yield: q: $(tail -c 300 "$OUT/box-yield.json")"
+  # Its stage begins with its build at level ram (`loading`, into RAM) and goes on beside it: the call goes at the first sign.
+  t=0; until [[ $(item -none stage) =~ ^(loading|staging|built)$ ]]; do sleep 0.2; t=$((t + 1)); [ "$t" -lt 600 ] || fail "yield: q's stage never began: $(tail -1 "$OUT/status.ndjson" | cut -c1-400)"; done
+  say "yield: q is $(item -none stage), $(item -none done) of $(item -none total) bytes in RAM: the call is sent"
+  called yield 82
+  until_item -none 'built|staged' yield
+  say "yield: after the call, q $(item "$ID" stage) with $(item "$ID" done) bytes in RAM"
+fi
+
 # back: q built at level ram and its weights in RAM, then a program takes the host's free memory a while.
 if arm back; then
 staged back "$(command -v cozy)" "$WANT" 40
@@ -278,16 +315,18 @@ c = json.load(open(f"{out}/ceiling.json"))
 disk, h2d = (c.get("disk_direct_read_gbps") or 0) * 1e9, (c.get("h2d_gbps") or 0) * 1e9
 bound = {"ram": q / h2d, "disk": max(q / disk, q / h2d)} if disk and h2d else {}
 rows = {}
-for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram"), ("disk", "disk")):
+for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram"), ("disk", "disk"), ("yield-control", "disk"), ("yield", "disk")):
     try:
         r = json.load(open(f"{out}/report-{arm}.json"))
     except OSError:
         continue
+    b_ = r.get("bytes") or q
+    own = {"ram": b_ / h2d, "disk": max(b_ / disk, b_ / h2d)} if disk and h2d else {}
     first = next((i for i, s in enumerate(r["stages"]) if s["steps"]), len(r["stages"]))
     stepped = r["stages"][first]["name"] if first < len(r["stages"]) else None
     before = [s for i, s in enumerate(r["stages"]) if i < first or (stepped and s["name"].startswith(stepped + " / loading"))]
     tui = sum(s["ms"] for s in before) / 1000
-    b = bound.get(frm)
+    b = own.get(frm)
     rows[arm] = {"run": r["run"], "from": frm, "memoized": r.get("memoized"), "until_inference_s": round(tui, 2), "bound_s": b and round(b, 2),
                  "multiple": b and round(tui / b, 2), "stages": {s["name"]: s["ms"] for s in before}}
 print(json.dumps({"q_bytes": q, "ceiling": c, "bounds_s": {k: round(v, 2) for k, v in bound.items()}, "renders": rows,
@@ -299,6 +338,10 @@ grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level
 ! { arm before && arm after; } || jq -e '.renders.after.until_inference_s < .renders.before.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "after: no sooner than before"
 ! arm back || [ "${DURING:-0}" -lt "$HELD" ] || fail_if "back: q's RAM wasn't given back ($DURING of $HELD)"
+# A stage reads no disk while a call loads: the call sent mid-stage starts no later than its control, within the 5% that is noise.
+! arm yield || jq -e '.renders.yield.until_inference_s <= .renders["yield-control"].until_inference_s * 1.05' "$OUT/summary.json" > /dev/null ||
+  fail_if "yield: the call sent mid-stage started later than with nothing staging"
+! arm yield || grep -q "stage ahead: .*stopped" "$OUT/ahead.log" || fail_if "yield: no stage stopped for the call"
 ! { arm after && arm disk; } || jq -e '.renders.after.until_inference_s < .renders.disk.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "disk: the built executor reading the disk started no later than reading RAM: the stage bought nothing"
 [ "$RC" = 0 ] && say "PASS: a predicted box the GPU couldn't take was staged in RAM, its render's load read RAM; a free GPU loaded ahead; the RAM went back"

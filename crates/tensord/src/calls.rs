@@ -683,6 +683,8 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
             }
         }
         (None, Some(position), Some(ms)) => {
+            // Past its loads: a stage may read beside it now (cl-1318).
+            crate::gpu_service::stepped(engine, id);
             if seen.steps.0 != frame.stage {
                 seen.steps = (frame.stage.clone(), 0, vec![]);
             }

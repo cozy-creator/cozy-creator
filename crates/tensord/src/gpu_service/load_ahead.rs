@@ -24,6 +24,25 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// The calls on a GPU that reported a step, by run (`stepped`): past their loads. Until its first step a call reads its weights,
+/// and a stage shares the disk with none (cl-1318: a stage that went on beside a call's cold load slowed the load it was for).
+static STEPPED: std::sync::LazyLock<Mutex<BTreeSet<String>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// Run `id` reported a step (`calls::observe`): a stage may read beside it now, so the load step looks again.
+pub(crate) fn stepped(engine: &Engine, id: &str) {
+    let mut stepped = STEPPED.lock().unwrap();
+    if !stepped.contains(id) {
+        stepped.insert(id.to_owned());
+        drop(stepped);
+        engine.notify_activity();
+    }
+}
+
+/// Run `id` left its GPU.
+pub(crate) fn unstepped(id: &str) {
+    STEPPED.lock().unwrap().remove(id);
+}
+
 /// Whom an executor served last: an actor, and its local private project.
 pub(super) type Scope = (String, Option<String>);
 
@@ -296,12 +315,26 @@ impl Pool {
         self.stage_next(engine, &items) || changed
     }
 
-    /// The first listed item no GPU has taken, whose weights are here, read into RAM (`crate::stage`), one at a time and never while
-    /// a call waits for a GPU (it reads its own weights ahead): within the host number's room (what may still be held: clean cache
-    /// isn't held, so this displaces only cache) less what the items listed before it hold there. One that ended whole or short
-    /// stands; one a call stopped goes on later. Whether one began.
-    fn stage_next(self: &Arc<Self>, engine: &Arc<Engine>, items: &[Arc<Item>]) -> bool {
+    /// A real call reads its weights now: one waits for a GPU (it reads ahead meanwhile), or one is on a GPU and hasn't reported a
+    /// step. A stage reads only when none does, by construction: an idle I/O class is no order under the `none` scheduler most NVMe
+    /// disks use. It still reads beside another call's steps.
+    fn loading_call(&self, engine: &Engine) -> bool {
         if gpu_request_queued(engine, None) {
+            return true;
+        }
+        let mut stepped = STEPPED.lock().unwrap();
+        let lanes = self.lanes.lock().unwrap();
+        // A run off any GPU here (a CPU call's steps) is no one's to keep.
+        stepped.retain(|id| lanes.contains_key(id));
+        lanes.keys().any(|id| !stepped.contains(id))
+    }
+
+    /// The first listed item no GPU has taken, whose weights are here, read into RAM (`crate::stage`), one at a time and never while
+    /// a real call reads its weights (`loading_call`; one that starts stops it at its next chunk): within the host number's room
+    /// (what may still be held: clean cache isn't held, so this displaces only cache) less what the items listed before it hold
+    /// there. One that ended whole or short stands; one a call stopped goes on later. Whether one began.
+    fn stage_next(self: &Arc<Self>, engine: &Arc<Engine>, items: &[Arc<Item>]) -> bool {
+        if self.loading_call(engine) {
             return false;
         }
         let mut before = 0u64;
@@ -327,7 +360,11 @@ impl Pool {
             }
             let room = move |cached: u64| varena_ledger::host::budget().room().saturating_sub(i64::try_from(before.saturating_add(cached)).unwrap_or(i64::MAX));
             let (listed, pool, woken) = (Arc::downgrade(item), Arc::downgrade(self), Arc::downgrade(engine));
-            let live = move || listed.strong_count() > 0;
+            let (looks, wakes) = (Arc::downgrade(self), Arc::downgrade(engine));
+            let live = move || {
+                let calls = |pool: Arc<Pool>| wakes.upgrade().is_some_and(|engine| !pool.loading_call(&engine));
+                listed.strong_count() > 0 && looks.upgrade().is_some_and(calls)
+            };
             let (caller, construction) = (item.predicted.caller.clone(), item.predicted.plan.construction.clone());
             let ended = move |stage: &crate::stage::Stage| {
                 let (read, ms) = (stage.read(), stage.took_ms());
@@ -421,10 +458,12 @@ impl Pool {
         drop(loading);
         let lane = start..start + degree;
         match level {
-            // Its load reads the disk now: a stage of it would read the same chunks beside it.
+            // Its load reads the disk now, ahead of any stage (one of it would read the same chunks beside it); they go on after.
             Level::Gpu => {
-                if let Some(stage) = item.state.lock().unwrap().staged.as_ref().filter(|stage| !stage.ended()) {
-                    stage.stop();
+                for listed in self.ahead.items.lock().unwrap().iter() {
+                    if let Some(stage) = listed.state.lock().unwrap().staged.as_ref().filter(|stage| !stage.ended()) {
+                        stage.stop();
+                    }
                 }
                 item.hold_back("");
             }
