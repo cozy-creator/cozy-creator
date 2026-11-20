@@ -875,6 +875,9 @@ case $SHARD in
   plan-resent) parts="plan_resent logs" ;;
   # A capability redemption the Hub never answers: each attempt said, then an anonymous read (cl-1189). Its own shard for a dispatch.
   grants) parts="grant_silent logs" ;;
+  # A project's upload right after its run, under a capability no read redeemed yet (cl-1083's quantize outside; 44636417703: its
+  # renewal never found the project's run, so a late first look ended it unredeemed). Its own shard, dispatched as many times as asked.
+  quantize-outside) parts="quantize_outside logs" ;;
   # A busy machine's runs ahead in its quote, replayed on two stand-ins that say only their Status (cl-1107): a few minutes.
   # A machine with an estimate wins over one with none, and with none anywhere a job is still placed, its time unknown (cl-1279).
   queue) parts="plan_queue plan_unknown logs" ;;

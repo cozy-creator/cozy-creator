@@ -112,6 +112,7 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       hub_fixture: ${{ steps.select.outputs.hub_fixture }}
       publish: ${{ steps.select.outputs.publish }}
+      capability: ${{ steps.select.outputs.capability }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -167,6 +168,7 @@ jobs:
             [ -n "$PACKAGES_REF" ] || { echo "::error::suite publish publishes packages_ref's candidates: give packages_ref"; exit 1; }
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
+          if [[ ,$SUITES, == *,capability,* ]]; then echo "capability=true" >> "$GITHUB_OUTPUT"; else echo "capability=false" >> "$GITHUB_OUTPUT"; fi
           echo "gates: $(jq -r 'map(.sku + " (" + .suite + ")") | join(", ")' <<< "$matrix")"
 
   # Publication tests have their own database, object store and development account.
@@ -175,7 +177,7 @@ jobs:
   # installed and one function run from it (release-gate/suites/publish/run.sh).
   hub-fixture:
     needs: select
-    if: inputs.rent && (needs.select.outputs.hub_fixture == 'true' || needs.select.outputs.publish == 'true')
+    if: inputs.rent && (needs.select.outputs.hub_fixture == 'true' || needs.select.outputs.publish == 'true' || needs.select.outputs.capability == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -275,11 +277,31 @@ jobs:
           mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
           bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --admin --out "$RUNNER_TEMP/publish" "${args[@]}" \
             --command creator/release-gate/suites/publish/run.sh -- "$GITHUB_WORKSPACE/packages" "$ONLY"
+      # Suite capability: a project's run on this computer's machine past its run capability's token (release-gate/suites/capability).
+      - name: A long project run under its capability
+        if: ${{ !cancelled() && steps.prep.outcome == 'success' && needs.select.outputs.capability == 'true' }}
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
+          bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --admin --out "$RUNNER_TEMP/capability" "${args[@]}" \
+            --command creator/release-gate/suites/capability/run.sh
       - if: always()
         uses: ./creator/e2e/publish
         with:
           name: hub-fixture
           path: ${{ runner.temp }}/hub-fixture
+          retention-days: 14
+      - if: always() && needs.select.outputs.capability == 'true'
+        uses: ./creator/e2e/publish
+        with:
+          name: capability
+          path: ${{ runner.temp }}/capability
           retention-days: 14
       - if: always() && needs.select.outputs.publish == 'true'
         uses: ./creator/e2e/publish
