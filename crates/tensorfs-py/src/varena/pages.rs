@@ -1,7 +1,9 @@
 //! The host tier: weight pages in pinned host RAM, stored, baked or cast, so a refill is one DMA
 //! and no store read or bake. One per GPU. Process lifetime, never on disk, each page once, within
-//! half of the host's RAM and beyond a headroom (`Tier::look`). The tier follows use, not arrival:
-//! a page is worth its refills per request, and only pages worth less make room for it.
+//! half of varena's host number (the tightest bound on this process's memory: a container's or an
+//! executor's limit, else the computer's) and beyond a headroom (`Tier::look`). The tier follows
+//! use, not arrival: a page is worth its refills per request, and only pages worth less make room
+//! for it.
 //!
 //! A page enters as it is read: a refill of stored bytes is read into a page the tier admits, and
 //! onto the card from there (`keeping`), so what a loop streams is read from the store once. A
@@ -212,6 +214,8 @@ struct State {
     unread: bool,
     /// What stays free, as the last look decided it.
     headroom: i64,
+    /// The most bytes of pages kept, as the last look decided it (`Tier::look`).
+    cap: u64,
     /// The host stalled on memory at the last look (a shared machine): `host_memory::Stall`.
     pressed: bool,
     looked: Option<Instant>,
@@ -263,7 +267,8 @@ struct State {
 
 pub(super) struct Tier {
     device: i32,
-    cap: u64,
+    /// A cap the caller set, in place of half of the host number.
+    fixed_cap: Option<u64>,
     /// A person's computer: the headroom is its reserve, read at each look (`look`).
     shared: bool,
     state: Mutex<State>,
@@ -367,11 +372,10 @@ impl State {
 }
 
 impl Tier {
-    /// This GPU's tier, within `cap` (half of physical memory by default), in the host's ledger page.
+    /// This GPU's tier, within `cap` (half of the host number by default), in the host's ledger page.
     pub(super) fn new(device: i32, cap: Option<u64>, shared: bool) -> Arc<Self> {
-        let cap = cap.unwrap_or(u64::try_from(host_memory::total()).unwrap_or(0) / 2);
         let tier = Arc::new(Self {
-            device, cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
+            device, fixed_cap: cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), making: Arc::default(), freeing: Arc::default(),
             stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
@@ -486,8 +490,11 @@ impl Tier {
 
     /// What stays free beside pinned pages: the number's headroom (`Budget::headroom`). On a
     /// person's computer (`shared`), while the host stalls on memory: no pins, and a sixteenth of
-    /// the number more.
+    /// the number more. The cap: half of the number, so pinned pages leave the other half to the
+    /// page cache and working memory. Half of physical memory instead let a 30 GiB container's tier
+    /// pin past what the container holds.
     fn look(&self, state: &mut State, budget: &Budget) {
+        state.cap = self.fixed_cap.unwrap_or_else(|| u64::try_from(budget.total).unwrap_or(0) / 2);
         state.pressed = self.shared && host_memory::stall().pressed();
         let stalled = if state.pressed { (budget.total / 16).max(512 << 20) } else { 0 };
         state.headroom = budget.headroom + stalled;
@@ -575,13 +582,13 @@ impl Tier {
     /// Short of the headroom for `bytes` more while the cap allows them, over the number or under it:
     /// idle peers are asked.
     fn ask_room(&self, state: &State, bytes: i64) {
-        if !state.unread && state.room - bytes < state.headroom && state.bytes as i64 + bytes <= self.cap as i64 {
+        if !state.unread && state.room - bytes < state.headroom && state.bytes as i64 + bytes <= state.cap as i64 {
             super::host::short((state.headroom + bytes - state.room) as u64);
         }
     }
 
     fn fits(&self, state: &State, bytes: i64) -> bool {
-        !state.pressed && state.bytes as i64 + bytes <= self.cap as i64 && state.room - bytes >= state.headroom
+        !state.pressed && state.bytes as i64 + bytes <= state.cap as i64 && state.room - bytes >= state.headroom
     }
 
     /// Whether a page of `bytes` that is no weight (a retained region's) may pin now, within the
@@ -796,7 +803,7 @@ impl Tier {
 
     /// Whether `bytes` more kept bytes stay within the cap.
     fn under_cap(&self, state: &State, bytes: u64) -> bool {
-        state.bytes + bytes <= self.cap
+        state.bytes + bytes <= state.cap
     }
 
     /// `page` holds `key`'s stored bytes, read for a refill: kept.
@@ -1348,9 +1355,9 @@ impl PyPages {
             .map(|row| (row.set, row.block, row.bytes, row.origin, row.ahead, row.ns, row.at_ms)).collect()
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pages, bytes, room, wanted, pin_failed, off, headroom, pressed, reserved, reserved_ahead, reads, let_go) = {
+        let (pages, bytes, room, cap, wanted, pin_failed, off, headroom, pressed, reserved, reserved_ahead, reads, let_go) = {
             let state = self.tier.state();
-            (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
+            (state.kept.len(), state.bytes, state.room, state.cap, state.wanted.len(), state.pin_failed, state.off.clone(),
                 state.headroom, state.pressed, state.reserved.len(), state.reserved_ahead, state.last_reads.clone(),
                 state.let_go.clone())
         };
@@ -1363,7 +1370,7 @@ impl PyPages {
         row.set_item("pages", pages)?;
         row.set_item("bytes", bytes)?;
         row.set_item("room", room)?;
-        row.set_item("cap", self.tier.cap)?;
+        row.set_item("cap", cap)?;
         row.set_item("headroom", headroom)?;
         row.set_item("pressed", pressed)?;
         row.set_item("pinned", off.is_none())?;
