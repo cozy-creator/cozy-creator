@@ -12,6 +12,8 @@
 #   yield   this build: an SDXL call sent cold while q is being staged (q can't fit beside another program holding `yield_gb`
 #           of the GPU), against the same cold call with nothing staging (yield-control): a stage reads no disk from the call's
 #           dispatch to its first step, so the call starts no later (TensorD's log: the stage stopped, and went on after).
+#   hold    this build: q alone, another program holding `yield_gb` of the GPU (the card could hold q, its free memory can't):
+#           built, it stays `built` and never reads as failed (44660502447: a GPU load tried beside the holder, and failed).
 #   back    this build: as `after` up to q `built` with its weights in RAM; a program then takes the host's free memory a while,
 #           and what q held in RAM is given back, nothing ended (its executor still holds it built).
 # A render's time until inference starts is its stages before its first denoising step (and that stage's loads), against its bound:
@@ -21,11 +23,11 @@
 #   before   a dev-build run id whose cozy is the RC's (required)
 #   tool, other  the boxes' tools (default qwen-image-2/image, sdxl/generate)
 #   wait_s   how long a box may take to reach its stage (default 600)
-#   arms     which arms run, in this order (default "free before after disk yield back")
+#   arms     which arms run, in this order (default "free before after disk yield hold back")
 #   yield_gb what the other program holds of the GPU in yield (default 6)
 #   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
 . "$(dirname "$0")/lib.sh"
-ARMS=" $(param arms 'free before after disk yield back') " YIELD_GB=$(param yield_gb 6)
+ARMS=" $(param arms 'free before after disk yield hold back') " YIELD_GB=$(param yield_gb 6)
 HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
@@ -261,6 +263,19 @@ if arm yield; then
   say "yield: after the call, q $(item "$ID" stage) with $(item "$ID" done) bytes in RAM"
 fi
 
+if arm hold; then
+  tensord "$(command -v cozy)" "$WANT" hold
+  evict hold
+  project hold
+  HOLD_GB=$YIELD_GB hold hold
+  run_page add q --tool "$TOOL" --fields "$(Q_FIELDS 91)" > "$OUT/box-hold.json" 2>&1 || fail "hold: q: $(tail -c 300 "$OUT/box-hold.json")"
+  until_item -none built hold
+  sleep 20
+  HELD_STAGE=$(item "$ID" stage) HELD_WHY=$(item "$ID" reason)
+  say "hold: 20 s later q is $HELD_STAGE: $HELD_WHY"
+  [ "$HELD_STAGE" = built ] && [[ $HELD_WHY != *failed* ]] || fail_if "hold: q didn't stay built ($HELD_STAGE: $HELD_WHY)"
+fi
+
 # back: q built at level ram and its weights in RAM, then a program takes the host's free memory a while.
 if arm back; then
 staged back "$(command -v cozy)" "$WANT" 40
@@ -336,7 +351,7 @@ print(json.dumps({"q_bytes": q, "ceiling": c, "bounds_s": {k: round(v, 2) for k,
                   "back": {"held": held, "during": during}}, indent=1))
 PY
 grep -q "stage ahead: .* in RAM in" "$OUT/ahead.log" || fail_if "no stage ahead in this build's TensorD log"
-! { arm after || arm disk || arm back; } || grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level ram in this build's TensorD log"
+! { arm after || arm disk || arm hold || arm back; } || grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level ram in this build's TensorD log"
 ! arm free || jq -e '.renders.free.until_inference_s < 1' "$OUT/summary.json" > /dev/null || fail_if "free: the loaded render's first step waited on a load"
 ! { arm before && arm after; } || jq -e '.renders.after.until_inference_s < .renders.before.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "after: no sooner than before"

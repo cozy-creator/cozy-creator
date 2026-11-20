@@ -104,6 +104,9 @@ struct ItemState {
     staged: Option<Arc<crate::stage::Stage>>,
     /// Built at level `ram` by this executor: its GPU couldn't hold it whole.
     in_ram: Option<u32>,
+    /// Built at level `ram`, its GPU load failed with this much free on its GPU (another process held the rest): it waits, built,
+    /// until more is free, and never reads as failed for it.
+    gpu_short: Option<u64>,
 }
 
 struct Loading {
@@ -433,7 +436,14 @@ impl Pool {
             }).collect()
         };
         let mut short = None;
-        let gpu = fit(Level::Gpu, &mut short);
+        let mut gpu = fit(Level::Gpu, &mut short);
+        let freed = |start: &usize| self.free(&(*start..*start + degree));
+        if let Some(was) = item.state.lock().unwrap().gpu_short.filter(|_| self.in_ram(item)) {
+            gpu.retain(|start| freed(start).is_some_and(|free| free > was));
+            if gpu.is_empty() {
+                short.get_or_insert_with(|| format!("built, its GPU load waits for more than the {} it had free", gib(was)));
+            }
+        }
         let short = short.unwrap_or_else(|| "no GPU here serves it".into());
         // Its GPU can't hold it whole now: its executor and models are built at level `ram`, once, beside what holds the room.
         let (level, fits) = match gpu.is_empty() {
@@ -532,6 +542,13 @@ impl Pool {
                     "ms": ms, "need": item.need, "held": held, "built": item.predicted.build, "free_before": free}));
             }
             Err(_) if halted.is_some() => {}
+            // Built at level `ram`, it stays built: what holds the GPU's memory isn't its to take, so it waits for more room.
+            Err(why) if level == Level::Gpu && self.in_ram(item) => {
+                tracing::info!(run = %caller, "load ahead: built, its GPU load waits for room ({why}, {} free)", free.map_or("?".into(), gib));
+                let mut state = item.state.lock().unwrap();
+                state.gpu_short = Some(free.unwrap_or(0));
+                state.held_back = format!("built; on its GPU once it has the room ({why})");
+            }
             Err(why) => {
                 tracing::warn!(run = %caller, "load ahead: {why}");
                 self.notes.note(serde_json::json!({"event": "load_ahead_failed", "run": caller, "plan": construction, "why": why}));
@@ -593,7 +610,10 @@ impl Pool {
                 continue;
             }
             let sessions = self.sessions.lock().unwrap();
-            let holders: Vec<&Session> = sessions.values().filter(|session| session.degree != 0 && session.lane().contains(&device)).collect();
+            // Its own executor (built at level `ram`) holds no memory its load could take: only another's models are room.
+            let holders: Vec<&Session> = (sessions.values())
+                .filter(|session| session.degree != 0 && session.lane().contains(&device) && session.loaded.keys().any(|loaded| loaded != own))
+                .collect();
             let theirs = holders.iter().any(|session| session.user.as_ref().is_some_and(|user| *user != scope));
             let kept = holders.iter().any(|session| session.loaded.keys().any(|loaded| loaded != own && (listed.contains(loaded) || warm.contains(loaded))));
             // Every idle one there is the item's to take (an idle executor says what it holds only once asked): what the card
