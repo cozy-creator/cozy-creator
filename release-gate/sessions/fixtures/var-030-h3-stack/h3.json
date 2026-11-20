@@ -1,0 +1,145 @@
+{
+  "need_s": 13000,
+  "max_failures": 8,
+  "order": "one-way",
+  "floor_mb_s": 100,
+  "compare": [
+    [
+      "a-1440",
+      "b-1440"
+    ]
+  ],
+  "cells": [
+    {
+      "name": "a-1440",
+      "tree": "rc",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip5}",
+        "to=1440p",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "update": {
+        "runtime": "44629282533",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "tensord": true,
+        "gpu_memory_limit": "off"
+      }
+    },
+    {
+      "name": "b-1440",
+      "tree": "se",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip5}",
+        "to=1440p",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "update": {
+        "runtime": "44639451556",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "gpu_memory_limit": "off"
+      }
+    },
+    {
+      "name": "h3-up-2160p-15s",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip15}",
+        "to=2160p",
+        "strength:=0.909",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "max_s": 2100,
+      "tree": "se",
+      "update": {
+        "runtime": "44639451556",
+        "tensorfs": "https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.28.0/tensorfs-0.28.0.dev3529+g021df0f9-cp311-abi3-manylinux_2_28_x86_64.whl",
+        "gpu_memory_limit": "6GiB"
+      },
+      "keep_state": true
+    },
+    {
+      "name": "h3-up-2160p-5s",
+      "target": "minimax-h3/upscale",
+      "args": [
+        "--file",
+        "video={clip5}",
+        "to=2160p",
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing"
+      ],
+      "max_s": 2100,
+      "tree": "se",
+      "unless": "h3-up-2160p-15s"
+    },
+    {
+      "name": "h3-gen-full-fbcache",
+      "target": "minimax-h3/generate",
+      "args": [
+        "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\"}]",
+        "turbo:=false",
+        "quality=draft",
+        "seed:=30031"
+      ],
+      "max_s": 1200,
+      "tree": "se"
+    },
+    {
+      "name": "h3-gen-full-easycache",
+      "target": "minimax-h3/generate",
+      "args": [
+        "beats:=[{\"description\":\"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\",\"duration\":15}]",
+        "turbo:=false",
+        "quality=full",
+        "seed:=30003"
+      ],
+      "max_s": 1800,
+      "tree": "se"
+    },
+    {
+      "name": "h3-gen-refs12",
+      "target": "minimax-h3/generate",
+      "args": [
+        "summary=A quiet harbour at dusk, with <P1>, <P2>, <P3>, <P4>, <P5>, <P6>, <P7>, <P8>, <P9>, moving as in <V1>, <V2> and <V3>.",
+        "beats:=[{\"description\":\"<P1> walks along the quay past <P2> while the camera pans slowly; gulls, water, footsteps.\",\"duration\":15}]",
+        "references:=[{\"name\":\"P1\",\"image\":\"{pic1}\"},{\"name\":\"P2\",\"image\":\"{pic2}\"},{\"name\":\"P3\",\"image\":\"{pic3}\"},{\"name\":\"P4\",\"image\":\"{pic4}\"},{\"name\":\"P5\",\"image\":\"{pic5}\"},{\"name\":\"P6\",\"image\":\"{pic6}\"},{\"name\":\"P7\",\"image\":\"{pic7}\"},{\"name\":\"P8\",\"image\":\"{pic8}\"},{\"name\":\"P9\",\"image\":\"{pic9}\"},{\"name\":\"V1\",\"video\":\"{clip5}\"},{\"name\":\"V2\",\"video\":\"{clip5}\"},{\"name\":\"V3\",\"video\":\"{clip5}\"}]",
+        "quality=full",
+        "seed:=30001"
+      ],
+      "max_s": 1500,
+      "tree": "se"
+    },
+    {
+      "name": "h3-edit-hardest",
+      "target": "minimax-h3/edit",
+      "args": [
+        "--file",
+        "plate={clip15}",
+        "edit=character_swap",
+        "summary=<Hero> stands in the scene.",
+        "references:=[{\"name\":\"Hero\",\"image\":\"{pic1}\"}]",
+        "beats:=[{\"description\":\"<Hero> replaces the subject and follows its motion.\",\"duration\":15}]",
+        "quality=full",
+        "seed:=30007"
+      ],
+      "max_s": 2100,
+      "tree": "se"
+    },
+    {
+      "name": "s6-h3i",
+      "tree": "se",
+      "target": "minimax-h3-image/generate",
+      "max_s": 1500,
+      "args": [
+        "instructions=One wide photo that joins <L1>, <L2>, <L3> and <L4> into a single panorama",
+        "references:=[{\"name\":\"L1\",\"image\":\"{long}\"},{\"name\":\"L2\",\"image\":\"{long}\"},{\"name\":\"L3\",\"image\":\"{long}\"},{\"name\":\"L4\",\"image\":\"{long}\"}]",
+        "megapixels:=20",
+        "seed:=30071",
+        "prompt_upsampling:=false"
+      ]
+    }
+  ]
+}

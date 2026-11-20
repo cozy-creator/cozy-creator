@@ -52,6 +52,7 @@
 #              `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
+#              "unless" (optional: runs only if that cell did not complete);
 #              "max_s" (optional: its run is canceled this long in and said UNFINISHED, not failed; a compared pair
 #              with an UNFINISHED cell compares nothing);
 #              "host_free_gib" (optional: for this cell a root shell's program holds the pod's host RAM but this many GiB
@@ -177,6 +178,8 @@ NEED=$(param need_s 3600)
 [ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
 quote "$NEED"
 rent
+# The host bounds TensorD's executors meet (W5's number is the tightest on their path): every memory.max under the root.
+say "host bounds: $(cozy machine ssh "$NAME" 'echo "MemAvailable $(awk "/^MemAvailable/ {print \$2 * 1024}" /proc/meminfo)"; for f in /sys/fs/cgroup/memory.max $(find /sys/fs/cgroup -mindepth 2 -maxdepth 6 -name memory.max 2> /dev/null | head -40); do v=$(cat "$f" 2> /dev/null); [ "$v" = max ] || [ -z "$v" ] || echo "${f#/sys/fs/cgroup}=$v"; done' < /dev/null 2> /dev/null | grep -v '^Warning' | paste -sd' ')"
 # A dev home on an RC build moves its rental to the RC's builds once it's ready: no cell starts before that ends.
 cozy machine show "$NAME" --json > "$OUT/show-rc.json" 2> /dev/null
 if [ -n "$(jq -r '.rc.state // empty' "$OUT/show-rc.json")" ]; then
@@ -444,9 +447,12 @@ cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(s
   "$OUT/$1.json" 2>/dev/null; }
 printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$OUT/states.tsv"
 fails=0 memoized=0
-declare -A MADE=() SEEN=() ASKED=()
+declare -A MADE=() SEEN=() ASKED=() ENDED=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
+  # unless: the cell runs only if that cell did not complete (a default after its hardest)
+  u=$(jq -r '.unless // empty' <<<"$c")
+  if [ -n "$u" ] && [ "${ENDED[$u]:-}" = completed ]; then say "$k: not run: $u completed"; continue; fi
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
     a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{depth\}/$PICS/depth.png}; a=${a//\{digits\}/$DIGITS}; a=${a//\{long\}/$LONG}; a=${a//\{clip5\}/$OUT/clip5.mp4}; a=${a//\{clip15\}/$OUT/clip15.mp4}
@@ -527,7 +533,7 @@ for k in "${names[@]}"; do
   cd "$OUT" || fail "no $OUT"
   held "$k" after
   cozy machine logs "$NAME" -n 0 > "$OUT/$k-tensord.log" 2>&1
-  st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
+  st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}; ENDED[$k]=$st
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   say "$k has/needs/extras: $(jq -c '[.measurements.weights?, (.calls[]? | select(.measurements.weights? != null) | {(.function // "call"): .measurements.weights})] | map(select(. != null))' "$OUT/$k.json" 2>/dev/null)"
