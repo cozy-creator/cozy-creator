@@ -148,11 +148,11 @@ said: dict[str, object] = {"mode": mode}
 if mode == "drop":
     os.sync()
     try:
-        with open("/proc/sys/vm/drop_caches", "w") as f:
-            f.write("1\n")
+        with open("/proc/sys/vm/drop_caches", "w") as out:
+            out.write("1\n")
         said["drop_caches"] = "done"
-    except OSError as e:
-        said["drop_caches"] = f"refused: {e.strerror}"
+    except OSError as err:
+        said["drop_caches"] = f"refused: {err.strerror}"
     n = 0
     for f in store_files() + (files(DERIVED) if os.path.isdir(DERIVED) else []):
         try:
@@ -171,8 +171,8 @@ elif mode == "forget":
                                      and "/generations/" not in dp and "/editable/" not in dp]
     for d in [DERIVED, f"{GPU}/peaks"] + memos:
         if os.path.isdir(d):
-            for e in os.listdir(d):
-                p = os.path.join(d, e)
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
                 shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
             gone.append(d)
     said["cleared"] = sorted(set(gone))

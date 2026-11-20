@@ -260,7 +260,7 @@ def main() -> None:
         rows.append(row(label, arm, model, condition, loop, rest[0] if rest else "step2", recs[label], hots.get((arm, model), {}),
                         load(os.path.join(d, census)) if census else {}))
         if strays.get(label):
-            rows[-1].setdefault("flaws", []).append(f"stray runs on the pod: {', '.join(map(str, arr(strays[label])))}")
+            rows[-1]["flaws"] = arr(rows[-1].get("flaws")) + [f"stray runs on the pod: {', '.join(map(str, arr(strays[label])))}"]
     for r in rows:
         print(json.dumps(r))
     print()
