@@ -5,7 +5,8 @@
 # forward's top token at the prompt's end and its rope delta (the largest logit difference told).
 # Then on the pod, real Qwen3.5-9B on the q8_0 and int8.convrot lanes, each lane:
 #   cold      a short text call until the engine serves it (its kernel set landed);
-#   inputs    the CPU check on the GPU;
+#   inputs    the CPU check on the GPU, with a text prompt as long as the picture's beside the media cases, and Transformers'
+#             own spread (its head on every row; eager attention) and the vision tower's output against Transformers' own;
 #   pictures  the engine's decoder on a picture, a picture in an earlier turn, a short video and text, as one bucket of four rows
 #             (four rope deltas) and each alone, drafted and plain, every row against Transformers' teacher-forced reference with
 #             the pixel values at every clear position (both its one-pass forward and its own cached decode lead by 0.5 with
@@ -65,8 +66,11 @@ inputs() {
     { tail -c 2000 "$OUT/$1.txt" | tee -a "$R"; FAILED+=("$1"); return; }
   record "$1"; detail "$1"
   say "$1: $(jq -c . "$OUT/$1-detail.json" 2> /dev/null | cut -c1-1500)"
+  for c in picture earlier video text; do
+    say "$1 $c: $(jq -c --arg c "$c" '.[$c] | {tokens, delta, ours, ours_3, chunked, reference_all, eager, features, features_in_embeds, tower}' "$OUT/$1-detail.json" 2> /dev/null | cut -c1-900)"
+  done
   jq -e '.engine == "CozyEngine" and ([.[] | objects | select(.media_tokens != null)] | length == 3 and
-         all(.whole_top_same and .chunked_top_same and .delta == .their_delta))' "$OUT/$1-detail.json" > /dev/null 2>&1 ||
+         all(.ours.top_same and .chunked.top_same and .delta == .their_delta))' "$OUT/$1-detail.json" > /dev/null 2>&1 ||
     { say "FAILED: $1: a case's top token or rope delta isn't Transformers'"; FAILED+=("$1"); }
 }
 # The CPU check, on this runner's own machine with the candidates: what a $0 pre-flight is for.

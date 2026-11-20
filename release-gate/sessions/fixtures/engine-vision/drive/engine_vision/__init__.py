@@ -53,15 +53,25 @@ def _video() -> Watched:
     return Watched(frames, [0.25 + 0.5 * i for i in range(4)])
 
 
-def _cases(photo: Image.Image) -> dict[str, Question]:
-    """A picture; a picture in an earlier turn; a short video; text alone."""
+#: About a thousand tokens of plain English: a text prompt as long as a picture's (the picture's 1024 tokens and its words).
+LONG = " ".join([
+    "The lighthouse stood at the end of a long stone pier, its white tower streaked with rust where the iron rail met the "
+    "wall. Every evening the keeper climbed the spiral stairs, counted the steps out of habit, and wiped the salt from the "
+    "great lens before lighting the lamp. Ships passing in the dark never saw him, only the slow sweep of the beam across "
+    "the water, but the fishermen in the harbour town said they could set their clocks by it."
+] * 11)
+
+
+def _cases(photo: Image.Image, long: bool = False) -> dict[str, Question]:
+    """A picture; a picture in an earlier turn; a short video; text alone (with `long`, about as long as the picture's)."""
+    text = f"{LONG}\n\nSay in two sentences what this passage describes." if long else "Name three colours and say one thing about each."
     return {
         "picture": Question(parts=[photo, "Describe this picture in two sentences."]),
         "earlier": Question(text="What was in the photograph? Answer in two sentences.", turns=[
             Turn("user", [photo, "Remember this photograph."]), Turn("assistant", ["I will."]),
         ]),  # fmt: skip
         "video": Question(parts=[_video(), "What happens in this video?"]),
-        "text": Question(text="Name three colours and say one thing about each."),
+        "text": Question(text=text),
     }
 
 
@@ -140,39 +150,102 @@ def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], media: ob
     return torch.stack(rows).cpu()
 
 
+def _apart(a: torch.Tensor, b: torch.Tensor) -> dict[str, object]:
+    """Two reads of the same logits (or features): their largest and mean difference, and whether their tops agree."""
+    d = (a.float() - b.float()).abs()
+    return {"max": round(float(d.max()), 4), "mean": round(float(d.mean()), 5), "top_same": int(a.argmax()) == int(b.argmax())}
+
+
 @app.entrypoint()
 def inputs(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
-    """Each case's prompt as CozyEngine reads and encodes it, through the language model's own forward (whole, and 64
-    tokens at a time with Transformers' cache), against Transformers' forward of the same processor inputs: the largest
-    difference of the last position's logits, whether their top tokens agree, and the rope delta against Transformers'."""
+    """Each case's prompt (a picture, one in an earlier turn, a video, and text about as long as the picture's) as
+    CozyEngine reads and encodes it, through the language model's own forward, against Transformers' forward of the same
+    processor inputs at the prompt's last position (`reference`: its head on that row alone, as ours), each as max and
+    mean logit difference and top agreement:
+    - `ours`: the engine's prefill (embeddings, positions `[4, 1, L]`), whole; `ours_3`: the same with the three M-RoPE
+      rows alone, as Transformers' forward passes them; `chunked`: ours 64 tokens at a time with Transformers' cache;
+    - Transformers' own spread: `reference_all` (its head on every row, as the earlier check read it) and `eager` (its
+      forward with eager attention in place of its own, language model and vision tower alike).
+    `features`: the vision tower's output in the engine's encode against Transformers' forward's (a hook on the tower),
+    and under eager attention; `tower`: each call's attention implementation and dtypes. Also the rope delta."""
     from transformers import DynamicCache
 
     net, engine = model.pipe.components["model"], model.engine
-    rows: dict[str, object] = {"engine": type(engine).__name__, "device": str(net.device)}
-    for case, question in _cases(payload.image.read()).items():
-        prompts, media = engine._read([question], _params(8))  # type: ignore[attr-defined]  # CozyEngine's
-        (prompt,), (row,) = prompts, media
-        if row is None:
-            rows[case] = {"tokens": len(prompt), "media": False}
-            continue
-        (prompted,) = engine._encoded(prompts, media)  # type: ignore[attr-defined]  # as above
-        ids = torch.tensor([prompt], device=net.device)
-        with torch.inference_mode():
-            reference = net(input_ids=ids, **_media_kwargs(row, 0)).logits[0, -1].float()
-            theirs = int(net.model.rope_deltas.reshape(-1)[0])
-            text = torch.arange(len(prompt), device=net.device)[None]
-            at = torch.cat([text, prompted.positions])[:, None]
-            whole = net.lm_head(net.get_decoder()(inputs_embeds=prompted.embeds[None], position_ids=at).last_hidden_state[0, -1:])[0].float()
-            cache = DynamicCache(config=net.config.get_text_config(decoder=True))
-            for c0 in range(0, len(prompt), 64):
-                y = net.get_decoder()(inputs_embeds=prompted.embeds[None, c0 : c0 + 64], position_ids=at[..., c0 : c0 + 64],
-                                      past_key_values=cache, use_cache=True).last_hidden_state  # fmt: skip
-            chunked = net.lm_head(y[0, -1:])[0].float()
-        rows[case] = {
-            "tokens": len(prompt), "media_tokens": int((row.kinds != 0).sum()), "delta": prompted.delta, "their_delta": theirs,
-            "whole_max_diff": float((whole - reference).abs().max()), "whole_top_same": int(whole.argmax()) == int(reference.argmax()),
-            "chunked_max_diff": float((chunked - reference).abs().max()), "chunked_top_same": int(chunked.argmax()) == int(reference.argmax()),
-        }  # fmt: skip
+    visual = net.model.visual
+    calls: list[dict[str, object]] = []
+    outs: list[torch.Tensor] = []
+
+    def seen(module: torch.nn.Module, args: tuple[object, ...], out: object) -> None:
+        pooled = getattr(out, "pooler_output", None)
+        pooled = torch.cat(list(pooled)) if isinstance(pooled, (tuple, list)) else pooled
+        first = args[0] if args else None
+        calls.append({"attn": str(getattr(module.config, "_attn_implementation", "?")),
+                      "pixels": str(getattr(first, "dtype", "?")), "weights": str(next(module.parameters()).dtype),
+                      "out": str(getattr(pooled, "dtype", "?"))})  # fmt: skip
+        if isinstance(pooled, torch.Tensor):
+            outs.append(pooled.detach().clone())
+
+    handle = visual.register_forward_hook(seen)
+    implementation = str(net.config._attn_implementation)
+    rows: dict[str, object] = {"engine": type(engine).__name__, "device": str(net.device), "attn": implementation,
+                               "text_attn": str(net.config.get_text_config(decoder=True)._attn_implementation)}  # fmt: skip
+    try:
+        for case, question in _cases(payload.image.read(), long=True).items():
+            prompts, media = engine._read([question], _params(8))  # type: ignore[attr-defined]  # CozyEngine's
+            (prompt,), (row,) = prompts, media
+            ids = torch.tensor([prompt], device=net.device)
+            outs.clear()
+            calls.clear()
+            with torch.inference_mode():
+                if row is not None:
+                    (prompted,) = engine._encoded(prompts, media)  # type: ignore[attr-defined]  # as above
+                    embeds, positions, delta = prompted.embeds, prompted.positions, prompted.delta
+                else:  # text: the token embeddings at text positions, as a text prompt's prefill reads them
+                    embeds = net.get_input_embeddings()(ids)[0]
+                    positions, delta = torch.arange(len(prompt), device=net.device).expand(3, -1), 0
+                encoded = list(outs)
+                kwargs = _media_kwargs(row, 0)
+                reference = net(input_ids=ids, logits_to_keep=1, **kwargs).logits[0, -1]
+                theirs = int(net.model.rope_deltas.reshape(-1)[0]) if row is not None else 0
+                forwarded = list(outs[len(encoded):])
+                reference_all = net(input_ids=ids, **kwargs).logits[0, -1]
+                text = torch.arange(len(prompt), device=net.device)[None]
+                at = torch.cat([text, positions])[:, None]
+                decoder, head = net.get_decoder(), net.lm_head
+                ours = head(decoder(inputs_embeds=embeds[None], position_ids=at).last_hidden_state[0, -1:])[0]
+                ours_3 = head(decoder(inputs_embeds=embeds[None], position_ids=positions[:, None]).last_hidden_state[0, -1:])[0]
+                cache = DynamicCache(config=net.config.get_text_config(decoder=True))
+                for c0 in range(0, len(prompt), 64):
+                    y = decoder(inputs_embeds=embeds[None, c0 : c0 + 64], position_ids=at[..., c0 : c0 + 64],
+                                past_key_values=cache, use_cache=True).last_hidden_state  # fmt: skip
+                chunked = head(y[0, -1:])[0]
+                eager: dict[str, object] = {}
+                try:
+                    net.set_attn_implementation("eager")
+                    before = len(outs)
+                    eager_logits = net(input_ids=ids, logits_to_keep=1, **kwargs).logits[0, -1]
+                    eager = _apart(eager_logits, reference)
+                    if row is not None and len(outs) > before and forwarded:
+                        eager["features"] = _apart(outs[before], forwarded[0])
+                except Exception as exc:  # told, and the rest stands
+                    eager = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+                finally:
+                    net.set_attn_implementation(implementation)
+            found: dict[str, object] = {
+                "tokens": len(prompt), "delta": delta, "their_delta": theirs,
+                "ours": _apart(ours, reference), "ours_3": _apart(ours_3, reference), "chunked": _apart(chunked, reference),
+                "reference_all": _apart(reference_all, reference), "eager": eager,
+            }  # fmt: skip
+            if row is not None:
+                found["media_tokens"] = int((row.kinds != 0).sum())
+                kinds = row.kinds[0] != 0
+                if encoded and forwarded:
+                    found["features"] = _apart(torch.cat(encoded), torch.cat(forwarded))
+                    found["features_in_embeds"] = _apart(embeds[kinds], torch.cat(forwarded).to(embeds.dtype))
+                found["tower"] = list(calls)
+            rows[case] = found
+    finally:
+        handle.remove()
     return Agreement(json.dumps(rows))
 
 
@@ -194,7 +267,7 @@ def pictures(ctx: Context, payload: Pictured, model: VisionLM) -> Agreement:
         time.sleep(1)
     if paths.launcher and paths.replayed:
         raise RuntimeError(f"this driver runs neither launch path: {paths.launcher}; {paths.replayed}")
-    cases = _cases(payload.image.read())
+    cases = _cases(payload.image.read(), long=True)
     names = list(cases)
     read = [engine._read([q], _params(8)) for q in cases.values()]  # type: ignore[attr-defined]  # CozyEngine's
     prompts = [p for (ps, _) in read for p in ps]
