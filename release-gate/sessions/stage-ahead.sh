@@ -7,6 +7,8 @@
 #           fits q beside p alone, by 0.23 GB: 44636453479), then `q`, which the GPU can't take beside them (`ready`); q rendered.
 #   after   this build: the same; q's executor and models are built at level ram beside p, and its weights read into RAM (`built`,
 #           all its bytes in the page cache) before its render.
+#   disk    this build: as `after`, then the page cache dropped just before Render: the same built executor reading the disk, so
+#           what the stage itself buys is after against disk.
 #   back    this build: as `after` up to q `built` with its weights in RAM; a program then takes the host's free memory a while,
 #           and what q held in RAM is given back, nothing ended (its executor still holds it built).
 # A render's time until inference starts is its stages before its first denoising step (and that stage's loads), against its bound:
@@ -16,10 +18,10 @@
 #   before   a dev-build run id whose cozy is the RC's (required)
 #   tool, other  the boxes' tools (default qwen-image-2/image, sdxl/generate)
 #   wait_s   how long a box may take to reach its stage (default 600)
-#   arms     which arms run, in this order (default "free before after back")
+#   arms     which arms run, in this order (default "free before after disk back")
 #   hold_gb  what the other program holds of the GPU in before, after and back (default 1.5)
 . "$(dirname "$0")/lib.sh"
-ARMS=" $(param arms 'free before after back') "
+ARMS=" $(param arms 'free before after disk back') "
 HOLD_GB=$(param hold_gb 1.5) TOOL=$(param tool qwen-image-2/image) OTHER=$(param other sdxl/generate) WAIT=$(param wait_s 600) BEFORE=$(param before '') BEGAN=$(date +%s)
 [ -n "$BEFORE" ] || fail "before: a dev-build run id of the RC's cozy"
 fail_if() { say "FAIL: $*"; RC=1; }
@@ -209,6 +211,16 @@ say "after: $(meminfo)"
 render after q
 fi
 
+if arm disk; then
+staged disk "$(command -v cozy)" "$WANT" 50
+until_item "-$P_ID" built disk
+Q_ID=$ID
+until_held "$Q_ID" disk
+evict disk
+say "disk: q $(item "$Q_ID" stage), $(item "$Q_ID" done) bytes in RAM now"
+render disk q
+fi
+
 # back: q built at level ram and its weights in RAM, then a program takes the host's free memory a while.
 if arm back; then
 staged back "$(command -v cozy)" "$WANT" 40
@@ -218,7 +230,7 @@ until_held "$Q_ID" back
 HELD=$(item "$Q_ID" done)
 HOG='import os, sys, time
 def room():
-    # The tightest limit on this process's path, as TensorD reads it: a shell can be inside the machine's own number (44640195326).
+    # The tightest limit on the path of this process, as TensorD reads it: a shell can be inside the number of the machine (44640195326).
     m = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in open("/proc/meminfo")}
     a = m["MemAvailable"]
     path = open("/proc/self/cgroup").read().strip().split("::")[-1]
@@ -266,7 +278,7 @@ c = json.load(open(f"{out}/ceiling.json"))
 disk, h2d = (c.get("disk_direct_read_gbps") or 0) * 1e9, (c.get("h2d_gbps") or 0) * 1e9
 bound = {"ram": q / h2d, "disk": max(q / disk, q / h2d)} if disk and h2d else {}
 rows = {}
-for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram")):
+for arm, frm in (("free", "loaded"), ("before", "disk"), ("after", "ram"), ("disk", "disk")):
     try:
         r = json.load(open(f"{out}/report-{arm}.json"))
     except OSError:
@@ -287,4 +299,6 @@ grep -q "built at level ram" "$OUT/ahead.log" || fail_if "no load ahead at level
 ! { arm before && arm after; } || jq -e '.renders.after.until_inference_s < .renders.before.until_inference_s' "$OUT/summary.json" > /dev/null ||
   fail_if "after: no sooner than before"
 ! arm back || [ "${DURING:-0}" -lt "$HELD" ] || fail_if "back: q's RAM wasn't given back ($DURING of $HELD)"
+! { arm after && arm disk; } || jq -e '.renders.after.until_inference_s < .renders.disk.until_inference_s' "$OUT/summary.json" > /dev/null ||
+  fail_if "disk: the built executor reading the disk started no later than reading RAM: the stage bought nothing"
 [ "$RC" = 0 ] && say "PASS: a predicted box the GPU couldn't take was staged in RAM, its render's load read RAM; a free GPU loaded ahead; the RAM went back"
