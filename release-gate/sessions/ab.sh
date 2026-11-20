@@ -91,7 +91,8 @@ for p in $(pgrep -f cozy_runtime.internal.executor); do echo "== py-spy $p"; [ -
 for p in $(pgrep -f cozy_runtime.internal.executor); do r=$(tr "\\0" " " < "/proc/$p/cmdline" | sed -n "s/.*--root \\([^ ]*\\).*/\\1/p")
   [ -z "$r" ] || [ ! -f "$r/stderr.log" ] || { echo "== stderr $p ($r)"; tail -c 30000 "$r/stderr.log" | tr "\\r" "\\n" | grep -v "it/s\\]$" | tail -120; }; done
 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv'
-# {pic1}..{pic16} and {digits}: cap-sweep's 2048x2048 pictures and its 65,000-character prompt, made the same way.
+# {pic1}..{pic16} and {digits}: cap-sweep's 2048x2048 pictures and its 65,000-character prompt, made the same way;
+# {digits:N} its first N groups (a prompt of a chosen length, with no text in the params).
 PICS=$OUT/pics FX=$(cd "$(dirname "$0")/../suites/bench/fixtures" && pwd)
 if jq -e 'any(.[].args[]?; contains("{pic"))' <<<"$CELLS" > /dev/null; then
   mkdir -p "$PICS"; SRC=("$REF/seed.jpg" "$FX/lighthouse.jpg" "$FX/teapot.jpg")
@@ -284,6 +285,7 @@ for k in "${names[@]}"; do
   FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
     a=${args[$i]//\{ref\}/$REF}; a=${a//\{clip\}/$CLIP}; a=${a//\{digits\}/$DIGITS}
+    while [[ $a =~ \{digits:([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/${DIGITS:0:$((BASH_REMATCH[1] * 4 - 1))}}; done
     while [[ $a =~ \{pic([0-9]+)\} ]]; do a=${a//"${BASH_REMATCH[0]}"/$PICS/pic${BASH_REMATCH[1]}.jpg}; done
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
       [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
