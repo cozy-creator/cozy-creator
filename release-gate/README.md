@@ -34,6 +34,7 @@ A session written for one issue's proof is deleted by the PR that closes the iss
 | `inputs` | each package's largest inputs, the LM-heavy ones again at an 8 GiB cap (cr-279); the suite the `*-ab.sh` hooks ride on | rtx-5060-ti, rtx-5090 |
 | `h3`, `runtime` | minimax-h3's generate, edit and upscale at their edges; H3's video VAE and latent upscaler at their stored times (`h3-vae`, `h3-upscaler`) | rtx-4090, rtx-5090 |
 | `hub` | TensorHub's deploy check: its contract, the account and one `cpu` pod per provider | cpu |
+| `capability` | $0, on a runner: a project's run on this computer's machine still reads the Hub under its run capability past the Hub's 15 min token (escaped in 0.26.0–0.27.1) | none |
 | `publish`, `checkpoints` | $0, on a runner: packages through the Hub-publish path on a throwaway Hub; published checkpoints carry what their tool reads | none |
 
 `attention` and `attention-corpus` are not tests: they measure the attention table the Runtime ships (xs-171,
