@@ -118,7 +118,7 @@ def row(label: str, arm: str, model: str, condition: str, loop: str, warm: str, 
                 "flaws": ["no loop steps in the record"]}
     end1, ms1 = num(series[0][0]), num(series[0][1])
     _, hot1 = first_step(track(hot, loop)[1]) if hot else (0.0, 0.0)
-    warm_ms = hot1 if warm == "hot" or len(series) < 2 else num(series[1][1])
+    warm_ms = hot1 if warm == "hot" else num(series[1][1]) if len(series) > 1 else 0.0
     if not warm_ms:
         flaws.append("no warm step: ready is step 1's end")
     execution = obj(m.get("execution"))
@@ -231,6 +231,22 @@ def table(rows: list[Obj], cols: list[str]) -> str:
     return "\n".join(lines)
 
 
+def notes(rows: list[Obj]) -> list[str]:
+    """Plain lines on how cold the cold and disk cells were."""
+    dropped = [r for r in rows if r.get("condition") in ("cold", "disk") and r.get("ready_s") is not None]
+    out = []
+    refused = sorted({str(r.get("drop")) for r in dropped if str(r.get("drop") or "").startswith("refused")})
+    if refused:
+        held = max(num(r.get("store_resident_gb")) for r in dropped)
+        out.append(f"drop_caches {'; '.join(refused)}: the cold and disk cells dropped the store with posix_fadvise alone, leaving at"
+                   f" most {held} GB resident (mincore); a cache below the pod is out of its reach.")
+    for r in dropped:
+        if r.get("x") is not None and num(r.get("x")) < 1:
+            out.append(f"{r['label']}: ready {r['ready_s']} s is under its bound {r['bound_s']} s (x {r['x']}): its reads beat the"
+                       f" pod's disk ceiling ({r['disk_gbps']} GB/s) or ran under compute, so this x is no load at the bound.")
+    return out
+
+
 def main() -> None:
     d = sys.argv[1]
     cells = [line.rstrip("\n").split("\t") for line in open(os.path.join(d, "cold-load.tsv")) if line.strip()]
@@ -262,6 +278,10 @@ def main() -> None:
         med.append(m)
     print()
     print(table(med, ["arm", "model", "condition", "n"] + MEDIAN))
+    said = notes(rows)
+    if said:
+        print()
+        print("\n".join(said))
 
 
 main()

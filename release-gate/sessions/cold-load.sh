@@ -204,15 +204,20 @@ for A in "${arms[@]}"; do
 done
 kill $BG 2> /dev/null; BG=''
 
+LOGGED=true
 cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - $(jq -r .at_ms "$OUT/census-start.json") / 1000) / 60 + 10 ))m" > "$OUT/tensord.log" 2>&1 ||
-  say "the pod's TensorD log wasn't read"
+  { LOGGED=false; say "the pod's TensorD log wasn't read"; }
 (cd "$RUN_PROJECT" && cozy --json run ls --all --on "$NAME" --limit 0) > "$OUT/runs.json" 2>&1
 cozy model ls --on "$NAME" --json --full > "$OUT/models.json" 2>&1
 # Strays (cl-1316): every run TensorD's log names in a cell's span that isn't this session's.
-python3 -I - "$OUT" <<'PY' | tee -a "$R"
+python3 -I - "$OUT" "$LOGGED" <<'PY' | tee -a "$R"
 import json, os, re, sys
 from datetime import datetime
 d = sys.argv[1]
+if sys.argv[2] != "true":
+    json.dump({}, open(os.path.join(d, "strays.json"), "w"))
+    print("strays: unknown, the pod's TensorD log wasn't read")
+    sys.exit(0)
 mine = set()
 for line in open(os.path.join(d, "runs.json"), errors="replace"):
     for m in re.findall(r'"id"\s*:\s*"(run-[0-9a-f]+)', line):
