@@ -228,8 +228,15 @@ def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int]) -> torch.
     """Transformers' cached decode of `prompt` then `made`, a token at a time: at each position its top choice, its
     lead over the next, and how far `made`'s token sits below its top, as `[len(made), 3]` floats. Its attention
     layers' K/V are held in `author.retained` between steps: as plain tensors the Runtime's memory reused them under
-    the cache (44654637279: every attention layer's cached K/V gone, the decode 19 logits off its forward)."""
+    the cache (44654637279: every attention layer's cached K/V gone, the decode 19 logits off its forward). Its
+    prefill starts with no rope delta: Transformers' Qwen3.5 keeps the last prompt's on the model and a text prefill
+    leaves it standing, so a text decode after a picture's ran at the picture's offset (the vision agent, 44657445446);
+    `generate` resets it too."""
     from cozy_runtime.author import retained
+
+    inner = getattr(net, "model", None)
+    if inner is not None and hasattr(inner, "rope_deltas"):
+        inner.rope_deltas = None
 
     rows: list[torch.Tensor] = []
     stores: list[object] = []
