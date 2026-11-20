@@ -5,9 +5,10 @@ build-backend = "uv_build"
 [project]
 name = "kernel-ready-drive"
 version = "0.1.0"
-description = "kernel-ready-cpu's calls of the Runtime's kernel-readiness exerciser (cozy_runtime.bench.kernel_ready)"
+description = "kernel-ready-cpu's and engine-recapture's calls of the Runtime's kernel-readiness exercisers (cozy_runtime.bench)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.49.0.dev0,<0.50", "msgspec>=0.19", "torch>=2.14"]
+# engine_recapture builds its small Qwen3.5 with Transformers, in this environment.
+dependencies = ["cozy-runtime>=0.49.0.dev0,<0.50", "msgspec>=0.19", "torch>=2.14", "transformers>=5.17,<6"]
 
 [project.entry-points."cozy.application"]
 default = "kernel_ready_drive:app"
