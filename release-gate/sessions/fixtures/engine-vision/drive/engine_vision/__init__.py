@@ -135,6 +135,13 @@ def _forced(net: torch.nn.Module, prompt: list[int], made: list[int], media: obj
     return found
 
 
+def _fresh(net: torch.nn.Module) -> None:
+    """Before a cached decode's prefill: Transformers' Qwen3.5 keeps the last prompt's rope delta on the model
+    (`Qwen3_5Model.rope_deltas`) and a text prompt's prefill leaves it standing, so a text row's decode after a picture's
+    would run at the picture's offset; `generate` resets it (`_prepare_position_ids_for_generation`), and so does this."""
+    net.model.rope_deltas = None
+
+
 def _kv(cache: object) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
     """A Transformers cache's attention layers' keys and values, by layer."""
     found = {}
@@ -154,6 +161,7 @@ def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int], media: ob
 
     rows: list[torch.Tensor] = []
     stores: list[object] = []
+    _fresh(net)
     try:
         with torch.inference_mode():
             out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, logits_to_keep=1,
@@ -622,6 +630,7 @@ def layers(ctx: Context, payload: Probe, model: VisionLM) -> Agreement:
             # cached decode, K/V retained
             rec = _Layers(net)
             stores: list[object] = []
+            _fresh(net)
             try:
                 out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, logits_to_keep=1, **_media_kwargs(media, 0))
                 for t, token in enumerate(prefix):
