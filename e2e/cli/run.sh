@@ -716,6 +716,7 @@ case $SHARD in
     own_references
     lane_fit
     no_descriptions
+    pickup_grid
     choice_clamp
     orbit_angles
     old_runtime
@@ -913,6 +914,7 @@ case $SHARD in
     own_references
     lane_fit
     no_descriptions
+    pickup_grid
     choice_clamp
     orbit_angles
     old_runtime
@@ -1185,6 +1187,8 @@ case $SHARD in
   given-take) parts="given_take logs" ;;
   # `cozy run <fn> --describe` with inputs runs nothing (cl-1317).
   describe-inputs) parts="describe_inputs logs" ;;
+  # A pickup lands on its function's frame grid: H3's and LTX's generate through the binder (cl-1317).
+  pickup-grid) parts="pickup_grid logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: a newer release offered at a terminal (cl-1069), the Latest

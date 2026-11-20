@@ -739,6 +739,39 @@ fi
 [ "$(row "$RUN_PROJECT" described .fields.description)" = '"An orange card."' ] || check "descriptions: the stored one is now $(row "$RUN_PROJECT" described .fields)"
 }
 
+# cl-1317 (the coordinator, 11-19: "the page's 'Pick up from here' lands on the function's grid for every package"): Calcifer read a
+# pickup's frame grid from the pickup field, but the Runtime writes it on `out_frame` (`Snap`), so neither the page's tool nor the binder
+# ever moved a pickup onto it. H3's and LTX's real `generate` (the packages checkout), bound by Calcifer's binder with nothing run (the
+# estimate API), pick up an imported clip at frame 130: H3's lands on its 17k + 5 grid at 124, said in a line; LTX takes any frame.
+pickup_grid() {
+step "a pickup lands on its function's frame grid: H3's and LTX's generate through the binder (cl-1317)"
+[ -n "${PACKAGES:-}" ] && [ -x "${RUN_CODE_STAGE:-}" ] || { check "pickup grid: no packages checkout or stage-code"; return; }
+local dir=$OUT/pickup-grid p req want said
+rm -rf "$dir"; mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=64x36:rate=24:duration=6 -c:v libx264 -pix_fmt yuv420p "$dir/grid.mp4"
+[ -n "$(row "$RUN_PROJECT" pickgrid .name)" ] || project_import "$RUN_PROJECT" "$dir/grid.mp4" pickgrid > /dev/null \
+  || { check "pickup grid: the clip wasn't imported"; return; }
+for p in minimax-h3 ltx-2.5; do
+  case $p in
+    minimax-h3) req='{"beats": [{"duration": 5, "description": {"text": "the fox runs on"}}]}' want=124 ;;
+    *) req='{"prompt": "the fox runs on"}' want='' ;;
+  esac
+  jq -n --argjson r "$req" '$r + {pickup: {take: "<pickgrid.1>", out_frame: 130}}' > "$dir/$p.json"
+  cozy --json run "$PACKAGES/$p/generate" --describe > "$dir/$p.describe.json" 2> "$dir/$p.describe.err" \
+    || { check "pickup grid: cozy couldn't read $p/generate: $(tail -c 300 "$dir/$p.describe.err")"; continue; }
+  python3 "$here/../run-estimate.py" "$PACKAGES/$p/generate" --project "$RUN_PROJECT" --input "$dir/$p.json" > "$dir/$p.bound.json" 2> "$dir/$p.bound.err" \
+    || { check "pickup grid: $p/generate's pickup wasn't bound: $(head -c 300 "$dir/$p.bound.json") $(tail -c 200 "$dir/$p.bound.err")"; continue; }
+  said=$(jq -c '[.notes[]?.message | select(test("pickup can.t land"))]' "$dir/$p.bound.json")
+  echo "pickup grid: $p/generate at frame 130: ${said}"
+  if [ -n "$want" ]; then
+    J --arg w "$want" 'length == 1 and (.[0] | test("frame 130, so it picks up at frame " + $w + "[.]"))' <<< "$said" \
+      || check "pickup grid: $p/generate's pickup at frame 130 didn't land on its grid at $want: $said"
+  else
+    J 'length == 0' <<< "$said" || check "pickup grid: $p/generate takes any frame, but frame 130 moved: $said"
+  fi
+done
+}
+
 # se-138 (Paul's clamp-and-warn rule): a size or count that isn't one of a choice's values runs at the nearest one and says
 # so, never at a default larger than asked (cr-299's `to: 768p` ran at 1440p); a word that names none goes as its default.
 choice_clamp() {

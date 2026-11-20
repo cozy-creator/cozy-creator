@@ -399,8 +399,16 @@ fn model_slot(key: &str, slot: &crate::interface::Slot) -> ToolModel {
 
 /// The frames a pickup of `request` may land on, when it takes one.
 pub(crate) fn pickup(request: &Struct) -> Option<Snap> {
-    let field = request.fields.iter().find(|field| matches!(field.ty.plain(), Type::Pickup(_)))?;
-    Some(field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default())
+    request.fields.iter().find_map(|field| match field.ty.plain() {
+        Type::Pickup(members) => Some(snap(members)),
+        _ => None,
+    })
+}
+
+/// The frames a pickup's `out_frame` may land on, as the Runtime writes them on it (`Snap`, cl-1317); any frame when it says none.
+pub fn snap(pickup: &Struct) -> Snap {
+    let out_frame = pickup.fields.iter().find(|member| member.name == "out_frame");
+    out_frame.and_then(|member| member.extra.get("snap")).and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default()
 }
 
 /// What a new box of `callable` is called, which counts up as it's taken: its `Node`'s word, else its package's, numbered.

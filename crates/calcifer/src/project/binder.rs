@@ -10,7 +10,7 @@ use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
     calcifer::project::{Pickup, Unused},
-    calcifer::tool::{MEDIA, PLATFORM},
+    calcifer::tool::{MEDIA, PLATFORM, snap},
 };
 use serde_json::{Map, Value, json};
 
@@ -717,8 +717,7 @@ impl Binder<'_> {
             let said = format!("{name}: {} isn't a take Cozy can pick up from.", shown.as_str().map_or_else(|| shown.to_string(), str::to_owned));
             return Err(Error::new(Kind::Validation, "pickup_no_take", said).remedy("Pick up from one of a video box's takes, like <shot_1.3>, or a video file."));
         };
-        let snap: Snap = field.extra.get("snap").and_then(|snap| serde_json::from_value(snap.clone()).ok()).unwrap_or_default();
-        let landed = snapped(out_frame, snap);
+        let landed = snapped(out_frame, snap(members));
         if landed != out_frame {
             self.warn(format!("{name}: a pickup can't land on frame {out_frame}, so it picks up at frame {landed}."));
         }
