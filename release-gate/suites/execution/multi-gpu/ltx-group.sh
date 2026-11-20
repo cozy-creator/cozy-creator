@@ -17,8 +17,9 @@ ltx_group() {
     expect "$n-video" FAIL "no mp4 ($(run_get "$OUT" "$n" '.status + " " + (.reason.message // "")' | head -c 300))"
     return 0
   fi
-  ranks=$(jq -r '[.calls[]?.measurements.execution // {} | select(.degree) | [.degree, (.gpus // [] | map(.uuid) | unique | length)]]
-    | max_by(.[0]) // [1, 0] | @tsv' "$n.json" 2>/dev/null)
+  # A run's execution, kept on the record itself or on each of its calls (H3's group).
+  ranks=$(jq -r '[.measurements.execution, .calls[]?.measurements.execution | select(.degree? // false)
+    | [.degree, (.gpus // [] | map(.uuid) | unique | length)]] | max_by(.[0]) // [1, 0] | @tsv' "$n.json" 2>/dev/null)
   hv=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=height,nb_read_packets -of csv=p=0 "$v")
   au=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,duration -of csv=p=0 "$v")
   IFS=, read -r h fr <<< "$hv"; read -r deg ng <<< "$ranks"
