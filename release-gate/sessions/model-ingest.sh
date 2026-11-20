@@ -42,7 +42,6 @@
 # cozy-runtime dev-build run id: its wheel carries the kernels a machine requires), or true for this session's
 # RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref), a pure wheel an RC cozy refuses (`runtime_without_kernels`);
 # tensorfs, a wheel source likewise, the TensorFS that Runtime requires (an RC Runtime takes the RC's), installed with it.
-# tree: the packages_refs name whose checkout the mirrors use, when it names several (a bundle's other sessions read them).
 # A mirror's `from` (bf16 by default) is the upload lane its `lanes` are written from: fp16 for a model published so. A Civitai source
 # that needs an account reads CIVITAI_TOKEN, the release-gate secret pod-session.yaml gives Calcifer. A failed item
 # stays private and the next goes on; the session fails if any did.
@@ -178,11 +177,9 @@ mirror() {
 }
 
 if [ -n "$MIRRORS" ]; then
-  TREE='' k=$(param tree '')
-  if [ -n "$k" ]; then
-    TREE=$PACKAGES/$k; cd "$TREE" || fail "packages_refs has no $k"
-  elif [ -d "${trees[0]}" ]; then
-    [ "${#trees[@]}" = 1 ] || fail "packages_refs must name one checkout, or tree the one to use"
+  TREE=''
+  if [ -d "${trees[0]}" ]; then
+    [ "${#trees[@]}" = 1 ] || fail "packages_refs must name one checkout"
     TREE=${trees[0]%/}; cd "$TREE" || fail "no checkout"
   fi
   n=$(jq -e 'if type == "array" then length else error("not an array") end' <<<"$MIRRORS") || fail "mirrors is not a JSON array"
