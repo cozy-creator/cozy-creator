@@ -72,11 +72,11 @@ ask() {
     beats: [{duration: 1, description: {references: [], text: "The beam sweeps once across the water."}}], seed: $s}' > "$OUT/$1.req.json"
 }
 
-# group <degree>: from a restarted machine, H3 over <degree> GPUs; its record in g<degree>.json. The DiT call's execution is the
-# widest call's.
+# group <degree> [cell]: H3 over <degree> GPUs. Restart first unless a cell is named for a
+# transition that must keep the previous executors. The DiT call's execution is the widest.
 group() {
-  local d=$1 c=g$1 n got
-  restart "$c"
+  local d=$1 c=${2:-g$1} n got
+  [ "$#" -ne 1 ] || restart "$c"
   ask "$c"
   step "$c" run "$SOURCE/minimax-h3/generate" --input "$OUT/$c.req.json" --gpus "$d" --on "$NAME" --output "$OUT/$c"
   n=$(runno "$c"); [ -n "$n" ] || n=$(grep -oE '^Run [A-Z0-9]+-[0-9]+ failed' "$OUT/$c.txt" | awk '{print $2}' | tail -1)
@@ -117,8 +117,32 @@ second() {
   say "${got:-FAIL second: no record was read}"
   [[ $got == PASS* ]] || RC=1
 }
+
+# The separate one-GPU calls in second leave cached executors behind. Their ranks must
+# leave the lane before a fresh pair can form, without restarting the worker.
+handoff() {
+  local pids
+  pids=$(jq -sc '[.[].calls[]?.measurements.execution.gpus[]?.pid | select(. != null)] | unique' \
+    "$OUT/s0.json" "$OUT/s1.json") || fail "handoff: cannot read prior executor PIDs"
+  [ "$pids" != "[]" ] || fail "handoff: prior runs did not record their GPU executors"
+  group 2 g2-handoff
+  cozy machine logs "$NAME" memory --json -n 0 > "$OUT/handoff-memory.jsonl" ||
+    fail "handoff: memory log read failed"
+  if jq -se --argjson pids "$pids" '
+    any(.[] | .text | try (sub("^[^ ]+ "; "") | fromjson) catch empty;
+        .event == "group_start_retired_idle" and (.pid as $pid | $pids | index($pid) != null))
+  ' "$OUT/handoff-memory.jsonl" > /dev/null; then
+    say "PASS handoff: the new pair retired a recorded single-GPU executor without a restart"
+  else
+    say "FAIL handoff: no prior executor retirement was recorded"
+    RC=1
+  fi
+}
 for d in $DEGREES; do group "$d"; done
-if [ "$G" -ge 2 ]; then second; fi
+if [ "$G" -ge 2 ]; then
+  second
+  handoff
+fi
 cozy machine logs "$NAME" --since 3h -n 0 > "$OUT/machine.log" 2>&1
 { echo "## h3-group on $NAME ($SKU x$G), degrees $DEGREES"; grep -E '^[0-9:]+ (PASS|FAIL)' "$R"; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 exit "$RC"

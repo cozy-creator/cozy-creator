@@ -1427,6 +1427,73 @@ impl Pool {
         self.ended(&plan, start);
         true
     }
+
+    /// NCCL's collective startup allocates directly in CUDA. A cooperative allocation
+    /// can ask an idle tenant to trim, but this allocation cannot. Under the group's
+    /// existing call permit, retire idle contexts on its lane before creating any rank.
+    fn prepare_group_start(&self, engine: &Engine, id: &str, incoming: &Session) -> io::Result<()> {
+        let lane = incoming.lane();
+        loop {
+            let previous = {
+                let mut sessions = self.sessions.lock().unwrap();
+                let key = sessions.iter()
+                    .find(|(_, session)| session.lane().any(|device| lane.contains(&device)))
+                    .map(|(key, _)| key.clone());
+                key.and_then(|key| sessions.remove(&key))
+            };
+            let Some(previous) = previous else { break };
+            say(engine, id, "freeing GPUs for the new group");
+            let (plan, start) = (previous.env.clone(), previous.start);
+            let births = executor_births(&previous.executor.birth, &previous.followers);
+            let pid = previous.executor.birth.pid;
+            let ended = previous.executor.terminate();
+            self.retire(&plan, start, &births);
+            self.idle_changed();
+            if let Err(error) = ended {
+                return Err(group_memory_held(format!("an idle executor on the group's GPUs could not exit: {error}")));
+            }
+            self.notes.note(serde_json::json!({"event": "group_start_retired_idle", "pid": pid, "gpus": lane}));
+        }
+
+        // On a dedicated lane, the driver must also have finished giving back its
+        // memory. Host PIDs in its accounting may be outside our PID namespace.
+        // A current family member can legitimately hold memory across a nested call.
+        if self.config.host.mode != HostMode::Dedicated {
+            return Ok(());
+        }
+        let other: Vec<_> = self.tenants.lock().unwrap().values()
+            .filter(|tenant| tenant.exact.birth() != &incoming.executor.birth && !tenant.exact.ended())
+            .map(|tenant| tenant.start..tenant.start + tenant.width)
+            .collect();
+        let check: Vec<_> = lane.filter(|index| !other.iter().any(|lane| lane.contains(index)))
+            .filter_map(|index| platform::gpu::Device::open(&self.devices[index].entry).ok().map(|device| (index, device)))
+            .collect();
+        let deadline = Instant::now() + EXIT_WAIT;
+        let mut waiting = false;
+        loop {
+            let epoch = engine.activity_epoch();
+            let busy = check.iter().find_map(|(index, device)| {
+                let reading = device.read().ok()?;
+                let used = reading.total.saturating_sub(reading.free);
+                (!reading.display && used > IDLE_USE).then_some((*index, used))
+            });
+            let Some((index, used)) = busy else { return Ok(()) };
+            if engine.get(id)?.cancel_actor.is_some() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "canceled while waiting for GPU memory"));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(group_memory_held(format!(
+                    "GPU {} still holds {:.1} GiB before the group could start",
+                    self.index(index), used as f64 / (1u64 << 30) as f64,
+                )));
+            }
+            if !std::mem::replace(&mut waiting, true) {
+                say(engine, id, "waiting for GPU memory to be released");
+            }
+            engine.wait_activity(epoch, Some(remaining.min(std::time::Duration::from_millis(100))));
+        }
+    }
     pub(crate) fn memo(&self) -> &crate::memo::Memo {
         &self.memo
     }
@@ -4148,6 +4215,9 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.started {
+            if ranks > 1 {
+                self.prepare_group_start(engine, id, session)?;
+            }
             if !load_only {
                 say(engine, id, "starting the executor");
             }
@@ -5119,6 +5189,10 @@ pub(crate) fn output_bindings(bindings: Vec<device_executor::AssetBinding>) -> V
 struct Refused {
     code: String,
     detail: String,
+}
+
+fn group_memory_held(detail: String) -> io::Error {
+    io::Error::other(Refused { code: "gpu_lost".into(), detail })
 }
 impl std::fmt::Display for Refused {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
