@@ -182,17 +182,35 @@ def _forced(net: torch.nn.Module, prompt: list[int], made: list[int],
 
 def _decoded(net: torch.nn.Module, prompt: list[int], made: list[int]) -> torch.Tensor:
     """Transformers' cached decode of `prompt` then `made`, a token at a time: at each position its top choice, its
-    lead over the next, and how far `made`'s token sits below its top, as `[len(made), 3]` floats."""
+    lead over the next, and how far `made`'s token sits below its top, as `[len(made), 3]` floats. Its attention
+    layers' K/V are held in `author.retained` between steps: as plain tensors the Runtime's memory reused them under
+    the cache (44654637279: every attention layer's cached K/V gone, the decode 19 logits off its forward)."""
+    from cozy_runtime.author import retained
+
     rows: list[torch.Tensor] = []
-    with torch.inference_mode():
-        out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True)
-        for t, token in enumerate(made):
-            last = out.logits[0, -1].float()
-            v, i = last.topk(2)
-            rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
-            if t + 1 < len(made):
-                out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=out.past_key_values,
-                          use_cache=True)  # fmt: skip
+    stores: list[object] = []
+    try:
+        with torch.inference_mode():
+            out = net(input_ids=torch.tensor([prompt], device=net.device), use_cache=True, logits_to_keep=1)
+            for t, token in enumerate(made):
+                last = out.logits[0, -1].float()
+                v, i = last.topk(2)
+                rows.append(torch.stack([i[0].float(), v[0] - v[1], v[0] - last[token]]))
+                if t + 1 < len(made):
+                    cache = out.past_key_values
+                    held = _kv(cache)
+                    store = retained(sum(k.nbytes + v.nbytes for k, v in held.values()))
+                    for layer, (k, v) in held.items():
+                        cache.layers[layer].keys, cache.layers[layer].values = store.put(k, v).get()
+                    del held
+                    stores.append(store)
+                    if len(stores) > 1:
+                        stores.pop(0).close()  # type: ignore[attr-defined]  # a Store
+                    out = net(input_ids=torch.tensor([[token]], device=net.device), past_key_values=cache,
+                              use_cache=True, logits_to_keep=1)  # fmt: skip
+    finally:
+        for store in stores:
+            store.close()  # type: ignore[attr-defined]  # a Store
     return torch.stack(rows).cpu()
 
 
