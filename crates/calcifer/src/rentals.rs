@@ -403,8 +403,11 @@ impl Machines {
             Ok(self.rented(ask, false).await?.machine.name)
         }
         .await;
-        // Settled, it has no owner to ask; a restart that finds it waiting asks again under its key.
-        lock(&self.renders).remove(key);
+        // Settled, it has no owner to ask; still on order, it keeps its owner until its loop settles it (`Asking`): one of its
+        // render's sends ending first never leaves the order unowned. A restart that finds it waiting asks again under its key.
+        if !matches!(self.store().ask(key), Ok(Some(ask)) if ask.state == AskState::Pending) {
+            lock(&self.renders).remove(key);
+        }
         rented
     }
 
@@ -1801,6 +1804,8 @@ impl Drop for Asking<'_> {
     fn drop(&mut self) {
         lock(&self.0.asking).remove(self.1);
         lock(&self.0.unanswered).remove(self.1);
+        // Its loop over, the order is settled: a render's owner of it is asked nothing more (cl-1066).
+        lock(&self.0.renders).remove(self.1);
     }
 }
 
