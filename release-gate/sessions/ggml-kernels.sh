@@ -152,19 +152,36 @@ if [ -n "$FIRST" ]; then
     jq -r '.execution_ms // ""' "$OUT/$n.json" > "$OUT/$n.ms"
     say "$n: $(cat "$OUT/$n.ms") ms · blocking [$(cut -c1-200 "$OUT/$n.blocking")] · decodes [$(cut -c1-160 "$OUT/$n.decodes")] · engine: $(cut -c1-260 "$OUT/$n.engine")$([ -s "$OUT/$n.uncaptured" ] && echo " · $(cut -c1-200 "$OUT/$n.uncaptured")")"
   }
-  same() { cmp -s "$OUT/$1.text" "$OUT/first-red.text" || { FIRST_BAD=1; say "FAILED: $1: its text is unlike red's"; }; }
+  # A call's engine (`engine`, the engine's note "by the engine", else `transformers`): its text is compared with red's
+  # call on the same engine, never across them (44649812184 compared the engine's text with Transformers').
+  kind() { if grep -q 'by the engine' "$OUT/$1.engine"; then echo engine; else echo transformers; fi; }
+  keep() { local k; k=$(kind "$1"); [ -s "$OUT/red-$k.text" ] || cp "$OUT/$1.text" "$OUT/red-$k.text"; }
+  same() {
+    local k; k=$(kind "$1")
+    if [ ! -s "$OUT/red-$k.text" ]; then say "$1: red has no $k call to compare with"; return; fi
+    cmp -s "$OUT/$1.text" "$OUT/red-$k.text" || { FIRST_BAD=1; say "FAILED: $1: its text is unlike red's $k call's"; }
+  }
   clean() { ! grep -q 'triton compile:' "$OUT/$1.blocking" || { FIRST_BAD=1; say "FAILED: $1 compiled in the request"; }; }
   step first-runtime-red machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$FIRST_RED" -y || fail "the pod's Runtime (first_red)"
-  if ask first-red && ! grep -q 'triton compile:' "$OUT/first-red.blocking"; then
-    FIRST_BAD=1; say "FAILED: first-red: no compile recorded, so the cell reproduces nothing"
+  if ask first-red; then
+    grep -q 'triton compile:' "$OUT/first-red.blocking" || { FIRST_BAD=1; say "FAILED: first-red: no compile recorded, so the cell reproduces nothing"; }
+    keep first-red
   fi
-  say "red's text: $(head -c 200 "$OUT/first-red.text" | tr '\n' ' ')"
+  # Red's calls until the engine serves one, so the candidate's engine calls have red's engine text to compare with.
+  for i in $(seq 1 20); do
+    [ "$(kind first-red)" = engine ] && break
+    ask "red-later-$i" || break
+    keep "red-later-$i"
+    [ "$(kind "red-later-$i")" = engine ] && break
+    sleep 15
+  done
+  say "red's texts: transformers [$(head -c 120 "$OUT/red-transformers.text" 2> /dev/null | tr '\n' ' ')] · engine [$(head -c 120 "$OUT/red-engine.text" 2> /dev/null | tr '\n' ' ')]"
   step first-candidate machine update "$NAME" --tensorfs "$TENSORFS" --runtime "$RUNTIME" -y || fail "the candidate back on the pod"
   if ask first-candidate; then
     clean first-candidate; same first-candidate
     awk -v c="$(cat "$OUT/first-candidate.ms")" -v r="$(cat "$OUT/first-red.ms")" 'BEGIN { exit !(c + 0 <= 1.05 * r) }' ||
       { FIRST_BAD=1; say "FAILED: first-candidate: $(cat "$OUT/first-candidate.ms") ms, slower than red's $(cat "$OUT/first-red.ms") ms past 5%"; }
-    say "first calls: red $(cat "$OUT/first-red.ms") ms, candidate $(cat "$OUT/first-candidate.ms") ms (the candidate's ran second on the pod)"
+    say "first calls: red $(cat "$OUT/first-red.ms") ms ($(kind first-red)), candidate $(cat "$OUT/first-candidate.ms") ms ($(kind first-candidate); the candidate's ran after red's on the pod)"
   fi
   captured=''
   for i in $(seq 1 20); do
@@ -181,13 +198,11 @@ if [ -n "$FIRST" ]; then
     ask warm && { clean warm; same warm; }
     say "ms a step: $captured $(grep -o '[0-9.]* ms a step' "$OUT/$captured.engine"), warm $(grep -o '[0-9.]* ms a step' "$OUT/warm.engine" 2> /dev/null)"
   fi
-  # The lane's decode set's verdict (`kernel_ready.verified`'s line: cozy-decode-ggml.q8_0), in the executors' stderr
-  # logs on the pod: an installed package's executor root is TensorD's, on any mount (44619110063 looked under
-  # `executors` only, 44623512956 on the root filesystem only).
-  logs="\$(find / -name stderr.log -not -path '/proc/*' -not -path '/sys/*' 2> /dev/null)"
-  verdict=$(there "grep -h -E 'cozy-decode-[a-z0-9._-]+ (verified|refused)' $logs 2> /dev/null | sort -u | head -3" 120 < /dev/null)
-  say "the decode sets' verdicts: ${verdict:-none in the executor logs}"
-  [[ $verdict == *verified* && $verdict != *refused* ]] || FIRST_BAD=1
+  # Each decode set's probe verdict, carried on its `kernel.decode_cores` set rows (cozy-runtime#2344): every candidate call.
+  verdict=$(cat "$OUT"/first-candidate.json "$OUT"/later-*.json "$OUT"/warm.json 2> /dev/null |
+    jq -r 'select(type == "object") | .. | objects | select(.name? == "kernel.decode_cores" and .value? == "set" and (.fields.probe? // "") != "") | "\(.fields.scheme): \(.fields.probe)"' 2> /dev/null | sort -u)
+  say "the decode sets' probes: ${verdict:-none recorded}"
+  [ -n "$verdict" ] && ! grep -q 'first off' <<< "$verdict" || FIRST_BAD=1
   [ -n "${FIRST_BAD:-}" ] || say "PASS: cozy-runtime#2344's cell: red compiled in its first call, the candidate compiled nothing, its set served once landed, same text"
 fi
 
