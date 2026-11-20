@@ -38,10 +38,29 @@
    "max_s": 1500
   },
   {
+   "name": "h3-gen1-cold",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 1}]",
+    "seed:=40085"
+   ],
+   "max_s": 1200,
+   "restart": true
+  },
+  {
+   "name": "h3-gen1-warm",
+   "target": "minimax-h3/generate",
+   "args": [
+    "beats:=[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 1}]",
+    "seed:=40086"
+   ],
+   "max_s": 1200
+  },
+  {
    "name": "h3-shot-cold",
    "target": "minimax-h3/render_shot",
    "args": [
-    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40085}"
+    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40087}"
    ],
    "max_s": 1500,
    "restart": true
@@ -50,7 +69,7 @@
    "name": "h3-shot-warm",
    "target": "minimax-h3/render_shot",
    "args": [
-    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40086}"
+    "shot:={\"beats\":[{\"description\": \"The beam sweeps over the dark sea as waves roll in and break on the rocks, slow push-in, wind and surf.\", \"duration\": 5}],\"seed\":40088}"
    ],
    "max_s": 1500
   },
@@ -61,7 +80,7 @@
     "--file",
     "plate={clip5}",
     "beats:=[{\"description\": \"heavy snow falls over the whole scene\", \"duration\": 5}]",
-    "seed:=40087"
+    "seed:=40089"
    ],
    "max_s": 1500,
    "restart": true
@@ -73,7 +92,7 @@
     "--file",
     "plate={clip5}",
     "beats:=[{\"description\": \"heavy snow falls over the whole scene\", \"duration\": 5}]",
-    "seed:=40088"
+    "seed:=40090"
    ],
    "max_s": 1500
   },
@@ -128,7 +147,7 @@
     "--file",
     "image={seed}",
     "resolution=1080p",
-    "seed:=40091"
+    "seed:=40093"
    ],
    "max_s": 900,
    "restart": true
@@ -140,7 +159,7 @@
     "--file",
     "image={seed}",
     "resolution=1080p",
-    "seed:=40092"
+    "seed:=40094"
    ],
    "max_s": 900
   },
@@ -152,7 +171,7 @@
     "video={clip5}",
     "resolution=1080p",
     "aspect_ratio=16:9",
-    "seed:=40093"
+    "seed:=40095"
    ],
    "max_s": 1800,
    "restart": true
@@ -165,7 +184,7 @@
     "video={clip5}",
     "resolution=1080p",
     "aspect_ratio=16:9",
-    "seed:=40094"
+    "seed:=40096"
    ],
    "max_s": 1800
   },
@@ -177,7 +196,7 @@
     "video={clip5}",
     "resolution=1080p",
     "aspect_ratio=16:9",
-    "seed:=40095"
+    "seed:=40097"
    ],
    "max_s": 1200,
    "restart": true
@@ -190,7 +209,7 @@
     "video={clip5}",
     "resolution=1080p",
     "aspect_ratio=16:9",
-    "seed:=40096"
+    "seed:=40098"
    ],
    "max_s": 1200
   },
@@ -200,7 +219,7 @@
    "args": [
     "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo, slow push-in, ambient sound",
     "resolution=720p",
-    "seed:=40097"
+    "seed:=40099"
    ],
    "max_s": 1500,
    "restart": true
@@ -211,7 +230,7 @@
    "args": [
     "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo, slow push-in, ambient sound",
     "resolution=720p",
-    "seed:=40098"
+    "seed:=40100"
    ],
    "max_s": 1500
   },
@@ -221,7 +240,7 @@
    "args": [
     "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
     "duration:=5",
-    "seed:=40099"
+    "seed:=40101"
    ],
    "max_s": 2400,
    "restart": true
@@ -232,7 +251,7 @@
    "args": [
     "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing. A keeper walks in from the left. One continuous wide shot.",
     "duration:=5",
-    "seed:=40100"
+    "seed:=40102"
    ],
    "max_s": 2400
   },
@@ -242,7 +261,7 @@
    "args": [
     "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
     "megapixels:=4",
-    "seed:=40101"
+    "seed:=40103"
    ],
    "max_s": 1800,
    "restart": true
@@ -253,7 +272,7 @@
    "args": [
     "instructions=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, photo",
     "megapixels:=4",
-    "seed:=40102"
+    "seed:=40104"
    ],
    "max_s": 1800
   }
