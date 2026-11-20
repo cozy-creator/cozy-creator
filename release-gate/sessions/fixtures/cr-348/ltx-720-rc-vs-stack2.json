@@ -22,7 +22,7 @@
    ],
    "update": {
     "runtime": "44640870766",
-    "tensorfs": "artifact:44607246583/tensorfs-wheel-95831c3365ff24b4d32d916f37cf368490ba810b",
+    "tensorfs": "artifact:44648200603/tensorfs-wheel-9a5aded1d179acf57bac8cfceca815bcbcfba687",
     "tensord": true,
     "gpu_memory_limit": "off"
    },
@@ -93,7 +93,7 @@
    ],
    "update": {
     "runtime": "44642011218",
-    "tensorfs": "artifact:44607246583/tensorfs-wheel-95831c3365ff24b4d32d916f37cf368490ba810b",
+    "tensorfs": "artifact:44648200603/tensorfs-wheel-9a5aded1d179acf57bac8cfceca815bcbcfba687",
     "tensord": true,
     "gpu_memory_limit": "off"
    },
