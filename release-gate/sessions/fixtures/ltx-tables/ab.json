@@ -1,0 +1,58 @@
+{
+  "need_s": 3900,
+  "quiet_s": 2400,
+  "order": "one-way",
+  "max_failures": 2,
+  "cells": [
+    {
+      "name": "b-hardest",
+      "tree": "rc",
+      "target": "ltx-2.5/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+        "duration_s:=20",
+        "resolution=1080p",
+        "--file",
+        "first_frame={ref}/ltx-pic1.jpg",
+        "seed:=30010"
+      ],
+      "update": {
+        "runtime": "44643529827",
+        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensord": true,
+        "gpu_memory_limit": "6GiB"
+      }
+    },
+    {
+      "name": "a-5s",
+      "tree": "rc",
+      "target": "ltx-2.5/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+        "seed:=30130"
+      ],
+      "update": {
+        "runtime": "44643936012",
+        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensord": true,
+        "gpu_memory_limit": "off"
+      }
+    },
+    {
+      "name": "b-5s",
+      "tree": "rc",
+      "target": "ltx-2.5/generate",
+      "args": [
+        "prompt=A lighthouse on a rocky coast at dusk, waves breaking below, a fishing boat passing, slow push-in, ambient sound",
+        "seed:=30130"
+      ],
+      "update": {
+        "runtime": "44643529827",
+        "tensorfs": "artifact:44643822213/tensorfs-wheel-ca5ebedbf3b8e0a9c12441f48d3a043d76f8a2b6",
+        "tensord": true,
+        "gpu_memory_limit": "off"
+      }
+    }
+  ],
+  "compare": [["a-5s", "b-5s"]]
+}
