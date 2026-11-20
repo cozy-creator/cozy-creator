@@ -59,6 +59,24 @@ learned as each request ends. Between those, what the driver takes beyond our bo
 comes out of the room: growth is not counted twice. A process coming up asks its peers for it once its context is up,
 before Torch's runtime and first stream, where a refusal reaches no one.
 
+Growth follows the code a process runs, not its weights: one model set runs several functions, and a
+path's first run loads libraries the others never did. The Runtime names a request's path as it
+begins: its function and the names of the inputs it gave (a Qwen Image 2 edit's references reach an
+FFT its plain generate never runs). While a request runs a path no request completed in this
+process, the room is at least what that path's first completed run grew outside the books on this
+card, learned like the set's figure, or the context's cost where none did. Only a completed request teaches that growth. An
+LTX-2.5 retake after a text-to-video in one process began with room 0 and its first cuFFT plan was
+refused on a full 4090 (var-040). A request's begin makes its room at once, from what is idle and
+finished, since a library's first use can come before the request's first map.
+
+Libraries' workspaces are already ours: Torch takes cuFFT's work area (auto-allocation off), cuBLAS's
+and cuBLASLt's workspaces and cuDNN's from the current allocator. What is outside is each library's own
+data and code at its first use.
+
+When the driver or a library still refuses its own allocation by its out-of-memory code, with varena
+having refused nothing, the Runtime asks for the room again (`make_driver_room`: at least the context's
+cost, from what is idle and finished) and runs a Runtime-owned pure op once more if anything came free.
+
 The room is soft: it is kept only by evicting what is idle and finished, with no wait, and never fails a
 demand. Pages that fit, but not beside it, take what is idle and finished for it (no wait on our own
 work, no owner), an idle peer's before our weights, and short of that take the room. One the driver

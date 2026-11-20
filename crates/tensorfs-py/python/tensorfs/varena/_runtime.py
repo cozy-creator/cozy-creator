@@ -54,10 +54,18 @@ def poisoned() -> str | None:
     return _ext._varena_poisoned()
 
 
-def request_boundary(device: int, *, begin: bool) -> None:
+def request_boundary(device: int, *, begin: bool, work: str | None = None, completed: bool = False) -> None:
     """A request started or ended here: orders who donates first, and the first to begin is a phase
-    boundary. Never fails."""
-    _ext._varena_request_boundary(device, begin)
+    boundary. `work` names the call's code path (its function and the inputs it gave), whose first
+    run in a process keeps room for the libraries it loads; an ending request says whether it `completed`, and only then teaches what that
+    run grew. Never fails."""
+    _ext._varena_request_boundary(device, begin, work, completed)
+
+
+def make_driver_room(device: int) -> bool:
+    """A library's or the driver's own allocation was refused: frees what is idle and finished on the
+    card for the driver, with no wait. True if anything came free, and the op may run once more."""
+    return _ext._varena_make_driver_room(device)
 
 
 def bind_torch_allocator() -> None:

@@ -3,7 +3,7 @@
 //! donations, never an allocation.
 use crate::{Device, Error, Result, cache_owner, cuda, working};
 use nvml_wrapper::{Nvml, enums::device::UsedGpuMemory};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -73,7 +73,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             Err(Error::Cuda { code: 2, .. }) => Some(0),
             Ok(()) => card_free(device).and_then(|free| {
                 let context = before.map_or(0, |before| before.saturating_sub(free));
-                came_up(device, Expected { uuid, context, set: None });
+                came_up(device, uuid, context);
                 (free < context).then(|| context - free)
             }),
             Err(_) => None,
@@ -83,7 +83,7 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
             _ => break started,
         }
     }?;
-    came_up(device, Expected { uuid, context: 0, set: None });
+    came_up(device, uuid, 0);
     // What other programs hold as this process begins: a wait is only ever for what they took since.
     let _ = others_came(device);
     if let Some(serving) = serving {
@@ -118,32 +118,51 @@ pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
 }
 
-pub(crate) fn request_boundary(device: i32, begin: bool) {
+/// A request began or ended on `device`. `work` names the code path it runs, its function and the
+/// inputs it gave (None for a Start's or a Load's construction), and an ending one says whether it
+/// `completed`. A beginning one makes the
+/// driver's room now, from what is idle and finished: a library's first use (a cuFFT plan, a cuDNN
+/// engine's code) may come before the request maps anything (var-040).
+pub(crate) fn request_boundary(device: i32, begin: bool, work: Option<&str>, completed: bool) {
     if let Some(service) = service(device) {
         if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }
     }
-    let (room, own) = expect(device, !begin);
+    let work = work.map(|name| fnv(name.bytes()));
+    let (room, own) = expect(device, if begin { Boundary::Begin(work) } else { Boundary::End(work, completed) });
     if begin && let Ok(gpu) = crate::gpu(device) {
         gpu.driver_room_began(room, own);
+        let _ = crate::reclaim::free_for_driver(device, room);
     }
 }
 
 /// What a process on each GPU is expected to hold outside its books, as read when it came up.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Expected {
     uuid: [u8; 16],
     /// Its context's measured cost (`join`): 0 where NVML could not read the card.
     context: usize,
     /// The model set its latest plan runs (`plan_seen`): what it learns under and reads back.
     set: Option<u64>,
+    /// The code path of each request running here, and what this process held outside its books as it began.
+    running: Vec<(u64, usize)>,
+    /// Paths a request completed in this process: their libraries and kernels are loaded here.
+    ran: BTreeSet<u64>,
 }
 
 static EXPECTED: Mutex<BTreeMap<i32, Expected>> = Mutex::new(BTreeMap::new());
 
+#[derive(Clone, Copy)]
+enum Boundary {
+    None,
+    Begin(Option<u64>),
+    End(Option<u64>, bool),
+}
+
 /// This process is up on `device`, as `expected` read it the first time.
-fn came_up(device: i32, expected: Expected) {
-    EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).entry(device).or_insert(expected);
-    expect(device, false);
+fn came_up(device: i32, uuid: [u8; 16], context: usize) {
+    EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).entry(device)
+        .or_insert(Expected { uuid, context, set: None, running: Vec::new(), ran: BTreeSet::new() });
+    expect(device, Boundary::None);
 }
 
 /// A plan running model set `set` became active on `device`: its learned figure now applies.
@@ -151,27 +170,39 @@ pub(crate) fn plan_seen(device: i32, set: u64) {
     let changed = EXPECTED.lock().unwrap_or_else(|error| error.into_inner()).get_mut(&device)
         .is_some_and(|expected| expected.set.replace(set) != Some(set));
     if changed {
-        expect(device, false);
+        expect(device, Boundary::None);
     }
 }
 
+/// FNV-1a, as a plan's model set is.
+fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// One code path of one model set: what its first run grew is learned under it.
+fn first_key(set: u64, work: u64) -> u64 {
+    fnv(set.to_le_bytes().into_iter().chain(work.to_le_bytes()))
+}
+
 /// The driver's room every map leaves on `device` (`Device::driver_room`), and what this process holds
-/// outside its books now, measured (by NVML, else read from the card). The room is the most a process
-/// running this model set on this card held outside its books (learned on this machine, kept across
-/// boots) less what this process holds there now. A set this card never ran keeps its context's
-/// measured cost: a library's first use loads its code as the driver's own allocation, which what the
-/// process holds says nothing of (s16: a cold H3 on a full 4090 with no room failed cuDNN's first audio
-/// conv). Learned across every model set, a process inherited another's growth. A fixed 800 MiB was
-/// left before, 10-13% of an 8 GB card. `learn`: a request ended, and what this process holds outside
-/// its books joins what its set learned. Read as the process comes up, as a plan becomes active and at
-/// each request's boundaries.
-fn expect(device: i32, learn: bool) -> (usize, usize) {
+/// outside its books now, measured (by NVML, else read from the card). The room is the larger of two:
+/// - The most a process running this model set on this card held outside its books (learned on this
+///   machine, kept across boots), less what this process holds there now. A set this card never ran
+///   keeps its context's measured cost: a library's first use loads its code as the driver's own
+///   allocation, which what the process holds says nothing of (s16: a cold H3 on a full 4090 with no
+///   room failed cuDNN's first audio conv). Learned across every model set, a process inherited
+///   another's growth. A fixed 800 MiB was left before, 10-13% of an 8 GB card.
+/// - For a request running a code path (a function and the inputs it gave) no request completed in
+///   this process: what that path's first completed run grew outside its books on this card, else the
+///   context's cost. The same set runs other paths, whose libraries are not loaded yet: an LTX-2.5
+///   retake after a text-to-video in one process began with room 0, its learned figure already held,
+///   and its first cuFFT plan was refused on a full 4090 (var-040).
+/// At a request's end, what this process holds joins what its set learned; a completed one's growth, if
+/// it was its path's first here, joins what that path learned. A failed one teaches no growth:
+/// one that ended early would teach too little. Read as the process comes up, as a plan becomes active
+/// and at each request's boundaries.
+fn expect(device: i32, boundary: Boundary) -> (usize, usize) {
     let Ok(gpu) = crate::gpu(device) else { return (0, 0) };
-    let Some(Expected { uuid, context, set }) = EXPECTED.lock().unwrap_or_else(|error| error.into_inner())
-        .get(&device).copied()
-    else {
-        return (0, 0);
-    };
     // Where NVML can't name this process (a container's nested PID namespace), what it holds outside its
     // books is read from the card: its context, and what lies outside its books now past the least it
     // did. Unread, a 4090's room stood at its context's 391 MiB under an 8 GiB cap for every request,
@@ -179,12 +210,39 @@ fn expect(device: i32, learn: bool) -> (usize, usize) {
     let measured = split(device).map(|(ours, _)| (ours as usize).saturating_sub(gpu.owned()));
     let floor = gpu.outside_floor.load(Ordering::Acquire);
     let grown = if floor == usize::MAX { 0 } else { gpu.outside.load(Ordering::Acquire).saturating_sub(floor) };
-    let own = measured.unwrap_or(context + grown);
-    if learn && let Some(set) = set {
+    let (uuid, context, set, own, first, learned) = {
+        let mut table = EXPECTED.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(expected) = table.get_mut(&device) else { return (0, 0) };
+        let own = measured.unwrap_or(expected.context + grown);
+        let mut learned = None;
+        match boundary {
+            Boundary::None => {}
+            Boundary::Begin(work) => expected.running.extend(work.map(|work| (work, own))),
+            Boundary::End(work, completed) => {
+                let ended = work.and_then(|work| expected.running.iter().position(|(running, _)| *running == work));
+                if let Some((work, began)) = ended.map(|at| expected.running.swap_remove(at))
+                    && completed && expected.ran.insert(work)
+                {
+                    learned = Some((work, own.saturating_sub(began)));
+                }
+            }
+        }
+        let first: Vec<u64> = expected.running.iter().map(|(work, _)| *work)
+            .filter(|work| !expected.ran.contains(work)).collect();
+        (expected.uuid, expected.context, expected.set, own, first, learned)
+    };
+    if let Boundary::End(..) = boundary && let Some(set) = set {
         let _ = varena_ledger::held_out_of_books(&uuid, set, own as u64);
+        if let Some((work, growth)) = learned {
+            let _ = varena_ledger::grew_first(&uuid, first_key(set, work), growth as u64);
+        }
     }
     let most = set.and_then(|set| varena_ledger::out_of_books(&uuid, set));
-    let room = most.map_or(context, |most| (most as usize).saturating_sub(own));
+    let held = most.map_or(context, |most| (most as usize).saturating_sub(own));
+    let loading = first.iter()
+        .map(|work| set.and_then(|set| varena_ledger::first_growth(&uuid, first_key(set, *work))).map_or(context, |grew| grew as usize))
+        .max().unwrap_or(0);
+    let room = held.max(loading);
     gpu.expect_driver(room, measured.unwrap_or(0), context, most.map_or(0, |most| most as usize));
     (room, own)
 }

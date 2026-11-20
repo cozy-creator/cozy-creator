@@ -133,24 +133,43 @@ fn private(root: &str) -> io::Result<PathBuf> {
 /// context, kernel modules, local memory, libraries' handles), as each measured it: None before any
 /// did. In this user's directory under /var/tmp, so a reboot keeps it.
 pub fn out_of_books(uuid: &[u8; 16], set: u64) -> Option<u64> {
-    fs::read_to_string(out_of_books_path(uuid, set).ok()?).ok()?.trim().parse().ok()
+    learned("out-of-books", uuid, set)
 }
 
 /// Records `bytes` held outside one process's books on this GPU running `set`, kept if the most yet.
 /// Two writers racing may lose one figure; the next boundary of either writes it again.
 pub fn held_out_of_books(uuid: &[u8; 16], set: u64, bytes: u64) -> io::Result<()> {
-    if out_of_books(uuid, set).is_some_and(|most| most >= bytes) {
+    learn("out-of-books", uuid, set, bytes)
+}
+
+/// The most a process's bytes outside its books grew on this GPU in its first completed request of one
+/// code path (`work`, a model set's): the libraries and kernels that path loads. None before any did.
+pub fn first_growth(uuid: &[u8; 16], work: u64) -> Option<u64> {
+    learned("first-growth", uuid, work)
+}
+
+/// Records one first completed request's growth, kept if the most yet.
+pub fn grew_first(uuid: &[u8; 16], work: u64, bytes: u64) -> io::Result<()> {
+    learn("first-growth", uuid, work, bytes)
+}
+
+fn learned(kind: &str, uuid: &[u8; 16], key: u64) -> Option<u64> {
+    fs::read_to_string(learned_path(kind, uuid, key).ok()?).ok()?.trim().parse().ok()
+}
+
+fn learn(kind: &str, uuid: &[u8; 16], key: u64, bytes: u64) -> io::Result<()> {
+    if learned(kind, uuid, key).is_some_and(|most| most >= bytes) {
         return Ok(());
     }
-    let path = out_of_books_path(uuid, set)?;
+    let path = learned_path(kind, uuid, key)?;
     let staged = path.with_extension(format!("{}", std::process::id()));
     fs::write(&staged, bytes.to_string())?;
     fs::rename(&staged, &path)
 }
 
-fn out_of_books_path(uuid: &[u8; 16], set: u64) -> io::Result<PathBuf> {
+fn learned_path(kind: &str, uuid: &[u8; 16], key: u64) -> io::Result<PathBuf> {
     let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(private("/var/tmp")?.join(format!("out-of-books-{name}-{set:016x}")))
+    Ok(private("/var/tmp")?.join(format!("{kind}-{name}-{key:016x}")))
 }
 
 /// A `GPU-…` or `MIG-…` name's 16 bytes, as CUDA reports them.

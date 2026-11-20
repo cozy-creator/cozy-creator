@@ -481,8 +481,26 @@ fn keep_room(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
     if working::existing(device)?.is_none() {
         return Ok(false);
     }
+    let want = crate::gpu(device)?.driver_room();
+    keep(device, protect, ask, want)
+}
+
+/// The card's free bytes made `want` for what the driver allocates on its own, by `keep_room`'s order:
+/// as a request begins with its room (`cooperative::request_boundary`), or after a library's own
+/// allocation was refused, before the Runtime runs that op again. Whether anything came free.
+pub(crate) fn free_for_driver(device: i32, want: usize) -> Result<bool> {
+    if want == 0 || working::existing(device)?.is_none() {
+        return Ok(false);
+    }
+    let short = want.saturating_sub(free_now(crate::gpu(device)?)?);
+    if short == 0 {
+        return Ok(false);
+    }
+    keep(device, Protect::default(), false, short)
+}
+
+fn keep(device: i32, protect: Protect<'_>, ask: bool, want: usize) -> Result<bool> {
     let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
-    let want = sequence.gpu.driver_room();
     while sequence.released < want && sequence.step < ORDER.len() {
         let (step, left) = (ORDER[sequence.step], want - sequence.released);
         if step == Step::IdlePeers {
