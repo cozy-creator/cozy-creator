@@ -10,6 +10,7 @@ const { randomBytes, createHash } = require('crypto');
 const { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('fs');
 const { dirname, join, relative } = require('path');
 const { test: base, expect, canvasIdle, openPoint, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels } = require('./fixtures');
+const { ffmpeg } = require('./hands');
 
 const test = base.extend({
   /** Encrypted projects the cell made ({id, path}): each locked again before its folder goes, as a person locks one before deleting it. */
@@ -518,4 +519,56 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     expect.soft(stored, 'it keeps nothing of its view in Web Storage').toEqual([]);
   });
 
+});
+
+test.describe('encrypted video in a background tab', () => {
+  test.use({ projectOptions: { encrypted: true } });
+
+  test('keeps playback and pause through tab switches and stops on lock', { tag: '@vault' }, async ({ page, project, cli, vaults }) => {
+    vaults.push(project);
+    const path = test.info().outputPath('background.mp4');
+    ffmpeg('ffmpeg')('-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=20',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', path);
+    await project.import(readFileSync(path), { name: 'background' });
+    await page.goto(project.url('assets/background'));
+    const focus = page.getByRole('region', { name: 'Focused asset' });
+    const video = focus.locator('video.live');
+    const setVisibility = (state) => page.evaluate((value) => {
+      // Headless browsers can report both tabs as visible. Drive the same event a real switch delivers.
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value });
+      Object.defineProperty(document, 'hidden', { configurable: true, value: value === 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, state);
+    const sample = () => page.evaluate(() => {
+      const player = document.querySelector('video.live');
+      return player ? { playing: !player.paused, at: player.currentTime, same: player === window.backgroundVideo }
+        : { playing: false, at: -1, same: false };
+    });
+
+    await focus.getByRole('button', { name: 'Play', exact: true }).click();
+    await expect.poll(async () => (await sample()).at).toBeGreaterThan(0.3);
+    await video.evaluate((player) => { window.backgroundVideo = player; });
+    const before = await sample();
+    await setVisibility('hidden');
+    await expect.poll(sample).toMatchObject({ playing: true, same: true });
+    await expect.poll(async () => (await sample()).at).toBeGreaterThan(before.at + 0.3);
+    const hidden = await sample();
+    await setVisibility('visible');
+    await expect.poll(async () => (await sample()).at).toBeGreaterThan(hidden.at + 0.3);
+    expect(await sample()).toMatchObject({ playing: true, same: true });
+
+    await focus.getByRole('button', { name: 'Pause', exact: true }).click();
+    const paused = await sample();
+    await setVisibility('hidden');
+    await setVisibility('visible');
+    await expect.poll(sample).toMatchObject({ playing: false, same: true });
+    expect((await sample()).at).toBeCloseTo(paused.at, 2);
+
+    await focus.getByRole('button', { name: 'Play', exact: true }).click();
+    await setVisibility('hidden');
+    expect((await cli('--json', 'vault', 'lock')).code).toBe(0);
+    await expect.poll(() => page.evaluate(() => window.backgroundVideo.paused)).toBe(true);
+    await setVisibility('visible');
+    await expect(video).toHaveCount(0);
+  });
 });
