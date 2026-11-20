@@ -134,10 +134,11 @@ for arm in $ARMS; do
     kill)
       builds kill cand; derived_state kill reset; restart kill
       (cd "$RUN_PROJECT" && cozy run "$SOURCE/$TOOL" "${ARGS[@]}" "seed:=$seed" --on "$NAME") > "$OUT/kill.txt" 2>&1 & KP=$!
-      # On the pod, as a part appears: the process writing it (it holds it open) killed at once. The image has no pgrep.
-      pod 'for _ in $(seq 1 9000); do for f in /proc/[0-9]*/fd/*; do case $(readlink "$f" 2> /dev/null) in */cozy-derived-*/.*.part)
-        p=${f#/proc/}; p=${p%%/*}; kill -9 "$p" && echo "killed $p writing $(readlink "$f")"; exit 0 ;; esac; done
-        [ -z "$(find /var/tmp/cozy-derived-*/ -name ".*.part" 2> /dev/null | head -1)" ] || { echo "a part, no writer seen"; exit 0; }; sleep 0.1; done' > "$OUT/killed.txt"
+      # On the pod, as a part appears: its writer (the pid its name carries, `.<page>.<pid>.<n>.part`) killed at once.
+      pod 'for _ in $(seq 1 12000); do f=$(find /var/tmp/cozy-derived-*/ -name ".*.part" 2> /dev/null | head -1)
+        if [ -n "$f" ]; then p=$(basename "$f" | awk -F. "{print \$(NF-2)}")
+          if tr "\0" " " < /proc/$p/cmdline 2> /dev/null | grep -q cozy_runtime; then kill -9 "$p" && echo "killed $p writing $f"; else echo "part $f: its writer $p is not visible here"; fi
+          exit 0; fi; sleep 0.05; done' > "$OUT/killed.txt"
       if ! grep -q killed "$OUT/killed.txt"; then
         # An executor in a scope of its own may not be in this shell's /proc: the machine's restart ends its scope instead.
         say "kill: no writer visible from the pod's shell ($(head -c 200 "$OUT/killed.txt")): the machine restarted mid-write"
