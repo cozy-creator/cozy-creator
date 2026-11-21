@@ -1,0 +1,33 @@
+[package]
+name = "xs170-artifact-reissue"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+default-run = "xs170-artifact-reissue"
+
+# A one-off client, not a member of the installed Cozy CLI or SDK.
+[workspace]
+
+[features]
+default = []
+operator = ["dep:api", "dep:platform", "dep:tokio", "dep:bytes", "dep:pep440_rs", "tensorfs/net"]
+
+[[bin]]
+name = "xs170-artifact-operator"
+path = "src/bin/operator.rs"
+required-features = ["operator"]
+
+[dependencies]
+tensorfs = { path = "../../crates/tensorfs", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+api = { path = "../../crates/api", features = ["hub"], optional = true }
+platform = { path = "../../crates/platform", default-features = false, optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
+bytes = { version = "1", optional = true }
+pep440_rs = { version = "0.7.3", default-features = false, optional = true }
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"
