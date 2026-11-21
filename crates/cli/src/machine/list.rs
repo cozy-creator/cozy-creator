@@ -198,6 +198,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         if let Some(failure) = &r.failure {
             record = record.field("failure", failure);
         }
+        if let Some(contact) = r.contact.as_ref().and_then(hub_contact) {
+            record = record.field("hub contact", contact);
+        }
         if let Some(note) = &r.placement_note {
             record = record.field("placement", note);
         }
@@ -592,6 +595,17 @@ fn ends_cell(m: &Machine) -> String {
 }
 
 /// Since when the Hub cannot reach a live rental its provider reports running.
+/// When its Hub last heard it on each route, one line: `checked in 4s ago · reached 2m ago · its last probe missed`.
+fn hub_contact(c: &api::calcifer::Contact) -> Option<String> {
+    let ago = |at: Option<i64>, what: &str| at.map(|at| format!("{what} {} ago", clock(now_ms() - at)));
+    let mut parts: Vec<String> =
+        [ago(c.checked_in_at_ms, "checked in"), ago(c.reached_at_ms, "reached"), ago(c.vouched_at_ms, "vouched")].into_iter().flatten().collect();
+    if c.probe_missed {
+        parts.push("its last probe missed".into());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 fn unreachable_since(m: &Machine) -> Option<i64> {
     let since = m.rental.as_ref()?.unreachable_since_ms?;
     (m.state == MachineState::Ready).then_some(since)

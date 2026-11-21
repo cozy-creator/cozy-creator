@@ -1987,6 +1987,12 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         failure: rental.failure.as_ref().map(|f| f.code.clone()),
         placement_note: rental.placement_note.clone().filter(|n| !n.is_empty()),
         unreachable_since_ms: rental.unreachable_since.as_deref().and_then(ms),
+        contact: rental.contact.as_ref().map(|c| api::calcifer::Contact {
+            checked_in_at_ms: c.checked_in_at.as_deref().and_then(ms),
+            reached_at_ms: c.reached_at.as_deref().and_then(ms),
+            vouched_at_ms: c.vouched_at.as_deref().and_then(ms),
+            probe_missed: c.probe_missed,
+        }),
         base_worker_image_digest: Some(rental.base_worker_image_digest.clone())
             .filter(|d| !d.is_empty()),
         ssh: rental.ssh_address.clone().filter(|a| !a.is_empty()),

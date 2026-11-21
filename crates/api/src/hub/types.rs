@@ -834,7 +834,20 @@ pub struct Rental {
     /// The rental runs off the continent its request came from.
     pub placement_note: Option<String>,
     pub unreachable_since: Option<String>,
+    /// When the Hub last heard its machine on each route (th-378); absent from a Hub before it.
+    pub contact: Option<RentalContact>,
     pub boot: Option<RentalBoot>,
+}
+
+/// A ready rental's machine as the Hub last heard it: its check-in, the Hub's probe that reached it, its owner's vouch.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RentalContact {
+    pub checked_in_at: Option<String>,
+    pub reached_at: Option<String>,
+    pub vouched_at: Option<String>,
+    /// The Hub's latest probe did not reach it.
+    pub probe_missed: bool,
 }
 
 /// What went wrong with the rental, by the Hub's code (`readiness.provider_stopped`, …).

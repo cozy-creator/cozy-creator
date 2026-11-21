@@ -650,6 +650,16 @@ export type CodeRequest = { hub?: string | null, purpose: Purpose, email?: strin
 export type Component = { "version": string } | { "file": DevBuild };
 
 /**
+ * A ready rental's machine as its Hub last heard it (th-378): its check-in, the Hub's probe that reached it, and its owner's
+ * vouch for its boot; absent when never.
+ */
+export type Contact = { checked_in_at_ms?: number | null, reached_at_ms?: number | null, vouched_at_ms?: number | null,
+/**
+ * The Hub's latest probe did not reach it.
+ */
+probe_missed?: boolean, };
+
+/**
  * What `POST /v1/projects/{id}/copies` made: each copy, in the order asked.
  */
 export type Copied = { made: Array<AssetMade>,
@@ -2740,9 +2750,13 @@ failure?: string | null,
  */
 placement_note?: string | null,
 /**
- * Since when the Hub cannot reach it, though its provider reports it running.
+ * Since when no route reaches it (no check-in, probe or vouch), though its provider reports it running.
  */
 unreachable_since_ms?: number | null,
+/**
+ * When its Hub last heard it on each route; absent from a Hub before th-378.
+ */
+contact?: Contact | null,
 /**
  * The worker image it boots, by digest.
  */
