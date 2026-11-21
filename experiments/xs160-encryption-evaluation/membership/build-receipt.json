@@ -1,0 +1,15 @@
+{
+  "date": "2026-11-09",
+  "command": "CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=target cargo +1.99.1 run --locked",
+  "exit_code": 0,
+  "format_check_exit_code": 0,
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "sha256": {
+    "Cargo.toml": "612137ec138bfafa3a6c6ce8150dd68e6f9d1842438f423ea06a2aafde859617",
+    "Cargo.lock": "359fd5ce04571762e71dbb5b7730c64d9bf77977e35dafcdf4664d30e5a10451",
+    "src/main.rs": "767233cc92db36fd9c441d53195f81949449f66d699fea3b996943b9344e9531",
+    "results.json": "7a84aeedc0e2a1431388a35588967113bce9c2a05d1abd6bfe22cd1a1ab40cec"
+  },
+  "notes": "Synthetic randomized fixtures; rerunning changes ciphertext, message lengths, and JSON result hashes. Wrapping keys are not written to disk. No benchmark."
+}

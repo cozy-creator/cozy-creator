@@ -1,0 +1,85 @@
+{
+  "binary": "/home/fidika/cozy_v2/outputs/xs160-evaluation-20261109/filesystem/bin/securefs",
+  "binary_sha256": "a9aa990b007813916b03ec6f8cb83cdc5516bf7950ce432f841b86129b0cf8e5",
+  "version": "securefs v2.0.0\nCrypto++ 8.9\nlibfuse 29\n\nHardware features available:\nSSE2: true\nSSE3: true\nSSE4.1: true\nSSE4.2: true\nAVX: true\nAVX2: true\nAES-NI: true\nCLMUL: true\nSHA: true\n",
+  "artifact_directory": "/home/fidika/cozy_v2/outputs/xs160-evaluation-20261109/filesystem/run-01",
+  "limits": [
+    "Linux only",
+    "synthetic files",
+    "no security audit",
+    "no Creator integration",
+    "no native GUI player proof"
+  ],
+  "cases": {
+    "normal_file_io": {
+      "result": "pass",
+      "bytes": 4194344,
+      "sha256": "a4cf1669e3f568e7fb84c573e454236c37d886195ea935308185ed7d942ab34d",
+      "operations": [
+        "create",
+        "fsync",
+        "read",
+        "seek",
+        "rename",
+        "overwrite"
+      ]
+    },
+    "ordinary_media_program": {
+      "result": "pass",
+      "ffprobe": {
+        "format": {
+          "duration": "2.000000",
+          "size": "111932"
+        }
+      },
+      "seek_decode": "one frame at 1 second",
+      "command": [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x180:rate=24",
+        "-t",
+        "2",
+        "-c:v",
+        "mpeg4",
+        "/home/fidika/cozy_v2/outputs/xs160-evaluation-20261109/filesystem/run-01/mounted/synthetic.mp4"
+      ]
+    },
+    "backing_inspection": {
+      "result": "pass",
+      "files": 8,
+      "known_plaintext_marker_absent": true,
+      "known_plaintext_names_absent": true,
+      "limitation": "Marker scan is a functional observation, not a cryptographic confidentiality proof."
+    },
+    "open_handle_lock": {
+      "unmount_returncode": 1,
+      "stderr": "fusermount: failed to unmount /home/fidika/cozy_v2/outputs/xs160-evaluation-20261109/filesystem/run-01/mounted: Device or resource busy",
+      "still_mounted": true
+    },
+    "manual_lock": {
+      "result": "pass",
+      "mountpoint_remains": true,
+      "visible_entries": []
+    },
+    "remount": {
+      "result": "pass",
+      "exact_bytes_preserved": true
+    },
+    "idle_expiration": {
+      "result": "pass",
+      "configured_seconds": 3,
+      "observed_seconds": 3.031,
+      "still_mounted": false
+    }
+  },
+  "result": "pass",
+  "cleanup": {
+    "mounted": false,
+    "provider_running": false,
+    "backing_preserved": true
+  }
+}

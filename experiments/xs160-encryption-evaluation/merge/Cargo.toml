@@ -1,0 +1,12 @@
+[package]
+name = "xs160-merge-evaluation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+automerge = "=0.12.0"
+loro = "=1.17.1"
+serde_json = "=1.0.145"

@@ -1,0 +1,11 @@
+[package]
+name = "xs160-threshold-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rand = "=0.10.0"
+vsss-rs = "=6.0.1"

@@ -1,0 +1,3 @@
+   Compiling project-pre-revocation-probe v0.1.0 (/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre)
+    Finished `release` profile [optimized] target(s) in 4.59s
+     Running `target/release/project-pre-revocation-probe`

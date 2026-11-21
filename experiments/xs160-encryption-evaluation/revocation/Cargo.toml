@@ -1,0 +1,16 @@
+[package]
+name = "project-pre-revocation-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+api480 = []
+
+[dependencies]
+recrypt = "=0.16.0"
+aes-gcm = "=0.10.3"
+sha2 = "=0.10.9"
+

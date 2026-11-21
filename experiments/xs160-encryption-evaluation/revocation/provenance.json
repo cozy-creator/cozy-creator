@@ -1,0 +1,141 @@
+{
+  "checked_utc": "2026-11-10T03:11:48.825675+00:00",
+  "sources": {
+    "https://crates.io/api/v1/crates/recrypt": {
+      "crate": {
+        "max_version": "0.16.0",
+        "updated_at": "2026-08-19T17:03:57.955258Z",
+        "repository": "https://github.com/IronCoreLabs/recrypt-rs"
+      },
+      "versions": [
+        {
+          "num": "0.16.0",
+          "created_at": "2026-03-09T19:50:03.977160Z",
+          "yanked": false,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.88.0"
+        },
+        {
+          "num": "0.15.0",
+          "created_at": "2026-01-30T20:06:16.436922Z",
+          "yanked": false,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.88.0"
+        },
+        {
+          "num": "0.14.1",
+          "created_at": "2024-12-05T21:36:02.152037Z",
+          "yanked": false,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.70.0"
+        }
+      ]
+    },
+    "https://crates.io/api/v1/crates/umbral-pre": {
+      "crate": {
+        "max_version": "0.11.0",
+        "updated_at": "2023-08-01T16:03:34.286961Z",
+        "repository": "https://github.com/nucypher/rust-umbral/tree/master/umbral-pre"
+      },
+      "versions": [
+        {
+          "num": "0.11.0",
+          "created_at": "2023-08-01T16:03:34.286961Z",
+          "yanked": false,
+          "license": "GPL-3.0-only",
+          "rust_version": null
+        },
+        {
+          "num": "0.10.0",
+          "created_at": "2023-05-29T18:48:16.758805Z",
+          "yanked": false,
+          "license": "GPL-3.0-only",
+          "rust_version": null
+        },
+        {
+          "num": "0.9.1",
+          "created_at": "2023-02-18T01:27:48.663765Z",
+          "yanked": false,
+          "license": "GPL-3.0-only",
+          "rust_version": null
+        }
+      ]
+    },
+    "https://crates.io/api/v1/crates/ironoxide": {
+      "crate": {
+        "max_version": "4.4.2",
+        "updated_at": "2026-08-27T18:00:13.023005Z",
+        "repository": "https://github.com/IronCoreLabs/ironoxide"
+      },
+      "versions": [
+        {
+          "num": "4.4.2",
+          "created_at": "2026-08-27T18:00:13.023005Z",
+          "yanked": false,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.88.0"
+        },
+        {
+          "num": "4.4.1",
+          "created_at": "2026-05-06T18:48:54.720462Z",
+          "yanked": false,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.88.0"
+        },
+        {
+          "num": "4.4.0",
+          "created_at": "2026-05-05T21:05:50.497803Z",
+          "yanked": true,
+          "license": "AGPL-3.0-only",
+          "rust_version": "1.88.0"
+        }
+      ]
+    },
+    "https://api.github.com/repos/IronCoreLabs/recrypt-rs": {
+      "full_name": "IronCoreLabs/recrypt-rs",
+      "archived": false,
+      "default_branch": "main",
+      "pushed_at": "2026-08-24T18:49:02Z",
+      "license": {
+        "key": "agpl-3.0",
+        "name": "GNU Affero General Public License v3.0",
+        "spdx_id": "AGPL-3.0",
+        "url": "https://api.github.com/licenses/agpl-3.0",
+        "node_id": "MDc6TGljZW5zZTE="
+      }
+    },
+    "https://api.github.com/repos/IronCoreLabs/recrypt-rs/commits?per_page=1": [
+      {
+        "sha": "91cb16589e6676ef19919c2ae0943e52ca4cba3b",
+        "date": "2026-08-24T18:49:00Z",
+        "message": "Bump to next development version 0.16.1-pre.8 [skip ci]"
+      }
+    ],
+    "https://api.github.com/repos/nucypher/rust-umbral": {
+      "full_name": "nucypher/rust-umbral",
+      "archived": false,
+      "default_branch": "master",
+      "pushed_at": "2024-01-29T04:11:40Z",
+      "license": null
+    },
+    "https://api.github.com/repos/nucypher/rust-umbral/commits?per_page=1": [
+      {
+        "sha": "6f692dd5f2944889c45185875545a0159ea7b735",
+        "date": "2024-01-29T04:11:40Z",
+        "message": "Merge pull request #134 from fjarri/simplify-secrets\n\nMake `SecretKey::try_from_be_bytes()` take just a slice reference"
+      }
+    ],
+    "https://raw.githubusercontent.com/trailofbits/publications/master/reviews/nucypher.pdf": {
+      "local": "/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre/source-evidence/nucypher-tob-2018.pdf"
+    },
+    "https://www.nccgroup.com/media/25fmjqps/_ncc_group_ironcorelabs_recrypt_report.pdf": {
+      "local": "/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre/source-evidence/ncc-ironcore-2018.pdf"
+    },
+    "https://raw.githubusercontent.com/nucypher/rust-umbral/6f692dd5f2944889c45185875545a0159ea7b735/umbral-pre/src/key_frag.rs": {
+      "local": "/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre/source-evidence/umbral-key-frag.rs"
+    },
+    "https://raw.githubusercontent.com/nucypher/rust-umbral/6f692dd5f2944889c45185875545a0159ea7b735/umbral-pre/src/capsule.rs": {
+      "local": "/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre/source-evidence/umbral-capsule.rs"
+    }
+  }
+}
