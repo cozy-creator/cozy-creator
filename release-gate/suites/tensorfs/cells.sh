@@ -40,6 +40,8 @@
 #   layout-probe     Comfy-Org's ComfyUI H3 Ref2VA DiT (contiguous Q/K/V) read as h3.native: the layout probe refuses it
 #                    (LAYOUT_MISMATCH) after the header and the probed rows. That layout read right passes the probe in
 #                    the h3-comfy-layout cell's import.
+#   lane-choice      only by name, on a GPU SKU: the machine's lane choice, each arm a verdict of its own
+#                    (lane-choice/cells.sh)
 # check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
 TFS_MODEL=${TFS_MODEL:-qwen/qwen3.5-9b} TFS_RESUME_MB=${TFS_RESUME_MB:-2048} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
 T=$OUT/suite-tensorfs TFS_DESTS=()
@@ -290,3 +292,4 @@ PY
   tfs_burst straggler-burst
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi
+if [[ $ONLY == *",lane-choice,"* ]]; then echo lane-choice >> "$T/cases"; . "$HERE/suites/tensorfs/lane-choice/cells.sh"; fi

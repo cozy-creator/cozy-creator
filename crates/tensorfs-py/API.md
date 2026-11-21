@@ -33,8 +33,8 @@ In these examples `me/model` stands for a repository you can read, with `bf16` a
 
 `open` returns a `Checkpoint`. By default (`lazy=True`), it loads metadata; reading
 tensors then downloads the objects those tensors need. `release` names a release (none: the
-newest) and `lane` its commit of that lane; without a lane the endpoint picks what `gpus` run best
-(omitted: the visible GPUs; `[]`: the CPU). `"me/model@sha256:<tree>"` names a commit by id. No separate
+newest) and `lane` its commit of that lane; without a lane this machine picks what `gpus` run best
+(omitted: the visible GPUs; `[]`: the CPU) from the release's lanes, of the ones it holds when offline. `"me/model@sha256:<tree>"` names a commit by id. No separate
 download call is required. The same `open` accepts a local `.cozytensors` header or an
 explicitly materialized folder; those are optional input forms.
 

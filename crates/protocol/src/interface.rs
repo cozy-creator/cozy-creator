@@ -91,7 +91,7 @@ pub struct Slot {
     /// The release a run that names none loads: `[org/]model@release`.
     #[serde(default, deserialize_with = "or_default")]
     pub default: Option<String>,
-    /// The lane its default loads in; absent: the Hub's pick for the machine.
+    /// The lane its default loads in; absent: the machine's pick.
     #[serde(default, deserialize_with = "or_default")]
     pub lane: Option<String>,
     /// `decode` for an LM token loop; absent is compute.

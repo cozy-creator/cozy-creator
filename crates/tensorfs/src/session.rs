@@ -121,8 +121,8 @@ pub(crate) fn commit_id(text: &str) -> bool {
 
 #[derive(Clone, Debug)]
 pub struct Open {
-    /// The lane asked (a label: `bf16`, `fp8`, …): only it answers; none lets the endpoint pick
-    /// what `gpus` run best.
+    /// The lane asked (a label: `bf16`, `fp8`, …): only it answers; none lets this machine pick
+    /// what `gpus` run best (`precision::choose`).
     pub lane: Option<String>,
     /// Compute capabilities (e.g. "8.9"); none detects visible devices, empty is the CPU.
     pub gpus: Option<Vec<String>>,
@@ -227,12 +227,15 @@ impl Client {
             reference.lane = options.lane.clone();
             reference.endpoint = options.endpoint.clone();
             let gpus = match &options.gpus {
-                Some(gpus) => gpus.clone(),
-                None => platform::gpu::probe(std::env::var("CUDA_VISIBLE_DEVICES").ok().as_deref())
-                    .0.into_iter().map(|g| g.capability).collect(),
+                Some(gpus) => crate::precision::Gpus::of(&gpus.iter().map(String::as_str).collect::<Vec<_>>()),
+                None => {
+                    let (probed, _) = platform::gpu::probe(std::env::var("CUDA_VISIBLE_DEVICES").ok().as_deref());
+                    let ccs: Vec<&str> = probed.iter().map(|g| g.capability.as_str()).collect();
+                    crate::precision::Gpus::of(&ccs).with_capacity(probed.iter().map(|g| g.memory_bytes).filter(|&n| n > 0).min())
+                }
             };
             let source = self.source(&reference, options.local_files_only)?;
-            source.open(reference, &crate::fetch::Hardware { gpus, ..Default::default() }).await?
+            source.open(reference, &gpus).await?
         };
         if !options.lazy {
             checkpoint.download(&Download::default()).await?;

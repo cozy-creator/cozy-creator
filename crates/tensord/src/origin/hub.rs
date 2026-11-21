@@ -1,13 +1,12 @@
 //! A model at a Hub: TensorFS's distribution `Endpoint` at the Hub's origin, presenting the
 //! signer's newest run capability when the request carried one (the Hub reads the commits it names
-//! to it), else anonymous (released content). The Hub resolves a
-//! release and lane, or the machine's hardware, to one commit. Every Hub call runs on the fetch
-//! runtime.
+//! to it), else anonymous (released content). The Hub lists a release's lanes; the machine picks
+//! one (`tensorfs::lanes`). Every Hub call runs on the fetch runtime.
 use std::sync::Arc;
 
 use tensorfs::{
     err::{refuse, Code, Result},
-    fetch::{Endpoint, Hardware, Resolved, TokenProvider},
+    fetch::{Endpoint, Released, TokenProvider},
     format::ObjectRef,
 };
 
@@ -34,14 +33,12 @@ pub fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
     Ok(Remote { origin: Arc::new(endpoint), trust, local })
 }
 
-/// `repository`'s commit at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
-/// the one `hardware` runs best).
-pub fn resolve(machine: &Machine, source: &hub::Source, repository: &str, release: &str, lane: &str, hardware: &Hardware) -> Result<Resolved> {
+/// `repository`'s `release` (empty: the newest) at `source`'s Hub, with every lane of it.
+pub fn release(machine: &Machine, source: &hub::Source, repository: &str, release: &str) -> Result<Released> {
     let (endpoint, _) = endpoint(machine, source)?;
-    let (repository, release, lane, hardware) = (repository.to_string(), release.to_string(), lane.to_string(), hardware.clone());
+    let (repository, release) = (repository.to_string(), release.to_string());
     machine.block(&Stop::default(), async move {
-        let some = |text: &str| (!text.is_empty()).then(|| text.to_owned());
-        endpoint.resolve(&repository, some(&release).as_deref(), some(&lane).as_deref(), &hardware).await
+        endpoint.release(&repository, (!release.is_empty()).then_some(release.as_str())).await
     })
 }
 

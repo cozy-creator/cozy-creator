@@ -1,8 +1,8 @@
 //! The distribution client (`spec/distribution.md`): one endpoint `B` serving
-//! `B/blobs/<aa>/<bb>/<sha256>` and a model's commits and resolution, over HTTP(S) or a directory.
+//! `B/blobs/<aa>/<bb>/<sha256>` and a model's commits and its releases' lanes, over HTTP(S) or a directory.
 //!
 //! - **Reads.** Objects as Fetcher locations, whose redirects the client follows without
-//!   credentials across origins; [`Endpoint::resolve`] names a model's commit.
+//!   credentials across origins; [`Endpoint::release`] lists a release's lanes.
 //! - **Uploads.** Per object HEAD → PUT (to the HEAD's `Location`, else here) → HEAD; `412` means
 //!   present. [`upload_commit`] sends chunks, assets and repo files, then the header, then the
 //!   tree, then records the commit as the model's ([`Endpoint::commit`]).
@@ -30,6 +30,7 @@ use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{is_digest, repo_name, Header, ObjectRef, Repo, Tree};
+use crate::precision::{self, Lane, Profile};
 use crate::sha256::hex_digest;
 use crate::store::Store;
 
@@ -72,29 +73,33 @@ pub struct Uploaded {
     pub converged: bool,
 }
 
-/// What a consumer runs on, for a resolve without a lane: each GPU's compute capability (`"8.9"`,
-/// `"apple9"`; none: the CPU), the free bytes on the smallest of them, and whether it takes plain
-/// weights only (code that runs no encoded tensor).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Hardware {
-    pub gpus: Vec<String>,
-    pub free_vram: Option<u64>,
-    #[serde(default)]
-    pub plain: bool,
+/// A release as its endpoint lists it: its version (empty: a model with none, its newest commit)
+/// and every lane of it. The machine picks one (`precision::choose`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Released {
+    pub release: String,
+    pub lanes: Vec<Lane>,
 }
 
-/// A model's commit as resolved: its release (empty: none), lane, tree and header, and why a
-/// better lane was passed over.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Resolved {
+/// The Hub's resolve answer, the parts read here: the release and its lanes (tensorhub
+/// `Resolution.Lanes`). The one place the wire's names are spelled.
+#[derive(serde::Deserialize)]
+struct Answer {
+    release: String,
+    lanes: Option<Vec<AnswerLane>>,
+}
+
+#[derive(serde::Deserialize)]
+struct AnswerLane {
+    label: String,
+    commit: ObjectRef,
+    header: ObjectRef,
+    bytes: u64,
+    kinds: Vec<String>,
     #[serde(default)]
-    pub release: String,
+    family: String,
     #[serde(default)]
-    pub lane: String,
-    pub commit: ObjectRef,
-    pub header: ObjectRef,
-    #[serde(default)]
-    pub reasons: Vec<String>,
+    bits: u32,
 }
 
 /// An answer read whole.
@@ -163,43 +168,38 @@ impl Endpoint {
         self
     }
 
-    /// The commit of model `name` at `release` (none: the newest) in `lane`; with no lane, the
-    /// one `hardware` runs best (the Hub's choice; a directory's release has one lane, or its
-    /// model no releases: its newest commit).
-    pub async fn resolve(&self, name: &str, release: Option<&str>, lane: Option<&str>, hardware: &Hardware) -> Result<Resolved> {
+    /// Model `name`'s `release` (none: the newest) and its lanes: the Hub's catalog, with each
+    /// lane's profile as it indexed the header (profiled here when its table named none and this
+    /// one does); a directory's, as its store recorded it.
+    pub async fn release(&self, name: &str, release: Option<&str>) -> Result<Released> {
         check_repo_name(name)?;
         let base = match &self.at {
             At::Http(base) => base,
-            At::Dir(..) => {
-                // The store's own record of the model: the one way refs are read and written.
-                let Some(repo) = self.store()?.get_ref(name).map_err(crate::store::Error::refusal)? else {
-                    return refuse(Code::REF_NOT_FOUND, format!("no model {name} at {}", self.url));
-                };
-                let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{name}: {e}") };
-                let (release, lane, commit) = repo.resolve(release, lane)
-                    .map_err(|e| Refusal { code: Code::REF_NOT_FOUND, detail: e.to_string() })?;
-                let tree = Tree::from_json(&self.document(&commit).await?).map_err(unread)?;
-                let header = tree.header().map_err(unread)?.1.clone();
-                return Ok(Resolved { release, lane: lane.unwrap_or(tree.lane), commit, header, reasons: vec![] });
-            }
+            At::Dir(..) => return crate::lanes::recorded(self.store()?, name, release)?
+                .ok_or_else(|| Refusal { code: Code::REF_NOT_FOUND, detail: format!("no model {name} at {}", self.url) }),
         };
-        let mut url = format!("{}?", repo_url(base, &format!("v1/models/{}/resolve", name.to_ascii_lowercase())));
-        let mut query = |key: &str, value: &str| url.push_str(&format!("{key}={}&", query_escape(value)));
-        release.into_iter().for_each(|r| query("release", r));
-        lane.into_iter().for_each(|l| query("lane", l));
-        if !hardware.gpus.is_empty() {
-            query("gpus", &hardware.gpus.join(","));
-            hardware.free_vram.into_iter().for_each(|free| query("free_vram", &free.to_string()));
+        let mut url = repo_url(base, &format!("v1/models/{}/resolve", name.to_ascii_lowercase()));
+        if let Some(release) = release {
+            url.push_str(&format!("?release={}", query_escape(release)));
         }
-        if hardware.plain {
-            query("plain", "true");
-        }
-        url.pop();
         let reply = self.exchange(Ask { method: "GET", url: &url, headers: vec![], body: None, payload: None, auth: true }).await?;
-        match reply.status {
-            200 => serde_json::from_slice(&reply.body).map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("GET {url}: {e}") }),
-            _ => Err(refusal(&reply, "GET")),
+        if reply.status != 200 {
+            return Err(refusal(&reply, "GET"));
         }
+        let unread = |e: String| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("GET {url}: {e}") };
+        let answer: Answer = serde_json::from_slice(&reply.body).map_err(|e| unread(e.to_string()))?;
+        let Some(listed) = answer.lanes else {
+            return Err(unread("this Hub predates machine-side lane choice: its answer lists no lanes".into()));
+        };
+        let mut lanes = Vec::with_capacity(listed.len());
+        for l in listed {
+            let profile = match l.family.is_empty() && precision::tabled(&l.kinds) {
+                true => Profile::of(&Header::from_cbor(&self.document(&l.header).await?).map_err(|e| unread(e.to_string()))?),
+                false => Profile { bits: l.bits, family: l.family, bytes: l.bytes, kinds: l.kinds },
+            };
+            lanes.push(Lane { label: l.label, commit: l.commit, header: l.header, profile, held: false });
+        }
+        Ok(Released { release: answer.release, lanes })
     }
 
     /// Records the uploaded tree `commit` (its closure already here) as one of model `name`'s

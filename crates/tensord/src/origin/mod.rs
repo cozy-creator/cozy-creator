@@ -21,7 +21,7 @@ use tensorfs::{
     store::Store,
 };
 
-pub use hub::{object, remote, resolve};
+pub use hub::{object, release, remote};
 
 use crate::stop::Stop;
 

@@ -19,7 +19,7 @@ pub struct Call<'a> {
     pub callable: &'a Callable,
     /// 0: every GPU the run's slots support on its machine.
     pub gpus: u32,
-    /// The main model's lane; empty: the Hub's pick for the machine.
+    /// The main model's lane; empty: the machine's pick.
     pub lane: String,
     /// `--attention-kernel`; empty: the machine's own selection.
     pub attention_kernel: &'a str,

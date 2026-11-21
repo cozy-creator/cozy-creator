@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use bytes::Bytes;
 
 use base64::engine::{general_purpose::STANDARD, Engine as _};
-use super::endpoint::{upload_commit, Endpoint, Hardware, Payload, UploadControl};
+use super::endpoint::{upload_commit, Endpoint, Payload, UploadControl};
 use super::{Client, Config, Fetcher, ObjectStore, Origin, Want};
 use crate::err::{Code, Refusal, Result};
 use crate::format::{Config as HeaderConfig, Dtype, ObjectRef, Tree};
@@ -134,7 +134,7 @@ async fn read_side(
     scratch: &Path,
     cases: &mut Cases,
 ) -> Result<()> {
-    let absent = endpoint.resolve(&format!("conformance/absent-{}", &nonce[..12]), None, None, &Hardware::default()).await;
+    let absent = endpoint.release(&format!("conformance/absent-{}", &nonce[..12]), None).await;
     let outcome = expect(absent.as_ref().is_err_and(|e| e.code == Code::REF_NOT_FOUND), || format!("{absent:?}"));
     cases.record("resolve: an absent model is 404", true, Some(outcome));
 

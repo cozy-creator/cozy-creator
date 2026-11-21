@@ -210,39 +210,6 @@ impl Repo {
         self.commits.push(commit);
     }
 
-    /// The commit `release` (none: the newest) names in `lane` (none: its only lane), as
-    /// (release, lane, commit). A repo without releases (a machine's own model) answers its newest
-    /// commit, in no release. Refused naming what the repo has.
-    pub fn resolve(&self, release: Option<&str>, lane: Option<&str>) -> Result<(String, Option<String>, ObjectRef)> {
-        if self.releases.is_empty() && release.is_none() {
-            return match self.commits.last() {
-                Some(commit) => Ok((String::new(), lane.map(str::to_owned), commit.clone())),
-                None => invalid(format!("{} has no commit", self.name)),
-            };
-        }
-        let found = match release {
-            Some(version) => self.release(version),
-            None => self.releases.last(),
-        };
-        let Some(found) = found else {
-            let has: Vec<&str> = self.releases.iter().map(|r| r.version.as_str()).collect();
-            return invalid(format!("{} has no release {} (has {has:?})", self.name, release.unwrap_or("at all")));
-        };
-        let picked = match lane {
-            Some(lane) => found.lanes.get_key_value(lane),
-            None if found.lanes.len() == 1 => found.lanes.iter().next(),
-            None => None,
-        };
-        match picked {
-            Some((lane, commit)) => Ok((found.version.clone(), Some(lane.clone()), commit.clone())),
-            None => {
-                let has: Vec<&str> = found.lanes.keys().map(String::as_str).collect();
-                let wanted = lane.map_or_else(|| "name a lane".to_owned(), |lane| format!("has no lane {lane:?}"));
-                invalid(format!("{}@{}: {wanted} (lanes {has:?})", self.name, found.version))
-            }
-        }
-    }
-
     /// Every commit the repo keeps alive, each once.
     pub fn roots(&self) -> Vec<&ObjectRef> {
         let mut roots: Vec<&ObjectRef> = self.releases.iter().flat_map(|r| r.lanes.values()).chain(&self.commits).collect();

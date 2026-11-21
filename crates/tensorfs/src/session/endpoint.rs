@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use crate::failure::{Failure, Result};
 use crate::fetch::{self, Client as Transport, SourcePolicy};
 use crate::format::ObjectRef;
+use crate::precision::{self, Ask, Chosen, Gpus};
 
 use super::provider::from_native;
 use super::{Config, TokenProvider};
@@ -73,9 +74,10 @@ impl Endpoint {
         self.inner.document(object).await.map_err(from_native)
     }
 
-    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `hardware`
-    /// runs best), without opening it or filling a cache.
-    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, lane: Option<&str>, hardware: &fetch::Hardware) -> Result<fetch::Resolved> {
-        self.inner.resolve(repo_id, release, lane, hardware).await.map_err(from_native)
+    /// The lane of `repo_id` at `release` (none: the newest) this machine picks for `ask` on
+    /// `gpus`, without opening it or filling a cache: no lane counts as held.
+    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, gpus: &Gpus, ask: &Ask) -> Result<Chosen> {
+        let released = self.inner.release(repo_id, release).await.map_err(from_native)?;
+        precision::choose(repo_id, &released.release, &released.lanes, gpus, ask).map_err(from_native)
     }
 }
