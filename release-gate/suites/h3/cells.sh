@@ -6,7 +6,7 @@
 # - A 15 s take made as a box, then its no-prompt Upscale at 1080p in that executor and at 1440p in a fresh one
 #   (`take-upscale-15s`, cr-299).
 # - A plate (a synthetic, people-free test pattern) edited as long as the shot, shorter, longer, at 30 fps and at 9:16: the
-#   output must follow it frame by frame.
+#   output must follow it frame by frame. Its Sol steps run sparse as a render's do, and its transformer GEMMs 8-bit (cl-1081).
 # - First and last keyframes: the shot opens and ends on them without a cut.
 # - A plate and reference footage past one segment (se-086): `guide-30s` and `footage-30s`.
 # - A shot picked up from its latents (`pickup`, xs-139), and the full model at 30 steps.
@@ -82,6 +82,22 @@ guide_cell() {  # guide_cell <cell> <plate> <seconds> <seed>
 }
 guide_cell guide-equal guide-5s.mp4 5 $((R + 73))
 judge guide-equal guide-equal '.within_1 >= 0.8' guide "$OUT/guide-5s.mp4"
+# cl-1081 (Paul, 11-16: "an H100 should be able to generate 15 seconds of H3 footage in like 6 minutes or so … so 140 seconds
+# per step is a big regression"): an edit's guide is video, not a reference, so its Sol steps run sparse as a render's do
+# (Paul 11-12, carried frames: "the same sparsity policy as the other frames"); its plate inside the protected prefix ran
+# every step of a 15 s edit dense, 139-154 s each on an H100. And every transformer GEMM of a render and of a LoRA'd edit
+# runs 8-bit or less.
+sparse_8bit() {  # sparse_8bit <check> <cell>: each segment call's Sol steps sparse, its transformer GEMMs at most 8-bit
+  [ -f "$2.number" ] || return 0
+  local r
+  r=$(jq -c '[.calls[]? | select(.function | test("_segment$")) | (.measurements.observations // []) | {
+    sparse: ([.[] | select(.name == "attention.sol.calls") | .fields.sparse // 0] | add // 0),
+    gemm: ([.[] | select(.name == "gemm.selected" and (.fields.component | test("transformer"))) | .fields.format] | unique)}]' "$OUT/$2.json" 2>/dev/null)
+  expect "$1" "$(jq -r 'if length > 0 and all(.[]; .sparse > 0 and (.gemm | length) > 0 and all(.gemm[]; test("^(int8|fp8|nvfp4|int4)")))
+    then "PASS" else "FAIL" end' <<< "${r:-[]}" 2>/dev/null || echo FAIL)" "${r:-no record}"
+}
+sparse_8bit guide-equal-sparse guide-equal
+sparse_8bit regen-768p-sparse regen-768p
 # Shorter than a segment: the 3 s plate's 72 frames are followed, and the rest of H3's shortest segment (5 s, 124 frames)
 # holds together. The bar sits 3 frames under generate's own plate before 0.10 (0.792-0.833 within 1 frame over 72 guided
 # frames: gates 40991023097, 41012561523, 41153513878).
