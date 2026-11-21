@@ -1,0 +1,26 @@
+{
+  "name": "creator-canvas-selection-benchmark",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5197 --strictPort",
+    "build": "vite build",
+    "serve": "vite preview --host 127.0.0.1 --port 5197 --strictPort"
+  },
+  "dependencies": {
+    "@types/node": "24.13.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@types/three": "0.187.0",
+    "@xyflow/react": "12.12.1",
+    "gpucanvas": "0.4.4",
+    "leafer-ui": "2.3.4",
+    "pixi.js": "8.23.0",
+    "playwright": "1.65.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "three": "0.187.0",
+    "typescript": "6.0.2",
+    "vite": "8.0.0"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "workload": "13 Ctrl+wheel zoom-out events, deltaY50, with 130ms spacing requested, then wait for image readiness, real pan and Home",
+  "boundary": "One observational case per backend; capture includes loading and readiness waits, not matched steady-state timings; 2970 cards visible at final camera. Permanent refresh-required freeze not reproduced in isolated headless browser.",
+  "results": [
+    {
+      "mode": "pixi",
+      "status": "recovered",
+      "headless": true,
+      "browser": "system Chrome 151.0.7922.169",
+      "renderer": "ANGLE (Intel, Vulkan 1.4.318 (Intel(R) Graphics (RPL-S) (0x0000A788)), Intel open-source Mesa driver-25.2.8)",
+      "n": 5000,
+      "finalVisible": 2970,
+      "frames": 716,
+      "p95FrameMs": 66.60000000000036,
+      "p99FrameMs": 66.70000000000073,
+      "maximumFrameMs": 150,
+      "maximumInputCheckMs": 303.6151410000002,
+      "homeRecoveryMs": 302.4516100000001,
+      "errors": [],
+      "receipt": "/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/pixi.json"
+    },
+    {
+      "mode": "react-dom",
+      "status": "recovered",
+      "headless": true,
+      "browser": "system Chrome 151.0.7922.169",
+      "renderer": "ANGLE (Intel, Vulkan 1.4.318 (Intel(R) Graphics (RPL-S) (0x0000A788)), Intel open-source Mesa driver-25.2.8)",
+      "n": 5000,
+      "finalVisible": 2970,
+      "frames": 138,
+      "p95FrameMs": 216.69999999999982,
+      "p99FrameMs": 499.9000000000001,
+      "maximumFrameMs": 1249.8999999999996,
+      "maximumInputCheckMs": 2228.166400999995,
+      "homeRecoveryMs": 310.6267020000014,
+      "errors": [],
+      "receipt": "/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/react-dom.json"
+    },
+    {
+      "mode": "reactflow",
+      "status": "recovered",
+      "headless": true,
+      "browser": "system Chrome 151.0.7922.169",
+      "renderer": "ANGLE (Intel, Vulkan 1.4.318 (Intel(R) Graphics (RPL-S) (0x0000A788)), Intel open-source Mesa driver-25.2.8)",
+      "n": 5000,
+      "finalVisible": 2970,
+      "frames": 133,
+      "p95FrameMs": 250.10000000000036,
+      "p99FrameMs": 1066.6999999999998,
+      "maximumFrameMs": 2199.9000000000005,
+      "maximumInputCheckMs": 3232.2488890000022,
+      "homeRecoveryMs": 469.482167999995,
+      "errors": [],
+      "receipt": "/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/reactflow.json"
+    }
+  ]
+}
