@@ -3102,6 +3102,8 @@ async fn render_quotes(
 /// it, and its walk orders it once the ask is committed (cl-1066): nothing is bought for a render that never begins.
 async fn render(api: &Arc<Api>, id: &str, asked: Runs) -> Result<Asked, Refusal> {
     let (agreed, names) = (asked.agreed, asked.names.join(" "));
+    let boxes: HashSet<String> = asked.names.iter().map(|name| name_key(name)).collect();
+    let (mut held, mut renting) = (HashSet::<String>::new(), String::new());
     let mut plan = planned(api, id, asked).await?;
     if let [On::New(sku)] = plan.ask.target.on.clone().as_slice() {
         let jobs = plan.jobs(api).await.map_err(Refusal)?;
@@ -3118,9 +3120,20 @@ async fn render(api: &Arc<Api>, id: &str, asked: Runs) -> Result<Asked, Refusal>
             let message = format!("Renting {card} for this render: it renders there once it's up.");
             plan.lines.push(Said { level: NoteLevel::Info, message, names: vec![] });
             plan.ask.order = Some(order);
+            // Its boxes' renders held for want of a machine that can take them (disk room, cl-1175; a GPU, cl-1279) are this one now:
+            // once it's committed they go, so each box is made once, there.
+            let walker = plan.project.walker.lock().expect("walker lock");
+            held = walker.unable.keys().filter(|key| walker.graph.job(key).is_some_and(|job| boxes.contains(&name_key(&job.asset)))).cloned().collect();
+            renting = card;
         }
     }
-    begin(api, plan)
+    let project = plan.project.clone();
+    let asked = begin(api, plan)?;
+    if !held.is_empty() {
+        let instead = |asset: &str| format!("{asset} renders on a new {renting} instead");
+        stop_jobs(api, &project, &|_, key| held.contains(key), &instead).map_err(Refusal)?;
+    }
+    Ok(asked)
 }
 
 /// The key render `ask` of project `project` orders its rental under (cl-1066): the same order across retries and restarts, digested so
