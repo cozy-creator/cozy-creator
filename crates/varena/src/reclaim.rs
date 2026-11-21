@@ -57,6 +57,9 @@ pub(crate) struct Protect<'a> {
     /// request, with nothing of ours left to give, it waits for memory held outside this process
     /// (`OUTSIDE_WAIT`).
     pub(crate) outside: bool,
+    /// Working memory for this stream: its free run pages, done or freed on it, are its room in
+    /// place (`working::remaps`), so they are neither released nor waited on for it.
+    pub(crate) stream: Option<u64>,
 }
 
 /// How long a demand with no lever left of its own waits for memory outside this process to come
@@ -191,11 +194,8 @@ impl<'a> Sequence<'a> {
     fn working(&mut self, want: usize) -> Result<()> {
         if !self.protect.keep_working {
             let maximum = self.maximum.saturating_sub(self.released);
-            self.released += if self.protect.keep_phase {
-                working::release_beyond_phase(self.device, want, maximum, self.protect.pool)?
-            } else {
-                working::release_completed(self.device, want, maximum, self.protect.pool)?
-            };
+            self.released += working::release_free(self.device, want, maximum, self.protect.pool,
+                self.protect.keep_phase, self.protect.stream)?;
         }
         Ok(())
     }
@@ -219,7 +219,7 @@ impl<'a> Sequence<'a> {
                 if self.protect.keep_phase && working::phase_known(self.device)? {
                     return Ok(false);
                 }
-                if !working::wait_pending(self.device, want, self.protect.pool)? {
+                if !working::wait_pending(self.device, want, self.protect.pool, self.protect.stream)? {
                     return Ok(false);
                 }
                 // The retry uses what completed in place; if it can't, the order starts over.
@@ -434,6 +434,7 @@ fn shortfall(need: usize, failure: &AllocationFailure, gpu: &Device) -> Result<u
     if let AllocationFailure::Other(Error::Exhausted { requested_bytes, available_bytes }) = failure {
         return Ok(requested_bytes.saturating_sub(*available_bytes));
     }
+    let need = if let AllocationFailure::Short(bytes) = failure { *bytes } else { need };
     let over = gpu.over(need);
     if over != 0 {
         return Ok(over);
