@@ -403,17 +403,18 @@ impl Machine {
 }
 
 /// Runs `work`, telling `report` the bytes `progress` has of its total every quarter second
-/// meanwhile, and once more at the end.
+/// meanwhile, and once more at the end. Its end wakes the reporter: a download of what is all here
+/// returned up to 250 ms late, behind its sleep (cl-1318: 290 ms of a predicted load's way to its GPU).
 pub(crate) fn watched<T>(progress: &Progress, report: &(dyn Fn(u64, u64) + Sync), work: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering::Relaxed;
     let done = Stop::default();
     std::thread::scope(|scope| {
         scope.spawn(|| loop {
             report(progress.done(), progress.total.load(Relaxed));
-            if done.is_cancelled() {
+            if !done.sleep(Duration::from_millis(250)) {
+                report(progress.done(), progress.total.load(Relaxed));
                 return;
             }
-            std::thread::sleep(Duration::from_millis(250));
         });
         let answer = work();
         done.cancel();

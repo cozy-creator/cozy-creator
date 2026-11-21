@@ -35,7 +35,7 @@ use std::{
 use crate::storage::Store;
 
 mod load_ahead;
-pub(crate) use load_ahead::Predicted;
+pub(crate) use load_ahead::{stepped, Predicted};
 
 /// `binding`'s snapshot when it is a view this process keeps (`storage::view`), as the executor
 /// opens it: its bytes, which no store holds.
@@ -3798,6 +3798,7 @@ impl Pool {
         }
         let mut result = self.run_on(engine, id, held, plan, start, calls, &mut disposition);
         let lane = self.lanes.lock().unwrap().remove(id);
+        load_ahead::unstepped(id);
         if let (Ok(Some(post)), Some(lane)) = (&mut result, lane) {
             self.report_faults(lane, post);
         }
@@ -4442,6 +4443,7 @@ impl Pool {
         let stoppable = session.followers.is_empty().then(|| session.executor.stoppable(id));
         engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
+        load_ahead::invoked(id);
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
                 tensorfs: calls.and_then(|calls| calls.tensorfs(id)),
