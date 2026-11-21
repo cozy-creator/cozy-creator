@@ -82,11 +82,12 @@ guide_cell() {  # guide_cell <cell> <plate> <seconds> <seed>
 }
 guide_cell guide-equal guide-5s.mp4 5 $((R + 73))
 judge guide-equal guide-equal '.within_1 >= 0.8' guide "$OUT/guide-5s.mp4"
-# Shorter than a segment: the 3 s plate's 72 frames are followed, and the rest of H3's shortest segment (5 s, 124 frames)
-# holds together. The bar sits 3 frames under generate's own plate before 0.10 (0.792-0.833 within 1 frame over 72 guided
-# frames: gates 40991023097, 41012561523, 41153513878).
+# Shorter than a segment: the edit is the 3 s plate's 72 frames, followed; H3's shortest segment (5 s, 124 frames) runs past
+# and is cut (se-163, Paul 11-17: "generate those 345 frames and discard the final 5 frames from the final video"). The bar
+# sits 3 frames under generate's own plate before 0.10 (0.792-0.833 within 1 frame over 72 guided frames: gates
+# 40991023097, 41012561523, 41153513878).
 guide_cell guide-short guide-3s.mp4 3 $((R + 74))
-judge guide-short guide-short '.within_1 >= 0.75 and .coherence_after >= 0.5' guide "$OUT/guide-3s.mp4" --guided 3
+judge guide-short guide-short '.frames == 72 and .within_1 >= 0.75' guide "$OUT/guide-3s.mp4"
 # Longer: the edit is as long as its plate, 8 s, which is 192 frames on H3's 17n+5 grid.
 guide_cell guide-long guide-8s.mp4 8 $((R + 75))
 judge guide-long guide-long "(.frames - 192 | $ABS) <= 1 and .within_1 >= 0.8" guide "$OUT/guide-8s.mp4"
