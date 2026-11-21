@@ -517,35 +517,38 @@ impl State {
         }
     }
 
-    /// Where a planned loop's kept prefix ends: the latest plan position of a region that stayed
-    /// through the pass with more bytes kept than streamed up to it. None in a loop's first pass,
-    /// or with no plan. A region kept far past the streamed ones does not stretch it.
-    pub(crate) fn prefix(&self, order: &plan::Order) -> Option<u64> {
-        let boundary = self.phase_boundary?;
+    /// A planned loop's kept set (`Prefix`): the regions it reads this pass widest first, then in
+    /// plan order, and where the kept part of that order ends: the last place of a region that stayed
+    /// through the pass with more bytes kept than streamed up to it. Empty in a loop's first pass, or
+    /// with no plan. A region kept far past the streamed ones does not stretch it.
+    pub(crate) fn prefix(&self, order: &plan::Order) -> Prefix {
+        let Some(boundary) = self.phase_boundary else { return Prefix::default() };
         if !self.plan_phase.as_ref().is_none_or(PlanPhase::loops) {
-            return None;
+            return Prefix::default();
         }
-        let mut regions: Vec<(u64, usize, bool)> = self.entries.iter()
+        let mut regions: Vec<(std::cmp::Reverse<usize>, u64, bool, u64)> = self.entries.iter()
             .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high && !entry.prefetched
                 && !matches!(entry.uses.state(), Contents::Cold | Contents::Retired))
             .filter_map(|(id, entry)| match order.next_use(*id) {
-                Some((0, position)) => Some((position, entry.bytes, entry.filled <= boundary)),
+                Some((0, position)) => Some((std::cmp::Reverse(entry.bytes), position, entry.filled <= boundary, *id)),
                 _ => None,
             })
             .collect();
         regions.sort_unstable();
-        let (mut kept, mut streamed, mut end) = (0usize, 0usize, None);
-        for (position, bytes, stayed) in regions {
+        let mut found = Prefix::default();
+        let (mut kept, mut streamed) = (0usize, 0usize);
+        for (place, (std::cmp::Reverse(bytes), _, stayed, id)) in (0u64..).zip(regions) {
+            found.places.insert(id, place);
             if stayed {
                 kept += bytes;
                 if kept > streamed {
-                    end = Some(position);
+                    found.end = Some(place);
                 }
             } else {
                 streamed += bytes;
             }
         }
-        end
+        found
     }
 
     /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
@@ -555,12 +558,17 @@ impl State {
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
     /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
     ///
-    /// A planned loop keeps a prefix of its plan, as v1 did: what it refilled inside the prefix
-    /// (`prefix`) is the prefix's again, and the prefix gives way from its end, the region the next
-    /// pass needs last. By fill alone, a region another phase had evicted was streamed every pass
-    /// after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's
-    /// 4.7 (pasan, run 42322).
-    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<u64>) -> (u8, u64) {
+    /// A planned loop reads every region once a pass, so what it saves is the bytes it keeps,
+    /// whichever regions they are. It keeps them widest first, then in plan order (`prefix`), the
+    /// greedy fill that leaves least of the card unused: a fill by plan order alone leaves out a wide
+    /// region the rest has no room for, and streams it through a window its size. What it refilled
+    /// inside the kept part is kept again, and the kept part gives way from its end, the narrowest
+    /// region the next pass needs last. By fill alone, a region another phase had evicted was
+    /// streamed every pass after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB
+    /// a pass to v1's 4.7 (pasan, run 42322). By plan order alone, at 6 GiB it refilled its 0.95 GiB
+    /// int8 head, last in its plan, every token: 4.0 GiB read again a token to the 3.2 of the LM
+    /// keeper's largest-first hold (cr-336).
+    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: &Prefix) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
         }
@@ -587,8 +595,10 @@ impl State {
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
-            Some((0, position)) if touched && looping => match prefix {
-                Some(end) if used == reclaim::PHASE_USED || position < end => (reclaim::PHASE_USED, u64::MAX - position),
+            Some((0, _)) if touched && looping => match (prefix.places.get(&id), prefix.end) {
+                (Some(&place), Some(end)) if used == reclaim::PHASE_USED || place < end => {
+                    (reclaim::PHASE_USED, u64::MAX - place)
+                }
                 _ => (used, u64::MAX - entry.last_use),
             },
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
@@ -645,6 +655,15 @@ pub fn request_boundary(device: i32, begin: bool) {
     cooperative::request_boundary(device, begin);
     #[cfg(not(target_os = "linux"))]
     let _ = (device, begin);
+}
+
+/// A planned loop's kept set, as eviction ranks by it (`State::prefix`, `State::rank`).
+#[derive(Debug, Default)]
+pub(crate) struct Prefix {
+    /// Each region the loop reads this pass, by its place widest first, then in plan order.
+    places: std::collections::HashMap<u64, u64>,
+    /// The place the kept part ends at.
+    end: Option<u64>,
 }
 
 /// The active plan phase. One that ran through last time with no region coming back is a single
