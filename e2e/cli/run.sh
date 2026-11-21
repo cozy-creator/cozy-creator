@@ -1152,6 +1152,7 @@ case $SHARD in
     git_url
     hub_down_install
     rc_floor
+    rc_floor_sibling
     held_prerelease
     final_model
     grant_silent
