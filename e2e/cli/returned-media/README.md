@@ -6,7 +6,7 @@ frame encoding, output custody, child calls and exported bytes. It also keeps ex
 and rents nothing.
 
 The `typed-calls` CLI shard (`../typedcalls.sh`) copies the fixture, pins it to the run's candidate Runtime and
-TensorFS wheels, locks it and runs `run.py`, which invokes the 27 cases below in order and fails if any case does.
+TensorFS wheels, locks it and runs `run.py`, which invokes the 28 cases below in order and fails if any case does.
 Every command, NDJSON, export and verification result is kept under the shard's output.
 
 | Case | Expected outcome |
@@ -22,6 +22,7 @@ Every command, NDJSON, export and verification result is kept under the shard's 
 | child-failure | Failed `result_custody_failed`; identified failed child with that reason |
 | intermediate | Completed; intermediate PNG event followed by final WebP and original RGBA |
 | streaming | Completed; exported H.264 MP4, three 16×16 frames at 24 fps |
+| concat-saved | Completed; two videos it saved, joined by `save_video_concat` and returned only as the join: H.264 MP4, six 16×16 frames, the first's then the second's |
 | duplicate | Failed `duplicate_handle` |
 | decoded-bound | Failed `result_decoded_bound` |
 | encoded-bound | Failed `result_custody_failed`; declared one-byte encoded bound diagnostic |

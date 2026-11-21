@@ -1,7 +1,7 @@
 """CPU author handlers exercised only through the public Cozy CLI."""
 
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from typing import Annotated, Literal, cast
 
@@ -9,6 +9,8 @@ import msgspec
 from cozy_runtime.author import App, ImageFrame, Outputs, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import (
+    DecodedAudioChunk,
+    DecodedAudioFormat,
     DecodedMediaEvent,
     DecodedMediaHeader,
     DecodedVideoFormat,
@@ -119,6 +121,42 @@ def streaming(payload: Request, out: Outputs) -> VideoResult:
     saved = out.save_video_stream(events())
     out.publish("video", saved.video)
     return VideoResult(saved.video, saved.frame_count)
+
+
+def _clip(red: int) -> Iterator[DecodedMediaEvent]:
+    """Three silent 16x16 frames of one colour, on a zero-based 24 fps clock."""
+    yield DecodedMediaHeader(
+        DecodedVideoFormat(16, 16, Fraction(1, 24), Fraction(1), Fraction(24), 1, 1, 1, 2),
+        None,
+    )
+    for at in range(3):
+        yield DecodedVideoFrame(
+            16, 16, bytes([red, 63, 127]) * 256, at, 1, Fraction(1, 24), Fraction(1), 1, 1, 1, 2
+        )
+
+
+@app.entrypoint(accelerator=False)
+def concat_saved(payload: Request, out: Outputs) -> VideoResult:
+    """Two videos it saved itself, joined by `save_video_concat`; only the join is returned
+    (H3's pickup without latents: minimax-h3 join_kept, packages#953)."""
+    sound = DecodedAudioFormat(
+        channels=1, sample_rate=48000, channel_layout="mono", channel_names=("FC",),
+        time_base=Fraction(1, 48000),
+    )  # fmt: skip
+
+    def soundtrack(counts: Sequence[int]) -> Iterator[DecodedMediaEvent]:
+        samples = sum(counts) * 48000 // 24
+        yield DecodedMediaHeader(None, sound)
+        yield DecodedAudioChunk(
+            channels=1, sample_count=samples, sample_rate=48000, channel_layout="mono",
+            channel_names=("FC",), pcm_f32le=(bytes(4 * samples),), pts=0,
+            time_base=Fraction(1, 48000),
+        )  # fmt: skip
+
+    first = out.save_video_stream(_clip(15)).video
+    second = out.save_video_stream(_clip(200)).video
+    joined = out.save_video_concat([first, second], soundtrack)
+    return VideoResult(joined.video, joined.frame_count)
 
 
 @app.entrypoint(accelerator=False)
