@@ -1,0 +1,1 @@
+The host tier pins at most half of the memory this process may use (its container's or executor's limit, else the computer's), not half of physical memory: in a 30 GiB container it could pin past what the container holds and starve the page cache the rest of a model is read through.

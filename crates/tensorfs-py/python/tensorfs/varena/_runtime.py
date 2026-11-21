@@ -265,8 +265,8 @@ class Pages:
 
     def __init__(self, device: int, *, cap: int | None = None, shared: bool = False) -> None:
         """The tier sizes itself from the host and shares it through the host's ledger page.
-        `cap`: at most this many bytes (default half of physical memory). `shared`: a person's
-        computer, where nothing pins while it stalls."""
+        `cap`: at most this many bytes (default half of varena's host number, the tightest bound on
+        this process's memory). `shared`: a person's computer, where nothing pins while it stalls."""
         self._native = _ext._VarenaPages(device, cap, shared)
 
     def pending(self) -> bool:
