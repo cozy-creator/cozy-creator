@@ -566,10 +566,18 @@ pub fn split_select(
     stream: u64,
 ) -> Result<SplitSelection> {
     let result = split_select_inner(device, key, choices, stream);
-    if result.is_err() {
+    if result.as_ref().is_err_and(unsound) {
         let _ = invalidate_current_phase(device, "split_select_error");
     }
     result
+}
+
+/// An error that leaves the phase's measure unsound. A refusal (`Exhausted`) is a decision before
+/// anything ran: the caller runs the op another way within the same pass, whose peak stands. An
+/// answered refusal discarded it, so the next run started from no learned peak (H3's 1440p refine at
+/// 6 GiB, pod-session 44506184351).
+fn unsound(error: &Error) -> bool {
+    !matches!(error, Error::Exhausted { .. })
 }
 
 fn split_select_inner(
@@ -715,7 +723,7 @@ pub fn split_begin(
         stream,
         plan_generation,
     );
-    if result.is_err() {
+    if result.as_ref().is_err_and(unsound) {
         let _ = invalidate_current_phase(device, "split_begin_error");
     }
     result
