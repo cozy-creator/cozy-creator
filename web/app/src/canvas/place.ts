@@ -6,6 +6,7 @@ import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import { type CopiedBox, copyOf } from "./copy"
+import { tile } from "./homes"
 import { asName, nameKey, stemName } from "./names"
 import { pictureSize } from "./pictureSize"
 import { heightFor, underOf } from "./shown"
@@ -63,17 +64,15 @@ export class Placer {
     this.hooks = hooks
   }
 
-  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. `edit`: what they're part of.
+  /** One file is named by its field, focused; several take their stems, laid out as any boxes given no place are (`tile`), from the point, or
+   *  about it if `centred`, with no focus. With `then`, none asks: it's told the name each gets. `edit`: what they're part of.
    *  A picture is placed once its shape is read and it's decoded, all of a drop together: each box is there at its own shape, showing its own file, and stays as it is
    *  while the file goes to Calcifer (cl-918). */
-  add(files: File[], point: { x: number; y: number }, then?: (name: string) => void, edit?: string) {
-    void Promise.all(files.map((file) => (mediaOf(file) === "image" ? readied(file) : undefined))).then((pictures) => this.lay(files, pictures, point, then, edit))
+  add(files: File[], point: { x: number; y: number }, then?: (name: string) => void, edit?: string, centred = false) {
+    void Promise.all(files.map((file) => (mediaOf(file) === "image" ? readied(file) : undefined))).then((pictures) => this.lay(files, pictures, point, then, edit, centred))
   }
 
-  private lay(files: File[], pictures: (Readied | undefined)[], point: { x: number; y: number }, then: ((name: string) => void) | undefined, edit: string | undefined) {
-    const columns = Math.ceil(Math.sqrt(files.length))
-    const left = point.x - CARD_WIDTH / 2
-    let top = point.y - 16
+  private lay(files: File[], pictures: (Readied | undefined)[], point: { x: number; y: number }, then: ((name: string) => void) | undefined, edit: string | undefined, centred: boolean) {
     const placing = files.map((file, i) => {
       const media = mediaOf(file)
       const stem = stemName(file.name) || "file"
@@ -81,19 +80,18 @@ export class Placer {
       // As tall as it is drawn, and the room it keeps under it: no box of the drop lies on another, so none of them moves.
       return { file, media, view, tall: heightFor(view, CARD_WIDTH) + underOf(view) }
     })
-    for (let row = 0; row * columns < placing.length; row++) {
-      const boxes = placing.slice(row * columns, (row + 1) * columns)
-      boxes.forEach(({ file, view }, column) => {
-        const i = row * columns + column
-        const key = `placing:${++this.nextKey}`
-        const at = { x: Math.round(left + column * (CARD_WIDTH + GAP)), y: Math.round(top), w: CARD_WIDTH }
-        // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
-        const by = edit ?? crypto.randomUUID()
-        this.store.addPlacing(key, view.name, view.placing, at, { naming: files.length === 1 && !then, preview: pictures[i]?.url, aspect: view.aspect }, by)
-        void this.run(key, file, view.placing.abort.signal, at, then, by, !edit)
-      })
-      top += Math.max(...boxes.map(({ tall }) => tall)) + GAP
-    }
+    const block = tile(placing.map(({ tall }) => ({ w: CARD_WIDTH, h: tall })))
+    // The first box's head under the pointer, else the whole about the point.
+    const left = centred ? point.x - block.w / 2 : point.x - CARD_WIDTH / 2
+    const top = centred ? point.y - block.h / 2 : point.y - 16
+    placing.forEach(({ file, view }, i) => {
+      const key = `placing:${++this.nextKey}`
+      const at = { x: Math.round(left + block.at[i].x), y: Math.round(top + block.at[i].y), w: CARD_WIDTH }
+      // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
+      const by = edit ?? crypto.randomUUID()
+      this.store.addPlacing(key, view.name, view.placing, at, { naming: files.length === 1 && !then, preview: pictures[i]?.url, aspect: view.aspect }, by)
+      void this.run(key, file, view.placing.abort.signal, at, then, by, !edit)
+    })
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with

@@ -49,6 +49,9 @@ const fitOver = () => {
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
+/** A project opened with no view of its own is fitted, but never further out than this, on its middle (Paul, 11-19: "I'd think a max zoomout
+ *  of like 25% or so, with the canvas items mostly centered (fit as many as you can on the screen at once)"). A hand still goes to MIN_ZOOM. */
+const OPEN_ZOOM = 0.25
 /** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
 /** Entering or leaving Focus: the camera's move and the other boxes' fade with it (cl-1198), at once for a reader who asks for less motion. */
@@ -471,12 +474,12 @@ function Canvas({
   const { data: listed } = useQuery(toolsQuery(client, "", readable))
 
   useEffect(() => {
-    // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
+    // A project opened here for the first time is fitted, once, to OPEN_ZOOM at the least. Either way the viewport is kept, so a reload finds it.
     // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
     let fitted = Boolean(saved)
     const fitOnce = async () => {
       if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
-      if (openedOn && !await flow.fitView(fitOver())) return
+      if (openedOn && !await flow.fitView({ ...fitOver(), minZoom: OPEN_ZOOM })) return
       fitted = true
       keepViewport(store.projectId, flow.getViewport())
     }
@@ -586,9 +589,7 @@ function Canvas({
       const files = [...(event.target.files ?? [])]
       event.target.value = ""
       if (!files.length) return
-      const columns = Math.ceil(Math.sqrt(files.length))
-      const { x, y } = visibleCentre()
-      placer.add(files, { x: x - (columns * CARD_WIDTH) / 2 + CARD_WIDTH / 2, y: y - (Math.ceil(files.length / columns) * CARD_WIDTH) / 2 + 16 })
+      placer.add(files, visibleCentre(), undefined, undefined, true)
     },
     [placer, visibleCentre],
   )

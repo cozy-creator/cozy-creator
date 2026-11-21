@@ -552,6 +552,7 @@ WEB_2=(
   steady-face
   rule-loras
   shape-names
+  unplaced
 )
 WEB_3=(
   focus
