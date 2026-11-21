@@ -238,7 +238,7 @@ product_minimax_h3_image() {
     references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
 }
 product_ltx_2_5() {
-  cell ltx "$(pkg ltx-2.5 generate)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
+  cell ltx "$(pkg ltx-2.5 generate)" instructions="$SCENE, slow push-in, ambient sound" seed:=$((R + 31))
   av ltx 1080
 }
 product_relayvsr() {
