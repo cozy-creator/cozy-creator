@@ -1038,6 +1038,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         project: crate::private_io::current().map(|scope|scope.storage.project_id),
         agreed: None,
         stays: vec![],
+        placed: false,
         on,
         hub: hub.to_owned(),
         kind: RunKind::Warm,

@@ -84,6 +84,10 @@ pub struct SubmitRun {
     /// Its outputs that stay on its machine, by name: the result's `Latents` fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stays: Vec<String>,
+    /// Its machine is placement's pick (its project's machines, or where a run naming none goes), not its caller's: one that ends
+    /// places it again. A machine its caller named (`--on`, a render naming one) pins it there (cl-1316).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub placed: bool,
 }
 
 /// `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,

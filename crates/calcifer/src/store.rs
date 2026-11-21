@@ -1527,7 +1527,10 @@ macro_rules! journal_methods {
     /// as a machine that doesn't answer may hold one it was sent.
     pub(crate) fn requeue(&self, id: &str, why: &str, unsent: bool) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
-            Some(row) if row.state != State::Settled && (!unsent || row.state == State::Queued) => requeue_in(tx, &row, why),
+            Some(row) if row.state != State::Settled && (!unsent || row.state == State::Queued) => {
+                let served = match (row.pinned, row.machine.as_deref()) { (true, Some(name)) => self.served(tx, name)?, _ => false };
+                requeue_in(tx, &row, why, served)
+            }
             _ => Ok(vec![]),
         })
     }
@@ -1624,7 +1627,8 @@ macro_rules! journal_methods {
             let mut events = vec![];
             for row in rows {
                 let row = row?;
-                events.extend(requeue_in(tx, &row, why)?.into_iter().map(|event| (row.id.clone(), event)));
+                let served = match (row.pinned, row.machine.as_deref()) { (true, Some(name)) => self.served(tx, name)?, _ => false };
+                events.extend(requeue_in(tx, &row, why, served)?.into_iter().map(|event| (row.id.clone(), event)));
             }
             Ok(events)
         })
@@ -1943,6 +1947,9 @@ impl Store {
     fn keep_machine(&self, machine: &MachineRow) -> Result<()> { self.put_machine(machine) }
     fn rental(&self, tx: &Transaction, name: &str) -> Result<bool> {
         Ok(tx.query_row("SELECT kind FROM machines WHERE name = ?1", [name], |r| r.get::<_, String>(0)).optional()?.is_some_and(|kind| kind == "rental"))
+    }
+    fn served(&self, tx: &Transaction, name: &str) -> Result<bool> {
+        Ok(tx.query_row("SELECT served FROM machines WHERE name = ?1", [name], |r| r.get::<_, bool>(0)).optional()?.unwrap_or(false))
     }
 
     pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
@@ -3184,8 +3191,9 @@ fn retried(tx: &Transaction, id: &str, why: &str) -> Result<()> {
 /// (`Machines::place_unplaced`), never renting on its own; one its machine took, as its next attempt. Past its last attempt, a
 /// machine's own job (an install, a warm set, an update: it was for that machine, and what asked for it places its work again), or a
 /// call its caller pinned to the machine (`--on <machine>`: it measures that machine, and another may be another session's: cl-1316),
-/// it fails in one line. One its asker canceled ends canceled.
-fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
+/// it fails in one line. A pin is to a machine: a rental whose order never filled (it never served) was none yet, so a call asked of
+/// it is placed again, as `--on new`'s is (Paul 11-19). One its asker canceled ends canceled.
+fn requeue_in(tx: &Transaction, row: &RunRow, why: &str, served: bool) -> Result<Vec<Event>> {
     let id = row.id.as_str();
     if row.cancel_requested {
         return end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message: format!("canceled; {why}"), ..Default::default() }));
@@ -3202,7 +3210,7 @@ fn requeue_in(tx: &Transaction, row: &RunRow, why: &str) -> Result<Vec<Event>> {
             false => format!("{why} before it took {run}"),
         });
     }
-    if row.pinned {
+    if row.pinned && served {
         let machine = row.machine.as_deref().unwrap_or("its machine");
         return lost(match taken {
             true => format!("{why}, so {run} stopped: it was asked on {machine} (--on), so it runs nowhere else"),
@@ -3604,6 +3612,9 @@ impl RunStore<'_> {
     }
     fn rental(&self, tx: &Transaction, name: &str) -> Result<bool> {
         match self { Self::Maintenance(store) => store.rental(tx, name), Self::Project(store) => store.rental(tx, name) }
+    }
+    fn served(&self, tx: &Transaction, name: &str) -> Result<bool> {
+        match self { Self::Maintenance(store) => store.served(tx, name), Self::Project(store) => store.served(tx, name) }
     }
 }
 

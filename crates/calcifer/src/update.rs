@@ -393,6 +393,7 @@ impl Machines {
         let submit = SubmitRun { project: None,
             agreed: None,
             stays: vec![],
+            placed: false,
             on: On::Machine(m.name.clone()),
             hub,
             kind: wire::Kind::Update,

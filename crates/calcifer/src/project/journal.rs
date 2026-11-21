@@ -118,6 +118,11 @@ impl SealingStore<'_> {
         let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
         Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.kind == api::calcifer::MachineKind::Rental))
     }
+    /// Whether the machine ever served, from Calcifer's own list, as `rental`.
+    pub(crate) fn served(&self, _tx: &Transaction<'_>, name: &str) -> store::Result<bool> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.served))
+    }
     pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
         self.write(|tx| { tx.execute("INSERT INTO project_diagnostics(at_ms,code,detail) VALUES(?1,?2,?3)", params![store::now_ms(),code,detail])?; Ok(()) })
     }
@@ -238,6 +243,11 @@ impl ProjectStore {
     pub(crate) fn rental(&self, _tx: &Transaction<'_>, name: &str) -> store::Result<bool> {
         let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
         Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.kind == api::calcifer::MachineKind::Rental))
+    }
+    /// Whether the machine ever served, from Calcifer's own list, as `rental`.
+    pub(crate) fn served(&self, _tx: &Transaction<'_>, name: &str) -> store::Result<bool> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.served))
     }
 
 
