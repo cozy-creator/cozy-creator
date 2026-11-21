@@ -1,5 +1,6 @@
 # Suite `bench` (README.md): this pod's group of cells.tsv, each a cold run on its fixed seed and its warm runs on fresh ones,
-# between two runs of the reference workload, on a host held to the group's RAM (`skus`). bench.tsv names every run;
+# between two runs of the reference workload, on a host held to the group's RAM (`skus`). Each cell starts from a cold pod:
+# its derived state cleared and the machine restarted (bench-derived.tsv the census). bench.tsv names every run;
 # bench.py judges them (check.py in analyze.py; bench.sh's table across groups).
 BG=${GROUP:-${SKU}x${GPUS:-1}} FX=$HERE/suites/bench/fixtures
 echo "$BG" > bench-group; : > bench.tsv
@@ -84,6 +85,15 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
   [ "${name:0:1}" != '#' ] && ingroup "$group" || continue
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
+  # Each cell's cold run starts from a cold pod: what earlier cells left (LoRA bakes, memos, learned peaks, kernels, the
+  # store's page cache) goes before a restart ends their executors (machines.sh `pod_derived`), and a settle after it
+  # clears what the ended executors wrote behind their last run; its census must find none. Weights stay, as do the host hog and the pod scripts. Earlier, a cell's "cold" run read an earlier cell's
+  # bakes and kernels, and h3-g2 read h3-g1's text encodings (tfs-299).
+  [ -n "$(pod_derived "$CLI" "$M" reset)" ] || log "$name: no derived-state reset: its cold run may read what earlier cells left"
+  # The VRAM holder ends before the restart (TensorD sets aside a GPU another program holds at its start) and comes back
+  # after it for a capped cell.
+  [ "$CAPNOW" = off ] || podsh "sh /var/tmp/bench-pod.sh vram off" > /dev/null 2>&1
+  CAPNOW=reset
   if [ "$want" != "$CAPNOW" ]; then
     retried "$CLI" machine update "$M" --gpu-memory-limit off -y < /dev/null > "restart-$want.log" 2>&1 || log "restart for $want: $(tail -c 300 "restart-$want.log")"
     HELD=0 LEVEL_OK=1
@@ -98,6 +108,8 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
     CAPNOW=$want
   fi
   if [ "$LEVEL_OK" = 0 ]; then expect "$name" FAIL "no holder for a ${want} GiB card"; continue; fi
+  census=$(pod_derived "$CLI" "$M" settle); echo "$name	$census" >> bench-derived.tsv
+  pod_derived_zero "$census" || expect "$name-cold" FAIL "its cold run starts with derived state it did not make: ${census:-no census}"
   t=$(pkg "${target%/*}" "${target##*/}")
   for ((i = 0; i <= warm; i++)); do
     s=; [ "$seed" = - ] || s="seed:=$((seed + 100000 * i))"

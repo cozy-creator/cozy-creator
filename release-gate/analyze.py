@@ -269,6 +269,11 @@ for name in [n for n in summary if n.endswith(('-released', '-released-again'))]
         continue
     a, b = summary[mine], summary[name]
     digests = [sorted(o.get('sha256', '') for o in runs[n].record.get('output') or []) for n in (mine, name)]
+    if not name.startswith('ab-') and name.endswith('-released'):
+        # released.sh's first pair: the checkout cell ran among the suites, the release's later on a warmer pod.
+        notes.append(f'{mine} vs the release ({name}): output {"identical" if digests[0] == digests[1] else "differs"};'
+                     ' times not compared (the warm pair -again is)')
+        continue
     notes.append(f'{mine} vs the release ({name}): execution {against(a["execution_ms"], b["execution_ms"])}, steady'
                  f' {against(a["steady_ms"], b["steady_ms"])}, output {"identical" if digests[0] == digests[1] else "differs"}')
 

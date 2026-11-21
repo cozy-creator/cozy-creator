@@ -116,6 +116,8 @@ class Metrics(TypedDict):
     stages: dict[str, float]  # the record's named stages, ms (attribution, the run's and its calls')
     series: list[float]  # the dominant sampler track's steps, ms
     build: str  # cells.sh: this computer's cozy that sent it (version@digest, `a>b` when it changed meanwhile), then the machine's
+    bake: NotRequired[int]  # LoRA bake blocks it made, on every GPU of it and its calls
+    derived_bytes: NotRequired[int]  # derived (baked) page bytes it filled: made here, else read from what an earlier run left
 
 
 class Cell(TypedDict):
@@ -136,6 +138,7 @@ class Cell(TypedDict):
     builds: list[str]  # every machine build (cozy, Runtime, TensorFS) its runs ran on
     senders: list[str]  # every build of this computer's cozy that sent them (the RC laptop rebuilds live)
     cold_downloaded: bool  # its weights step made no run, so its cold run fetched them
+    cold_borrowed: NotRequired[bool]  # its cold run read derived pages it did not make: an earlier run's, so it was not cold
 
 
 class Reference(TypedDict, total=False):
@@ -310,7 +313,9 @@ def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Met
             'transport': transport_of(rec), 'throttles': sorted({t for r in rows for t in r.get('throttles') or []}), 'output': None,
             'stages': {k: float(v.get('total_ms') or 0.0) for m in run.measurements for k, v in ((m.get('attribution') or {}).get('stages') or {}).items()
                        if not k.startswith('host · ')},
-            'series': [float(x) for x in s], 'build': ''}
+            'series': [float(x) for x in s], 'build': '',
+            'bake': sum(((x.get('moved') or {}).get('bake') or {}).get('blocks') or 0 for x in stats),
+            'derived_bytes': sum(((x.get('moved') or {}).get('derived') or {}).get('bytes') or 0 for x in stats)}
 
 
 def output_of(d: str, run: Run, judged: bool) -> Output | None:
@@ -354,7 +359,8 @@ def summary(cold: Metrics | None, warm: list[Metrics]) -> Cell:
             'series': [statistics.median(v) for i in range(max((len(m.get('series', [])) for m in done), default=0))
                        if (v := [m['series'][i] for m in done if len(m.get('series', [])) > i])],
             'builds': sorted({m['build'].split(' on ')[-1] for m in runs if m.get('build')}),
-            'senders': sorted({m['build'].split(' on ')[0] for m in runs if ' on ' in m.get('build', '')}), 'cold_downloaded': False}
+            'senders': sorted({m['build'].split(' on ')[0] for m in runs if ' on ' in m.get('build', '')}), 'cold_downloaded': False,
+            'cold_borrowed': bool(cold and cold.get('derived_bytes') and not cold.get('bake'))}
 
 
 def text(d: str, name: str) -> str | None:
@@ -579,7 +585,9 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
                 if cal > 1 + limit and (k != 'total_ms' or w[k] - bw[k] > TOTAL_FLOOR_MS):
                     v.why.append(f"{k[:-3]} {w[k] / 1000:.2f} s, {cal:.2f}x its baseline's {bw[k] / 1000:.2f} s (raw {raw:.2f}x; at most {1 + limit:.2f}x)")
             bc, cc = b['cold']['numbers'] if b['cold'] else {}, c['cold']['numbers'] if c['cold'] else {}
-            if 'total_ms' in bc and 'total_ms' in cc and cc['total_ms'] > (1 + COLD_NOTE) * bc['total_ms'] + 1000:
+            if b.get('cold_borrowed') or c.get('cold_borrowed'):
+                v.notes.append('cold not compared: a cold run read derived pages an earlier run left (tfs-299)')
+            elif 'total_ms' in bc and 'total_ms' in cc and cc['total_ms'] > (1 + COLD_NOTE) * bc['total_ms'] + 1000:
                 v.notes.append(f"cold {cc['total_ms'] / 1000:.1f} s against {bc['total_ms'] / 1000:.1f} s")
             slow = [f"{k[:-3].replace('_', ' ')} {w[k] / 1000:.2f} s against {bw[k] / 1000:.2f} s" for k in ('package_import_ms', 'cuda_init_ms')
                     if k in w and k in bw and bw[k] >= 250 and w[k] > SLOW_LEG * bw[k]]
@@ -725,7 +733,8 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             continue
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
-                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: its warm-up made no run)", '',
+                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: its warm-up made no run;"
+                  " one marked † read derived pages an earlier run left, so it was not cold)", '',
                   '| cell | GPU | warm total s: Cozy (on the machine) / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
                   ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
         for name, x in g['comfyui'].items():
@@ -757,7 +766,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
                 return f'{f(a)} / {f(b)}'
             tot, steady, peak = judged['warm total'], judged['steady step'], judged['peak VRAM']
             speed = f"{tot[1] / tot[0]:.2f}x" if tot[0] and tot[1] else ('ComfyUI failed' if x['status'] != 'ok' else '-')
-            dl = '*' if c and c.get('cold_downloaded') else ''
+            dl = ('*' if c and c.get('cold_downloaded') else '') + ('†' if c and c.get('cold_borrowed') else '')
             mine = '-' if tot[0] is None else f"{tot[0]:.2f}" + ('' if exe is None else f" ({exe:.2f})")
             lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {mine} / {'-' if tot[1] is None else f'{tot[1]:.2f}'} | {speed} |"
                          f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)}{dl} |"
