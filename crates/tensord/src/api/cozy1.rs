@@ -1077,15 +1077,16 @@ async fn serve_follow(
     let _ = work.send(Work::Push { number, items });
 }
 
-/// The followed output's new revisions as the client lacks them: a reset when a replacement
-/// voids the bytes it holds, the revisions still current, then the bytes past `held`.
+/// The followed output's new revisions as the client lacks them: a reset when a revision voids
+/// bytes it holds (a replacement, or one that keeps fewer than it holds), the revisions still
+/// current, then the bytes past `held`.
 fn emit(
     target: &Target,
     pending: Vec<(u64, v1::Product)>,
     snapshot: OutputSnapshot,
     mut held: u64,
 ) -> (Vec<Item>, u64) {
-    let replaced = pending.iter().rposition(|(_, p)| p.appended_from.is_none());
+    let replaced = pending.iter().rposition(|(_, p)| p.appended_from.is_none_or(|kept| kept < held));
     let from = replaced.unwrap_or(0);
     let last = &pending[pending.len() - 1].1;
     let mut items = vec![];

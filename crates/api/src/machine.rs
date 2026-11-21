@@ -935,7 +935,8 @@ pub struct Product {
     pub label: String,
     /// Media time, for a growing video.
     pub duration_us: u64,
-    /// These bytes extend the previous revision's, from here.
+    /// These bytes keep the previous revision's up to here; the rest are new (cl-1210: a growing video
+    /// keeps all but its index).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appended_from: Option<u64>,
 }

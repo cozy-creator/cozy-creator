@@ -61,6 +61,9 @@ pub(crate) async fn exec(
     if let Some(weights) = weights(&run) {
         fields = fields.field("weights", weights);
     }
+    if let Some(transfer) = transfer(&run) {
+        fields = fields.field("downloaded", transfer);
+    }
     fields.print(ctx);
     if !ctx.full {
         if !follow::settled(&run) {
@@ -157,6 +160,24 @@ fn weights(run: &Run) -> Option<String> {
         words += &format!("; {} more in the background, not waited for", output::bytes(extras));
     }
     Some(words)
+}
+
+/// What this computer downloaded of each result and what it kept of the revision it already held, as its measurements say
+/// (`transfer`, cl-1210): a video made in pieces downloads each piece once.
+fn transfer(run: &Run) -> Option<String> {
+    let outputs = run.measurements.as_ref()?.get("transfer")?.as_object()?;
+    let said: Vec<String> = outputs
+        .iter()
+        .filter_map(|(name, moved)| {
+            let bytes = |key: &str| moved.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+            match (bytes("read"), bytes("reused")) {
+                (0, 0) => None,
+                (read, 0) => Some(format!("{name}: {}", output::bytes(read))),
+                (read, reused) => Some(format!("{name}: {}, with {} kept from what was already here", output::bytes(read), output::bytes(reused))),
+            }
+        })
+        .collect();
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// A table's rows before they meet the terminal. With more than one measured, each row leads

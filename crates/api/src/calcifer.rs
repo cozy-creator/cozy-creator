@@ -518,7 +518,9 @@ pub struct Run {
     /// A memoizable run's computation, once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<Memo>,
-    /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).
+    /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention, `weights`), and beside it `transfer`: of
+    /// each output landed here, by its name, the bytes this computer `read` from its machine and those it `reused` of the revision
+    /// it held, summed over its revisions (cl-1210).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurements: Option<serde_json::Value>,
     /// It has made no progress for a while. Shown and said once, never acted on.

@@ -3164,7 +3164,9 @@ result?: JsonValue | null, execution_ms?: number | null,
  */
 memo?: Memo | null,
 /**
- * With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).
+ * With `?detail=full`: what the machine measured (stages, steps, GPUs, attention, `weights`), and beside it `transfer`: of
+ * each output landed here, by its name, the bytes this computer `read` from its machine and those it `reused` of the revision
+ * it held, summed over its revisions (cl-1210).
  */
 measurements?: JsonValue | null,
 /**
