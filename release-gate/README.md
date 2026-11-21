@@ -105,4 +105,4 @@ name the rental (the account's rentals are one pool, cl-1224).
   against the machine's disk and PCIe bound), `control-plane`, `derived-disk`, `egress`, `far-reads`,
   `group-formation`, `h3-upscaler`, `h3-vae`, `install-share`, `io-fault`, `lane-floor`, `llm-stream`, `llm-tools`,
   `llm-two-gpus`, `lm-construct`, `ltx-images`, `one-pool`, `orbit`, `upscale`, `user-flow` (xs-203: Paul's flow through
-  the page on real rentals). `bundle` runs several on one rental; `gpu-reader` is `ab`'s helper.
+  the page on real rentals), `vision-components` (xs-213: a text-only `qwen3/ask` fetches no vision tower). `bundle` runs several on one rental; `gpu-reader` is `ab`'s helper.
