@@ -855,6 +855,8 @@ fn open_leaf(
         .checked_add(1)
         .ok_or(Error::Invalid("split observation overflow"))?;
     let id = state.splits.next;
+    let need = finest(state, key);
+    state.escapes.leaf_opened(id, need);
     state.splits.active = Some(Box::new(Active {
         id,
         key: key.to_owned(),
@@ -870,6 +872,20 @@ fn open_leaf(
         refused: 0,
     }));
     Ok(id)
+}
+
+/// What `key`'s finest level needs, in block capacities as the escape tally counts them: its measured
+/// classes, else its declared ones at 5/4 (`Fit::want`), and at least what refused it.
+fn finest(state: &State, key: &str) -> usize {
+    let Some(site) = state.splits.sites.get(key) else { return 0 };
+    let Some(choice) = site.choices.last() else { return 0 };
+    let held = |classes: &BTreeMap<usize, usize>| classes.iter().map(|(class, count)| class * count).sum::<usize>();
+    let sample = site.samples.get(&choice.id);
+    let need = match sample.filter(|sample| sample.known) {
+        Some(sample) => held(&sample.classes),
+        None => held(&choice.classes).saturating_mul(5) / 4,
+    };
+    need.max(sample.map_or(0, |sample| sample.refused))
 }
 
 /// An allocation of `bytes` on the open leaf's stream was refused with everything reclaimable
@@ -978,6 +994,7 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
         .active
         .take()
         .expect("checked split observation");
+    state.escapes.leaf_closed();
     learn(&mut state, &active.key, &active.choice, active.refused);
     let parent = active.owner.filter(|id| {
         state
@@ -1039,6 +1056,7 @@ pub(super) fn phase_finished(
     if open_for(state, parent) {
         refresh(state);
         let active = state.splits.active.take().expect("open split");
+        state.escapes.leaf_closed();
         learn(state, &active.key, &active.choice, active.refused);
         state.splits.pending.push((
             parent,
