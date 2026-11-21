@@ -1,5 +1,8 @@
 # warming (xs-132 items 3-5), on one rental of the pod's own image (the current release). Nothing here compares: the
-# run records, the pod's process and page-cache readings and the stamped event streams are the evidence.
+# run records, the pod's process and page-cache readings and the stamped event streams are the evidence. Where a cold case
+# or an arm begins (3b's trials, 5's cold and warm requests, 4b's modes) the derived state earlier items left (LoRA bakes,
+# memos, learned peaks, kernels, the store's page cache: lib.sh `derived_state`) goes before its restart and a census after
+# must find none (tfs-299); a request the call memo answered fails the session (states.tsv).
 #   3  page cache: an environment's import with its files evicted from the page cache vs cached. Through
 #      API warming to `imported` after a TensorD restart (no process left), and as the import-only parent's
 #      imports run directly in each environment's Python (SDXL, H3: H3's `imported` downloads its weights first).
@@ -19,7 +22,7 @@
 #               sampled each second: when each environment's import-only parent starts
 #   tensord     a dev-build run id: after the items before "3b", the pod runs its TensorD, and 3b measures its
 #               machine-start parent import with and without the environment's recorded import pages (its legs, from
-#               the next request's record), each after the environment's files are evicted
+#               the next request's record), each after the environment's files are evicted, in A B B A order
 #   need_s      seconds the guard must buy (3600)
 . "$(dirname "$0")/lib.sh"
 WARM_API=$(cd "$(dirname "$0")/../../e2e" && pwd)/warm.py
@@ -331,6 +334,8 @@ restart() {
   [ "$before" = "[]" ] || [ "$before" != "$after" ] || fail "restart $1: TensorD is still $before"
   say "restart $1: TensorD $before -> $after; executors $(jq -c '[.[] | select(.kind != "tensord") | {pid, kind, nvidia_fds}]' "$OUT/ps-restart-$1.json")"
 }
+# cold <label>: `restart` from no derived state (lib.sh `derived_state`), a census after it.
+cold() { derived_state "$1" reset; restart "$1"; arm_cold "$1"; }
 PROMPTS=("a lighthouse keeper's chart table under a brass lamp, gouache" "a glass greenhouse on a cliff in sea fog, film photo"
   "a paper-crane mobile over a sleeping cat, watercolor" "a night ferry crossing a lantern-lit harbor, oil painting"
   "a botanist sketching ferns in a misty ravine, ink and wash" "a tin toy rocket on a windowsill at dawn, macro photo"
@@ -414,10 +419,14 @@ item4() {
 
 item5() {
   warmrec i5-clear "$SDXL" off
-  restart i5-cold
+  # Cold: nothing items 3-4 left, the environment's files and the weights out of the page cache.
+  cold i5-cold
+  podpy evict sdxl > "$OUT/i5-cold-evict.json"; say "i5-cold evicted: $(cat "$OUT/i5-cold-evict.json")"
   sdxl_input "$OUT/i5-cold.yaml" 20
   runrec i5-cold "$SDXL" --input "$OUT/i5-cold.yaml" || fail "cold request"
-  restart i5-warm
+  state_row i5-cold i5-cold cold "$OUT/i5-cold.json" "$OUT/i5-cold.ndjson"
+  # Warm by its own warming at gpu, not by what the cold request left.
+  cold i5-warm
   warmrec i5-warm-gpu "$SDXL" gpu || fail "warming at gpu"
   say "i5: warming at gpu result $(jq -c .result "$OUT/i5-warm-gpu.json")"
   cozy machine show "$NAME" > "$OUT/i5-show-loaded.txt" 2>&1; cozy machine show "$NAME" --json > "$OUT/i5-show-loaded.json" 2>&1
@@ -428,6 +437,7 @@ item5() {
   say "i5: after ${HOLD} s: $(grep '^warm ' "$OUT/i5-show-held.txt" | paste -sd';'); GPU $(smi); executors $(jq -c '[.[] | select(.kind == "executor") | {pid, nvidia_fds, age_s}]' "$OUT/i5-ps-held.json")"
   sdxl_input "$OUT/i5-warm.yaml" 20
   runrec i5-warm "$SDXL" --input "$OUT/i5-warm.yaml" || fail "warm request"
+  state_row i5-warm i5-warm warm "$OUT/i5-warm.json" "$OUT/i5-warm.ndjson"
   warmrec i5-off "$SDXL" off
   cozy machine show "$NAME" > "$OUT/i5-show-off.txt" 2>&1; cozy machine show "$NAME" --json > "$OUT/i5-show-off.json" 2>&1
   say "i5: after warming at off: warm lines $(grep -c '^warm ' "$OUT/i5-show-off.txt"); GPU $(smi)"
@@ -449,12 +459,15 @@ item3b() {
   done
   jq -e .mb "$OUT/i3b-pages.json" >/dev/null 2>&1 || fail "3b: no import pages were recorded: $(cat "$OUT/i3b-pages.json")"
   say "3b: recorded $(cat "$OUT/i3b-pages.json")"
+  # A B B A: odd trials without the record first, even ones with it; each trial from no derived state, its files evicted.
   for t in $(seq 1 "$TRIALS"); do
-    for a in norecord record; do
+    for a in $([ $((t % 2)) = 1 ] && echo norecord record || echo record norecord); do
       l=i3b-$a-$t
       [ "$a" = norecord ] && podpy aside sdxl
+      derived_state "$l" reset
       podpy evict sdxl > "$OUT/$l-evict.json"; say "$l evicted: $(jq -c '{how, resident_gb_before, resident_gb_after}' "$OUT/$l-evict.json")"
       restart "$l"
+      arm_cold "$l"
       for i in $(seq 1 60); do
         [ "$(cozy package ls --on "$NAME" --json 2>/dev/null | jq -r '[.packages[] | select(.package == "sdxl" or .package == "_/sdxl") | .level] | first // empty')" = imported ] && break
         sleep 1
@@ -463,7 +476,10 @@ item3b() {
       runrec "$l" "$SDXL" --input "$OUT/$l.yaml"
       [ "$a" = norecord ] && podpy back sdxl
       say "$l: legs $(jq -c '.measurements.execution.executor.legs_ms | {torch_import, runtime_imports, package_import, fork}' "$OUT/$l.json")"
+      state_row "$l" "$l" cold "$OUT/$l.json" "$OUT/$l.ndjson"
     done
+    why=$(incomparable "i3b-norecord-$t" "i3b-record-$t")
+    [ -z "$why" ] || fail "3b trial $t: NOT COMPARABLE: $why"
   done
 }
 
@@ -480,7 +496,7 @@ PY
 # queue4b <label>: SDXL (60 steps) executing; birefnet, then the pipeline, submitted behind it; processes each second.
 queue4b() {
   local l=$1 n i
-  restart "$l"
+  cold "$l"
   podpy host > "$OUT/$l-host.json"
   sdxl_input "$OUT/$l-a.yaml" 60
   runrec "$l-a" "$SDXL" --input "$OUT/$l-a.yaml" & local pa=$!
@@ -524,4 +540,6 @@ for item in $ITEMS; do
     *) fail "no item $item";;
   esac
 done
+bad=$(states_unfit)
+[ -z "$bad" ] || fail "requests that measure nothing of their temperature: $bad"
 say "PASS: items $ITEMS ran"

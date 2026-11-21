@@ -18,9 +18,12 @@
 #             side by side ([]: one arm, the session's cozy and `update`)
 #   reset     true: before each arm, the pod's TensorFS store is emptied and its executors ended, over `cozy machine ssh` (no
 #             verb empties a rented machine's store: `cozy model uninstall` is this computer's only), so each arm starts cold;
-#             projects share the machine's store of public weights; and the picture's and video's packages uninstalled
-#             (`cozy package uninstall`), so each arm installs them afresh: a later arm would otherwise update the first's
-#             environments in a second (43683143359)
+#             projects share the machine's store of public weights; the derived state an earlier arm left goes too (stage
+#             memos, learned peaks, kernels: lib.sh `derived_state`, a census after the arm's TensorD starts, tfs-299); and
+#             the picture's and video's packages uninstalled (`cozy package uninstall`), so each arm installs them afresh: a
+#             later arm would otherwise update the first's environments in a second (43683143359). Two arms or more need it:
+#             without it a later arm finds the first's weights and is compared warm with cold. Each run's state is in
+#             states.tsv; one the call memo answered fails the session
 #   sample    true: the pod's disk (each device's bytes read and written), I/O and memory pressure and page cache every 0.5 s
 #             for the session, over SSH (samples.jsonl in each arm): what a running call's loads met while downloads wrote
 #   link_mbit the pod's download link shaped to this many Mbit/s for the whole session (tc police on its ingress, over SSH);
@@ -72,6 +75,7 @@ done
 say "the session's cozy: $(cozy --version)"
 RESET=$(param reset false) LINK=$(param link_mbit '') SAMPLE=$(param sample false)
 [[ -z $LINK || $LINK =~ ^[0-9]+$ ]] || fail "link_mbit $LINK"
+[ "${#names[@]}" = 1 ] || [ "$RESET" = true ] || fail "arms compare only from the same cold start: set reset true"
 if [ "$RESET" = true ] || [ -n "$LINK" ] || [ "$SAMPLE" = true ]; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
@@ -127,6 +131,7 @@ for ARM in "${names[@]}"; do
   if [ "$RESET" = true ]; then
     T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" < "$(dirname "$0")/empty-store.py" > "$D/reset.json" 2>&1 || fail "${ARM:+arm $ARM: }the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
     say "${ARM:+arm $ARM: }the pod's store emptied: $(tail -c 400 "$D/reset.json")"
+    derived_state "${ARM:-arm}" reset
     step "uninstall$TAG" package uninstall "${PICTURE%%/*}" "${VIDEO%%/*}" --on "$NAME" -y || say "${ARM:+arm $ARM: }the packages weren't uninstalled"
   fi
   step "tensord$TAG" machine update "$NAME" --tensord "${TENSORD[$ARM]}" -y || fail "the pod refused ${ARM:-the session}'s TensorD"
@@ -135,6 +140,7 @@ for ARM in "${names[@]}"; do
   read -ra update <<<"${UPDATE[$ARM]}"
   [ ${#update[@]} -eq 0 ] || step "candidate$TAG" machine update "$NAME" "${update[@]}" -y || fail "the pod refused ${ARM:-the candidate}'s Runtime and TensorFS"
   say "pod TensorD $v, Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
+  [ "$RESET" != true ] || arm_cold "${ARM:-arm}"
 
   # The board as the page sees it, every 5 s: when the video's fetch ahead began, and what each box said.
   ( while :; do printf '{"at_ms":%s,"board":%s}\n' "$(date +%s%3N)" "$(run_page board 2> /dev/null || echo null)" >> "$D/board.ndjson"; sleep 5; done ) & BG=$!
@@ -147,6 +153,9 @@ for ARM in "${names[@]}"; do
   (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 40) > "$D/runs.json" 2>&1
   for n in $(jq -r --argjson a "$ASK" '.runs[]? | select(.created_at_ms >= $a - 60000) | .number' "$D/runs.json"); do
     (cd "$RUN_PROJECT" && cozy run watch "$n" --once --json --full) > "$D/run-$n.json" 2>&1
+    # Each run of an arm that began cold; their weights come inside the requests, which is what the session measures.
+    state_row "${ARM:-arm}-run-$n" "${ARM:-arm}" cold "$D/run-$n.json"
+    why=$(unfit "${ARM:-arm}-run-$n" fetches); [ -z "$why" ] || { say "FAIL: ${ARM:+arm $ARM: }$why"; RC=1; }
   done
   # The whole log since the rental began (the default is its last 200 lines), and the transfer log beside it.
   cozy machine logs "$NAME" --lines 0 --since "$(( ($(date +%s) - BEGAN) / 60 + 2 ))m" > "$D/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"

@@ -6,12 +6,15 @@
 #   kq     Klein bf16 warm and idle, Qwen 1 MP beside it (the 0.36.0 gate case, 41034222864), Klein again: completed
 #   twice  a deviceless root (fixtures/pause-twice) calls SDXL twice with a 30 s pause beside the idle models: no memory
 #          event in the pause, and the second call replays its loop (reused) when the first phase's did
-# and no `room` record in any phase.
+# and no `room` record in any phase. Each phase after the first starts with none of the derived state the one before left
+# (learned peaks, memos, kernels, LoRA bakes, page cache: lib.sh `derived_state`, a census after its update; tfs-299).
 # params:
 #   runtime, tensorfs  the candidate's, for the last phase (default: that phase is skipped)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/pause-twice/package.toml" ] || fail "no fixture checkout"
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote 3600
 rent
 
@@ -52,11 +55,15 @@ PY
 v() { cozy machine show "$NAME" --json | jq -r .status.version; }
 say "production: TensorD $(v)"
 phase production
+derived_state tensord reset
 step update-tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
 [ "$(v)" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $(v), not the session's"
+arm_cold tensord
 phase tensord
 if [ -n "$(param runtime)" ] && [ -n "$(param tensorfs)" ]; then
+  derived_state candidate reset
   step update-full machine update "$NAME" --runtime "$(param runtime)" --tensorfs "$(param tensorfs)" -y || fail "update"
+  arm_cold candidate
   phase candidate
 fi
 for p in "${!REUSED[@]}"; do

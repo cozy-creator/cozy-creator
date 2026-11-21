@@ -12,11 +12,11 @@
 # - In an arm a cell is `cold`, its function's first request since the arm began, or `warm`, a later one. A cell marked
 #   `"warmup": true` is the arm's own warm-up and is never compared. Its first call still serves what has not compiled
 #   yet (the LoRA per step until the bake kernel is ready, a fused block eager until it is built).
-# - states.tsv gives each cell's arm, temperature, LoRA bake blocks, derived bytes filled, persisted pages, whether the
-#   call memo answered it, and its seconds. pairs.tsv lists each compared pair, cold and warm apart.
+# - states.tsv (lib.sh `state_row`) gives each cell's arm, temperature, LoRA bake blocks, derived bytes filled, persisted
+#   pages, whether the call memo answered it, and its seconds. pairs.tsv lists each compared pair, cold and warm apart.
 # - A compared pair must be the same temperature, neither memoized, a warm-up nor fetching its weights, and a cold cell
-#   must have made the derived pages it read. Else the session fails. Weights stay between arms, so give the session a
-#   first arm that runs each function once: the arm after it starts cold with every weight on disk.
+#   must have made the derived pages it read (lib.sh `incomparable`). Else the session fails. Weights stay between arms,
+#   so give the session a first arm that runs each function once: the arm after it starts cold with every weight on disk.
 # - Two builds compared run in both orders (A B B A), checked before renting, unless params say `"order": "one-way"`
 #   (an output-only proof).
 # params:
@@ -226,13 +226,6 @@ EOS
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
-# cellstate <name>: the record's LoRA bake blocks, derived bytes filled and persisted pages (the run's own measurements and
-# its calls', every GPU), and whether the call memo answered it, tab-separated.
-cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats // empty) as $v
-  | [($v | map(.moved.bake.blocks // 0) | add // 0), ($v | map(.moved.derived.bytes // 0) | add // 0),
-     ($v | map(.baked_pages.persisted // 0) | max // 0), (($r.memo.memoized // false) or ([$r.calls[]?.memoized] | any) | tostring)] | @tsv' \
-  "$OUT/$1.json" 2>/dev/null; }
-printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$OUT/states.tsv"
 fails=0
 declare -A MADE=() SEEN=()
 for k in "${names[@]}"; do
@@ -314,12 +307,7 @@ for k in "${names[@]}"; do
   # Its temperature in its arm: the warm-up's, else cold for its function's first request since the arm began, else warm.
   if [ "$(jq -r --arg k "$k" '.[$k].warmup' <<<"$ARMS")" = true ]; then temp=warmup; elif [ -n "${SEEN[$target]:-}" ]; then temp=warm; else temp=cold; fi
   SEEN[$target]=1
-  read -r bake derived persisted memo < <(cellstate "$k")
-  # Weights fetched inside the request: its seconds are the link's (44006261838: 0.25.0's first H3 spent 454 s of 822 here).
-  fetched=false; ! grep -qE 'downloading .* weights [0-9.]+ [KMG]i?B/' "$OUT/$k.txt" 2>/dev/null || fetched=true
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$(jq -r --arg k "$k" '.[$k].arm' <<<"$ARMS")" "$temp" "${bake:-0}" "${derived:-0}" \
-    "${persisted:-0}" "${memo:-false}" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json" 2>/dev/null)" "$fetched" >> "$OUT/states.tsv"
-  say "$k state: $temp, bake ${bake:-0}, derived $(( ${derived:-0} / 1000000000 )) GB, persisted ${persisted:-0}, memoized ${memo:-false}, fetched weights $fetched"
+  state_row "$k" "$(jq -r --arg k "$k" '.[$k].arm' <<<"$ARMS")" "$temp" "$OUT/$k.json" "$OUT/$k.txt"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
@@ -368,18 +356,11 @@ awk -F'\t' 'NR>1{n++; if($2>m)m=$2; if($3!=0)e++; if($6!=""){r++; if($6>q)q=$6; 
 printf 'temperature\ta\tb\ta_s\tb_s\tb_vs_a\tfair\n' > "$OUT/pairs.tsv"
 unfair=0
 while read -r a b; do
-  IFS=$'\t' read -r _ _ ta bake_a der_a _ memo_a sa dl_a < <(awk -F'\t' -v k="$a" '$1 == k' "$OUT/states.tsv")
-  IFS=$'\t' read -r _ _ tb bake_b der_b _ memo_b sb dl_b < <(awk -F'\t' -v k="$b" '$1 == k' "$OUT/states.tsv")
-  why=''
-  [ -n "${ta:-}" ] && [ -n "${tb:-}" ] || why="a cell did not run"
-  [ -n "$why" ] || [ "$ta" = "$tb" ] || why="$a is $ta, $b is $tb"
-  [ -n "$why" ] || { [ "$memo_a" != true ] && [ "$memo_b" != true ]; } || why="the call memo answered one"
-  [ -n "$why" ] || { [ "$dl_a" != true ] && [ "$dl_b" != true ]; } || why="one fetched its weights: run each function once before the first arm"
+  ta='' sa='' sb=''
+  IFS=$'\t' read -r _ _ ta _ _ _ _ sa _ < <(awk -F'\t' -v k="$a" '$1 == k' "$STATES")
+  IFS=$'\t' read -r _ _ _ _ _ _ _ sb _ < <(awk -F'\t' -v k="$b" '$1 == k' "$STATES")
+  why=$(incomparable "$a" "$b")
   [ -n "$why" ] || [ "$(jq -r --arg a "$a" --arg b "$b" '.[$a].keep == .[$b].keep' <<<"$ARMS")" = true ] || why="one arm kept another's derived state"
-  for x in "$a:$ta:$bake_a:$der_a" "$b:$tb:$bake_b:$der_b"; do
-    IFS=: read -r c t bk dr <<<"$x"
-    [ -n "$why" ] || [ "$t" != cold ] || [ "${dr:-0}" = 0 ] || [ "${bk:-0}" != 0 ] || why="cold $c read derived pages it did not make"
-  done
   d=$(awk -v x="${sa:-0}" -v y="${sb:-0}" 'BEGIN { if (x > 0) printf "%+.1f%%", (y / x - 1) * 100; else print "-" }')
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${ta:-none}" "$a" "$b" "${sa:-}" "${sb:-}" "$d" "${why:-yes}" >> "$OUT/pairs.tsv"
   [ -z "$why" ] || { unfair=$((unfair + 1)); say "$a vs $b: NOT COMPARABLE: $why"; }

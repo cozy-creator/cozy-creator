@@ -6,7 +6,9 @@ Works: each run completes, its take lands and shows. Lean: what each machine fet
 kernels, nothing fetched twice, no disk refusal, disks of 300 GB (cl-1076), a quote's download no more than what landed (cl-1071).
 Fast: rent, download and steps against bench.json (5%: a tie); a run's own work, from its GPU lease (a machine's first run: from the
 executor start before it) to its end, against the stored run, which ran alone on a machine holding its weights: its download and its
-wait for a GPU are judged by their own lines. Placed right: machine B works while A is busy, a run never waits for a busy machine's
+wait for a GPU are judged by their own lines. Cold only with cold (tfs-299): a machine's first run against `cold_exec_s` (a pod's
+first request), a later one against `warm_exec_s`; no figure of its temperature is a note, and a run the call memo answered fails.
+Placed right: machine B works while A is busy, a run never waits for a busy machine's
 GPU while a preferred one idles (cl-1073), a run takes every GPU of its machine. The page tells the truth: no page or console error; each take's tile names its phase (Downloading, then
 Rendering) with that phase's share and its machine, and a cancel (cl-1074); no MBps, no "0 of 0"; no CLI command in a toast (cl-1085);
 the take in Focus at its own shape (cl-1080); Calcifer never restarted; no page load nobody asked for (cl-1066); runs numbered from 1
@@ -470,12 +472,17 @@ for r in rows:
     if not r.stored:
         check(f"request {r.request} as fast as stored", None, f"no stored {fn} on {key}: recorded; its first green numbers go in bench.json")
         continue
-    cold = not any(o.label == r.label and o.request < r.request and o.record for o in rows)
-    want = num(r.stored.get('cold_exec_s' if cold else 'warm_exec_s')) or 0.0
+    temp = 'warm' if any(o.label == r.label and o.request < r.request and o.record for o in rows) else 'cold'
+    want = num(r.stored.get(f'{temp}_exec_s'))
+    name = f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {temp})"
     # Its own work, as the stored run's time is: that run was alone on a machine that held its weights. This one's download and its wait
     # for a GPU behind another run are not its work; its download's rate and placement judge those.
-    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", r.work_s is not None and r.work_s <= want * TIE,
-          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record'))
+    if r.record.memoized:
+        check(name, False, 'the call memo answered it: nothing ran to compare')
+    elif want is None:
+        check(name, None, f"{fmt(r.work_s, ' s', 1)}; no stored {temp} figure (bench.json: only a pod's first request is cold): recorded, not judged")
+    else:
+        check(name, r.work_s is not None and r.work_s <= want * TIE, f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record'))
     for part, step in (('dense', r.dense), ('sparse', r.sparse)):
         stored = num(r.stored.get(f'{part}_step_s'))
         if stored and step is not None:

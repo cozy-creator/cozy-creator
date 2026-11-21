@@ -79,8 +79,8 @@ if [ -n "${SESSION_UNTIL:-}" ]; then
 fi
 # derived_state <label> <reset|settle|census>: the pod's derived state (release-gate/derived-state.sh, machines.sh
 # `pod_derived`): `reset` before an update's restart begins an arm, `settle` after it clears what the ended executors still
-# wrote and counts what is left. DERIVED holds the census line; a cold arm
-# starts with no derived page, memo entry or learned peak (`derived_zero`). The call memo can't be cleared there: a record
+# wrote and counts what is left. DERIVED holds the census line; a cold arm starts with no derived page, memo entry or
+# learned peak (`derived_zero`). The call memo can't be cleared there: a record
 # it answered says `memoized`, and ab.sh never compares one. No `cozy` verb clears any of this (tfs-299): the root shell
 # is the only way in.
 DERIVED=''
@@ -98,6 +98,66 @@ derived_state() {
   DERIVED=$line; say "$1: derived state after $2: $line"
 }
 derived_zero() { pod_derived_zero "$DERIVED"; }
+# Arms on one pod (tfs-299): each starts cold or warm by declaration, never by what an earlier arm left. Cold: `derived_state
+# <arm> reset` before the update that restarts the machine (`cold_restart` when the arm updates nothing), then `arm_cold`.
+# Warm: its own warm-up first.
+# arm_cold <label>: after the restart that begins a cold arm, a settle clears what the ended executors wrote behind their last
+# run (#3663), and its census finds no derived page, memo entry or learned peak, or the session fails.
+arm_cold() { derived_state "$1" settle; derived_zero || fail "$1: its arm starts with derived state it did not make: $DERIVED"; }
+# cold_restart <label>: a cold arm with no update of its own: the derived state goes, a settings-only update (`--gpu-memory-limit
+# off`) restarts TensorD and ends every executor, then `arm_cold`.
+cold_restart() {
+  derived_state "$1" reset
+  step "restart-$1" machine update "$NAME" --gpu-memory-limit off -y || fail "$1: the restart"
+  arm_cold "$1"
+}
+# states.tsv: each compared record's line (`state_row`): its arm, its temperature (cold: its function's first request since its
+# arm began cold; warm: a later one; warmup: never compared), LoRA bake blocks, derived bytes filled and persisted pages (the
+# run's measurements and its calls', every GPU), whether the call memo answered it, its seconds and whether it fetched weights.
+STATES=$OUT/states.tsv
+# cellstate <record json>: its bake blocks, derived bytes, persisted pages and whether the call memo answered it, tab-separated.
+cellstate() { jq -r '. as $r | [.measurements, (.calls[]?.measurements)] | map(select(. != null) | .memory.stats.varena[]?.stats // empty) as $v
+  | [($v | map(.moved.bake.blocks // 0) | add // 0), ($v | map(.moved.derived.bytes // 0) | add // 0),
+     ($v | map(.baked_pages.persisted // 0) | max // 0), (($r.memo.memoized // false) or ([$r.calls[]?.memoized] | any) | tostring)] | @tsv' \
+  "$1" 2>/dev/null; }
+# fetched_weights <output>: whether a run's output (text or --json) shows weights downloaded inside the request: its seconds
+# are then the link's (44006261838: 0.25.0's first H3 spent 454 s of 822 there).
+fetched_weights() { if grep -qE 'downloading .* weights [0-9.]+ [KMG]i?B/|"downloading [^"]* weights' "$1" 2>/dev/null; then echo true; else echo false; fi; }
+# state_row <label> <arm> <temperature> <record json> [output]: its line in states.tsv, said.
+state_row() {
+  local bake derived persisted memo f s
+  [ -s "$STATES" ] || printf 'cell\tarm\ttemperature\tbake_blocks\tderived_bytes\tpersisted\tmemoized\texec_s\tdownloaded\n' > "$STATES"
+  read -r bake derived persisted memo < <(cellstate "$4")
+  f=$(fetched_weights "${5:-/dev/null}") s=$(jq -r '(.execution_ms // 0) / 1000' "$4" 2>/dev/null)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${bake:-0}" "${derived:-0}" "${persisted:-0}" "${memo:-false}" "${s:-0}" "$f" >> "$STATES"
+  say "$1 state: $3, bake ${bake:-0}, derived $(( ${derived:-0} / 1000000000 )) GB, persisted ${persisted:-0}, memoized ${memo:-false}, fetched weights $f"
+}
+# unfit <label> [fetches]: why its record measures nothing of its temperature (empty: it does): the call memo answered it, it
+# fetched weights inside the request (unless `fetches`: what the session measures), or, cold, it read derived pages it did not make.
+unfit() {
+  local row t bake derived memo dl
+  row=$(awk -F'\t' -v k="$1" '$1 == k' "$STATES" 2>/dev/null | tail -1)
+  [ -n "$row" ] || { echo "$1 did not run"; return; }
+  IFS=$'\t' read -r _ _ t bake derived _ memo _ dl <<<"$row"
+  if [ "$memo" = true ]; then echo "the call memo answered $1"
+  elif [ "$dl" = true ] && [ "${2:-}" != fetches ]; then echo "$1 fetched its weights inside the request"
+  elif [ "$t" = cold ] && [ "$derived" != 0 ] && [ "$bake" = 0 ]; then echo "cold $1 read derived pages it did not make"
+  fi
+}
+# states_unfit: `unfit` of every record in states.tsv, `;`-joined (empty: each measures its temperature).
+states_unfit() { awk -F'\t' 'NR > 1 {print $1}' "$STATES" 2>/dev/null | while read -r l; do unfit "$l"; done | paste -sd';'; }
+# incomparable <a> <b> [fetches]: why two records can't be compared (empty: they can): a warm-up, temperatures that differ, or
+# either `unfit`.
+incomparable() {
+  local ta tb
+  ta=$(awk -F'\t' -v k="$1" '$1 == k {t = $3} END {print t}' "$STATES" 2>/dev/null)
+  tb=$(awk -F'\t' -v k="$2" '$1 == k {t = $3} END {print t}' "$STATES" 2>/dev/null)
+  if [ -z "$ta" ] || [ -z "$tb" ]; then echo "a cell did not run"
+  elif [ "$ta" = warmup ] || [ "$tb" = warmup ]; then echo "a warm-up is never compared"
+  elif [ "$ta" != "$tb" ]; then echo "$1 is $ta, $2 is $tb"
+  else { unfit "$1" "${3:-}"; unfit "$2" "${3:-}"; } | head -1
+  fi
+}
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
 # orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
 claim() {

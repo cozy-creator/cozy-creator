@@ -2,7 +2,10 @@
 # arm, in order, on the same pod under the session's Runtime: the release keys an executor per construction, xs-113 one
 # per package environment, lane and degree. After each cell the pod's executor processes (pid, parent, /dev/nvidia
 # descriptors: CUDA contexts) and each GPU's bytes in use are kept as <arm>/<cell>.gpu.json; idle_entrypoints.py judges
-# each arm (<arm>/expect.tsv) and summary.tsv sets the arms side by side. params:
+# each arm (<arm>/expect.tsv) and summary.tsv sets the arms side by side. Each arm starts cold (tfs-299): the derived state
+# an earlier arm left (LoRA bakes, memos, learned peaks, kernels, page cache: lib.sh `derived_state`) goes before its update
+# restarts the machine (a settings-only restart for `image`), and a census after must find none. states.tsv holds each
+# cell's state (cold: its function's first in its arm); one the call memo answered or that fetched weights fails. params:
 #   arms        [{"name": "release", "tensord": "image", "only": "idle-klein-a,idle-klein-b"},
 #               {"name": "one", "tensord": "<dev-build run id>"}]; tensord `image` (no update), a release version or a
 #               dev-build run id; `only` the arm's cells (default: the session's)
@@ -83,6 +86,8 @@ cell() {
   [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* ]] || return 0
   run_cell "$PWD" "$name" "$target" --on "$M" "$@"
   snapshot > "$name.gpu.json"
+  state_row "$ARM-$name" "$ARM" "$([ -n "${SEEN[$target]:-}" ] && echo warm || echo cold)" "$PWD/$name.json" "$PWD/$name.ndjson"
+  SEEN[$target]=1
   say "$ARM $name: run $(cat "$name.number") $(run_get "$PWD" "$name" .status); $(jq -c '[.executors[] | select(.nvidia_fds > 0) | .pid], [.gpus[].used_mib]' "$name.gpu.json" 2>/dev/null | paste -sd' ')"
 }
 pkg() { echo "$1/$2"; }
@@ -91,12 +96,17 @@ mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
 BASE=$(( $(date +%s) / 60 ))
 for i in "${!names[@]}"; do
   ARM=${names[$i]}
+  declare -A SEEN=()
+  derived_state "$ARM" reset
   if [ -n "${bins[$i]}" ]; then
     step "update-$ARM" machine update "$NAME" --tensord "${bins[$i]}" -y || fail "$ARM: update"
     v=$(cozy machine show "$NAME" --json | jq -r .status.version); want=${bins[$i]}
     [ -x "$want" ] && want=$("$want" --version | awk '{print $2}')
     [ "$v" = "$want" ] || fail "$ARM: the pod runs TensorD $v, not $want"
+  else
+    step "restart-$ARM" machine update "$NAME" --gpu-memory-limit off -y || fail "$ARM: the restart"
   fi
+  arm_cold "$ARM"
   say "$ARM: TensorD $(cozy machine show "$NAME" --json | jq -r .status.version)"
   ONLY=$(jq -r --argjson i "$i" '.[$i].only // empty' <<<"$ARMS"); ONLY=${ONLY:-$(param only)}; ONLY=${ONLY:+,$ONLY,}
   # Each arm its own scenario and seeds: no request repeats.
@@ -133,3 +143,5 @@ for arm in arms:
 EOF
 cat "$OUT/summary.tsv" | tee -a "$R"
 for a in "${names[@]}"; do sed "s/^/$a\t/" "$OUT/$a/expect.tsv" 2>/dev/null; done | tee "$OUT/verdicts.tsv" | tee -a "$R"
+bad=$(states_unfit)
+[ -z "$bad" ] || fail "cells that measure nothing of their temperature: $bad"

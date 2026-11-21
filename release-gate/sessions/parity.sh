@@ -1,18 +1,22 @@
 # parity (xs-194): a package run from source behaves as its Hub install does, since gates run the RC's packages from
 # source (Paul 11-13). One rental with SSH. For each cell's package: its source from a packages_refs checkout (Triton sets
-# built into it first, as a release ships them: lib.sh `kernels`) and its Hub release, each run cold (a new executor,
-# its weights on disk and out of the page cache), source first so it can't take the release's kernels from the machine's
-# store, then each warm on the next seed. Held side by side: the two environments' distributions and the `_triton`
-# kernels each imports (each generation's, over SSH), cold and warm execution, step 1, steady step and the kernels
-# served, and the output bytes.
+# built into it first, as a release ships them: lib.sh `kernels`) and its Hub release, each an arm of its own (tfs-299):
+# it starts cold (lib.sh `cold_restart`: no derived page, memo, learned peak or kernel of the other arm's, no executor;
+# its weights on disk and out of the page cache), runs cold, then warm on the next seed. A B B A: source, Hub, then Hub
+# and source again cold on a new seed, so neither arm is always second. Held side by side: the two environments'
+# distributions and the `_triton` kernels each imports (each generation's, over SSH), cold and warm execution, step 1,
+# steady step and the kernels served, and the output bytes. A pair that differs in temperature, was answered by the call
+# memo or fetched its weights is not compared (lib.sh `incomparable`): it fails.
 # params:
 #   tree     the packages_refs checkout (pk)
 #   cells    [{"package": dir, "release": the Hub's, "function", "args": [inputs and flags; {seed}, {clip}: a 1.5 s
 #            320x176 test video made here], "download": [[model ref, `cozy model install` flags…], …]}]
-#   need_s   seconds the cap must buy (2700)
-#   slack    how much slower a source cold run's execution may be than the release's (1.15)
+#   order    abba (default) or one-way (source then Hub, once)
+#   need_s   seconds the cap must buy (3600)
+#   slack    how much slower source's cold execution may be than the release's, summed over the orders (1.15)
 . "$(dirname "$0")/lib.sh"
-TREE=$(param tree pk) CELLS=$(param cells '[]') SLACK=$(param slack 1.15)
+TREE=$(param tree pk) CELLS=$(param cells '[]') SLACK=$(param slack 1.15) ORDER=$(param order abba)
+[[ $ORDER =~ ^(abba|one-way)$ ]] || fail "order $ORDER: abba or one-way"
 SRC=$PACKAGES/$TREE
 [ -d "$SRC" ] || fail "no packages_refs checkout $TREE"
 [ "$(jq length <<<"$CELLS")" -gt 0 ] || fail "no cells"
@@ -28,7 +32,7 @@ for p in "${PKGS[@]}"; do
   say "cell $p: source $(git -C "$SRC" rev-parse --short HEAD) at $(grep -m1 '^version = ' "$SRC/$p/pyproject.toml" | cut -d'"' -f2), against the Hub's $p@$rel"
   kernels "$SRC/$p"
 done
-quote "$(param need_s 2700)"
+quote "$(param need_s 3600)"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
@@ -88,7 +92,7 @@ summary() { jq -r '.measurements as $m | ($m.attribution.steps // {} | to_entrie
   + "peak VRAM \(([$m.memory.driver[]?.peak_bytes] | max // 0) / 107374182.4 | floor / 10) GiB, "
   + "kernels \([.. | objects | select(has("kernel") and has("source")) | "\(.kernel)=\(.source)"] | unique | join(" ")), "
   + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)"] | join(" "))"' "$OUT/$1.json" 2>/dev/null; }
-exec_ms() { jq -r '.execution_ms // 0' "$OUT/$1.json" 2>/dev/null; }
+exec_ms() { local ms; ms=$(jq -r '.execution_ms // 0' "$OUT/$1.json" 2>/dev/null); echo "${ms:-0}"; }
 digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
 # cell <name> <target> <seed> <cell JSON>: one run followed to its end, its record and outputs kept.
 cell() {
@@ -104,6 +108,14 @@ cell() {
   say "$1 run $N $st: $(summary "$1")"
   [ "$st" = completed ] || fail "$1 $st: $(jq -r '.reason.message // .reason // empty' "$OUT/$1.json" 2>/dev/null | head -c 400)"
 }
+# arm <name> <target> <seed> <cell JSON> [warm]: from a cold start, its weights out of the page cache, its cold run on seed,
+# then with `warm` a warm one on the next seed in the same executor.
+arm() {
+  cold_restart "$1"
+  say "$1: page cache $(podpy evict < /dev/null)"
+  cell "$1-cold" "$2" "$3" "$4"; state_row "$1-cold" "$1" cold "$OUT/$1-cold.json" "$OUT/$1-cold.txt"
+  [ -z "${5:-}" ] || { cell "$1-warm" "$2" "$(($3 + 1))" "$4"; state_row "$1-warm" "$1" warm "$OUT/$1-warm.json" "$OUT/$1-warm.txt"; }
+}
 bad=0
 for p in "${PKGS[@]}"; do
   c=$(jq -c --arg p "$p" 'map(select(.package==$p))[0]' <<<"$CELLS")
@@ -113,19 +125,29 @@ for p in "${PKGS[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
     step "download-$p-$i" model install "${dl[@]}" --on "$NAME" < /dev/null || fail "$p: the download of ${dl[0]}"
   done
-  say "$p: page cache $(podpy evict < /dev/null)"
-  cell "src-$p-cold" "./$p/$fn" "$seed" "$c"
-  say "$p: page cache $(podpy evict < /dev/null)"
-  cell "hub-$p-cold" "$p/$fn@$rel" "$seed" "$c"
-  cell "src-$p-warm" "./$p/$fn" "$((seed + 1))" "$c"
-  cell "hub-$p-warm" "$p/$fn@$rel" "$((seed + 1))" "$c"
-  for k in cold warm; do
-    a=$(digests "src-$p-$k") b=$(digests "hub-$p-$k")
-    if [ -n "$a" ] && [ "$a" = "$b" ]; then say "$p $k: IDENTICAL output ($a)"; else say "$p $k: DIFFERENT output: source $a, Hub $b"; bad=$((bad + 1)); fi
+  # Each pair on one seed, so its outputs compare; the second order on a new one, which no earlier run's memo holds.
+  arm "src-$p" "./$p/$fn" "$seed" "$c" warm
+  arm "hub-$p" "$p/$fn@$rel" "$seed" "$c" warm
+  pairs=("src-$p-cold hub-$p-cold" "src-$p-warm hub-$p-warm")
+  if [ "$ORDER" = abba ]; then
+    arm "hub2-$p" "$p/$fn@$rel" "$((seed + 2))" "$c"
+    arm "src2-$p" "./$p/$fn" "$((seed + 2))" "$c"
+    pairs+=("src2-$p-cold hub2-$p-cold")
+  fi
+  s=0 h=0 fair=1
+  for pair in "${pairs[@]}"; do
+    read -r a b <<<"$pair"
+    why=$(incomparable "$a" "$b")
+    if [ -n "$why" ]; then say "$a vs $b: NOT COMPARABLE: $why"; bad=$((bad + 1)); fair=0; continue; fi
+    x=$(digests "$a") y=$(digests "$b")
+    if [ -n "$x" ] && [ "$x" = "$y" ]; then say "$a vs $b: IDENTICAL output ($x)"; else say "$a vs $b: DIFFERENT output: source $x, Hub $y"; bad=$((bad + 1)); fi
+    [[ $a == *-cold ]] || continue
+    s=$((s + $(exec_ms "$a"))) h=$((h + $(exec_ms "$b")))
+    say "$p cold, $([ "${a%%-*}" = src ] && echo source || echo Hub) first: source $(exec_ms "$a") ms, Hub $(exec_ms "$b") ms"
   done
-  s=$(exec_ms "src-$p-cold") h=$(exec_ms "hub-$p-cold")
-  if awk -v s="$s" -v h="$h" -v k="$SLACK" 'BEGIN { exit !(h > 0 && s <= h * k) }'; then say "$p cold execution: source ${s} ms, Hub ${h} ms (within ${SLACK}x)"
-  else say "$p cold execution: source ${s} ms, Hub ${h} ms: SLOWER than ${SLACK}x"; bad=$((bad + 1)); fi
+  [ "$fair" = 1 ] || continue
+  if awk -v s="$s" -v h="$h" -v k="$SLACK" 'BEGIN { exit !(h > 0 && s <= h * k) }'; then say "$p cold execution ($ORDER): source ${s} ms, Hub ${h} ms (within ${SLACK}x)"
+  else say "$p cold execution ($ORDER): source ${s} ms, Hub ${h} ms: SLOWER than ${SLACK}x"; bad=$((bad + 1)); fi
 done
 mods=$(for p in "${PKGS[@]}"; do sed -n '/cozy\.application/,/^\[/s/^default = "\([A-Za-z0-9_]*\)[.:].*/\1/p' "$SRC/$p/pyproject.toml"; done | paste -sd' ')
 podpy envs $mods < /dev/null > "$OUT/envs.jsonl" || fail "the environments: $(tail -c 300 "$OUT/envs.jsonl")"
